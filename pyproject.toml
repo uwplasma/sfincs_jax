@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sfincs_jax"
+version = "0.0.1"
+description = "JAX port of SFINCS (Fortran v3 parity-first)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "jax>=0.4.25",
+  "numpy>=1.24",
+  "scipy>=1.10",
+  "h5py>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+docs = [
+  "sphinx>=7.0",
+  "sphinx-rtd-theme>=2.0",
+]
+opt = [
+  "equinox>=0.11",
+  "jaxopt>=0.8",
+  "optax>=0.1.9",
+]
+
+[project.scripts]
+sfincs_jax = "sfincs_jax.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sfincs_jax*"]
+

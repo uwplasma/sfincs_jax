@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+import h5py
+
+from sfincs_jax.fortran import run_sfincs_fortran
+from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax.v3 import geometry_from_namelist, grids_from_namelist
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--input", required=True, help="Path to SFINCS input.namelist")
+    p.add_argument("--sfincs-output", default=None, help="Path to sfincsOutput.h5 (optional if --run-fortran)")
+    p.add_argument("--run-fortran", action="store_true", help="Run Fortran first to generate sfincsOutput.h5")
+    p.add_argument("--fortran-exe", default=None, help="Path to Fortran executable (or set SFINCS_FORTRAN_EXE)")
+    args = p.parse_args()
+
+    input_path = Path(args.input)
+    if args.run_fortran:
+        out_path = run_sfincs_fortran(input_namelist=input_path, exe=Path(args.fortran_exe) if args.fortran_exe else None)
+    else:
+        if args.sfincs_output is None:
+            raise SystemExit("--sfincs-output is required unless --run-fortran is set")
+        out_path = Path(args.sfincs_output)
+
+    nml = read_sfincs_input(input_path)
+    grids = grids_from_namelist(nml)
+    geom = geometry_from_namelist(nml=nml, grids=grids)
+
+    with h5py.File(out_path, "r") as f:
+        bhat_f = f["BHat"][...]
+        dbth_f = f["dBHatdtheta"][...]
+        dbze_f = f["dBHatdzeta"][...]
+
+    bhat = np.asarray(geom.b_hat).T
+    dbth = np.asarray(geom.db_hat_dtheta).T
+    dbze = np.asarray(geom.db_hat_dzeta).T
+
+    print("max |BHat - Fortran|:", float(np.max(np.abs(bhat - bhat_f))))
+    print("max |dBHatdtheta - Fortran|:", float(np.max(np.abs(dbth - dbth_f))))
+    print("max |dBHatdzeta - Fortran|:", float(np.max(np.abs(dbze - dbze_f))))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
