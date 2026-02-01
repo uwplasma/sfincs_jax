@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from jax import config as _jax_config
 
@@ -12,6 +13,7 @@ import numpy as np
 from jax import tree_util as jtu
 
 from .collisionless import CollisionlessV3Operator, apply_collisionless_v3
+from .collisionless_er import ErXDotV3Operator, ErXiDotV3Operator, apply_er_xdot_v3, apply_er_xidot_v3
 from .collisions import PitchAngleScatteringV3Operator, apply_pitch_angle_scattering_v3, make_pitch_angle_scattering_v3_operator
 from .geometry import BoozerGeometry
 from .namelist import Namelist
@@ -37,6 +39,19 @@ def _get_int(group: dict, key: str, default: int) -> int:
     if isinstance(v, list):
         v = v[0] if v else default
     return int(v)
+
+
+def _dphi_hat_dpsi_hat_from_er_scheme4(er: float) -> float:
+    """Compute dPhiHat/dpsiHat from Er for geometryScheme=4 (v3 defaults).
+
+    Matches geometry.F90 (scheme=4) + radialCoordinates.F90 with
+    inputRadialCoordinateForGradients=4 (default).
+    """
+    psi_a_hat = -0.384935
+    a_hat = 0.5109
+    psi_n = 0.25  # rN=0.5 is forced for geometryScheme=4
+    ddrhat2ddpsihat = a_hat / (2.0 * psi_a_hat * math.sqrt(psi_n))
+    return float(ddrhat2ddpsihat * (-er))
 
 
 def collisionless_operator_from_namelist(
@@ -101,12 +116,15 @@ class V3FBlockOperator:
     This is intentionally incomplete. Today it includes:
     - collisionless streaming + mirror (±1 couplings in L)
     - pitch-angle scattering collisions (diagonal in L)
+    - collisionless Er terms (xiDot and xDot), when enabled in the namelist
 
     As more v3 terms are ported, they will be composed here.
     """
 
     collisionless: CollisionlessV3Operator
     pas: PitchAngleScatteringV3Operator
+    er_xidot: ErXiDotV3Operator | None
+    er_xdot: ErXDotV3Operator | None
     identity_shift: jnp.ndarray  # scalar, helps make toy solves well-conditioned
 
     n_species: int
@@ -125,17 +143,19 @@ class V3FBlockOperator:
         return int(s * x * l * t * z)
 
     def tree_flatten(self):
-        children = (self.collisionless, self.pas, self.identity_shift)
+        children = (self.collisionless, self.pas, self.er_xidot, self.er_xdot, self.identity_shift)
         aux = (self.n_species, self.n_x, self.n_xi, self.n_theta, self.n_zeta)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        collisionless, pas, identity_shift = children
+        collisionless, pas, er_xidot, er_xdot, identity_shift = children
         n_species, n_x, n_xi, n_theta, n_zeta = aux
         return cls(
             collisionless=collisionless,
             pas=pas,
+            er_xidot=er_xidot,
+            er_xdot=er_xdot,
             identity_shift=identity_shift,
             n_species=n_species,
             n_x=n_x,
@@ -150,9 +170,57 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     geom = geometry_from_namelist(nml=nml, grids=grids)
     colless = collisionless_operator_from_namelist(nml=nml, grids=grids, geom=geom)
     pas = pas_collision_operator_from_namelist(nml=nml, grids=grids)
+
+    phys = nml.group("physicsParameters")
+    include_xdot = bool(phys.get("INCLUDEXDOTTERM", False))
+    include_er_xidot = bool(phys.get("INCLUDEELECTRICFIELDTERMINXIDOT", False))
+    er = float(phys.get("ER", 0.0))
+    alpha = float(phys.get("ALPHA", 1.0))
+    delta = float(phys.get("DELTA", 0.0))
+
+    # For now we assume geometryScheme=4 and v3 defaults for the radial conversion.
+    dphi = _dphi_hat_dpsi_hat_from_er_scheme4(er)
+
+    er_xidot = None
+    if include_er_xidot:
+        er_xidot = ErXiDotV3Operator(
+            alpha=jnp.asarray(alpha, dtype=jnp.float64),
+            delta=jnp.asarray(delta, dtype=jnp.float64),
+            dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
+            d_hat=geom.d_hat,
+            b_hat=geom.b_hat,
+            b_hat_sub_theta=geom.b_hat_sub_theta,
+            b_hat_sub_zeta=geom.b_hat_sub_zeta,
+            db_hat_dtheta=geom.db_hat_dtheta,
+            db_hat_dzeta=geom.db_hat_dzeta,
+            force0_radial_current=jnp.asarray(True),
+            n_xi_for_x=grids.n_xi_for_x,
+        )
+
+    er_xdot = None
+    if include_xdot:
+        er_xdot = ErXDotV3Operator(
+            alpha=jnp.asarray(alpha, dtype=jnp.float64),
+            delta=jnp.asarray(delta, dtype=jnp.float64),
+            dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
+            x=grids.x,
+            ddx_plus=grids.ddx,
+            ddx_minus=grids.ddx,
+            d_hat=geom.d_hat,
+            b_hat=geom.b_hat,
+            b_hat_sub_theta=geom.b_hat_sub_theta,
+            b_hat_sub_zeta=geom.b_hat_sub_zeta,
+            db_hat_dtheta=geom.db_hat_dtheta,
+            db_hat_dzeta=geom.db_hat_dzeta,
+            force0_radial_current=jnp.asarray(True),
+            n_xi_for_x=grids.n_xi_for_x,
+        )
+
     return V3FBlockOperator(
         collisionless=colless,
         pas=pas,
+        er_xidot=er_xidot,
+        er_xdot=er_xdot,
         identity_shift=jnp.asarray(identity_shift, dtype=jnp.float64),
         n_species=int(colless.n_species),
         n_x=int(colless.n_x),
@@ -165,6 +233,10 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
 def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray) -> jnp.ndarray:
     out = op.identity_shift * f
     out = out + apply_collisionless_v3(op.collisionless, f)
+    if op.er_xidot is not None:
+        out = out + apply_er_xidot_v3(op.er_xidot, f)
+    if op.er_xdot is not None:
+        out = out + apply_er_xdot_v3(op.er_xdot, f)
     out = out + apply_pitch_angle_scattering_v3(op.pas, f)
     return out
 
@@ -208,4 +280,3 @@ def solve_v3_fblock_gmres(
 
 apply_v3_fblock_operator_jit = jax.jit(apply_v3_fblock_operator, static_argnums=())
 matvec_v3_fblock_flat_jit = jax.jit(matvec_v3_fblock_flat, static_argnums=())
-

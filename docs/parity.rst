@@ -7,6 +7,11 @@ Implemented (parity-tested)
 - v3 grids: ``theta``, ``zeta``, ``x`` (including the v3 polynomial/Stieltjes ``x`` grid)
 - Boozer geometryScheme=4 (simplified W7-X model): ``BHat`` and derivatives
 - Collisionless v3 operator slice: streaming + mirror (parity vs PETSc binaries for one example)
+- Collisionless v3 Er terms:
+
+  - non-standard ``d/dxi`` term (``includeElectricFieldTermInXiDot = .true.``): |ΔL|=2 parity vs Fortran Jacobian
+  - collisionless ``d/dx`` term (``includeXDotTerm = .true.``): |ΔL|=2 parity vs Fortran Jacobian
+
 - Pitch-angle scattering collisions (``collisionOperator=1`` without Phi1): diagonal parity vs PETSc binaries for one small example
 
 Not yet implemented

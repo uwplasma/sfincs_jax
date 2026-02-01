@@ -21,6 +21,12 @@ For examples that use `optax` / `jaxopt` / `equinox`:
 pip install -e ".[opt]"
 ```
 
+For examples that generate publication-style figures:
+
+```bash
+pip install -e ".[viz]"
+```
+
 ### Running
 
 Each example is a standalone script:
@@ -28,4 +34,3 @@ Each example is a standalone script:
 ```bash
 python examples/1_simple/01_build_grids_and_geometry.py
 ```
-

@@ -12,6 +12,85 @@ def _weight(x: float, k: float) -> float:
     return math.exp(-(x * x)) * (x**k)
 
 
+def x_weight_np(x: np.ndarray, k: float) -> np.ndarray:
+    """Weight function used by SFINCS v3 for the polynomial x grid."""
+    x = np.asarray(x, dtype=np.float64)
+    return np.exp(-(x * x)) * (x**k)
+
+
+def x_weight_d1_over_weight_np(x: np.ndarray, k: float) -> np.ndarray:
+    """(d/dx weight) / weight, matching v3 `polynomialDiffMatrices.F90`."""
+    x = np.asarray(x, dtype=np.float64)
+    out = np.empty_like(x)
+    mask0 = np.abs(x) < 1e-12
+    out[mask0] = 0.0
+    out[~mask0] = k / x[~mask0] - 2.0 * x[~mask0]
+    return out
+
+
+def x_weight_d2_over_weight_np(x: np.ndarray, k: float) -> np.ndarray:
+    """(d^2/dx^2 weight) / weight, matching v3 `polynomialDiffMatrices.F90`."""
+    x = np.asarray(x, dtype=np.float64)
+    out = np.empty_like(x)
+    mask0 = np.abs(x) < 1e-12
+    out[mask0] = -2.0
+    out[~mask0] = k * (k - 1.0) / (x[~mask0] * x[~mask0]) - 2.0 * (2.0 * k + 1.0) + 4.0 * (
+        x[~mask0] * x[~mask0]
+    )
+    return out
+
+
+def make_x_polynomial_diff_matrices(x: np.ndarray, *, k: float) -> tuple[np.ndarray, np.ndarray]:
+    """Port of v3 `makeXPolynomialDiffMatrices` (polynomialDiffMatrices.F90).
+
+    Returns
+    -------
+    ddx, d2dx2:
+      First and second derivative matrices on the (possibly nonuniform) x-grid.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    n = int(x.size)
+    if n < 1:
+        raise ValueError("x must have at least one point")
+
+    xx = np.broadcast_to(x[:, None], (n, n)).copy()
+    dx = xx - xx.T
+    np.fill_diagonal(dx, 1.0)
+
+    c = np.prod(dx, axis=1)
+    c = c * x_weight_np(x, k)
+    ccc = c[:, None] / c[None, :]
+
+    z = 1.0 / dx
+    np.fill_diagonal(z, 0.0)
+
+    xxx = np.zeros((n - 1, n), dtype=np.float64)
+    for i in range(n):
+        if i + 1 < n:
+            xxx[i:, i] = z[i, i + 1 :]
+        if i > 0:
+            xxx[:i, i] = z[i, :i]
+
+    y = np.zeros((n, n), dtype=np.float64)
+    y[0, :] = x_weight_d1_over_weight_np(x, k)
+    for i in range(1, n):
+        y[i, :] = y[i - 1, :] + xxx[i - 1, :]
+
+    ddx = z * ccc
+    np.fill_diagonal(ddx, y[-1, :])
+
+    old_y = y
+    y2 = np.zeros((n, n), dtype=np.float64)
+    y2[0, :] = x_weight_d2_over_weight_np(x, k)
+    for i in range(1, n):
+        y2[i, :] = y2[i - 1, :] + 2.0 * old_y[i - 1, :] * xxx[i - 1, :]
+
+    repmat_diag_ddx = np.broadcast_to(np.diag(ddx)[:, None], (n, n))
+    d2dx2 = 2.0 * z * (ccc * repmat_diag_ddx - ddx)
+    np.fill_diagonal(d2dx2, y2[-1, :])
+
+    return ddx, d2dx2
+
 def _integrate_split(
     f: Callable[[float], float],
     *,
@@ -120,4 +199,3 @@ def make_x_grid(
         abscissae[0] = x0
 
     return XGrid(x=abscissae, gaussian_weights=weights)
-

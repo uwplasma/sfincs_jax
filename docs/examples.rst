@@ -25,3 +25,9 @@ Some advanced examples require optional dependencies:
 .. code-block:: bash
 
    pip install -e ".[opt]"
+
+Plotting examples require:
+
+.. code-block:: bash
+
+   pip install -e ".[viz]"

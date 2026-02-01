@@ -22,3 +22,9 @@ JAX optimization ecosystem (used in some advanced examples):
 .. code-block:: bash
 
    pip install -e ".[opt]"
+
+Plotting (for publication-style figures in some examples):
+
+.. code-block:: bash
+
+   pip install -e ".[viz]"

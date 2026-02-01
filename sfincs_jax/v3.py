@@ -11,7 +11,7 @@ import numpy as np
 from .geometry import BoozerGeometry, boozer_geometry_scheme4
 from .grids import uniform_diff_matrices
 from .namelist import Namelist
-from .xgrid import XGrid, make_x_grid
+from .xgrid import XGrid, make_x_grid, make_x_polynomial_diff_matrices
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class V3Grids:
 
     ddtheta: jnp.ndarray
     ddzeta: jnp.ndarray
+    ddx: jnp.ndarray
 
     n_xi: int
     n_l: int
@@ -71,6 +72,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     x_grid_scheme = _get_int(other, "xGridScheme", 5)
     x_grid_k = _get_float(other, "xGrid_k", 0.0)
     nxi_for_x_option = _get_int(other, "Nxi_for_x_option", 1)
+    xdot_derivative_scheme = _get_int(other, "xDotDerivativeScheme", 0)
 
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
     if geometry_scheme == 4:
@@ -121,6 +123,15 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     x = jnp.asarray(xg.x)
     x_weights = jnp.asarray(xg.dx_weights(x_grid_k))
 
+    # x differentiation matrix (used by the Er xDot term and by collisions).
+    ddx_np, _d2dx2_np = make_x_polynomial_diff_matrices(np.asarray(xg.x, dtype=np.float64), k=x_grid_k)
+    ddx = jnp.asarray(ddx_np)
+
+    if xdot_derivative_scheme != 0:
+        raise NotImplementedError(
+            "Only xDotDerivativeScheme=0 is implemented (ddx_xDot_plus/minus = ddx)."
+        )
+
     # Nxi_for_x logic (see createGrids.F90).
     x_np = np.asarray(x, dtype=float)
     nxi_for_x = np.zeros((nx,), dtype=int)
@@ -150,6 +161,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         x_weights=x_weights,
         ddtheta=ddtheta,
         ddzeta=ddzeta,
+        ddx=ddx,
         n_xi=nxi,
         n_l=nl,
         n_xi_for_x=jnp.asarray(nxi_for_x, dtype=jnp.int32),

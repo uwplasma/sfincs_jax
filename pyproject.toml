@@ -28,6 +28,9 @@ opt = [
   "jaxopt>=0.8",
   "optax>=0.1.9",
 ]
+viz = [
+  "matplotlib>=3.8",
+]
 
 [project.scripts]
 sfincs_jax = "sfincs_jax.cli:main"
@@ -35,4 +38,3 @@ sfincs_jax = "sfincs_jax.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sfincs_jax*"]
-
