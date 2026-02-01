@@ -25,7 +25,7 @@ from sfincs_jax.sparse import csr_matvec
 
 
 def _default_prefix() -> Path:
-    return Path(__file__).parents[2] / "tests" / "ref" / "pas_1species_PAS_noEr_small"
+    return Path(__file__).parents[2] / "tests" / "ref" / "pas_1species_PAS_noEr_tiny"
 
 
 def main() -> int:
@@ -67,4 +67,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

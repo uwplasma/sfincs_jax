@@ -43,7 +43,13 @@ def csr_matvec(
         raise ValueError("indptr has incompatible length")
 
     counts = indptr[1:] - indptr[:-1]
-    row_ids = jnp.repeat(jnp.arange(n_rows, dtype=indices.dtype), counts)
+    # When JIT compiling, `jnp.repeat` requires the total output length to be static.
+    # For CSR, this length is exactly nnz = len(data).
+    nnz = int(data.shape[0])
+    row_ids = jnp.repeat(
+        jnp.arange(n_rows, dtype=indices.dtype),
+        counts,
+        total_repeat_length=nnz,
+    )
     y_vals = data * x[indices]
     return jax.ops.segment_sum(y_vals, row_ids, n_rows)
-

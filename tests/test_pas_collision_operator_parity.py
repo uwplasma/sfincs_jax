@@ -21,9 +21,9 @@ def test_pas_collisions_diagonal_matvec_matches_fortran_matrix() -> None:
     by the PAS collision operator.
     """
     here = Path(__file__).parent
-    input_path = here / "ref" / "pas_1species_PAS_noEr_small.input.namelist"
-    mat_path = here / "ref" / "pas_1species_PAS_noEr_small.whichMatrix_3.petscbin"
-    vec_path = here / "ref" / "pas_1species_PAS_noEr_small.stateVector.petscbin"
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny.stateVector.petscbin"
 
     nml = read_sfincs_input(input_path)
     grids = grids_from_namelist(nml)
