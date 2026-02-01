@@ -22,6 +22,9 @@ API reference
 .. automodule:: sfincs_jax.collisions
    :members:
 
+.. automodule:: sfincs_jax.v3_fblock
+   :members:
+
 .. automodule:: sfincs_jax.indices
    :members:
 
