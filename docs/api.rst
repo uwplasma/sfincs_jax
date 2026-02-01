@@ -28,3 +28,8 @@ API reference
 .. automodule:: sfincs_jax.petsc_binary
    :members:
 
+.. automodule:: sfincs_jax.sparse
+   :members:
+
+.. automodule:: sfincs_jax.solver
+   :members:

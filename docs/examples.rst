@@ -14,9 +14,14 @@ Run from the repo root:
    cd sfincs_jax
    python examples/1_simple/01_build_grids_and_geometry.py
 
+Matrix-free linear solve demo (using frozen Fortran PETSc binaries):
+
+.. code-block:: bash
+
+   python examples/2_intermediate/04_solve_fortran_matrix_with_gmres.py
+
 Some advanced examples require optional dependencies:
 
 .. code-block:: bash
 
    pip install -e ".[opt]"
-
