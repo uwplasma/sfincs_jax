@@ -46,6 +46,7 @@ sfincs_jax run-fortran --input /path/to/input.namelist
 - [x] v3 theta/zeta/x grids and simplified Boozer geometryScheme=4
 - [x] Collisionless v3 operator slice (streaming + mirror) with PETSc-binary parity test
 - [x] Collisionless v3 Er terms (`xiDot` + `xDot`) with PETSc-binary parity tests (|ΔL|=2)
+- [x] ExB drift term (`d/dtheta` for geometryScheme=4) with PETSc-binary parity test
 - [x] Pitch-angle scattering collisions (collisionOperator=1 without Phi1) with PETSc-binary parity test
 - [ ] Full linearized Fokker-Planck collisions (collisionOperator=0)
 - [ ] Residual/Jacobian assembly in JAX (matrix-free where possible)

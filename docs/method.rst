@@ -38,6 +38,31 @@ The basic collisionless dynamics couple neighboring Legendre modes :math:`L \\le
 through (i) streaming along the field line and (ii) the mirror force. These terms are
 parity-tested against frozen PETSc binaries.
 
+ExB drift terms (ΔL=0)
+^^^^^^^^^^^^^^^^^^^^^
+
+SFINCS v3 includes ExB advection in the angular directions. In the Fortran code
+(`populateMatrix.F90`), these terms are assembled as dense derivative-matrix
+applications in :math:`\\theta` and :math:`\\zeta`, with a coefficient proportional
+to :math:`\\partial_{\\psi}\\hat\\Phi`.
+
+For the default (non-DKES) form used in most parity tests, the coefficients are:
+
+.. math::
+
+   F_{E\\times B,\\theta}(\\theta,\\zeta)
+   =
+   \\frac{\\alpha\\,\\Delta\\,\\partial_{\\psi}\\hat\\Phi}{2}
+   \\;\\frac{\\hat D\\;\\hat B_{\\zeta}}{\\hat B^2},
+   \\qquad
+   F_{E\\times B,\\zeta}(\\theta,\\zeta)
+   =
+   -\\frac{\\alpha\\,\\Delta\\,\\partial_{\\psi}\\hat\\Phi}{2}
+   \\;\\frac{\\hat D\\;\\hat B_{\\theta}}{\\hat B^2}.
+
+In `geometryScheme=4`, :math:`\\hat B_{\\theta} = \\hat I` is zero in the default
+W7-X parameter set, so the :math:`\\partial/\\partial\\zeta` ExB term vanishes.
+
 Non-standard Er term in xiDot (|ΔL|=2)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

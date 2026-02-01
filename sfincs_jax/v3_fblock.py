@@ -13,6 +13,7 @@ import numpy as np
 from jax import tree_util as jtu
 
 from .collisionless import CollisionlessV3Operator, apply_collisionless_v3
+from .collisionless_exb import ExBThetaV3Operator, ExBZetaV3Operator, apply_exb_theta_v3, apply_exb_zeta_v3
 from .collisionless_er import ErXDotV3Operator, ErXiDotV3Operator, apply_er_xdot_v3, apply_er_xidot_v3
 from .collisions import PitchAngleScatteringV3Operator, apply_pitch_angle_scattering_v3, make_pitch_angle_scattering_v3_operator
 from .geometry import BoozerGeometry
@@ -52,6 +53,18 @@ def _dphi_hat_dpsi_hat_from_er_scheme4(er: float) -> float:
     psi_n = 0.25  # rN=0.5 is forced for geometryScheme=4
     ddrhat2ddpsihat = a_hat / (2.0 * psi_a_hat * math.sqrt(psi_n))
     return float(ddrhat2ddpsihat * (-er))
+
+
+def _fsab_hat2(*, grids: V3Grids, geom: BoozerGeometry) -> float:
+    """Compute FSABHat2 as in v3 `geometry.F90:computeBIntegrals`."""
+    tw = np.asarray(grids.theta_weights, dtype=np.float64)  # (T,)
+    zw = np.asarray(grids.zeta_weights, dtype=np.float64)  # (Z,)
+    d_hat = np.asarray(geom.d_hat, dtype=np.float64)  # (T,Z)
+    b_hat = np.asarray(geom.b_hat, dtype=np.float64)  # (T,Z)
+
+    w = tw[:, None] * zw[None, :]  # (T,Z)
+    vprime_hat = float(np.sum(w / d_hat))
+    return float(np.sum(w * (b_hat**2) / d_hat) / vprime_hat)
 
 
 def collisionless_operator_from_namelist(
@@ -115,6 +128,7 @@ class V3FBlockOperator:
 
     This is intentionally incomplete. Today it includes:
     - collisionless streaming + mirror (±1 couplings in L)
+    - ExB drift terms (d/dtheta and d/dzeta)
     - pitch-angle scattering collisions (diagonal in L)
     - collisionless Er terms (xiDot and xDot), when enabled in the namelist
 
@@ -122,6 +136,8 @@ class V3FBlockOperator:
     """
 
     collisionless: CollisionlessV3Operator
+    exb_theta: ExBThetaV3Operator
+    exb_zeta: ExBZetaV3Operator
     pas: PitchAngleScatteringV3Operator
     er_xidot: ErXiDotV3Operator | None
     er_xdot: ErXDotV3Operator | None
@@ -143,16 +159,26 @@ class V3FBlockOperator:
         return int(s * x * l * t * z)
 
     def tree_flatten(self):
-        children = (self.collisionless, self.pas, self.er_xidot, self.er_xdot, self.identity_shift)
+        children = (
+            self.collisionless,
+            self.exb_theta,
+            self.exb_zeta,
+            self.pas,
+            self.er_xidot,
+            self.er_xdot,
+            self.identity_shift,
+        )
         aux = (self.n_species, self.n_x, self.n_xi, self.n_theta, self.n_zeta)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        collisionless, pas, er_xidot, er_xdot, identity_shift = children
+        collisionless, exb_theta, exb_zeta, pas, er_xidot, er_xdot, identity_shift = children
         n_species, n_x, n_xi, n_theta, n_zeta = aux
         return cls(
             collisionless=collisionless,
+            exb_theta=exb_theta,
+            exb_zeta=exb_zeta,
             pas=pas,
             er_xidot=er_xidot,
             er_xdot=er_xdot,
@@ -174,12 +200,39 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     phys = nml.group("physicsParameters")
     include_xdot = bool(phys.get("INCLUDEXDOTTERM", False))
     include_er_xidot = bool(phys.get("INCLUDEELECTRICFIELDTERMINXIDOT", False))
+    use_dkes_exb = bool(phys.get("USEDKESEXBDRIFT", False))
     er = float(phys.get("ER", 0.0))
     alpha = float(phys.get("ALPHA", 1.0))
     delta = float(phys.get("DELTA", 0.0))
 
     # For now we assume geometryScheme=4 and v3 defaults for the radial conversion.
     dphi = _dphi_hat_dpsi_hat_from_er_scheme4(er)
+    fsab_hat2 = _fsab_hat2(grids=grids, geom=geom)
+
+    exb_theta = ExBThetaV3Operator(
+        alpha=jnp.asarray(alpha, dtype=jnp.float64),
+        delta=jnp.asarray(delta, dtype=jnp.float64),
+        dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
+        ddtheta=grids.ddtheta,
+        d_hat=geom.d_hat,
+        b_hat=geom.b_hat,
+        b_hat_sub_zeta=geom.b_hat_sub_zeta,
+        use_dkes_exb_drift=jnp.asarray(use_dkes_exb),
+        fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
+        n_xi_for_x=grids.n_xi_for_x,
+    )
+    exb_zeta = ExBZetaV3Operator(
+        alpha=jnp.asarray(alpha, dtype=jnp.float64),
+        delta=jnp.asarray(delta, dtype=jnp.float64),
+        dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
+        ddzeta=grids.ddzeta,
+        d_hat=geom.d_hat,
+        b_hat=geom.b_hat,
+        b_hat_sub_theta=geom.b_hat_sub_theta,
+        use_dkes_exb_drift=jnp.asarray(use_dkes_exb),
+        fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
+        n_xi_for_x=grids.n_xi_for_x,
+    )
 
     er_xidot = None
     if include_er_xidot:
@@ -218,6 +271,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
 
     return V3FBlockOperator(
         collisionless=colless,
+        exb_theta=exb_theta,
+        exb_zeta=exb_zeta,
         pas=pas,
         er_xidot=er_xidot,
         er_xdot=er_xdot,
@@ -233,6 +288,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
 def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray) -> jnp.ndarray:
     out = op.identity_shift * f
     out = out + apply_collisionless_v3(op.collisionless, f)
+    out = out + apply_exb_theta_v3(op.exb_theta, f)
+    out = out + apply_exb_zeta_v3(op.exb_zeta, f)
     if op.er_xidot is not None:
         out = out + apply_er_xidot_v3(op.er_xidot, f)
     if op.er_xdot is not None:

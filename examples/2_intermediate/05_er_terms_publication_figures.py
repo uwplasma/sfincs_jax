@@ -3,6 +3,7 @@
 This script produces a small set of polished figures that illustrate:
   - The simplified W7-X Boozer field magnitude BHat(θ, ζ) (geometryScheme=4)
   - The Er-driven coefficients appearing in the v3 xiDot and xDot terms
+  - The ExB drift coefficient multiplying the v3 d/dtheta term (for this geometry, IHat=0 so d/dzeta vanishes)
 
 Outputs are written as both PNG and PDF in `examples/2_intermediate/figures/`.
 
@@ -112,6 +113,10 @@ def main() -> int:
     )
     f_x = (-(alpha * delta * dphi) / 4.0) * np.asarray(geom.d_hat) * temp_x / (bhat**3)
 
+    # ExB drift coefficient multiplying d/dtheta (non-DKES ExB drift).
+    # For geometryScheme=4, BHat_sub_theta = IHat = 0, so the ExB d/dzeta term is identically zero.
+    f_exb_theta = (alpha * delta * dphi / 2.0) * np.asarray(geom.d_hat) * np.asarray(geom.b_hat_sub_zeta) / (bhat**2)
+
     # Figure 1: BHat(θ, ζ)
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
     im = ax.pcolormesh(th2, ze2, bhat, shading="auto")
@@ -142,10 +147,19 @@ def main() -> int:
     cb.set_label(r"$F_x$")
     _save(fig, out_dir, "er_terms_xdot_coeff")
 
+    # Figure 4: ExB drift d/dtheta coefficient
+    fig, ax = plt.subplots(figsize=(6.2, 4.2))
+    im = ax.pcolormesh(th2, ze2, f_exb_theta, shading="auto")
+    ax.set_title(r"ExB $d/d\theta$ coefficient $F_{E\\times B,\\theta}(\theta,\zeta)$")
+    ax.set_xlabel(r"$\theta$")
+    ax.set_ylabel(r"$\zeta$")
+    cb = fig.colorbar(im, ax=ax)
+    cb.set_label(r"$F_{E\\times B,\\theta}$")
+    _save(fig, out_dir, "exb_terms_theta_coeff")
+
     print(f"Wrote figures to {out_dir}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

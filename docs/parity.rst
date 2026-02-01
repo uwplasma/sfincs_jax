@@ -12,6 +12,7 @@ Implemented (parity-tested)
   - non-standard ``d/dxi`` term (``includeElectricFieldTermInXiDot = .true.``): |ΔL|=2 parity vs Fortran Jacobian
   - collisionless ``d/dx`` term (``includeXDotTerm = .true.``): |ΔL|=2 parity vs Fortran Jacobian
 
+- ExB drift term (``useDKESExBDrift = .false.``): ``d/dtheta`` parity vs Fortran Jacobian (geometryScheme=4)
 - Pitch-angle scattering collisions (``collisionOperator=1`` without Phi1): diagonal parity vs PETSc binaries for one small example
 
 Not yet implemented

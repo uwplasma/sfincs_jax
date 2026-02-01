@@ -22,6 +22,9 @@ API reference
 .. automodule:: sfincs_jax.collisionless_er
    :members:
 
+.. automodule:: sfincs_jax.collisionless_exb
+   :members:
+
 .. automodule:: sfincs_jax.collisions
    :members:
 
