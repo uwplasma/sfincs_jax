@@ -24,6 +24,13 @@ class V3Grids:
     zeta_weights: jnp.ndarray
     x_weights: jnp.ndarray
 
+    ddtheta: jnp.ndarray
+    ddzeta: jnp.ndarray
+
+    n_xi: int
+    n_l: int
+    n_xi_for_x: jnp.ndarray  # (Nx,) int32
+
 
 def _get_int(group: dict, key: str, default: int) -> int:
     v = group.get(key.upper(), default)
@@ -48,6 +55,8 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     ntheta = _get_int(res, "Ntheta", 15)
     nzeta = _get_int(res, "Nzeta", 15)
     nx = _get_int(res, "Nx", 5)
+    nxi = _get_int(res, "Nxi", 16)
+    nl = _get_int(res, "NL", 4)
 
     # SFINCS v3 defaults:
     force_odd = True
@@ -61,6 +70,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     zeta_derivative_scheme = _get_int(other, "zetaDerivativeScheme", 2)
     x_grid_scheme = _get_int(other, "xGridScheme", 5)
     x_grid_k = _get_float(other, "xGrid_k", 0.0)
+    nxi_for_x_option = _get_int(other, "Nxi_for_x_option", 1)
 
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
     if geometry_scheme == 4:
@@ -75,7 +85,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     theta_scheme = theta_scheme_map.get(theta_derivative_scheme)
     if theta_scheme is None:
         raise ValueError(f"Invalid thetaDerivativeScheme={theta_derivative_scheme}")
-    theta, theta_weights, _, _ = uniform_diff_matrices(
+    theta, theta_weights, ddtheta, _ = uniform_diff_matrices(
         n=ntheta, x_min=0.0, x_max=2 * math.pi, scheme=theta_scheme
     )
 
@@ -89,10 +99,13 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         zeta = jnp.asarray(np.array([0.0], dtype=np.float64))
         zeta_weights = jnp.asarray(np.array([2 * math.pi], dtype=np.float64))
     else:
-        zeta, zeta_weights, _, _ = uniform_diff_matrices(
+        zeta, zeta_weights, ddzeta, _ = uniform_diff_matrices(
             n=nzeta, x_min=0.0, x_max=zeta_max, scheme=zeta_scheme
         )
         zeta_weights = zeta_weights * n_periods
+    # If axisymmetric, ddzeta is unused but keep it defined.
+    if nzeta == 1:
+        ddzeta = jnp.zeros((1, 1), dtype=jnp.float64)
 
     # x grid
     if x_grid_scheme in {1, 5}:
@@ -108,6 +121,26 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     x = jnp.asarray(xg.x)
     x_weights = jnp.asarray(xg.dx_weights(x_grid_k))
 
+    # Nxi_for_x logic (see createGrids.F90).
+    x_np = np.asarray(x, dtype=float)
+    nxi_for_x = np.zeros((nx,), dtype=int)
+    if nxi_for_x_option == 0:
+        nxi_for_x[:] = nxi
+    elif nxi_for_x_option == 1:
+        for j in range(nx):
+            temp = nxi * (0.1 + 0.9 * x_np[j] / 2.0)
+            nxi_for_x[j] = max(4, nl, min(int(temp), nxi))
+    elif nxi_for_x_option == 2:
+        for j in range(nx):
+            temp = nxi * (0.1 + 0.9 * ((x_np[j] / 2.0) ** 2))
+            nxi_for_x[j] = max(4, nl, min(int(temp), nxi))
+    elif nxi_for_x_option == 3:
+        for j in range(nx):
+            temp = nxi * (0.1 + 0.9 * x_np[j] / 2.0)
+            nxi_for_x[j] = max(3, nl, int(temp))
+    else:
+        raise ValueError(f"Invalid Nxi_for_x_option={nxi_for_x_option}")
+
     return V3Grids(
         theta=theta,
         zeta=zeta,
@@ -115,6 +148,11 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         theta_weights=theta_weights,
         zeta_weights=zeta_weights,
         x_weights=x_weights,
+        ddtheta=ddtheta,
+        ddzeta=ddzeta,
+        n_xi=nxi,
+        n_l=nl,
+        n_xi_for_x=jnp.asarray(nxi_for_x, dtype=jnp.int32),
     )
 
 
