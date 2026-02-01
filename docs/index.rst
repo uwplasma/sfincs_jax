@@ -8,6 +8,9 @@ sfincs_jax
    :caption: Contents
 
    installation
+   method
    usage
+   examples
+   api
    parity
-
+   contributing
