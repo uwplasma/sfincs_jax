@@ -8,8 +8,10 @@ _jax_config.update("jax_enable_x64", True)
 
 import jax
 import jax.numpy as jnp
+from jax import tree_util as jtu
 
 
+@jtu.register_pytree_node_class
 @dataclass(frozen=True)
 class CollisionlessV3Operator:
     """Collisionless part of the v3 kinetic operator (streaming + mirror).
@@ -47,6 +49,53 @@ class CollisionlessV3Operator:
     @property
     def n_zeta(self) -> int:
         return int(self.ddzeta.shape[0])
+
+    def tree_flatten(self):
+        children = (
+            self.x,
+            self.ddtheta,
+            self.ddzeta,
+            self.b_hat,
+            self.b_hat_sup_theta,
+            self.b_hat_sup_zeta,
+            self.db_hat_dtheta,
+            self.db_hat_dzeta,
+            self.t_hats,
+            self.m_hats,
+            self.n_xi_for_x,
+        )
+        aux = None
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        del aux
+        (
+            x,
+            ddtheta,
+            ddzeta,
+            b_hat,
+            b_hat_sup_theta,
+            b_hat_sup_zeta,
+            db_hat_dtheta,
+            db_hat_dzeta,
+            t_hats,
+            m_hats,
+            n_xi_for_x,
+        ) = children
+        return cls(
+            x=x,
+            ddtheta=ddtheta,
+            ddzeta=ddzeta,
+            b_hat=b_hat,
+            b_hat_sup_theta=b_hat_sup_theta,
+            b_hat_sup_zeta=b_hat_sup_zeta,
+            db_hat_dtheta=db_hat_dtheta,
+            db_hat_dzeta=db_hat_dzeta,
+            t_hats=t_hats,
+            m_hats=m_hats,
+            n_xi_for_x=n_xi_for_x,
+        )
 
 
 def _mask_xi(n_xi_for_x: jnp.ndarray, n_xi_max: int) -> jnp.ndarray:

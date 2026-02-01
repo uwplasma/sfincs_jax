@@ -1,10 +1,26 @@
+"""Compare sfincs_jax `geometryScheme=4` fields against a Fortran v3 run.
+
+This script is useful when extending the geometry implementation. It compares:
+- `BHat`
+- `dBHatdtheta`
+- `dBHatdzeta`
+
+You can either point to an existing `sfincsOutput.h5`, or ask the script to run the
+Fortran executable (set `SFINCS_FORTRAN_EXE` or pass `--fortran-exe`).
+"""
+
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-import numpy as np
 import h5py
+import numpy as np
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from sfincs_jax.fortran import run_sfincs_fortran
 from sfincs_jax.namelist import read_sfincs_input
@@ -21,7 +37,10 @@ def main() -> int:
 
     input_path = Path(args.input)
     if args.run_fortran:
-        out_path = run_sfincs_fortran(input_namelist=input_path, exe=Path(args.fortran_exe) if args.fortran_exe else None)
+        out_path = run_sfincs_fortran(
+            input_namelist=input_path,
+            exe=Path(args.fortran_exe) if args.fortran_exe else None,
+        )
     else:
         if args.sfincs_output is None:
             raise SystemExit("--sfincs-output is required unless --run-fortran is set")
@@ -36,6 +55,7 @@ def main() -> int:
         dbth_f = f["dBHatdtheta"][...]
         dbze_f = f["dBHatdzeta"][...]
 
+    # Fortran HDF5 output uses (Nzeta, Ntheta); sfincs_jax uses (Ntheta, Nzeta).
     bhat = np.asarray(geom.b_hat).T
     dbth = np.asarray(geom.db_hat_dtheta).T
     dbze = np.asarray(geom.db_hat_dzeta).T
@@ -48,4 +68,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

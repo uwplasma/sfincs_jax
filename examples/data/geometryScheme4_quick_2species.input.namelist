@@ -1,0 +1,42 @@
+! Minimal input file for sfincs_jax examples (geometryScheme=4).
+
+&general
+/
+
+&geometryParameters
+  geometryScheme = 4
+/
+
+&speciesParameters
+  ! Two-species example (values taken from the Fortran v3 quick example).
+  Zs = 1 6
+  mHats = 1 6
+  nHats = 0.6d+0 0.009d+0
+  THats = 0.5d+0 0.8d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 8.4774d-3
+  Er = 0.0d+0
+
+  collisionOperator = 0
+  includeXDotTerm = .true.
+  includeElectricFieldTermInXiDot = .true.
+  useDKESExBDrift = .false.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 7
+  Nx = 5
+  Nxi = 8
+  NL = 4
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
