@@ -9,7 +9,7 @@ _jax_config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-from .geometry import BoozerGeometry, boozer_geometry_scheme4
+from .geometry import BoozerGeometry, boozer_geometry_from_bc_file, boozer_geometry_scheme4
 from .grids import uniform_diff_matrices
 from .namelist import Namelist
 from .xgrid import XGrid, make_x_grid, make_x_polynomial_diff_matrices
@@ -271,6 +271,32 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
 def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
     geom = nml.group("geometryParameters")
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
-    if geometry_scheme != 4:
-        raise NotImplementedError("Only geometryScheme=4 is implemented so far.")
-    return boozer_geometry_scheme4(theta=grids.theta, zeta=grids.zeta)
+    if geometry_scheme == 4:
+        return boozer_geometry_scheme4(theta=grids.theta, zeta=grids.zeta)
+    if geometry_scheme in {11, 12}:
+        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        if equilibrium_file is None:
+            raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
+        base_dir = nml.source_path.parent if nml.source_path is not None else None
+        p = Path(str(equilibrium_file).strip().strip('"').strip("'"))
+        if not p.is_absolute():
+            if base_dir is not None:
+                cand = (base_dir / p).resolve()
+                if cand.exists():
+                    p = cand
+            if not p.exists():
+                cand = (Path.cwd() / p).resolve()
+                if cand.exists():
+                    p = cand
+
+        r_n_wish = float(geom.get("RN_WISH", 0.5))
+        vmecradial_option = int(geom.get("VMECRADIALOPTION", 0))
+        return boozer_geometry_from_bc_file(
+            path=str(p),
+            theta=grids.theta,
+            zeta=grids.zeta,
+            r_n_wish=r_n_wish,
+            vmecradial_option=vmecradial_option,
+            geometry_scheme=int(geometry_scheme),
+        )
+    raise NotImplementedError("Only geometryScheme in {4,11,12} is implemented so far.")

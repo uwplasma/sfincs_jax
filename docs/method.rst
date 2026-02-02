@@ -25,6 +25,25 @@ The primary unknown (in many modes) can be viewed as a tensor
 
 where :math:`s` is the species index and :math:`L` is the Legendre index.
 
+Geometry harmonics and resolution (v3 detail)
+---------------------------------------------
+
+For Boozer-coordinate geometries that are represented by Fourier harmonics (e.g. ``geometryScheme=11/12``),
+SFINCS v3 truncates the harmonic tables to modes representable on the discrete
+:math:`(\\theta,\\zeta)` grid. Concretely, for a grid of sizes ``Ntheta`` and ``Nzeta``,
+the v3 geometry builder includes only modes satisfying
+
+.. math::
+
+   0 \\le m \\le \\lfloor N_\\theta/2 \\rfloor,
+   \\qquad
+   |n| \\le \\lfloor N_\\zeta/2 \\rfloor,
+
+with additional Nyquist exclusions for sine components.
+
+`sfincs_jax` matches this behavior when evaluating `.bc` geometries so that the resulting
+arrays are consistent with the v3 Jacobian assembly at a given resolution.
+
 Selected operator terms (ported so far)
 --------------------------------------
 

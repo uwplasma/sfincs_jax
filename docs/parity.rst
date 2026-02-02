@@ -6,6 +6,7 @@ Implemented (parity-tested)
 
 - v3 grids: ``theta``, ``zeta``, ``x`` (including the v3 polynomial/Stieltjes ``x`` grid)
 - Boozer geometryScheme=4 (simplified W7-X model): ``BHat`` and derivatives
+- Boozer geometryScheme=11 from `.bc` file inputs: ``BHat``, ``DHat``, ``BHat_sub_psi``, and derivatives (parity vs frozen fixture)
 - ``sfincsOutput.h5`` writing for ``geometryScheme=4`` with dataset-by-dataset parity against a frozen
   Fortran v3 fixture (see ``docs/outputs.rst``). ``uHat`` is compared with a looser tolerance due to
   tiny platform-dependent transcendental/reduction differences.

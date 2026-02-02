@@ -59,6 +59,8 @@ sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
 - [x] Packaging + CLI scaffolding
 - [x] Parse SFINCS `input.namelist` (minimal)
 - [x] v3 theta/zeta/x grids and simplified Boozer geometryScheme=4
+- [x] v3 grids for geometryScheme=11/12 (read `NPeriods` from `.bc` header)
+- [x] Boozer geometryScheme=11/12 from `.bc` files (BHat and required covariant components)
 - [x] Collisionless v3 operator slice (streaming + mirror) with PETSc-binary parity test
 - [x] Collisionless v3 Er terms (`xiDot` + `xDot`) with PETSc-binary parity tests (|ΔL|=2)
 - [x] ExB drift term (`d/dtheta` for geometryScheme=4) with PETSc-binary parity test
