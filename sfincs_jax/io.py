@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
+from .diagnostics import u_hat_np
 from .diagnostics import vprime_hat as vprime_hat_jax
 from .namelist import Namelist, read_sfincs_input
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
@@ -336,6 +337,8 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["dBHat_sup_theta_dzeta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
     out["dBHat_sup_zeta_dpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
     out["dBHat_sup_zeta_dtheta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+
+    out["uHat"] = np.asarray(u_hat_np(grids=grids, geom=geom), dtype=np.float64)
 
     return out
 

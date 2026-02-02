@@ -11,6 +11,7 @@ sfincs_jax
    method
    usage
    outputs
+   fortran_examples
    examples
    api
    parity

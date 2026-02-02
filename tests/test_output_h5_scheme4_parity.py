@@ -47,7 +47,7 @@ def test_output_scheme4_matches_fortran_fixture(tmp_path: Path) -> None:
     b = read_sfincs_h5(fortran_path)
     assert a["input.namelist"] == b["input.namelist"]
 
-    keys = [
+    keys_strict = [
         "integerToRepresentFalse",
         "integerToRepresentTrue",
         "Nspecies",
@@ -169,6 +169,13 @@ def test_output_scheme4_matches_fortran_fixture(tmp_path: Path) -> None:
         "dBHat_sup_zeta_dtheta",
     ]
 
-    results = compare_sfincs_outputs(a_path=out_path, b_path=fortran_path, keys=keys, rtol=0, atol=1e-12)
+    results = compare_sfincs_outputs(a_path=out_path, b_path=fortran_path, keys=keys_strict, rtol=0, atol=1e-12)
     bad = [r for r in results if not r.ok]
     assert not bad, f"Mismatched keys: {[b.key for b in bad]}"
+
+    # `uHat` depends on many transcendental evaluations (cos/sin) and long reductions.
+    # In practice we observe tiny, platform-dependent differences vs the Fortran v3
+    # fixture (O(1e-9) absolute for this case), so we compare it with a looser tolerance.
+    uhat = compare_sfincs_outputs(a_path=out_path, b_path=fortran_path, keys=["uHat"], rtol=0, atol=1e-8)
+    bad_uhat = [r for r in uhat if not r.ok]
+    assert not bad_uhat, f"Mismatched keys (uHat): {[b.key for b in bad_uhat]}"

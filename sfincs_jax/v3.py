@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 from jax import config as _jax_config
 _jax_config.update("jax_enable_x64", True)
@@ -14,9 +15,23 @@ from .namelist import Namelist
 from .xgrid import XGrid, make_x_grid, make_x_polynomial_diff_matrices
 
 
-def _n_periods_from_bc_file(path: str) -> int:
-    """Read `NPeriods` from a Boozer `.bc` file header used by v3 geometryScheme=11/12."""
-    p = path.strip().strip('"').strip("'")
+def _n_periods_from_bc_file(path: str, *, base_dir: Path | None = None) -> int:
+    """Read `NPeriods` from a Boozer `.bc` file header used by v3 geometryScheme=11/12.
+
+    In upstream Fortran v3 runs, ``equilibriumFile`` is commonly specified as a **relative**
+    path, resolved relative to the run directory (i.e. the directory containing
+    ``input.namelist``).
+    """
+    p = Path(path.strip().strip('"').strip("'"))
+    if not p.is_absolute():
+        candidates: list[Path] = []
+        if base_dir is not None:
+            candidates.append((base_dir / p).resolve())
+        candidates.append((Path.cwd() / p).resolve())
+        for c in candidates:
+            if c.exists():
+                p = c
+                break
     with open(p, "r") as f:
         for line in f:
             if line.startswith("CC"):
@@ -31,7 +46,7 @@ def _n_periods_from_bc_file(path: str) -> int:
             except ValueError:
                 # Some files include an extra header line with column names.
                 continue
-    raise ValueError(f"Unable to find header line in {path!r}")
+    raise ValueError(f"Unable to find header line in {str(p)!r}")
 
 
 @dataclass(frozen=True)
@@ -106,7 +121,8 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
         if equilibrium_file is None:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
-        n_periods = _n_periods_from_bc_file(str(equilibrium_file))
+        base_dir = nml.source_path.parent if nml.source_path is not None else None
+        n_periods = _n_periods_from_bc_file(str(equilibrium_file), base_dir=base_dir)
     else:
         raise NotImplementedError(
             "Only geometryScheme in {4,11,12} is supported for grid construction so far."

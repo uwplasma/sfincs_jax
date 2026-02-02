@@ -112,6 +112,8 @@ def _parse_key(key: str) -> Tuple[str, Tuple[int, ...] | None]:
 class Namelist:
     groups: Dict[str, Dict[str, Value]]
     indexed: Dict[str, Dict[str, Dict[Tuple[int, ...], Scalar]]]
+    source_path: Path | None = None
+    source_text: str | None = None
 
     def group(self, name: str) -> Dict[str, Value]:
         return self.groups.get(name.lower(), {})
@@ -119,7 +121,8 @@ class Namelist:
 
 def read_sfincs_input(path: str | Path) -> Namelist:
     """Parse a SFINCS `input.namelist` file into groups."""
-    text = Path(path).read_text()
+    source_path = Path(path).resolve()
+    text = source_path.read_text()
     lines = [_strip_fortran_comments(ln) for ln in text.splitlines()]
 
     groups: Dict[str, List[str]] = {}
@@ -184,5 +187,4 @@ def read_sfincs_input(path: str | Path) -> Namelist:
         parsed_groups[gname] = scalars
         parsed_indexed[gname] = {k: v for k, v in indexed.items()}
 
-    return Namelist(groups=parsed_groups, indexed=parsed_indexed)
-
+    return Namelist(groups=parsed_groups, indexed=parsed_indexed, source_path=source_path, source_text=text)

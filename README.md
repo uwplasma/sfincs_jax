@@ -86,3 +86,6 @@ See `examples/README.md`. The examples are structured as:
 - `examples/1_simple/`
 - `examples/2_intermediate/`
 - `examples/3_advanced/`
+
+For a structured view of how much of the upstream Fortran v3 example suite is currently
+supported, see the docs page `docs/fortran_examples.rst` (auto-generated audit table).
