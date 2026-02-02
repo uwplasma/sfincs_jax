@@ -55,6 +55,22 @@ def test_full_system_rhs_pas_tiny_scheme5_matches_fortran() -> None:
     np.testing.assert_allclose(rhs, rhs_ref, rtol=0, atol=3e-12)
 
 
+def test_full_system_rhs_pas_tiny_scheme5_with_phi1_linear_matches_fortran() -> None:
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear.stateVector.petscbin"
+    residual_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear.residual.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+
+    rhs = np.asarray(rhs_v3_full_system(op))
+    rhs_ref = _rhs_ref_from_fortran_matrix_and_residual(mat_path=mat_path, vec_path=vec_path, residual_path=residual_path)
+
+    np.testing.assert_allclose(rhs, rhs_ref, rtol=0, atol=3e-12)
+
+
 def test_full_system_rhs_fp_2species_matches_fortran() -> None:
     here = Path(__file__).parent
     input_path = here / "ref" / "quick_2species_FPCollisions_noEr.input.namelist"

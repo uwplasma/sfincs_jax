@@ -27,6 +27,8 @@ Implemented (parity-tested)
   ``pas_1species_PAS_noEr_tiny`` and ``quick_2species_FPCollisions_noEr``.
 - Full-system matvec + RHS + residual + GMRES-solution parity for VMEC ``geometryScheme=5`` (tiny PAS case):
   ``pas_1species_PAS_noEr_tiny_scheme5``.
+- Full-system matvec + RHS + residual + GMRES-solution parity for VMEC ``geometryScheme=5`` with Phi1 QN/lambda blocks:
+  ``pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear``.
 - Phi1/QN/lambda block parity (includePhi1=true, includePhi1InKineticEquation=false):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for
   ``pas_1species_PAS_noEr_tiny_withPhi1_linear``.
