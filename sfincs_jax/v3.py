@@ -14,6 +14,26 @@ from .namelist import Namelist
 from .xgrid import XGrid, make_x_grid, make_x_polynomial_diff_matrices
 
 
+def _n_periods_from_bc_file(path: str) -> int:
+    """Read `NPeriods` from a Boozer `.bc` file header used by v3 geometryScheme=11/12."""
+    p = path.strip().strip('"').strip("'")
+    with open(p, "r") as f:
+        for line in f:
+            if line.startswith("CC"):
+                continue
+            # First non-comment line contains:
+            # m0b n0b nsurf nper flux a R ...
+            parts = line.split()
+            if len(parts) < 4:
+                raise ValueError(f"Unexpected .bc header line: {line!r}")
+            try:
+                return int(parts[3])
+            except ValueError:
+                # Some files include an extra header line with column names.
+                continue
+    raise ValueError(f"Unable to find header line in {path!r}")
+
+
 @dataclass(frozen=True)
 class V3Grids:
     theta: jnp.ndarray
@@ -27,6 +47,10 @@ class V3Grids:
     ddtheta: jnp.ndarray
     ddzeta: jnp.ndarray
     ddx: jnp.ndarray
+    ddtheta_magdrift_plus: jnp.ndarray
+    ddtheta_magdrift_minus: jnp.ndarray
+    ddzeta_magdrift_plus: jnp.ndarray
+    ddzeta_magdrift_minus: jnp.ndarray
 
     n_xi: int
     n_l: int
@@ -69,6 +93,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
 
     theta_derivative_scheme = _get_int(other, "thetaDerivativeScheme", 2)
     zeta_derivative_scheme = _get_int(other, "zetaDerivativeScheme", 2)
+    magnetic_drift_derivative_scheme = _get_int(other, "magneticDriftDerivativeScheme", 3)
     x_grid_scheme = _get_int(other, "xGridScheme", 5)
     x_grid_k = _get_float(other, "xGrid_k", 0.0)
     nxi_for_x_option = _get_int(other, "Nxi_for_x_option", 1)
@@ -77,9 +102,14 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
     if geometry_scheme == 4:
         n_periods = 5
+    elif geometry_scheme in {11, 12}:
+        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        if equilibrium_file is None:
+            raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
+        n_periods = _n_periods_from_bc_file(str(equilibrium_file))
     else:
         raise NotImplementedError(
-            "Only geometryScheme=4 is implemented in sfincs_jax so far."
+            "Only geometryScheme in {4,11,12} is supported for grid construction so far."
         )
 
     # theta grid
@@ -90,6 +120,30 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     theta, theta_weights, ddtheta, _ = uniform_diff_matrices(
         n=ntheta, x_min=0.0, x_max=2 * math.pi, scheme=theta_scheme
     )
+
+    # Upwinded theta matrices for magnetic drifts (ddtheta_magneticDrift_plus/minus in v3).
+    if magnetic_drift_derivative_scheme == 0:
+        ddtheta_magdrift_plus = ddtheta
+        ddtheta_magdrift_minus = ddtheta
+    else:
+        drift_scheme_map = {
+            1: (80, 90),
+            2: (100, 110),
+            3: (120, 130),
+            -1: (90, 80),
+            -2: (110, 100),
+            -3: (130, 120),
+        }
+        schemes = drift_scheme_map.get(magnetic_drift_derivative_scheme)
+        if schemes is None:
+            raise ValueError(f"Invalid magneticDriftDerivativeScheme={magnetic_drift_derivative_scheme}")
+        scheme_plus, scheme_minus = schemes
+        _, _, ddtheta_magdrift_plus, _ = uniform_diff_matrices(
+            n=ntheta, x_min=0.0, x_max=2 * math.pi, scheme=scheme_plus
+        )
+        _, _, ddtheta_magdrift_minus, _ = uniform_diff_matrices(
+            n=ntheta, x_min=0.0, x_max=2 * math.pi, scheme=scheme_minus
+        )
 
     # zeta grid
     zeta_max = 2 * math.pi / n_periods
@@ -108,6 +162,32 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     # If axisymmetric, ddzeta is unused but keep it defined.
     if nzeta == 1:
         ddzeta = jnp.zeros((1, 1), dtype=jnp.float64)
+        ddzeta_magdrift_plus = ddzeta
+        ddzeta_magdrift_minus = ddzeta
+    else:
+        # Upwinded zeta matrices for magnetic drifts (ddzeta_magneticDrift_plus/minus in v3).
+        if magnetic_drift_derivative_scheme == 0:
+            ddzeta_magdrift_plus = ddzeta
+            ddzeta_magdrift_minus = ddzeta
+        else:
+            drift_scheme_map = {
+                1: (80, 90),
+                2: (100, 110),
+                3: (120, 130),
+                -1: (90, 80),
+                -2: (110, 100),
+                -3: (130, 120),
+            }
+            schemes = drift_scheme_map.get(magnetic_drift_derivative_scheme)
+            if schemes is None:
+                raise ValueError(f"Invalid magneticDriftDerivativeScheme={magnetic_drift_derivative_scheme}")
+            scheme_plus, scheme_minus = schemes
+            _, _, ddzeta_magdrift_plus, _ = uniform_diff_matrices(
+                n=nzeta, x_min=0.0, x_max=zeta_max, scheme=scheme_plus
+            )
+            _, _, ddzeta_magdrift_minus, _ = uniform_diff_matrices(
+                n=nzeta, x_min=0.0, x_max=zeta_max, scheme=scheme_minus
+            )
 
     # x grid
     if x_grid_scheme in {1, 5}:
@@ -162,6 +242,10 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         ddtheta=ddtheta,
         ddzeta=ddzeta,
         ddx=ddx,
+        ddtheta_magdrift_plus=ddtheta_magdrift_plus,
+        ddtheta_magdrift_minus=ddtheta_magdrift_minus,
+        ddzeta_magdrift_plus=ddzeta_magdrift_plus,
+        ddzeta_magdrift_minus=ddzeta_magdrift_minus,
         n_xi=nxi,
         n_l=nl,
         n_xi_for_x=jnp.asarray(nxi_for_x, dtype=jnp.int32),

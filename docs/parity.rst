@@ -13,6 +13,7 @@ Implemented (parity-tested)
   - collisionless ``d/dx`` term (``includeXDotTerm = .true.``): |ΔL|=2 parity vs Fortran Jacobian
 
 - ExB drift term (``useDKESExBDrift = .false.``): ``d/dtheta`` parity vs Fortran Jacobian (geometryScheme=4)
+- Magnetic drift terms (``magneticDriftScheme=1``): parity-tested as |ΔL|=2 slices vs Fortran Jacobian (geometryScheme=11)
 - Pitch-angle scattering collisions (``collisionOperator=1`` without Phi1): diagonal parity vs PETSc binaries for one small example
 
 Not yet implemented

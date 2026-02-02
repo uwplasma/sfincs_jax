@@ -25,6 +25,9 @@ API reference
 .. automodule:: sfincs_jax.collisionless_exb
    :members:
 
+.. automodule:: sfincs_jax.magnetic_drifts
+   :members:
+
 .. automodule:: sfincs_jax.collisions
    :members:
 

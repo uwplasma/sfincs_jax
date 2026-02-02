@@ -38,3 +38,7 @@ sfincs_jax = "sfincs_jax.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sfincs_jax*"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=prepend"]
+testpaths = ["tests"]

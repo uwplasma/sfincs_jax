@@ -96,6 +96,66 @@ The v3 implementation includes:
 In `sfincs_jax` we currently implement the default `xDotDerivativeScheme = 0`, i.e.
 the same polynomial-grid differentiation matrix is used for both upwind directions.
 
+Magnetic drift terms (ΔL=0 and |ΔL|=2)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+SFINCS v3 includes magnetic-drift advection in the angular directions, plus an associated
+non-standard :math:`\\partial/\\partial\\xi` term.
+
+For the v3 Jacobian assembly (`populateMatrix.F90`), the d/dtheta and d/dzeta drift terms take the form
+
+.. math::
+
+   \\mathcal{L}_{\\mathrm{md},\\theta}[f]
+   =
+   F_{\\mathrm{md}}(\\theta,\\zeta)\\;\\partial_{\\theta} f
+   \\quad\\text{(with Legendre couplings in } L\\text{)},
+
+.. math::
+
+   \\mathcal{L}_{\\mathrm{md},\\zeta}[f]
+   =
+   F_{\\mathrm{md}}(\\theta,\\zeta)\\;\\partial_{\\zeta} f
+   \\quad\\text{(with Legendre couplings in } L\\text{)}.
+
+Each term includes a diagonal-in-:math:`L` piece and :math:`L\\leftrightarrow L\\pm 2` couplings. In the
+Fortran code, the shared prefactor is
+
+.. math::
+
+   \\mathrm{factor}(\\theta,\\zeta,x)
+   =
+   \\frac{\\Delta\\,\\hat T\\,\\hat D\\,x^2}{2\\,Z\\,\\hat B^3}.
+
+For `magneticDriftScheme = 1` (the first scheme ported), the v3 code defines the geometric factors
+(using v3-normalized quantities)
+
+.. math::
+
+   g_1^{(\\theta)} = \\hat B_{\\zeta}\\,\\partial_{\\psi}\\hat B - \\hat B_{\\psi}\\,\\partial_{\\zeta}\\hat B,
+   \\qquad
+   g_2^{(\\theta)} = 2\\,\\hat B\\,\\big(\\partial_{\\zeta}\\hat B_{\\psi} - \\partial_{\\psi}\\hat B_{\\zeta}\\big),
+
+and (for the zeta drift term as implemented in `sfincs_jax` parity fixtures)
+
+.. math::
+
+   g_1^{(\\zeta)} = \\hat B_{\\psi}\\,\\partial_{\\theta}\\hat B - \\hat B_{\\theta}\\,\\partial_{\\psi}\\hat B,
+   \\qquad
+   g_2^{(\\zeta)} = 2\\,\\hat B\\,\\big(\\partial_{\\psi}\\hat B_{\\theta} - \\partial_{\\theta}\\hat B_{\\psi}\\big).
+
+To stabilize the drift advection, v3 supports upwinded angular derivative matrices
+(``ddtheta_magneticDrift_plus/minus`` and ``ddzeta_magneticDrift_plus/minus``). When
+``magneticDriftDerivativeScheme != 0``, v3 selects the upwind direction at each
+:math:`(\\theta,\\zeta)` grid point based on
+
+.. math::
+
+   \\mathrm{use\\_plus}(\\theta,\\zeta) = \\big(g_1\\,\\hat D(1,1)/Z\\big) > 0.
+
+This upwind selection is implemented in `sfincs_jax.magnetic_drifts` and parity-tested against
+frozen PETSc binaries for a `geometryScheme=11` fixture.
+
 Why JAX?
 --------
 

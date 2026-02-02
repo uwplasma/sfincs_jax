@@ -32,6 +32,8 @@ class BoozerGeometry:
     db_hat_dpsi_hat: jnp.ndarray
     db_hat_sub_psi_dtheta: jnp.ndarray
     db_hat_sub_psi_dzeta: jnp.ndarray
+    db_hat_sub_theta_dpsi_hat: jnp.ndarray
+    db_hat_sub_zeta_dpsi_hat: jnp.ndarray
 
 
 def _scheme4_default_harmonics() -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -114,4 +116,6 @@ def boozer_geometry_scheme4(
         db_hat_dpsi_hat=zeros,
         db_hat_sub_psi_dtheta=zeros,
         db_hat_sub_psi_dzeta=zeros,
+        db_hat_sub_theta_dpsi_hat=zeros,
+        db_hat_sub_zeta_dpsi_hat=zeros,
     )

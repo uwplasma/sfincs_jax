@@ -17,6 +17,14 @@ from .collisionless_exb import ExBThetaV3Operator, ExBZetaV3Operator, apply_exb_
 from .collisionless_er import ErXDotV3Operator, ErXiDotV3Operator, apply_er_xdot_v3, apply_er_xidot_v3
 from .collisions import PitchAngleScatteringV3Operator, apply_pitch_angle_scattering_v3, make_pitch_angle_scattering_v3_operator
 from .geometry import BoozerGeometry
+from .magnetic_drifts import (
+    MagneticDriftThetaV3Operator,
+    MagneticDriftXiDotV3Operator,
+    MagneticDriftZetaV3Operator,
+    apply_magnetic_drift_theta_v3,
+    apply_magnetic_drift_xidot_v3,
+    apply_magnetic_drift_zeta_v3,
+)
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
@@ -129,6 +137,7 @@ class V3FBlockOperator:
     This is intentionally incomplete. Today it includes:
     - collisionless streaming + mirror (±1 couplings in L)
     - ExB drift terms (d/dtheta and d/dzeta)
+    - magnetic drifts (d/dtheta, d/dzeta, and the non-standard d/dxi term), when enabled
     - pitch-angle scattering collisions (diagonal in L)
     - collisionless Er terms (xiDot and xDot), when enabled in the namelist
 
@@ -138,6 +147,9 @@ class V3FBlockOperator:
     collisionless: CollisionlessV3Operator
     exb_theta: ExBThetaV3Operator
     exb_zeta: ExBZetaV3Operator
+    magdrift_theta: MagneticDriftThetaV3Operator | None
+    magdrift_zeta: MagneticDriftZetaV3Operator | None
+    magdrift_xidot: MagneticDriftXiDotV3Operator | None
     pas: PitchAngleScatteringV3Operator
     er_xidot: ErXiDotV3Operator | None
     er_xdot: ErXDotV3Operator | None
@@ -163,6 +175,9 @@ class V3FBlockOperator:
             self.collisionless,
             self.exb_theta,
             self.exb_zeta,
+            self.magdrift_theta,
+            self.magdrift_zeta,
+            self.magdrift_xidot,
             self.pas,
             self.er_xidot,
             self.er_xdot,
@@ -173,12 +188,15 @@ class V3FBlockOperator:
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        collisionless, exb_theta, exb_zeta, pas, er_xidot, er_xdot, identity_shift = children
+        collisionless, exb_theta, exb_zeta, magdrift_theta, magdrift_zeta, magdrift_xidot, pas, er_xidot, er_xdot, identity_shift = children
         n_species, n_x, n_xi, n_theta, n_zeta = aux
         return cls(
             collisionless=collisionless,
             exb_theta=exb_theta,
             exb_zeta=exb_zeta,
+            magdrift_theta=magdrift_theta,
+            magdrift_zeta=magdrift_zeta,
+            magdrift_xidot=magdrift_xidot,
             pas=pas,
             er_xidot=er_xidot,
             er_xdot=er_xdot,
@@ -201,6 +219,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     include_xdot = bool(phys.get("INCLUDEXDOTTERM", False))
     include_er_xidot = bool(phys.get("INCLUDEELECTRICFIELDTERMINXIDOT", False))
     use_dkes_exb = bool(phys.get("USEDKESEXBDRIFT", False))
+    magnetic_drift_scheme = _get_int(phys, "magneticDriftScheme", 0)
     er = float(phys.get("ER", 0.0))
     alpha = float(phys.get("ALPHA", 1.0))
     delta = float(phys.get("DELTA", 0.0))
@@ -233,6 +252,67 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
         n_xi_for_x=grids.n_xi_for_x,
     )
+
+    magdrift_theta = None
+    magdrift_zeta = None
+    magdrift_xidot = None
+    if magnetic_drift_scheme != 0:
+        if magnetic_drift_scheme != 1:
+            raise NotImplementedError("sfincs_jax currently only builds magnetic drifts for magneticDriftScheme=1.")
+
+        species = nml.group("speciesParameters")
+        t_hat = float(_as_1d_float(species, "THats")[0])
+        z = float(_as_1d_float(species, "Zs")[0])
+
+        magdrift_theta = MagneticDriftThetaV3Operator(
+            delta=jnp.asarray(delta, dtype=jnp.float64),
+            t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
+            z=jnp.asarray(z, dtype=jnp.float64),
+            x=grids.x,
+            ddtheta_plus=grids.ddtheta_magdrift_plus,
+            ddtheta_minus=grids.ddtheta_magdrift_minus,
+            d_hat=geom.d_hat,
+            b_hat=geom.b_hat,
+            b_hat_sub_zeta=geom.b_hat_sub_zeta,
+            b_hat_sub_psi=geom.b_hat_sub_psi,
+            db_hat_dzeta=geom.db_hat_dzeta,
+            db_hat_dpsi_hat=geom.db_hat_dpsi_hat,
+            db_hat_sub_psi_dzeta=geom.db_hat_sub_psi_dzeta,
+            db_hat_sub_zeta_dpsi_hat=geom.db_hat_sub_zeta_dpsi_hat,
+            n_xi_for_x=grids.n_xi_for_x,
+        )
+        magdrift_zeta = MagneticDriftZetaV3Operator(
+            delta=jnp.asarray(delta, dtype=jnp.float64),
+            t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
+            z=jnp.asarray(z, dtype=jnp.float64),
+            x=grids.x,
+            ddzeta_plus=grids.ddzeta_magdrift_plus,
+            ddzeta_minus=grids.ddzeta_magdrift_minus,
+            d_hat=geom.d_hat,
+            b_hat=geom.b_hat,
+            b_hat_sub_theta=geom.b_hat_sub_theta,
+            b_hat_sub_psi=geom.b_hat_sub_psi,
+            db_hat_dtheta=geom.db_hat_dtheta,
+            db_hat_dpsi_hat=geom.db_hat_dpsi_hat,
+            db_hat_sub_theta_dpsi_hat=geom.db_hat_sub_theta_dpsi_hat,
+            db_hat_sub_psi_dtheta=geom.db_hat_sub_psi_dtheta,
+            n_xi_for_x=grids.n_xi_for_x,
+        )
+        magdrift_xidot = MagneticDriftXiDotV3Operator(
+            delta=jnp.asarray(delta, dtype=jnp.float64),
+            t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
+            z=jnp.asarray(z, dtype=jnp.float64),
+            x=grids.x,
+            d_hat=geom.d_hat,
+            b_hat=geom.b_hat,
+            db_hat_dtheta=geom.db_hat_dtheta,
+            db_hat_dzeta=geom.db_hat_dzeta,
+            db_hat_sub_psi_dzeta=geom.db_hat_sub_psi_dzeta,
+            db_hat_sub_zeta_dpsi_hat=geom.db_hat_sub_zeta_dpsi_hat,
+            db_hat_sub_theta_dpsi_hat=geom.db_hat_sub_theta_dpsi_hat,
+            db_hat_sub_psi_dtheta=geom.db_hat_sub_psi_dtheta,
+            n_xi_for_x=grids.n_xi_for_x,
+        )
 
     er_xidot = None
     if include_er_xidot:
@@ -273,6 +353,9 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         collisionless=colless,
         exb_theta=exb_theta,
         exb_zeta=exb_zeta,
+        magdrift_theta=magdrift_theta,
+        magdrift_zeta=magdrift_zeta,
+        magdrift_xidot=magdrift_xidot,
         pas=pas,
         er_xidot=er_xidot,
         er_xdot=er_xdot,
@@ -290,6 +373,12 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray) -> jnp.ndarra
     out = out + apply_collisionless_v3(op.collisionless, f)
     out = out + apply_exb_theta_v3(op.exb_theta, f)
     out = out + apply_exb_zeta_v3(op.exb_zeta, f)
+    if op.magdrift_theta is not None:
+        out = out + apply_magnetic_drift_theta_v3(op.magdrift_theta, f)
+    if op.magdrift_zeta is not None:
+        out = out + apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f)
+    if op.magdrift_xidot is not None:
+        out = out + apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f)
     if op.er_xidot is not None:
         out = out + apply_er_xidot_v3(op.er_xidot, f)
     if op.er_xdot is not None:
