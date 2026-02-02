@@ -41,18 +41,11 @@ def fsab_hat2(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
     return jnp.sum(w * (geom.b_hat**2) / geom.d_hat) / vph
 
 
-def u_hat(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
-    """Compute `uHat` as in v3 `geometry.F90` (cos-only branch).
+def _u_hat_loop(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
+    """Reference implementation of `uHat` using explicit harmonic loops (slow but transparent).
 
-    Notes
-    -----
-    In v3, `uHat` is computed from discrete harmonics of
-
-      hHat = 1 / BHat^2
-
-    via a projection onto modes `cos(m*theta - n*NPeriods*zeta)`. This implementation
-    follows the **cosine-only** branch, which is the branch used for the `geometryScheme=4`
-    fixture suite (stellarator-symmetric BHarmonics only).
+    This follows the cosine-only branch in v3 `geometry.F90` and is useful for validating
+    faster implementations.
     """
     theta = jnp.asarray(grids.theta, dtype=jnp.float64)
     zeta = jnp.asarray(grids.zeta, dtype=jnp.float64)
@@ -101,6 +94,48 @@ def u_hat(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
             u = u + u_amp * cos_angle
 
     return u
+
+
+def u_hat(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
+    """Compute `uHat` using an FFT-based mode-by-mode transform (fast, JIT-friendly).
+
+    Notes
+    -----
+    v3 computes `uHat` by projecting :math:`\\hat h = 1/\\hat B^2` onto harmonics
+
+      cos(m*theta - n*NPeriods*zeta)
+
+    and applying a per-mode scaling. On a uniform periodic grid, this projection is exactly
+    a discrete Fourier transform, so we can compute `uHat` efficiently via `fft2/ifft2`.
+    """
+    b_hat = jnp.asarray(geom.b_hat, dtype=jnp.float64)
+    ntheta, nzeta = int(b_hat.shape[0]), int(b_hat.shape[1])
+
+    # Work in zeta' = NPeriods*zeta, which is 2π-periodic on the v3 grids.
+    # The grid samples already correspond to zeta' = 2π*j/Nzeta, so the standard FFT basis applies.
+    h_hat = 1.0 / (b_hat * b_hat)
+    f = jnp.fft.fft2(h_hat)  # complex128 when x64 is enabled
+
+    m = jnp.fft.fftfreq(ntheta, d=1.0 / ntheta)  # integer-valued float frequencies
+    k = jnp.fft.fftfreq(nzeta, d=1.0 / nzeta)
+    mm, kk = jnp.meshgrid(m, k, indexing="ij")
+
+    # Map FFT basis exp(i(m*theta + k*zeta')) to the v3 harmonic exp(i(m*theta - n*NPeriods*zeta)):
+    #   zeta' = NPeriods*zeta so exp(i(m*theta - n*NPeriods*zeta)) = exp(i(m*theta - n*zeta')).
+    # In the FFT basis k multiplies +zeta', so k = -n  =>  n = -k, and the uHat scale uses n*NPeriods.
+    n_periods = jnp.asarray(float(geom.n_periods), dtype=jnp.float64)
+    n_eff = (-kk) * n_periods
+    denom = n_eff - jnp.asarray(geom.iota, dtype=jnp.float64) * mm
+    numer = jnp.asarray(geom.iota, dtype=jnp.float64) * (
+        jnp.asarray(geom.g_hat, dtype=jnp.float64) * mm + jnp.asarray(geom.i_hat, dtype=jnp.float64) * n_eff
+    )
+    scale = jnp.where(jnp.abs(denom) < 1e-30, 0.0, numer / denom).astype(f.dtype)
+
+    # Omit the (0,0) mode.
+    scale = scale.at[0, 0].set(jnp.asarray(0.0, dtype=f.dtype))
+
+    u = jnp.fft.ifft2(scale * f).real
+    return jnp.asarray(u, dtype=jnp.float64)
 
 
 def u_hat_np(*, grids: V3Grids, geom: BoozerGeometry) -> np.ndarray:

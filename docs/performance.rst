@@ -36,6 +36,8 @@ JAX-native performance patterns used in `sfincs_jax`
   - For fixed-size recurrences (e.g. Legendre-coupled pitch-angle structure), prefer `jax.lax.scan` or
     banded updates via `at[].add(...)`.
   - For dense transforms, prefer `einsum`/batched `@` so XLA can fuse.
+  - For Fourier-mode operations on uniform periodic grids, prefer `jax.numpy.fft` over explicit harmonic loops
+    (e.g. `uHat` in `sfincs_jax.diagnostics`).
 
 - **Exploit linearity**: for linear runs, the operator is constant; store and reuse the assembled RHS and
   re-run only GMRES when parameters change.
