@@ -39,7 +39,8 @@ At the moment, `sfincs_jax` output writing supports:
 - v3 grids: ``theta``, ``zeta``, ``x`` and ``Nxi_for_x``
 - core geometry fields: ``BHat``, ``DHat`` and derivatives available in `sfincs_jax.geometry`
 - basic scalar integrals: ``VPrimeHat`` and ``FSABHat2`` (see `sfincs_jax.diagnostics`)
-- selected run parameters and species arrays (e.g. ``Delta``, ``alpha``, ``Er``, ``Zs``, ``THats``)
+- selected run parameters, radial-coordinate conversions, and species arrays (e.g. ``Delta``, ``alpha``, ``Er``, ``dPhiHatdpsiHat``,
+  ``psiAHat``, ``aHat``, ``rN``, ``Zs``, ``THats``)
 
 Output parity tests live in ``tests/test_output_h5_scheme4_parity.py`` and compare the
 datasets above against a frozen Fortran v3 fixture in ``tests/ref``.
@@ -53,4 +54,3 @@ Python, multi-dimensional arrays often appear with axes reversed relative to the
 
 To make it easy to do *file-to-file* comparisons in Python, `sfincs_jax` writes arrays
 using the same convention by default (see `sfincs_jax.io.write_sfincs_h5`).
-

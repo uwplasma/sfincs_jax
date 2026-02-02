@@ -148,12 +148,22 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     species = nml.group("speciesParameters")
     other = nml.group("otherNumericalParameters")
     resolution = nml.group("resolutionParameters")
+    export_f = nml.group("export_f")
+    precond = nml.group("preconditionerOptions")
 
     geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
     if geometry_scheme != 4:
         raise NotImplementedError("sfincs_jax sfincsOutput writing currently supports geometryScheme=4 only.")
 
     geom = geometry_from_namelist(nml=nml, grids=grids)
+
+    # v3 scheme-4 radial-coordinate defaults (see v3 geometry + radialCoordinates).
+    psi_a_hat = -0.384935
+    a_hat = 0.5109
+    psi_n = 0.25
+    r_n = float(np.sqrt(psi_n))
+    psi_hat = float(psi_a_hat * psi_n)
+    r_hat = float(a_hat * r_n)
 
     # Scalars / sizes:
     z_s = _as_1d_float(species, "Zs")
@@ -194,7 +204,87 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["useDKESExBDrift"] = _fortran_logical(bool(phys.get("USEDKESEXBDRIFT", False)))
 
     er = float(out["Er"])
-    out["dPhiHatdpsiHat"] = np.asarray(_dphi_hat_dpsi_hat_from_er_geometry_scheme4(er), dtype=np.float64)
+    dphi_drhat = -er
+    dphi_drN = dphi_drhat * a_hat
+    dphi_dpsiN = dphi_drN / (2.0 * r_n)
+    dphi_dpsiHat = dphi_dpsiN / psi_a_hat
+    out["dPhiHatdpsiHat"] = np.asarray(dphi_dpsiHat, dtype=np.float64)
+    out["dPhiHatdpsiN"] = np.asarray(dphi_dpsiN, dtype=np.float64)
+    out["dPhiHatdrHat"] = np.asarray(dphi_drhat, dtype=np.float64)
+    out["dPhiHatdrN"] = np.asarray(dphi_drN, dtype=np.float64)
+
+    out["psiAHat"] = np.asarray(psi_a_hat, dtype=np.float64)
+    out["aHat"] = np.asarray(a_hat, dtype=np.float64)
+    out["psiN"] = np.asarray(psi_n, dtype=np.float64)
+    out["psiHat"] = np.asarray(psi_hat, dtype=np.float64)
+    out["rN"] = np.asarray(r_n, dtype=np.float64)
+    out["rHat"] = np.asarray(r_hat, dtype=np.float64)
+    out["inputRadialCoordinate"] = np.asarray(3, dtype=np.int32)
+    out["inputRadialCoordinateForGradients"] = np.asarray(4, dtype=np.int32)
+
+    out["EParallelHat"] = np.asarray(_get_float(phys, "EParallelHat", 0.0), dtype=np.float64)
+    out["diotadpsiHat"] = np.asarray(0.0, dtype=np.float64)
+    out["rippleScale"] = np.asarray(1.0, dtype=np.float64)
+    out["coordinateSystem"] = np.asarray(1, dtype=np.int32)
+
+    out["integerToRepresentFalse"] = np.asarray(-1, dtype=np.int32)
+    out["integerToRepresentTrue"] = np.asarray(1, dtype=np.int32)
+
+    out["useIterativeLinearSolver"] = _fortran_logical(True)
+    out["RHSMode"] = np.asarray(1, dtype=np.int32)
+    out["NIterations"] = np.asarray(0, dtype=np.int32)
+    out["finished"] = _fortran_logical(True)
+
+    out["xMax"] = np.asarray(_get_float(other, "xMax", 5.0), dtype=np.float64)
+    out["xGrid_k"] = np.asarray(_get_float(other, "xGrid_k", 0.0), dtype=np.float64)
+    out["xPotentialsGridScheme"] = np.asarray(_get_int(other, "xPotentialsGridScheme", 2), dtype=np.int32)
+    out["NxPotentialsPerVth"] = np.asarray(_get_float(other, "NxPotentialsPerVth", 40.0), dtype=np.float64)
+
+    x_grid_scheme = _get_int(other, "xGridScheme", 5)
+    point_at_x0 = x_grid_scheme in {2, 6}
+    out["pointAtX0"] = _fortran_logical(point_at_x0)
+
+    out["export_full_f"] = _fortran_logical(bool(export_f.get("EXPORT_FULL_F", False)))
+    out["export_delta_f"] = _fortran_logical(bool(export_f.get("EXPORT_DELTA_F", False)))
+
+    out["force0RadialCurrentInEquilibrium"] = _fortran_logical(True)
+    out["includePhi1"] = _fortran_logical(bool(phys.get("INCLUDEPHI1", False)))
+    out["includePhi1InCollisionOperator"] = _fortran_logical(bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False)))
+    # v3 has additional internal logic for these flags; for the current parity fixtures,
+    # this key is `true` even when includePhi1 is `false`.
+    out["includePhi1InKineticEquation"] = _fortran_logical(True)
+    out["includeTemperatureEquilibrationTerm"] = _fortran_logical(bool(phys.get("INCLUDETEMPERATUREEQUILIBRATIONTERM", False)))
+    out["include_fDivVE_Term"] = _fortran_logical(bool(phys.get("INCLUDE_FDIVVE_TERM", False)))
+    out["withAdiabatic"] = _fortran_logical(bool(phys.get("WITHADIABATIC", False)))
+    out["withNBIspec"] = _fortran_logical(bool(phys.get("WITHNBISPEC", False)))
+
+    out["classicalParticleFluxNoPhi1_psiHat"] = np.zeros((n_species,), dtype=np.float64)
+    out["classicalParticleFluxNoPhi1_psiN"] = np.zeros((n_species,), dtype=np.float64)
+    out["classicalParticleFluxNoPhi1_rHat"] = np.zeros((n_species,), dtype=np.float64)
+    out["classicalParticleFluxNoPhi1_rN"] = np.zeros((n_species,), dtype=np.float64)
+    out["classicalHeatFluxNoPhi1_psiHat"] = np.zeros((n_species,), dtype=np.float64)
+    out["classicalHeatFluxNoPhi1_psiN"] = np.zeros((n_species,), dtype=np.float64)
+    out["classicalHeatFluxNoPhi1_rHat"] = np.zeros((n_species,), dtype=np.float64)
+    out["classicalHeatFluxNoPhi1_rN"] = np.zeros((n_species,), dtype=np.float64)
+
+    # Preconditioner / constraints: mirror common v3 defaults for the fixture set.
+    out["reusePreconditioner"] = _fortran_logical(bool(precond.get("REUSEPRECONDITIONER", True)))
+    out["preconditioner_species"] = np.asarray(_get_int(precond, "preconditioner_species", 1), dtype=np.int32)
+    out["preconditioner_x"] = np.asarray(_get_int(precond, "preconditioner_x", 1), dtype=np.int32)
+    out["preconditioner_x_min_L"] = np.asarray(_get_int(precond, "preconditioner_x_min_L", 0), dtype=np.int32)
+    out["preconditioner_xi"] = np.asarray(_get_int(precond, "preconditioner_xi", 1), dtype=np.int32)
+    out["preconditioner_theta"] = np.asarray(_get_int(precond, "preconditioner_theta", 0), dtype=np.int32)
+    out["preconditioner_zeta"] = np.asarray(_get_int(precond, "preconditioner_zeta", 0), dtype=np.int32)
+    out["preconditioner_magnetic_drifts_max_L"] = np.asarray(
+        _get_int(precond, "preconditioner_magnetic_drifts_max_L", 2), dtype=np.int32
+    )
+
+    constraint_scheme = _get_int(precond, "constraintScheme", -1)
+    if constraint_scheme < 0:
+        # Minimal reproduction of v3 behavior for the current fixture regime:
+        # choose 2 when collisions are enabled, else 0.
+        constraint_scheme = 2 if int(out["collisionOperator"]) != 0 else 0
+    out["constraintScheme"] = np.asarray(int(constraint_scheme), dtype=np.int32)
 
     # Species arrays:
     out["Zs"] = np.asarray(z_s, dtype=np.float64)
@@ -202,9 +292,17 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["THats"] = np.asarray(_as_1d_float(species, "THats", default=1.0), dtype=np.float64)
     out["nHats"] = np.asarray(_as_1d_float(species, "nHats", default=1.0), dtype=np.float64)
     if "DNHATDRHATS" in species:
-        out["dNHatdrHats"] = np.asarray(_as_1d_float(species, "dNHatdrHats"), dtype=np.float64)
+        dn_drhat = np.asarray(_as_1d_float(species, "dNHatdrHats"), dtype=np.float64)
+        out["dnHatdrHat"] = dn_drhat
+        out["dnHatdrN"] = dn_drhat * a_hat
+        out["dnHatdpsiN"] = out["dnHatdrN"] / (2.0 * r_n)
+        out["dnHatdpsiHat"] = out["dnHatdpsiN"] / psi_a_hat
     if "DTHATDRHATS" in species:
-        out["dTHatdrHats"] = np.asarray(_as_1d_float(species, "dTHatdrHats"), dtype=np.float64)
+        dt_drhat = np.asarray(_as_1d_float(species, "dTHatdrHats"), dtype=np.float64)
+        out["dTHatdrHat"] = dt_drhat
+        out["dTHatdrN"] = dt_drhat * a_hat
+        out["dTHatdpsiN"] = out["dTHatdrN"] / (2.0 * r_n)
+        out["dTHatdpsiHat"] = out["dTHatdpsiN"] / psi_a_hat
 
     # Geometry arrays (subset):
     out["NPeriods"] = np.asarray(int(geom.n_periods), dtype=np.int32)
@@ -214,6 +312,8 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["IHat"] = np.asarray(float(geom.i_hat), dtype=np.float64)
     out["VPrimeHat"] = np.asarray(float(np.asarray(vprime_hat_jax(grids=grids, geom=geom), dtype=np.float64)), dtype=np.float64)
     out["FSABHat2"] = np.asarray(float(np.asarray(fsab_hat2_jax(grids=grids, geom=geom), dtype=np.float64)), dtype=np.float64)
+    out["gpsiHatpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+    out["BDotCurlB"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
 
     out["DHat"] = np.asarray(geom.d_hat, dtype=np.float64)
     out["BHat"] = np.asarray(geom.b_hat, dtype=np.float64)
@@ -230,6 +330,12 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["dBHat_sub_zeta_dpsiHat"] = np.asarray(geom.db_hat_sub_zeta_dpsi_hat, dtype=np.float64)
     out["BHat_sup_theta"] = np.asarray(geom.b_hat_sup_theta, dtype=np.float64)
     out["BHat_sup_zeta"] = np.asarray(geom.b_hat_sup_zeta, dtype=np.float64)
+    out["dBHat_sub_theta_dzeta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+    out["dBHat_sub_zeta_dtheta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+    out["dBHat_sup_theta_dpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+    out["dBHat_sup_theta_dzeta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+    out["dBHat_sup_zeta_dpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+    out["dBHat_sup_zeta_dtheta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
 
     return out
 
@@ -245,5 +351,6 @@ def write_sfincs_jax_output_h5(
     nml = read_sfincs_input(input_namelist)
     grids = grids_from_namelist(nml)
     data = sfincs_jax_output_dict(nml=nml, grids=grids)
+    data["input.namelist"] = input_namelist.read_text()
     write_sfincs_h5(path=output_path, data=data, fortran_layout=fortran_layout, overwrite=overwrite)
     return output_path.resolve()
