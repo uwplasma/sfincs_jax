@@ -45,6 +45,28 @@ def _n_periods_from_bc_file(path: str, *, base_dir: Path | None = None) -> int:
     raise ValueError(f"Unable to find header line in {str(p)!r}")
 
 
+def _resolve_vmec_equilibrium_file(
+    path: str,
+    *,
+    base_dir: Path | None,
+    extra_search_dirs: tuple[Path, ...],
+) -> Path:
+    """Resolve `equilibriumFile` for `geometryScheme=5`, with a `.txt -> .nc` fallback.
+
+    Upstream v3 examples sometimes point to a VMEC ASCII `wout_*.txt` file, but many repositories
+    also ship an equivalent netCDF `wout_*.nc`. `sfincs_jax` currently reads netCDF and will
+    automatically use the `.nc` sibling if the `.txt` path cannot be resolved.
+    """
+    try:
+        return resolve_existing_path(path, base_dir=base_dir, extra_search_dirs=extra_search_dirs).path
+    except FileNotFoundError:
+        p = Path(str(path).strip().strip('"').strip("'"))
+        if p.suffix.lower() not in {".txt", ".dat"}:
+            raise
+        p2 = p.with_suffix(".nc")
+        return resolve_existing_path(str(p2), base_dir=base_dir, extra_search_dirs=extra_search_dirs).path
+
+
 @dataclass(frozen=True)
 class V3Grids:
     theta: jnp.ndarray
@@ -114,6 +136,16 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
     if geometry_scheme == 4:
         n_periods = 5
+    elif geometry_scheme == 1:
+        # v3: NPeriods = max(1, helicity_n)
+        helicity_n = _get_int(geom, "helicity_n", 10)
+        n_periods = max(1, int(helicity_n))
+    elif geometry_scheme == 2:
+        # v3: fixed simplified LHD model
+        n_periods = 10
+    elif geometry_scheme == 3:
+        # v3: fixed LHD inward-shifted model
+        n_periods = 10
     elif geometry_scheme in {11, 12}:
         equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
         if equilibrium_file is None:
@@ -127,11 +159,11 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         base_dir = nml.source_path.parent if nml.source_path is not None else None
         repo_root = Path(__file__).resolve().parents[1]
         extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
-        p = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
+        p = _resolve_vmec_equilibrium_file(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra)
         n_periods = int(read_vmec_wout(p).nfp)
     else:
         raise NotImplementedError(
-            "Only geometryScheme in {4,5,11,12} is supported for grid construction so far."
+            "Only geometryScheme in {1,2,3,4,5,11,12} is supported for grid construction so far."
         )
 
     # theta grid
@@ -279,6 +311,28 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
 def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
     geom = nml.group("geometryParameters")
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
+    if geometry_scheme == 1:
+        from .geometry import boozer_geometry_scheme1
+
+        return boozer_geometry_scheme1(
+            theta=grids.theta,
+            zeta=grids.zeta,
+            epsilon_t=_get_float(geom, "epsilon_t", -0.07053),
+            epsilon_h=_get_float(geom, "epsilon_h", 0.05067),
+            epsilon_antisymm=_get_float(geom, "epsilon_antisymm", 0.0),
+            iota=_get_float(geom, "iota", 0.4542),
+            g_hat=_get_float(geom, "GHat", 3.7481),
+            i_hat=_get_float(geom, "IHat", 0.0),
+            b0_over_bbar=_get_float(geom, "B0OverBBar", 1.0),
+            helicity_l=_get_int(geom, "helicity_l", 2),
+            helicity_n=_get_int(geom, "helicity_n", 10),
+            helicity_antisymm_l=_get_int(geom, "helicity_antisymm_l", 1),
+            helicity_antisymm_n=_get_int(geom, "helicity_antisymm_n", 0),
+        )
+    if geometry_scheme == 2:
+        from .geometry import boozer_geometry_scheme2
+
+        return boozer_geometry_scheme2(theta=grids.theta, zeta=grids.zeta)
     if geometry_scheme == 4:
         return boozer_geometry_scheme4(theta=grids.theta, zeta=grids.zeta)
     if geometry_scheme in {11, 12}:
@@ -307,7 +361,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         base_dir = nml.source_path.parent if nml.source_path is not None else None
         repo_root = Path(__file__).resolve().parents[1]
         extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
-        p = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
+        p = _resolve_vmec_equilibrium_file(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra)
 
         r_n_wish = float(geom.get("RN_WISH", 0.5))
         psi_n_wish = float(r_n_wish) * float(r_n_wish)
@@ -330,4 +384,4 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
             helicity_n=helicity_n,
             helicity_l=helicity_l,
         )
-    raise NotImplementedError("Only geometryScheme in {4,5,11,12} is implemented so far.")
+    raise NotImplementedError("Only geometryScheme in {1,2,4,5,11,12} is implemented so far.")

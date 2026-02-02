@@ -604,11 +604,12 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     resolution = nml.group("resolutionParameters")
     export_f = nml.group("export_f")
     precond = nml.group("preconditionerOptions")
+    general = nml.group("general")
 
     geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
-    if geometry_scheme not in {4, 5, 11, 12}:
+    if geometry_scheme not in {1, 2, 4, 5, 11, 12}:
         raise NotImplementedError(
-            "sfincs_jax sfincsOutput writing currently supports geometryScheme in {4,5,11,12} only."
+            "sfincs_jax sfincsOutput writing currently supports geometryScheme in {1,2,4,5,11,12} only."
         )
 
     geom = geometry_from_namelist(nml=nml, grids=grids)
@@ -616,6 +617,14 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     w_vmec = None
     if geometry_scheme == 4:
         psi_a_hat, a_hat = _scheme4_radial_constants()
+    elif geometry_scheme == 1:
+        # v3 defaults are in `globalVariables.F90`; allow the namelist to override them.
+        a_hat = _get_float(geom_params, "aHat", 0.5585)
+        psi_a_hat = _get_float(geom_params, "psiAHat", 0.15596)
+    elif geometry_scheme == 2:
+        # v3 ignores *_wish and uses the fixed LHD model with aHat=0.5585 and psiAHat=aHat^2/2.
+        a_hat = 0.5585
+        psi_a_hat = (a_hat * a_hat) / 2.0
     elif geometry_scheme in {11, 12}:
         bc_path = _resolve_equilibrium_file_from_namelist(nml=nml)
         header = read_boozer_bc_header(path=bc_path, geometry_scheme=int(geometry_scheme))
@@ -657,7 +666,9 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     r_hat = float(a_hat) * float(r_n)
 
     # Scalars / sizes:
-    z_s = _as_1d_float(species, "Zs")
+    # In monoenergetic runs (RHSMode=3) the upstream examples may omit speciesParameters.
+    # Use v3's default Z=1 as a fallback so the output file can still be written.
+    z_s = _as_1d_float(species, "Zs", default=1.0)
     n_species = int(z_s.shape[0])
 
     out: Dict[str, Any] = {}
@@ -741,7 +752,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["integerToRepresentTrue"] = np.asarray(1, dtype=np.int32)
 
     out["useIterativeLinearSolver"] = _fortran_logical(True)
-    out["RHSMode"] = np.asarray(1, dtype=np.int32)
+    out["RHSMode"] = np.asarray(_get_int(general, "RHSMode", 1), dtype=np.int32)
     # In v3, `NIterations` is written as 0 during initializeOutputFile(), and is later
     # overwritten by updateOutputFile(iterationNum, ...). For the small output parity
     # fixtures, geometryScheme=4 typically retains 0, while 11/12 generally writes 1.
@@ -792,11 +803,14 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
         _get_int(precond, "preconditioner_magnetic_drifts_max_L", 2), dtype=np.int32
     )
 
-    constraint_scheme = _get_int(precond, "constraintScheme", -1)
+    # In v3, `constraintScheme` is read from physicsParameters and finalized in createGrids.F90.
+    constraint_scheme = _get_int(phys, "constraintScheme", -1)
     if constraint_scheme < 0:
-        # Minimal reproduction of v3 behavior for the current fixture regime:
-        # choose 2 when collisions are enabled, else 0.
-        constraint_scheme = 2 if int(out["collisionOperator"]) != 0 else 0
+        # v3 sets `constraintScheme` during createGrids():
+        #   - `collisionOperator = 0` (full FP)  -> constraintScheme = 1
+        #   - `collisionOperator = 1` (PAS)      -> constraintScheme = 2
+        # See `sfincs/fortran/version3/createGrids.F90`.
+        constraint_scheme = 1 if int(out["collisionOperator"]) == 0 else 2
     out["constraintScheme"] = np.asarray(int(constraint_scheme), dtype=np.int32)
 
     # Species arrays:

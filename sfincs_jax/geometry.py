@@ -47,6 +47,171 @@ class BoozerGeometry:
     db_hat_sup_zeta_dtheta: jnp.ndarray
 
 
+def boozer_geometry_scheme1(
+    *,
+    theta: jnp.ndarray,
+    zeta: jnp.ndarray,
+    epsilon_t: float,
+    epsilon_h: float,
+    epsilon_antisymm: float,
+    iota: float,
+    g_hat: float,
+    i_hat: float,
+    b0_over_bbar: float,
+    helicity_l: int,
+    helicity_n: int,
+    helicity_antisymm_l: int,
+    helicity_antisymm_n: int,
+) -> BoozerGeometry:
+    """Three-helicity analytic Boozer model (`geometryScheme = 1` in v3).
+
+    v3 defines:
+
+      BHat = B0OverBBar
+             + (epsilon_t * B0OverBBar) * cos(theta)
+             + (epsilon_h * B0OverBBar) * cos(helicity_l*theta - helicity_n*zeta)
+             + (epsilon_antisymm * B0OverBBar) * sin(helicity_antisymm_l*theta - helicity_antisymm_n*zeta)
+
+    with `NPeriods = max(1, helicity_n)` and the Boozer toroidal angle sampled on
+    `[0, 2π/NPeriods)`.
+    """
+    n_periods = max(1, int(helicity_n))
+    theta2 = jnp.asarray(theta, dtype=jnp.float64)[:, None]
+    zeta2 = jnp.asarray(zeta, dtype=jnp.float64)[None, :]
+
+    # v3 stores harmonics as cos(m*theta - NPeriods*n*zeta) / sin(...). With NPeriods=helicity_n,
+    # the main helical ripple term uses n=1 to represent helicity_n*zeta.
+    n2 = 0 if int(helicity_n) == 0 else 1
+    if int(helicity_n) == 0:
+        n3 = int(helicity_antisymm_n)
+    else:
+        n3 = int(helicity_antisymm_n) // int(helicity_n) if int(helicity_n) != 0 else 0
+
+    m = jnp.asarray([1, int(helicity_l), int(helicity_antisymm_l)], dtype=jnp.float64)[:, None, None]
+    n = jnp.asarray([0, int(n2), int(n3)], dtype=jnp.float64)[:, None, None]
+    parity = jnp.asarray([True, True, False], dtype=bool)[:, None, None]
+    amp = (
+        jnp.asarray([float(epsilon_t), float(epsilon_h), float(epsilon_antisymm)], dtype=jnp.float64) * float(b0_over_bbar)
+    )[:, None, None]
+
+    angle = m * theta2[None, :, :] - float(n_periods) * n * zeta2[None, :, :]
+    cos_a = jnp.cos(angle)
+    sin_a = jnp.sin(angle)
+
+    basis = jnp.where(parity, cos_a, sin_a)
+    b_hat = float(b0_over_bbar) + jnp.sum(amp * basis, axis=0)
+
+    # Derivatives:
+    dtheta_basis = jnp.where(parity, -m * sin_a, m * cos_a)
+    db_hat_dtheta = jnp.sum(amp * dtheta_basis, axis=0)
+
+    dzeta_factor = float(n_periods) * n
+    dzeta_basis = jnp.where(parity, dzeta_factor * sin_a, -dzeta_factor * cos_a)
+    db_hat_dzeta = jnp.sum(amp * dzeta_basis, axis=0)
+
+    denom = float(g_hat) + float(iota) * float(i_hat)
+    d_hat = (b_hat * b_hat) / denom
+    b_hat_sup_theta = float(iota) * d_hat
+    b_hat_sup_zeta = d_hat
+    b_hat_sub_theta = jnp.full_like(b_hat, float(i_hat))
+    b_hat_sub_zeta = jnp.full_like(b_hat, float(g_hat))
+
+    zeros = jnp.zeros_like(b_hat)
+    return BoozerGeometry(
+        n_periods=n_periods,
+        b0_over_bbar=float(b0_over_bbar),
+        iota=float(iota),
+        g_hat=float(g_hat),
+        i_hat=float(i_hat),
+        b_hat=b_hat,
+        db_hat_dtheta=db_hat_dtheta,
+        db_hat_dzeta=db_hat_dzeta,
+        d_hat=d_hat,
+        b_hat_sup_theta=b_hat_sup_theta,
+        b_hat_sup_zeta=b_hat_sup_zeta,
+        b_hat_sub_theta=b_hat_sub_theta,
+        b_hat_sub_zeta=b_hat_sub_zeta,
+        b_hat_sub_psi=zeros,
+        db_hat_dpsi_hat=zeros,
+        db_hat_sub_psi_dtheta=zeros,
+        db_hat_sub_psi_dzeta=zeros,
+        db_hat_sub_theta_dpsi_hat=zeros,
+        db_hat_sub_zeta_dpsi_hat=zeros,
+        db_hat_sub_theta_dzeta=zeros,
+        db_hat_sub_zeta_dtheta=zeros,
+        db_hat_sup_theta_dpsi_hat=zeros,
+        db_hat_sup_theta_dzeta=zeros,
+        db_hat_sup_zeta_dpsi_hat=zeros,
+        db_hat_sup_zeta_dtheta=zeros,
+    )
+
+
+def boozer_geometry_scheme2(*, theta: jnp.ndarray, zeta: jnp.ndarray) -> BoozerGeometry:
+    """Simplified LHD model (`geometryScheme = 2` in v3).
+
+    Values are from Beidler et al, Nuclear Fusion 51, 076001 (2011), Table 1, matching v3.
+    """
+    # v3 hard-codes these values in `geometry.F90` for scheme 2:
+    n_periods = 10
+    iota = 0.4542
+    b0_over_bbar = 1.0
+    r0 = 3.7481
+    g_hat = b0_over_bbar * r0
+    i_hat = 0.0
+
+    theta2 = jnp.asarray(theta, dtype=jnp.float64)[:, None]
+    zeta2 = jnp.asarray(zeta, dtype=jnp.float64)[None, :]
+
+    # Harmonics: (m, n, amplitude) with cosine parity.
+    m = jnp.asarray([1, 2, 1], dtype=jnp.float64)[:, None, None]
+    n = jnp.asarray([0, 1, 1], dtype=jnp.float64)[:, None, None]
+    amp = jnp.asarray([-0.07053, 0.05067, -0.01476], dtype=jnp.float64)[:, None, None] * b0_over_bbar
+
+    angle = m * theta2[None, :, :] - float(n_periods) * n * zeta2[None, :, :]
+    cos_a = jnp.cos(angle)
+    sin_a = jnp.sin(angle)
+
+    b_hat = b0_over_bbar + jnp.sum(amp * cos_a, axis=0)
+    db_hat_dtheta = -jnp.sum(amp * m * sin_a, axis=0)
+    db_hat_dzeta = jnp.sum(amp * (float(n_periods) * n) * sin_a, axis=0)
+
+    denom = float(g_hat) + float(iota) * float(i_hat)
+    d_hat = (b_hat * b_hat) / denom
+    b_hat_sup_theta = float(iota) * d_hat
+    b_hat_sup_zeta = d_hat
+    b_hat_sub_theta = jnp.full_like(b_hat, float(i_hat))
+    b_hat_sub_zeta = jnp.full_like(b_hat, float(g_hat))
+
+    zeros = jnp.zeros_like(b_hat)
+    return BoozerGeometry(
+        n_periods=n_periods,
+        b0_over_bbar=float(b0_over_bbar),
+        iota=float(iota),
+        g_hat=float(g_hat),
+        i_hat=float(i_hat),
+        b_hat=b_hat,
+        db_hat_dtheta=db_hat_dtheta,
+        db_hat_dzeta=db_hat_dzeta,
+        d_hat=d_hat,
+        b_hat_sup_theta=b_hat_sup_theta,
+        b_hat_sup_zeta=b_hat_sup_zeta,
+        b_hat_sub_theta=b_hat_sub_theta,
+        b_hat_sub_zeta=b_hat_sub_zeta,
+        b_hat_sub_psi=zeros,
+        db_hat_dpsi_hat=zeros,
+        db_hat_sub_psi_dtheta=zeros,
+        db_hat_sub_psi_dzeta=zeros,
+        db_hat_sub_theta_dpsi_hat=zeros,
+        db_hat_sub_zeta_dpsi_hat=zeros,
+        db_hat_sub_theta_dzeta=zeros,
+        db_hat_sub_zeta_dtheta=zeros,
+        db_hat_sup_theta_dpsi_hat=zeros,
+        db_hat_sup_theta_dzeta=zeros,
+        db_hat_sup_zeta_dpsi_hat=zeros,
+        db_hat_sup_zeta_dtheta=zeros,
+    )
+
+
 def _scheme4_default_harmonics() -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Return the (l, n, amp0) harmonic table for `geometryScheme=4`.
 

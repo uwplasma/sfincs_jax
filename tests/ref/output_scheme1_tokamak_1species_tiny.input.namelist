@@ -1,0 +1,71 @@
+! Minimal output fixture for sfincs_jax `sfincsOutput.h5` parity (geometryScheme=1, tokamak-like).
+
+&general
+  solveSystem = .false.
+  saveMatricesAndVectorsInBinary = .false.
+  RHSMode = 1
+/
+
+&geometryParameters
+  geometryScheme = 1
+  inputRadialCoordinate = 3  ! rN
+  rN_wish = 0.3
+
+  B0OverBBar = 1.0d+0
+  GHat = 1.0d+0
+  IHat = 0.0d+0
+  iota = 1.31d+0
+  epsilon_t = 0.1d+0
+  epsilon_h = 0.0d+0
+  helicity_l = 1
+  helicity_n = 1
+
+  psiAHat = 0.045d+0
+  aHat = 0.1
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1.0d+0
+  nHats = 1.0d+0
+  THats = 0.5d+0
+  dNHatdrHats = -6.0d+0
+  dTHatdrHats = -3.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 8.4774d-3
+  Er = 0.0d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .true.
+  includeElectricFieldTermInXiDot = .true.
+  useDKESExBDrift = .false.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 9
+  Nzeta = 1
+  Nxi = 8
+  NL = 3
+  Nx = 4
+  solverTolerance = 1d-8
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+  xGridScheme = 5
+  xDotDerivativeScheme = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
+

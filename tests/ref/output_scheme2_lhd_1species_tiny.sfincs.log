@@ -1,0 +1,185 @@
+ ****************************************************************************
+ SFINCS: Stellarator Fokker-Plank Iterative Neoclassical Conservative Solver
+ Version 3
+ Using double precision.
+ Serial job (1 process) detected.
+ Successfully read parameters from general namelist in input.namelist.
+ Successfully read parameters from geometryParameters namelist in input.namelist.
+ Successfully read parameters from speciesParameters namelist in input.namelist.
+ Successfully read parameters from physicsParameters namelist in input.namelist.
+ Successfully read parameters from resolutionParameters namelist in input.namelist.
+ Successfully read parameters from otherNumericalParameters namelist in input.namelist.
+ Successfully read parameters from preconditionerOptions namelist in input.namelist.
+ Successfully read parameters from export_f namelist in input.namelist.
+ ******************************************************************
+ ******************************************************************
+ **   WARNING: Although values of NL in the range [2,8] work well, NL = 4 is usually recommended.
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ **   WARNING: You selected a small solverTolerance which may require more Krylov/KSP iterations than necessary.
+ **            Good values for solverTolerance are typically 1e-5 to 1e-7.
+ ******************************************************************
+ ******************************************************************
+ mumps detected
+ superlu_dist not detected
+ ---- Physics parameters: ----
+ Number of particle species =            1
+ Delta (rho* at reference parameters)          =    4.5694000000000004E-003
+ alpha (e Phi / T at reference parameters)     =    1.0000000000000000     
+ nu_n (collisionality at reference parameters) =   0.26680179999999998     
+ Linear run
+ ---------------------------------------------------------
+ Since geometryScheme=2, we will ignore the *_wish parameters and use the flux surface rN = 0.5.
+ ---- Numerical parameters: ----
+ Ntheta             =            9
+ Nzeta              =            9
+ Nxi                =            8
+ NL                 =            3
+ Nx                 =            4
+ solverTolerance    =    1.0000000000000000E-008
+ Theta derivative: centered finite differences, 5-point stencil
+ Zeta derivative: centered finite differences, 5-point stencil
+ For solving large linear systems, an iterative Krylov solver will be used.
+ Processor    0 owns theta indices   1 to   9 and zeta indices   1 to   9
+ Nxi_for_x_option:           0
+ x:  0.13377644699606789       0.62432469018719050        1.3425378256449918        2.2626644770103619     
+ Nxi for each x:           8           8           8           8
+ min_x_for_L:           1           1           1           1           1           1           1           1
+ The matrix is         2594 x        2594  elements.
+ Selecting the flux surface to use based on rN_wish =   0.50000000000000000     
+ ---- Geometry parameters: ----
+ Geometry scheme =            2
+ psiAHat (Normalized toroidal flux at the last closed flux surface) =   0.15596112500000001     
+ aHat (Radius of the last closed flux surface in units of RHat) =   0.55850000000000000     
+ GHat (Boozer component multiplying grad zeta) =    3.7481000000000000     
+ IHat (Boozer component multiplying grad theta) =    0.0000000000000000     
+ iota (Rotational transform) =   0.45419999999999999     
+ ---- Geometry parameters: ----
+ Geometry scheme =            2
+ psiAHat (Normalized toroidal flux at the last closed flux surface) =   0.15596112500000001     
+ aHat (Radius of the last closed flux surface in units of RHat) =   0.55850000000000000     
+ GHat (Boozer component multiplying grad zeta) =    3.7481000000000000     
+ IHat (Boozer component multiplying grad theta) =    0.0000000000000000     
+ iota (Rotational transform) =   0.45419999999999999     
+ ------------------------------------------------------
+ Done creating grids.
+ Requested/actual flux surface for this calculation, in various radial coordinates:
+   psiHat =    3.8990281250000002E-002 /   3.8990281250000002E-002
+   psiN   =   0.25000000000000000      /  0.25000000000000000     
+   rHat   =   0.27925000000000000      /  0.27925000000000000     
+   rN     =   0.50000000000000000      /  0.50000000000000000     
+ Selecting the input gradients of n & T from the specified ddrHat values.
+ Selecting the input gradient of Phi from the specified Er.
+ Entering main solver loop.
+ Initializing f0
+ Beginning preallocation for whichMatrix =            1
+ Beginning preallocation for whichMatrix =            0
+ Since this is a linear run, we will only take a single step, and not iterate Newton's method.
+ Solver package which will be used: mumps                                                                           
+ Running populateMatrix with whichMatrix =            1
+ Time to pre-assemble Jacobian matrix:    9.0299999574199319E-003  seconds.
+ Time to assemble Jacobian matrix:    5.4958392865955830E-005  seconds.
+ # of nonzeros in Jacobian matrix:       52114 , allocated:      161354 , mallocs:           0  (should be 0)
+ Running populateMatrix with whichMatrix =            0
+ Time to pre-assemble Jacobian preconditioner matrix:    6.6482083639129996E-003  seconds.
+ Time to assemble Jacobian preconditioner matrix:    4.5333290472626686E-005  seconds.
+ # of nonzeros in Jacobian preconditioner matrix:       44338 , allocated:      161354 , mallocs:           0  (should be 0)
+ ################################################################
+ Solving system with right-hand side 1 of 3
+ ################################################################
+ evaluateResidual called.
+ State vector is 0 so I will skip building the first matrix when evaluating the residual.
+ Beginning the main solve.  This could take a while ...
+ Done with the main solve.  Time to solve:    4.1676685214042664E-008  seconds.
+ Linear iteration (KSP) did not converge :(   KSPConvergedReason =            0
+   KSP still iterating ?!?!
+ Computing diagnostics.
+ Initializing f0
+    FSADensityPerturbation:     0.0000000000000000     
+    FSABFlow:                   0.0000000000000000     
+    max and min Mach #:         0.0000000000000000        0.0000000000000000     
+    FSAPressurePerturbation:    0.0000000000000000     
+    NTV:                        0.0000000000000000     
+    particleFlux_vm0_psiHat    -1.1634628772742770E-019
+    particleFlux_vm_psiHat     -1.1634628772742770E-019
+    classicalParticleFlux       0.0000000000000000     
+    classicalHeatFlux           0.0000000000000000     
+    momentumFlux_vm0_psiHat     0.0000000000000000     
+    momentumFlux_vm_psiHat      0.0000000000000000     
+    heatFlux_vm0_psiHat        -1.6025321558750140E-019
+    heatFlux_vm_psiHat         -1.6025321558750140E-019
+    particle source             0.0000000000000000     
+    heat source                 0.0000000000000000     
+ FSABjHat (bootstrap current):    0.0000000000000000     
+ Transport matrix:
+      -5.9467954155392799E-015   0.0000000000000000        0.0000000000000000     
+      -1.6382011087690611E-014   0.0000000000000000        0.0000000000000000     
+       0.0000000000000000        0.0000000000000000        0.0000000000000000     
+ Saving diagnostics to h5 file for iteration            1
+ ################################################################
+ Solving system with right-hand side 2 of 3
+ ################################################################
+ evaluateResidual called.
+ State vector is 0 so I will skip building the first matrix when evaluating the residual.
+ Beginning the main solve.  This could take a while ...
+ Done with the main solve.  Time to solve:    0.0000000000000000       seconds.
+ Linear iteration (KSP) did not converge :(   KSPConvergedReason =            0
+   KSP still iterating ?!?!
+ Computing diagnostics.
+ Initializing f0
+    FSADensityPerturbation:     0.0000000000000000     
+    FSABFlow:                   0.0000000000000000     
+    max and min Mach #:         0.0000000000000000        0.0000000000000000     
+    FSAPressurePerturbation:    0.0000000000000000     
+    NTV:                        0.0000000000000000     
+    particleFlux_vm0_psiHat    -1.1634628772742770E-019
+    particleFlux_vm_psiHat     -1.1634628772742770E-019
+    classicalParticleFlux       0.0000000000000000     
+    classicalHeatFlux           0.0000000000000000     
+    momentumFlux_vm0_psiHat     0.0000000000000000     
+    momentumFlux_vm_psiHat      0.0000000000000000     
+    heatFlux_vm0_psiHat        -1.6025321558750140E-019
+    heatFlux_vm_psiHat         -1.6025321558750140E-019
+    particle source             0.0000000000000000     
+    heat source                 0.0000000000000000     
+ FSABjHat (bootstrap current):    0.0000000000000000     
+ Transport matrix:
+      -5.9467954155392799E-015  -5.9467954155392799E-015   0.0000000000000000     
+      -1.6382011087690611E-014  -1.6382011087690611E-014   0.0000000000000000     
+       0.0000000000000000        0.0000000000000000        0.0000000000000000     
+ Saving diagnostics to h5 file for iteration            2
+ ################################################################
+ Solving system with right-hand side 3 of 3
+ ################################################################
+ evaluateResidual called.
+ State vector is 0 so I will skip building the first matrix when evaluating the residual.
+ Beginning the main solve.  This could take a while ...
+ Done with the main solve.  Time to solve:    4.1676685214042664E-008  seconds.
+ Linear iteration (KSP) did not converge :(   KSPConvergedReason =            0
+   KSP still iterating ?!?!
+ Computing diagnostics.
+ Initializing f0
+    FSADensityPerturbation:     0.0000000000000000     
+    FSABFlow:                   0.0000000000000000     
+    max and min Mach #:         0.0000000000000000        0.0000000000000000     
+    FSAPressurePerturbation:    0.0000000000000000     
+    NTV:                        0.0000000000000000     
+    particleFlux_vm0_psiHat    -1.1634628772742770E-019
+    particleFlux_vm_psiHat     -1.1634628772742770E-019
+    classicalParticleFlux       0.0000000000000000     
+    classicalHeatFlux           0.0000000000000000     
+    momentumFlux_vm0_psiHat     0.0000000000000000     
+    momentumFlux_vm_psiHat      0.0000000000000000     
+    heatFlux_vm0_psiHat        -1.6025321558750140E-019
+    heatFlux_vm_psiHat         -1.6025321558750140E-019
+    particle source             0.0000000000000000     
+    heat source                 0.0000000000000000     
+ FSABjHat (bootstrap current):    0.0000000000000000     
+ Transport matrix:
+      -5.9467954155392799E-015  -5.9467954155392799E-015  -1.3432394090704936E-017
+      -1.6382011087690611E-014  -1.6382011087690611E-014  -3.7003060228565651E-017
+       0.0000000000000000        0.0000000000000000        0.0000000000000000     
+ Saving diagnostics to h5 file for iteration            3
+ Goodbye!

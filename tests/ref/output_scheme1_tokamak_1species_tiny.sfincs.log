@@ -1,0 +1,89 @@
+ ****************************************************************************
+ SFINCS: Stellarator Fokker-Plank Iterative Neoclassical Conservative Solver
+ Version 3
+ Using double precision.
+ Serial job (1 process) detected.
+ Successfully read parameters from general namelist in input.namelist.
+ Successfully read parameters from geometryParameters namelist in input.namelist.
+ Successfully read parameters from speciesParameters namelist in input.namelist.
+ Successfully read parameters from physicsParameters namelist in input.namelist.
+ Successfully read parameters from resolutionParameters namelist in input.namelist.
+ Successfully read parameters from otherNumericalParameters namelist in input.namelist.
+ Successfully read parameters from preconditionerOptions namelist in input.namelist.
+ Successfully read parameters from export_f namelist in input.namelist.
+ ******************************************************************
+ ******************************************************************
+ **   WARNING: Although values of NL in the range [2,8] work well, NL = 4 is usually recommended.
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ **   WARNING: You selected a small solverTolerance which may require more Krylov/KSP iterations than necessary.
+ **            Good values for solverTolerance are typically 1e-5 to 1e-7.
+ ******************************************************************
+ ******************************************************************
+ mumps detected
+ superlu_dist not detected
+ ---- Physics parameters: ----
+ Number of particle species =            1
+ Delta (rho* at reference parameters)          =    4.5694000000000004E-003
+ alpha (e Phi / T at reference parameters)     =    1.0000000000000000     
+ nu_n (collisionality at reference parameters) =    8.4773999999999995E-003
+ Linear run
+ ---- Numerical parameters: ----
+ Ntheta             =            9
+ Nzeta              =            1
+ Nxi                =            8
+ NL                 =            3
+ Nx                 =            4
+ solverTolerance    =    1.0000000000000000E-008
+ Theta derivative: centered finite differences, 5-point stencil
+ Zeta derivative: centered finite differences, 5-point stencil
+ For solving large linear systems, an iterative Krylov solver will be used.
+ Processor    0 owns theta indices   1 to   9 and zeta indices   1 to   1
+ Nxi_for_x_option:           0
+ x:  0.13377644699606789       0.62432469018719050        1.3425378256449918        2.2626644770103619     
+ Nxi for each x:           8           8           8           8
+ min_x_for_L:           1           1           1           1           1           1           1           1
+ The matrix is          292 x         292  elements.
+ Selecting the flux surface to use based on rN_wish =   0.29999999999999999     
+ ---- Geometry parameters: ----
+ Geometry scheme =            1
+ psiAHat (Normalized toroidal flux at the last closed flux surface) =    4.4999999999999998E-002
+ aHat (Radius of the last closed flux surface in units of RHat) =   0.10000000000000001     
+ epsilon_t =   0.10000000000000001     
+ epsilon_h =    0.0000000000000000     
+ epsilon_antisymm =    0.0000000000000000     
+ GHat (Boozer component multiplying grad zeta) =    1.0000000000000000     
+ IHat (Boozer component multiplying grad theta) =    0.0000000000000000     
+ iota (Rotational transform) =    1.3100000000000001     
+ ---- Geometry parameters: ----
+ Geometry scheme =            1
+ psiAHat (Normalized toroidal flux at the last closed flux surface) =    4.4999999999999998E-002
+ aHat (Radius of the last closed flux surface in units of RHat) =   0.10000000000000001     
+ epsilon_t =   0.10000000000000001     
+ epsilon_h =    0.0000000000000000     
+ epsilon_antisymm =    0.0000000000000000     
+ GHat (Boozer component multiplying grad zeta) =    1.0000000000000000     
+ IHat (Boozer component multiplying grad theta) =    0.0000000000000000     
+ iota (Rotational transform) =    1.3100000000000001     
+ ------------------------------------------------------
+ Done creating grids.
+ Requested/actual flux surface for this calculation, in various radial coordinates:
+   psiHat =    4.0499999999999998E-003 /   4.0499999999999998E-003
+   psiN   =    8.9999999999999997E-002 /   8.9999999999999997E-002
+   rHat   =    3.0000000000000002E-002 /   2.9999999999999999E-002
+   rN     =   0.29999999999999999      /  0.29999999999999999     
+ Selecting the input gradients of n & T from the specified ddrHat values.
+ Selecting the input gradient of Phi from the specified Er.
+ Entering main solver loop.
+ Initializing f0
+ Beginning preallocation for whichMatrix =            1
+ Beginning preallocation for whichMatrix =            0
+ Since this is a linear run, we will only take a single step, and not iterate Newton's method.
+ Solver package which will be used: mumps                                                                           
+ ------------------------------------------------------
+ Finished initialization.
+ Beginning the main solve.  This could take a while ...
+ Done with the main solve.  Time to solve:    8.3236955106258392E-008  seconds.
+ Goodbye!

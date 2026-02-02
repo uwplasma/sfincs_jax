@@ -48,6 +48,8 @@ At the moment, `sfincs_jax` output writing supports:
 Output parity tests live in:
 
 - ``tests/test_output_h5_scheme4_parity.py`` (scheme 4)
+- ``tests/test_output_h5_scheme1_parity.py`` (scheme 1)
+- ``tests/test_output_h5_scheme2_parity.py`` (scheme 2)
 - ``tests/test_output_h5_scheme11_parity.py`` (scheme 11)
 - ``tests/test_output_h5_scheme5_parity.py`` (scheme 5)
 
