@@ -27,7 +27,7 @@ Implemented (parity-tested)
 Not yet implemented
 -------------------
 
-- Full kinetic solve (residual/Jacobian assembly, linear/nonlinear solve, Rosenbluth potentials)
-- Full linearized Fokker-Planck collision operator with Phi1 variations (``includePhi1 = .true.``)
+- Full kinetic solve (residual/RHS construction, linear/nonlinear solve, Rosenbluth potentials)
+- Full Phi1 coupling in the kinetic operator and collision operator (``includePhi1 = .true.`` end-to-end)
 - VMEC-based geometry schemes and radial interpolation
 - ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme=4``

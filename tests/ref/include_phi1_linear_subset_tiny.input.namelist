@@ -1,0 +1,54 @@
+! Minimal SFINCS v3-style input for unit-testing the Phi1/QN/lambda block assembly.
+!
+! This input is *not* intended to be a physically meaningful run. It is designed so that:
+! - includePhi1 = .true. (so Phi1 + lambda blocks exist)
+! - Phi1 does not enter the kinetic equation operator (so the only Phi1 coupling is in QN/lambda)
+! - quasineutralityOption=2 with adiabatic response gives a simple diagonal Phi1 term in the QN block
+
+&general
+  saveMatricesAndVectorsInBinary=.f.
+/
+
+&geometryParameters
+  geometryScheme = 4
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1
+  nHats = 1.0d+0
+  THats = 1.0d+0
+  dNHatdrHats = 0.0d+0
+  dTHatdrHats = 0.0d+0
+/
+
+&physicsParameters
+  Delta = 1.0d-3
+  alpha = 1.0d+0
+  nu_n = 0.0d+0
+  Er = 0.0d+0
+  collisionOperator = 1
+
+  includePhi1 = .true.
+  includePhi1InKineticEquation = .false.
+  includePhi1InCollisionOperator = .false.
+  quasineutralityOption = 2
+  withAdiabatic = .true.
+  adiabaticZ = 1.0d+0
+  adiabaticNHat = 1.0d+0
+  adiabaticTHat = 1.0d+0
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 5
+  Nxi = 6
+  Nx = 4
+  NL = 3
+/
+
+&otherNumericalParameters
+  constraintScheme = 2
+  Nxi_for_x_option = 1
+/
+

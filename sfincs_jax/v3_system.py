@@ -29,11 +29,15 @@ def _get_bool(group: dict, key: str, default: bool = False) -> bool:
 @jtu.register_pytree_node_class
 @dataclass(frozen=True)
 class V3FullSystemOperator:
-    """Matrix-free operator for the full v3 linear system in the common includePhi1 = false modes.
+    """Matrix-free operator for a subset of the full v3 linear system.
 
     This operator extends the F-block (distribution function) operator with the constraint rows/cols
     used to remove nullspaces and enforce moments:
 
+    - If ``includePhi1 = .true.`` (and ``readExternalPhi1 = .false.``), the operator includes the
+      quasineutrality (QN) block and the flux-surface-average constraint on ``Phi1`` (lambda),
+      matching v3 `indices.F90` ordering:
+      ``[F-block, Phi1(theta,zeta), lambda, constraint unknowns]``.
     - ``constraintScheme = 2`` (common default when ``collisionOperator != 0``):
       adds an L=0 source unknown at each x, and enforces flux-surface average of ``f1`` is 0 at each x.
     - ``constraintScheme = 1`` (common default when ``collisionOperator = 0``):
@@ -41,14 +45,27 @@ class V3FullSystemOperator:
 
     Notes
     -----
-    - This currently supports only ``includePhi1 = .false.`` (no quasineutrality / lambda blocks).
-    - The ordering of unknowns matches v3 `indices.F90` for this subset:
-      ``[F-block, constraint unknowns]``.
+    - Phi1 coupling terms in the kinetic equation and collision operator are not yet implemented.
+      For now, `sfincs_jax` supports the *linear* QN/lambda blocks used when Phi1 is present but does
+      not enter the kinetic equation operator.
     """
 
     fblock: V3FBlockOperator
     constraint_scheme: int
-    point_at_x0: jnp.ndarray  # scalar bool
+    point_at_x0: bool
+
+    include_phi1: bool
+    quasineutrality_option: int
+    with_adiabatic: bool
+    alpha: jnp.ndarray  # scalar
+    adiabatic_z: jnp.ndarray  # scalar
+    adiabatic_nhat: jnp.ndarray  # scalar
+    adiabatic_that: jnp.ndarray  # scalar
+
+    z_s: jnp.ndarray  # (S,)
+    m_hat: jnp.ndarray  # (S,)
+    t_hat: jnp.ndarray  # (S,)
+    n_hat: jnp.ndarray  # (S,)
 
     theta_weights: jnp.ndarray  # (T,)
     zeta_weights: jnp.ndarray  # (Z,)
@@ -62,6 +79,17 @@ class V3FullSystemOperator:
             self.fblock,
             self.constraint_scheme,
             self.point_at_x0,
+            self.include_phi1,
+            self.quasineutrality_option,
+            self.with_adiabatic,
+            self.alpha,
+            self.adiabatic_z,
+            self.adiabatic_nhat,
+            self.adiabatic_that,
+            self.z_s,
+            self.m_hat,
+            self.t_hat,
+            self.n_hat,
             self.theta_weights,
             self.zeta_weights,
             self.d_hat,
@@ -78,6 +106,17 @@ class V3FullSystemOperator:
             fblock,
             constraint_scheme,
             point_at_x0,
+            include_phi1,
+            quasineutrality_option,
+            with_adiabatic,
+            alpha,
+            adiabatic_z,
+            adiabatic_nhat,
+            adiabatic_that,
+            z_s,
+            m_hat,
+            t_hat,
+            n_hat,
             theta_weights,
             zeta_weights,
             d_hat,
@@ -87,7 +126,18 @@ class V3FullSystemOperator:
         return cls(
             fblock=fblock,
             constraint_scheme=int(constraint_scheme),
-            point_at_x0=point_at_x0,
+            point_at_x0=bool(point_at_x0),
+            include_phi1=bool(include_phi1),
+            quasineutrality_option=int(quasineutrality_option),
+            with_adiabatic=bool(with_adiabatic),
+            alpha=alpha,
+            adiabatic_z=adiabatic_z,
+            adiabatic_nhat=adiabatic_nhat,
+            adiabatic_that=adiabatic_that,
+            z_s=z_s,
+            m_hat=m_hat,
+            t_hat=t_hat,
+            n_hat=n_hat,
             theta_weights=theta_weights,
             zeta_weights=zeta_weights,
             d_hat=d_hat,
@@ -120,6 +170,12 @@ class V3FullSystemOperator:
         return int(self.fblock.flat_size)
 
     @property
+    def phi1_size(self) -> int:
+        if bool(self.include_phi1):
+            return int(self.n_theta * self.n_zeta + 1)
+        return 0
+
+    @property
     def extra_size(self) -> int:
         if int(self.constraint_scheme) == 2:
             return int(self.n_species * self.n_x)
@@ -131,7 +187,7 @@ class V3FullSystemOperator:
 
     @property
     def total_size(self) -> int:
-        return int(self.f_size + self.extra_size)
+        return int(self.f_size + self.phi1_size + self.extra_size)
 
 
 def _ix_min(point_at_x0: bool) -> int:
@@ -161,12 +217,49 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
         raise ValueError(f"x_full must have shape {(op.total_size,)}, got {x_full.shape}")
 
     f_flat = x_full[: op.f_size]
-    extra = x_full[op.f_size :]
+    rest = x_full[op.f_size :]
     f = f_flat.reshape(op.fblock.f_shape)
 
     y_f = apply_v3_fblock_operator(op.fblock, f)
     factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
-    ix0 = _ix_min(bool(op.point_at_x0))
+    ix0 = _ix_min(op.point_at_x0)
+
+    y_phi1 = jnp.zeros((0,), dtype=jnp.float64)
+    if op.include_phi1:
+        phi1_flat = rest[: op.n_theta * op.n_zeta]
+        lam = rest[op.n_theta * op.n_zeta]
+        extra = rest[op.phi1_size :]
+
+        phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
+
+        # Quasineutrality equation block (in v3, this is appended after the DKE rows).
+        # For the linear subset we currently support, this block includes:
+        #   - charge density from f1 (L=0)
+        #   - a diagonal phi1 term for quasineutralityOption=2 with adiabatic response
+        #   - the lambda Lagrange multiplier
+        x2w = (op.x * op.x) * op.x_weights  # (X,)
+        species_factor = 4.0 * jnp.pi * op.z_s * op.t_hat / op.m_hat * jnp.sqrt(op.t_hat / op.m_hat)  # (S,)
+
+        if int(op.quasineutrality_option) == 2:
+            # EUTERPE equations: only the first kinetic species appears in QN.
+            qn_from_f = species_factor[0] * jnp.einsum("x,xtz->tz", x2w, f[0, :, 0, :, :])
+        else:
+            qn_from_f = jnp.einsum("s,x,sxtz->tz", species_factor, x2w, f[:, :, 0, :, :])
+
+        phi1_diag = 0.0
+        if int(op.quasineutrality_option) == 2 and op.with_adiabatic and op.n_species > 0:
+            phi1_diag = -op.alpha * (
+                (op.z_s[0] * op.z_s[0]) * op.n_hat[0] / op.t_hat[0]
+                + (op.adiabatic_z * op.adiabatic_z) * op.adiabatic_nhat / op.adiabatic_that
+            )
+        qn = qn_from_f + phi1_diag * phi1 + lam
+
+        # <Phi1> = 0 constraint row ("lambda row"):
+        y_lam = jnp.sum(factor * phi1)
+
+        y_phi1 = jnp.concatenate([qn.reshape((-1,)), jnp.asarray([y_lam])], axis=0)
+    else:
+        extra = rest
 
     if int(op.constraint_scheme) == 0:
         y_extra = jnp.zeros((0,), dtype=jnp.float64)
@@ -181,7 +274,7 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
         # Constraint rows: y = <f> at each x (L=0), with special handling for pointAtX0.
         # y[s,ix] = Σ_{θ,ζ} factor(θ,ζ) * f[s,ix,L=0,θ,ζ]
         y_avg = jnp.einsum("tz,sxtz->sx", factor, f[:, :, 0, :, :])
-        if bool(op.point_at_x0):
+        if op.point_at_x0:
             y_avg = y_avg.at[:, 0].set(src[:, 0])
         y_extra = y_avg.reshape((-1,))
 
@@ -215,7 +308,7 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
     else:
         raise NotImplementedError(f"constraintScheme={int(op.constraint_scheme)} is not supported.")
 
-    return jnp.concatenate([y_f.reshape((-1,)), y_extra], axis=0)
+    return jnp.concatenate([y_f.reshape((-1,)), y_phi1, y_extra], axis=0)
 
 
 apply_v3_full_system_operator_jit = jax.jit(apply_v3_full_system_operator, static_argnums=())
@@ -225,10 +318,13 @@ def full_system_operator_from_namelist(*, nml: Namelist, identity_shift: float =
     """Build the full-system operator (subset) from an input namelist."""
     phys = nml.group("physicsParameters")
     other = nml.group("otherNumericalParameters")
+    species = nml.group("speciesParameters")
 
     include_phi1 = _get_bool(phys, "includePhi1", False)
-    if include_phi1:
-        raise NotImplementedError("full-system assembly currently supports includePhi1 = .false. only.")
+    read_external_phi1 = _get_bool(phys, "readExternalPhi1", False)
+    if include_phi1 and read_external_phi1:
+        raise NotImplementedError("readExternalPhi1 is not yet supported in sfincs_jax.")
+    include_phi1 = include_phi1 and (not read_external_phi1)
 
     collision_operator = _get_int(phys, "collisionOperator", 0)
     constraint_scheme = _get_int(other, "constraintScheme", -1)
@@ -242,10 +338,40 @@ def full_system_operator_from_namelist(*, nml: Namelist, identity_shift: float =
     x_grid_scheme = _get_int(other, "xGridScheme", 5)
     point_at_x0 = x_grid_scheme in {2, 6}
 
+    def _as_1d_float_array(v) -> jnp.ndarray:
+        if isinstance(v, list):
+            vv = v
+        else:
+            vv = [v]
+        return jnp.asarray(vv, dtype=jnp.float64)
+
+    zs = _as_1d_float_array(species.get("ZS", 1.0))
+    mhat = _as_1d_float_array(species.get("MHATS", 1.0))
+    that = _as_1d_float_array(species.get("THATS", 1.0))
+    nhat = _as_1d_float_array(species.get("NHATS", 1.0))
+
+    quasineutrality_option = _get_int(phys, "quasineutralityOption", 1)
+    with_adiabatic = _get_bool(phys, "withAdiabatic", False)
+    adiabatic_z = float(phys.get("ADIABATICZ", 1.0))
+    adiabatic_nhat = float(phys.get("ADIABATICNHAT", 0.0))
+    adiabatic_that = float(phys.get("ADIABATICTHAT", 1.0))
+    alpha = float(phys.get("ALPHA", 1.0))
+
     return V3FullSystemOperator(
         fblock=fblock,
         constraint_scheme=int(constraint_scheme),
-        point_at_x0=jnp.asarray(point_at_x0),
+        point_at_x0=bool(point_at_x0),
+        include_phi1=bool(include_phi1),
+        quasineutrality_option=int(quasineutrality_option),
+        with_adiabatic=bool(with_adiabatic),
+        alpha=jnp.asarray(alpha, dtype=jnp.float64),
+        adiabatic_z=jnp.asarray(adiabatic_z, dtype=jnp.float64),
+        adiabatic_nhat=jnp.asarray(adiabatic_nhat, dtype=jnp.float64),
+        adiabatic_that=jnp.asarray(adiabatic_that, dtype=jnp.float64),
+        z_s=zs,
+        m_hat=mhat,
+        t_hat=that,
+        n_hat=nhat,
         theta_weights=grids.theta_weights,
         zeta_weights=grids.zeta_weights,
         d_hat=geom.d_hat,

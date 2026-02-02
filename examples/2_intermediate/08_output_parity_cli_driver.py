@@ -27,7 +27,7 @@ def main() -> int:
     cmd = [
         sys.executable,
         "-m",
-        "sfincs_jax.cli",
+        "sfincs_jax",
         "write-output",
         "--input",
         str(input_path),

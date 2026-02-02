@@ -86,12 +86,23 @@ Running the Fortran v3 executable
    export SFINCS_FORTRAN_EXE=/path/to/sfincs/fortran/version3/sfincs
    sfincs_jax run-fortran --input /path/to/input.namelist
 
+If you are developing from a source checkout and have not installed the console script,
+you can invoke the CLI module directly:
+
+.. code-block:: bash
+
+   python -m sfincs_jax run-fortran --input /path/to/input.namelist
+
 Writing `sfincsOutput.h5` with `sfincs_jax`
 --------------------------------------------------
 
 .. code-block:: bash
 
    sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
+
+.. code-block:: bash
+
+   python -m sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
 
 .. code-block:: python
 

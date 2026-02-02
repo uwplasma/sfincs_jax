@@ -55,7 +55,7 @@ def main() -> int:
         cmd = [
             sys.executable,
             "-m",
-            "sfincs_jax.cli",
+            "sfincs_jax",
             "write-output",
             "--input",
             str(input_path),
@@ -92,4 +92,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -39,4 +39,7 @@ New in this repo:
 
 - Write `sfincsOutput.h5` via Python: `examples/1_simple/03_write_sfincs_output_python.py`
 - Write `sfincsOutput.h5` via CLI: `examples/1_simple/04_write_sfincs_output_cli.py`
+- Write output using a vendored upstream v3 input (Python): `examples/1_simple/05_write_output_upstream_quick2species_python.py`
+- Write output using a vendored upstream v3 input (CLI): `examples/1_simple/06_write_output_upstream_quick2species_cli.py`
 - Output parity vs Fortran fixture: `examples/2_intermediate/07_output_parity_vs_fortran_fixture.py`
+- Differentiate through an operator term (Er xiDot): `examples/2_intermediate/11_autodiff_er_xidot_term.py` (requires `.[viz]`)

@@ -8,7 +8,9 @@ sfincs_jax
    :caption: Contents
 
    installation
+   normalizations
    method
+   system_equations
    usage
    outputs
    upstream_docs

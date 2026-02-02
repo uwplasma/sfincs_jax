@@ -1,24 +1,50 @@
-# `sfincs_jax`
+# sfincs_jax
 
-`sfincs_jax` is a parity-first port of **SFINCS Fortran v3** to **JAX**, with the goal of:
+A parity-first **JAX** port of **SFINCS Fortran v3**, with a focus on:
 
-- Matching the Fortran algorithms and outputs (example-by-example).
-- Enabling **auto-differentiation** through the entire compute graph.
-- Providing a clean, modular Python API with modern tooling (tests, docs, CI).
+- **Numerical parity** against the upstream v3 implementation (fixture-by-fixture).
+- **Performance** via JIT + vectorization (matrix-free operator application).
+- **End-to-end differentiability** to enable gradient-based sensitivity, calibration, and optimization.
 
-This repo is intentionally incremental: the Fortran v3 solver is large, so we port subsystems
-in a way that always keeps a working, tested baseline.
+Documentation: build locally (`sphinx-build -b html docs docs/_build/html`) or view on Read the Docs.
 
-## Install (editable)
+## What exists today
+
+`sfincs_jax` is intentionally incremental. The upstream v3 codebase is large, so the port proceeds in
+small, parity-tested slices:
+
+- v3 grids (`theta`, `zeta`, `x`) including the polynomial/Stieltjes x-grid
+- `geometryScheme=4` (simplified Boozer model) output parity (`sfincsOutput.h5`) vs frozen v3 fixtures
+- `geometryScheme=11/12` Boozer `.bc` parsing (B, D, covariant components) + drift-term parity fixtures
+- Collisionless operator terms (streaming/mirror, ExB, Er terms, magnetic drift slices) parity-tested
+- Collision operators (PAS and full linearized FP, no-Phi1 modes) parity-tested at the F-block level
+- Full-system **matrix-free** matvec parity for two fixtures (no-Phi1, constraint schemes 1/2)
+- Matrix-free residual/JVP scaffolding for implicit-diff workflows
+
+Current parity coverage is tracked in `docs/parity.rst` and via the v3 example audit in `docs/fortran_examples.rst`.
+
+## Install
+
+Editable install (development):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-## Quick start
+Optional extras:
 
-Parse a Fortran `input.namelist`, build the v3 grids, and compute the (simplified) Boozer
-geometry for `geometryScheme = 4`:
+```bash
+# Docs:
+pip install -e ".[docs]"
+
+# Plotting examples:
+pip install -e ".[viz]"
+
+# Optimization ecosystem:
+pip install -e ".[opt]"
+```
+
+## Quick start (Python)
 
 ```python
 from sfincs_jax.namelist import read_sfincs_input
@@ -27,78 +53,97 @@ from sfincs_jax.v3 import grids_from_namelist, geometry_from_namelist
 nml = read_sfincs_input("input.namelist")
 grids = grids_from_namelist(nml)
 geom = geometry_from_namelist(nml=nml, grids=grids)
-print(geom.b_hat.shape)
+print(geom.b_hat.shape)  # (Ntheta, Nzeta)
 ```
 
-## Running the Fortran v3 executable (benchmark)
+## CLI
 
-The Fortran binary is not shipped with this package, but you can point to a local build:
+Write a SFINCS-style `sfincsOutput.h5` using the JAX implementation (supported modes only):
+
+```bash
+sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
+```
+
+Compare two `sfincsOutput.h5` files dataset-by-dataset:
+
+```bash
+sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
+```
+
+## Benchmarking against the Fortran v3 executable
+
+If you have the upstream Fortran v3 binary available locally:
 
 ```bash
 export SFINCS_FORTRAN_EXE=/path/to/sfincs/fortran/version3/sfincs
 sfincs_jax run-fortran --input /path/to/input.namelist
 ```
 
-## Writing `sfincsOutput.h5` with `sfincs_jax`
-
-For supported modes (currently `geometryScheme=4`), `sfincs_jax` can write a SFINCS-style
-`sfincsOutput.h5` file:
-
-```bash
-sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
-```
-
-You can compare a JAX output file with a Fortran v3 output file (dataset-by-dataset):
-
-```bash
-sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
-```
-
-## Roadmap
-
-- [x] Packaging + CLI scaffolding
-- [x] Parse SFINCS `input.namelist` (minimal)
-- [x] v3 theta/zeta/x grids and simplified Boozer geometryScheme=4
-- [x] v3 grids for geometryScheme=11/12 (read `NPeriods` from `.bc` header)
-- [x] Boozer geometryScheme=11/12 from `.bc` files (BHat and required covariant components)
-- [x] Collisionless v3 operator slice (streaming + mirror) with PETSc-binary parity test
-- [x] Collisionless v3 Er terms (`xiDot` + `xDot`) with PETSc-binary parity tests (ΔL = ±2)
-- [x] ExB drift term (`d/dtheta` for geometryScheme=4) with PETSc-binary parity test
-- [x] Magnetic drift terms (`d/dtheta`, `d/dzeta`, non-standard `d/dxi`) with PETSc-binary parity tests (ΔL = ±2 slices)
-- [x] Pitch-angle scattering collisions (collisionOperator=1 without Phi1) with PETSc-binary parity test
-- [x] Combined F-block matvec parity (collisionless + PAS) vs PETSc matrix (F-block slice)
-- [x] Full linearized Fokker-Planck collisions (collisionOperator=0, no Phi1) with F-block matvec parity vs PETSc matrix
-- [x] Residual/Jacobian (JVP) scaffolding for F-block (matrix-free)
-- [x] Full-system matvec parity (includePhi1=false constraint schemes 1/2) vs PETSc matrices for two fixtures
-- [x] Full-system GMRES solution parity vs PETSc stateVector (tiny PAS fixture)
-- [ ] Full solver parity across the v3 example suite (includes includePhi1 and more geometries)
-
-## Why JAX?
-
-JAX makes it practical to:
-
-- JIT-compile the operator application and solver kernels for performance.
-- Differentiate through geometry, collisions, and (eventually) the full solve.
-- Use matrix-free linear algebra and implicit-diff patterns (`jaxopt`) for scalable gradients.
-- Build optimization loops (`optax`) once the compute graph is differentiable.
-
-Optional ecosystem packages are available via `pip install -e ".[opt]"`.
+Note: on some locked-down environments (including certain CI/sandboxed runtimes), MPI may be unable to
+open network endpoints, causing the Fortran executable to fail at `MPI_Init`. In that case, run the
+Fortran benchmark on a normal workstation/HPC environment and copy the resulting fixtures into `tests/ref/`.
 
 ## Examples
 
-See `examples/README.md`. The examples are structured as:
+Examples are structured by difficulty:
 
-- `examples/1_simple/`
-- `examples/2_intermediate/`
-- `examples/3_advanced/`
+- `examples/1_simple/`: basic API usage (no Fortran required)
+- `examples/2_intermediate/`: parity checks + autodiff demos
+- `examples/3_advanced/`: optimization/implicit-diff patterns (may require extras)
 
-For convenience, the original upstream SFINCS example inputs (Fortran v3, multi-species, and MATLAB v3)
-are vendored in `examples/upstream/`.
+Start here:
 
-For a structured view of how much of the upstream Fortran v3 example suite is currently
-supported, see the docs page `docs/fortran_examples.rst` (auto-generated audit table).
+```bash
+python examples/1_simple/01_build_grids_and_geometry.py
+python examples/2_intermediate/11_autodiff_er_xidot_term.py  # requires ".[viz]"
+```
+
+Upstream example inputs (Fortran v3, multi-species, and MATLAB v3) are vendored in `examples/upstream/`
+so existing SFINCS users can find familiar starting points.
+
+## Why JAX?
+
+JAX makes three things practical at the same time:
+
+1) **Fast kernels**: JIT-compile the operator application and solver inner loops.
+2) **Matrix-free linear algebra**: represent the Jacobian as a matvec rather than assembling sparse matrices.
+3) **Differentiability**: obtain gradients through geometry/operators and eventually through the solve (implicit diff).
+
+The optional JAX ecosystem becomes natural once the compute graph is differentiable:
+
+- `jaxopt`: robust root/linear solvers + implicit differentiation patterns
+- `optax`: gradient-based optimization loops
+- `equinox`: clean, testable module structure and parameter handling (optional)
+
+## Testing and parity fixtures
+
+Tests live in `tests/` and include:
+
+- Parity tests that compare matrix-free matvecs to frozen PETSc binaries (`*.petscbin`)
+- Output parity tests for `sfincsOutput.h5` vs frozen Fortran v3 fixtures
+
+Run:
+
+```bash
+pytest -q
+```
 
 ## Upstream docs (vendored)
 
 Selected upstream SFINCS technical notes and paper sources are vendored in `docs/upstream/` and linked
-from the Sphinx documentation (`docs/upstream_docs.rst`).
+from `docs/upstream_docs.rst`. This makes the Read the Docs site self-contained for readers who want
+the original derivations and parameter definitions.
+
+## Roadmap to full v3 parity
+
+High-level remaining milestones (see `docs/parity.rst` for the detailed, parity-tested inventory):
+
+- Implement RHS/residual construction (not just matvec parity)
+- Implement full Phi1 coupling in the kinetic equation + collision operator
+- Implement additional geometry schemes (VMEC-based, filtered W7-X netCDF, etc.)
+- Achieve end-to-end solver parity across the full upstream v3 example suite
+
+## License
+
+See `LICENSE`.
+
