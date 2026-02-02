@@ -51,6 +51,17 @@ is available):
    python examples/3_advanced/04_optimize_scheme4_harmonics_publication_figures.py
    python examples/3_advanced/05_calibrate_nu_n_to_fortran_residual_fixture.py
 
+Implicit differentiation through solves
+---------------------------------------
+
+An important differentiability milestone is **implicit differentiation** through a linear solve
+(``A x = b``) without backpropagating through Krylov iterations. `sfincs_jax` provides a small helper
+based on `jax.lax.custom_linear_solve` and demonstrates it here:
+
+.. code-block:: bash
+
+   python examples/3_advanced/06_implicit_diff_through_gmres_solve_scheme5.py
+
 Upstream SFINCS example inputs
 --------------------------------
 

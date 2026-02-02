@@ -5,11 +5,13 @@ Implemented (parity-tested)
 ---------------------------
 
 - v3 grids: ``theta``, ``zeta``, ``x`` (including the v3 polynomial/Stieltjes ``x`` grid)
+- Boozer geometryScheme=1 (three-helicity analytic model): ``BHat`` and derivatives (via output parity fixtures)
+- Boozer geometryScheme=2 (simplified LHD model): ``BHat`` and derivatives (via output parity fixtures)
 - Boozer geometryScheme=4 (simplified W7-X model): ``BHat`` and derivatives
 - Boozer geometryScheme=11/12 from `.bc` file inputs: ``BHat``, ``DHat``, ``BHat_sub_psi``, and derivatives (parity vs frozen fixture)
 - VMEC geometryScheme=5 from ``wout_*.nc`` inputs: core geometry arrays (``BHat``, ``DHat``, covariant/contravariant components)
   and ``gpsiHatpsiHat`` (parity vs frozen fixture)
-- ``sfincsOutput.h5`` writing for ``geometryScheme in {4,5,11}`` with dataset-by-dataset parity against frozen
+- ``sfincsOutput.h5`` writing for ``geometryScheme in {1,2,4,5,11,12}`` with dataset-by-dataset parity against frozen
   Fortran v3 fixtures (see ``docs/outputs.rst``). ``uHat`` is compared with a looser tolerance due to tiny
   platform-dependent transcendental/reduction differences.
 - Collisionless v3 operator slice: streaming + mirror (parity vs PETSc binaries for one example)
@@ -29,6 +31,8 @@ Implemented (parity-tested)
   ``pas_1species_PAS_noEr_tiny_scheme5``.
 - Full-system matvec + RHS + residual + GMRES-solution parity for VMEC ``geometryScheme=5`` with Phi1 QN/lambda blocks:
   ``pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear``.
+- Full-system matvec + RHS + residual + GMRES-solution parity for ``geometryScheme=1`` (tokamak-like, Nzeta=1):
+  ``pas_1species_PAS_noEr_tiny_scheme1``.
 - Phi1/QN/lambda block parity (includePhi1=true, includePhi1InKineticEquation=false):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for
   ``pas_1species_PAS_noEr_tiny_withPhi1_linear``.
@@ -50,4 +54,4 @@ Not yet implemented
 - Full kinetic solve driver across the upstream example suite (run loop, solves, and HDF5 outputs)
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions)
 - VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset
-- ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme in {4,5,11,12}``
+- ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme in {1,2,4,5,11,12}``

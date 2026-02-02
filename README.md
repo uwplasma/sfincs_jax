@@ -14,7 +14,7 @@ Documentation: build locally (`sphinx-build -b html docs docs/_build/html`) or v
 small, parity-tested slices:
 
 - v3 grids (`theta`, `zeta`, `x`) including the polynomial/Stieltjes x-grid
-- `sfincsOutput.h5` output parity for `geometryScheme in {4,5,11}` vs frozen v3 fixtures
+- `sfincsOutput.h5` output parity for `geometryScheme in {1,2,4,5,11,12}` vs frozen v3 fixtures
 - `geometryScheme=11/12` Boozer `.bc` parsing (B, D, covariant components) + drift-term parity fixtures
 - `geometryScheme=5` VMEC `wout_*.nc` parsing + output parity fixture
 - Collisionless operator terms (streaming/mirror, ExB, Er terms, magnetic drift slices) parity-tested
@@ -25,6 +25,7 @@ small, parity-tested slices:
 - Full-system **RHS and residual** assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries (subset)
 - Experimental Newton–Krylov nonlinear solve (parity on a tiny Phi1-in-kinetic fixture)
 - Matrix-free residual/JVP scaffolding for implicit-diff workflows
+- Implicit-differentiation through linear GMRES solves (`sfincs_jax.implicit_solve`)
 
 Current parity coverage is tracked in `docs/parity.rst` and via the v3 example audit in `docs/fortran_examples.rst`.
 
@@ -115,6 +116,12 @@ Optimization + publication-ready figures (optional extras):
 pip install -e ".[opt,viz]"
 python examples/3_advanced/04_optimize_scheme4_harmonics_publication_figures.py
 python examples/3_advanced/05_calibrate_nu_n_to_fortran_residual_fixture.py
+```
+
+Implicit differentiation through solves (advanced):
+
+```bash
+python examples/3_advanced/06_implicit_diff_through_gmres_solve_scheme5.py
 ```
 
 Quick performance sanity check (JIT vs no-JIT):

@@ -55,5 +55,8 @@ API reference
 .. automodule:: sfincs_jax.solver
    :members:
 
+.. automodule:: sfincs_jax.implicit_solve
+   :members:
+
 .. automodule:: sfincs_jax.paths
    :members:

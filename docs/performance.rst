@@ -24,6 +24,8 @@ differentiate objectives with respect to them. For example:
 
 - Differentiate a residual norm w.r.t. ``nu_n`` (see ``examples/2_intermediate/14_autodiff_sensitivity_nu_n_scheme5.py``).
 - Differentiate a diagnostics functional w.r.t. a differentiable geometry parameter in ``geometryScheme=4`` optimization demos.
+- Differentiate **through a linear solve** via implicit differentiation (see
+  ``examples/3_advanced/06_implicit_diff_through_gmres_solve_scheme5.py``).
 
 
 JAX-native performance patterns used in `sfincs_jax`
@@ -41,6 +43,9 @@ JAX-native performance patterns used in `sfincs_jax`
 
 - **Exploit linearity**: for linear runs, the operator is constant; store and reuse the assembled RHS and
   re-run only GMRES when parameters change.
+- **Use implicit differentiation for solve gradients**: for objectives that depend on the solution `x(p)` of
+  a linear system `A(p) x = b(p)`, prefer `jax.lax.custom_linear_solve` (adjoint solve) over
+  differentiating through Krylov iterations.
 
 
 Links to the JAX ecosystem (optional)
@@ -57,7 +62,7 @@ workflows, the JAX ecosystem can be integrated cleanly once the residual is expr
 Connection to MONKES / adjoint methods
 --------------------------------------
 
-The MONKES approach (see `Escoto_Thesis.pdf`) emphasizes:
+The MONKES approach (see the MONKES code/paper materials and related thesis work, external to this repository) emphasizes:
 
 - a **monoenergetic drift-kinetic equation** as a reduced model,
 - a **Legendre basis** representation,
