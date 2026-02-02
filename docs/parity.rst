@@ -29,6 +29,8 @@ Implemented (parity-tested)
 - Phi1 in kinetic equation parity (includePhi1=true, includePhi1InKineticEquation=true):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for
   ``pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear``.
+- Nonlinear end-to-end solve (experimental Newton–Krylov) parity for:
+  ``pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear``.
 - Full-system RHS and residual assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries for:
   ``pas_1species_PAS_noEr_tiny``, ``quick_2species_FPCollisions_noEr``,
   ``pas_1species_PAS_noEr_tiny_withPhi1_linear``, and ``pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear``.

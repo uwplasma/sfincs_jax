@@ -20,6 +20,7 @@ small, parity-tested slices:
 - Collision operators (PAS and full linearized FP, no-Phi1 modes) parity-tested at the F-block level
 - Full-system **matrix-free** matvec parity for two fixtures (no-Phi1, constraint schemes 1/2)
 - Full-system **RHS and residual** assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries (subset)
+- Experimental Newton–Krylov nonlinear solve (parity on a tiny Phi1-in-kinetic fixture)
 - Matrix-free residual/JVP scaffolding for implicit-diff workflows
 
 Current parity coverage is tracked in `docs/parity.rst` and via the v3 example audit in `docs/fortran_examples.rst`.

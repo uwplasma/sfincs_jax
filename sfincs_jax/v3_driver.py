@@ -12,7 +12,13 @@ from jax import tree_util as jtu
 
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
-from .v3_system import V3FullSystemOperator, apply_v3_full_system_operator, full_system_operator_from_namelist, rhs_v3_full_system
+from .v3_system import (
+    V3FullSystemOperator,
+    apply_v3_full_system_operator,
+    full_system_operator_from_namelist,
+    residual_v3_full_system,
+    rhs_v3_full_system,
+)
 
 
 @jtu.register_pytree_node_class
@@ -88,3 +94,104 @@ solve_v3_full_system_linear_gmres_jit = jax.jit(
     static_argnames=("tol", "atol", "restart", "maxiter", "solve_method", "identity_shift"),
 )
 
+
+@jtu.register_pytree_node_class
+@dataclass(frozen=True)
+class V3NewtonKrylovResult:
+    """Result of a simple Newton–Krylov solve for `residual_v3_full_system` (experimental)."""
+
+    op: V3FullSystemOperator
+    x: jnp.ndarray
+    residual_norm: jnp.ndarray
+    n_newton: int
+    last_linear_residual_norm: jnp.ndarray
+
+    def tree_flatten(self):
+        children = (self.op, self.x, self.residual_norm, self.last_linear_residual_norm)
+        aux = int(self.n_newton)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        op, x, residual_norm, last_linear_residual_norm = children
+        return cls(op=op, x=x, residual_norm=residual_norm, n_newton=int(aux), last_linear_residual_norm=last_linear_residual_norm)
+
+
+def solve_v3_full_system_newton_krylov(
+    *,
+    nml: Namelist,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    max_newton: int = 12,
+    gmres_tol: float = 1e-10,
+    gmres_restart: int = 80,
+    gmres_maxiter: int | None = 400,
+    solve_method: str = "batched",
+    identity_shift: float = 0.0,
+) -> V3NewtonKrylovResult:
+    """Solve `residual_v3_full_system(op, x) = 0` using a basic Newton–Krylov iteration.
+
+    This is intended for small parity fixtures and developer experimentation. It is **not**
+    yet a stable API for production runs.
+    """
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift)
+    if x0 is None:
+        x = jnp.zeros((op.total_size,), dtype=jnp.float64)
+    else:
+        x = jnp.asarray(x0, dtype=jnp.float64)
+        if x.shape != (op.total_size,):
+            raise ValueError(f"x0 must have shape {(op.total_size,)}, got {x.shape}")
+
+    last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
+
+    for k in range(int(max_newton)):
+        r = residual_v3_full_system(op, x)
+        rnorm = jnp.linalg.norm(r)
+        if float(rnorm) < float(tol):
+            return V3NewtonKrylovResult(
+                op=op,
+                x=x,
+                residual_norm=rnorm,
+                n_newton=k,
+                last_linear_residual_norm=last_linear_resid,
+            )
+
+        def jvp(v):
+            # J(x) v via forward-mode AD.
+            return jax.jvp(lambda xx: residual_v3_full_system(op, xx), (x,), (v,))[1]
+
+        # Solve J s = -r
+        lin = gmres_solve(
+            matvec=jvp,
+            b=-r,
+            tol=float(gmres_tol),
+            restart=int(gmres_restart),
+            maxiter=gmres_maxiter,
+            solve_method=str(solve_method),
+        )
+        s = lin.x
+        last_linear_resid = lin.residual_norm
+
+        # Backtracking line search on ||r|| (very simple Armijo-style criterion).
+        step = 1.0
+        rnorm0 = float(rnorm)
+        for _ in range(12):
+            x_try = x + step * s
+            r_try = residual_v3_full_system(op, x_try)
+            rnorm_try = float(jnp.linalg.norm(r_try))
+            if rnorm_try <= 0.9 * rnorm0:
+                x = x_try
+                break
+            step *= 0.5
+        else:
+            # If we fail to reduce the residual, still take a small step to avoid stalling.
+            x = x + (1.0 / 64.0) * s
+
+    r = residual_v3_full_system(op, x)
+    return V3NewtonKrylovResult(
+        op=op,
+        x=x,
+        residual_norm=jnp.linalg.norm(r),
+        n_newton=int(max_newton),
+        last_linear_residual_norm=last_linear_resid,
+    )
