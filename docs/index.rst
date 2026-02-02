@@ -11,6 +11,7 @@ sfincs_jax
    method
    usage
    outputs
+   upstream_docs
    fortran_examples
    examples
    api

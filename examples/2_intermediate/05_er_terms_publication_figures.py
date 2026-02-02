@@ -150,11 +150,11 @@ def main() -> int:
     # Figure 4: ExB drift d/dtheta coefficient
     fig, ax = plt.subplots(figsize=(6.2, 4.2))
     im = ax.pcolormesh(th2, ze2, f_exb_theta, shading="auto")
-    ax.set_title(r"ExB $d/d\theta$ coefficient $F_{E\\times B,\\theta}(\theta,\zeta)$")
+    ax.set_title(r"ExB $d/d\theta$ coefficient $F_{E\times B,\theta}(\theta,\zeta)$")
     ax.set_xlabel(r"$\theta$")
     ax.set_ylabel(r"$\zeta$")
     cb = fig.colorbar(im, ax=ax)
-    cb.set_label(r"$F_{E\\times B,\\theta}$")
+    cb.set_label(r"$F_{E\times B,\theta}$")
     _save(fig, out_dir, "exb_terms_theta_coeff")
 
     print(f"Wrote figures to {out_dir}")

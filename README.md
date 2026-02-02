@@ -92,5 +92,13 @@ See `examples/README.md`. The examples are structured as:
 - `examples/2_intermediate/`
 - `examples/3_advanced/`
 
+For convenience, the original upstream SFINCS example inputs (Fortran v3, multi-species, and MATLAB v3)
+are vendored in `examples/upstream/`.
+
 For a structured view of how much of the upstream Fortran v3 example suite is currently
 supported, see the docs page `docs/fortran_examples.rst` (auto-generated audit table).
+
+## Upstream docs (vendored)
+
+Selected upstream SFINCS technical notes and paper sources are vendored in `docs/upstream/` and linked
+from the Sphinx documentation (`docs/upstream_docs.rst`).

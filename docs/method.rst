@@ -241,6 +241,8 @@ In `sfincs_jax`, the residual interface lives in `sfincs_jax.residual`:
 
 - :class:`sfincs_jax.residual.V3FBlockLinearSystem` computes ``residual(x)`` and
   provides a matrix-free Jacobian matvec ``jacobian_matvec(v)``.
+- :class:`sfincs_jax.residual.V3FullLinearSystem` provides the same interface for the
+  (currently supported subset of the) full v3 linear system operator.
 - For linear operators, the Jacobian matvec is identical to the operator matvec; for nonlinear
   residuals later in the port, `jax.jvp` provides an efficient Jacobian-vector product (JVP)
   without ever forming a dense or sparse Jacobian matrix.

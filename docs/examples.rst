@@ -38,3 +38,10 @@ Plotting examples require:
 .. code-block:: bash
 
    pip install -e ".[viz]"
+
+Upstream SFINCS example inputs
+--------------------------------
+
+For convenience, `sfincs_jax` also vendors the original SFINCS example inputs (Fortran v3, multi-species,
+and MATLAB v3) in `examples/upstream/`. These files are intended as recognizable reference points for
+SFINCS users; not all of them are runnable end-to-end in `sfincs_jax` yet.
