@@ -26,3 +26,7 @@ except Exception:
     html_theme = "alabaster"
 else:
     html_theme = "sphinx_rtd_theme"
+
+# Read the Docs and some locked-down environments can block certain CDNs. Pin MathJax
+# to a widely mirrored CDN to keep equation rendering reliable.
+mathjax_path = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js"
