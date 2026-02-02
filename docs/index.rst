@@ -12,6 +12,7 @@ sfincs_jax
    method
    system_equations
    usage
+   inputs
    outputs
    performance
    upstream_docs
