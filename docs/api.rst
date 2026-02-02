@@ -37,6 +37,9 @@ API reference
 .. automodule:: sfincs_jax.v3_fblock
    :members:
 
+.. automodule:: sfincs_jax.v3_system
+   :members:
+
 .. automodule:: sfincs_jax.residual
    :members:
 

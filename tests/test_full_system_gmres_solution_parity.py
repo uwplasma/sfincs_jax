@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import jax.numpy as jnp
+from scipy.sparse import csr_matrix
+
+from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax.petsc_binary import read_petsc_mat_aij, read_petsc_vec
+from sfincs_jax.solver import gmres_solve
+from sfincs_jax.v3_system import apply_v3_full_system_operator, full_system_operator_from_namelist
+
+
+def test_full_system_gmres_recovers_fortran_statevector_pas_tiny() -> None:
+    """Solve A x = b matrix-free and recover the Fortran v3 stateVector (tiny PAS case)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+
+    a = read_petsc_mat_aij(mat_path)
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+    a_csr = csr_matrix((a.data, a.col_ind, a.row_ptr), shape=a.shape)
+
+    # Build b using the Fortran matrix so the reference solution is exact.
+    b = a_csr.dot(x_ref)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(matvec=mv, b=jnp.asarray(b), tol=1e-12, restart=80, maxiter=200)
+    x = np.asarray(result.x)
+
+    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    assert float(result.residual_norm) < 1e-9
+

@@ -21,6 +21,8 @@ Implemented (parity-tested)
 - Pitch-angle scattering collisions (``collisionOperator=1`` without Phi1): diagonal parity vs PETSc binaries for one small example
 - Full linearized Fokker-Planck collision operator (``collisionOperator=0`` without Phi1): F-block matvec parity vs a frozen
   PETSc matrix for a 2-species ``geometryScheme=4`` fixture (``tests/ref/quick_2species_FPCollisions_noEr.whichMatrix_3.petscbin``).
+- Full-system matvec parity (includePhi1=false, constraint schemes 1/2) vs frozen PETSc matrices for:
+  ``pas_1species_PAS_noEr_tiny`` and ``quick_2species_FPCollisions_noEr``.
 
 Not yet implemented
 -------------------

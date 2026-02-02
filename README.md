@@ -69,7 +69,9 @@ sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
 - [x] Combined F-block matvec parity (collisionless + PAS) vs PETSc matrix (F-block slice)
 - [x] Full linearized Fokker-Planck collisions (collisionOperator=0, no Phi1) with F-block matvec parity vs PETSc matrix
 - [x] Residual/Jacobian (JVP) scaffolding for F-block (matrix-free)
-- [ ] Full solver parity across the v3 example suite
+- [x] Full-system matvec parity (includePhi1=false constraint schemes 1/2) vs PETSc matrices for two fixtures
+- [x] Full-system GMRES solution parity vs PETSc stateVector (tiny PAS fixture)
+- [ ] Full solver parity across the v3 example suite (includes includePhi1 and more geometries)
 
 ## Why JAX?
 

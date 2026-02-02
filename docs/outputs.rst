@@ -41,7 +41,7 @@ At the moment, `sfincs_jax` output writing supports:
 - basic scalar integrals: ``VPrimeHat`` and ``FSABHat2`` (see `sfincs_jax.diagnostics`)
 - selected run parameters, radial-coordinate conversions, and species arrays (e.g. ``Delta``, ``alpha``, ``Er``, ``dPhiHatdpsiHat``,
   ``psiAHat``, ``aHat``, ``rN``, ``Zs``, ``THats``)
-- `NTV`-related geometry diagnostic ``uHat`` (computed from harmonics of :math:`1/\\hat B^2`)
+- `NTV`-related geometry diagnostic ``uHat`` (computed from harmonics of :math:`1/\hat B^2`)
 
 Output parity tests live in ``tests/test_output_h5_scheme4_parity.py`` and compare the
 datasets above against a frozen Fortran v3 fixture in ``tests/ref``.
@@ -54,7 +54,7 @@ There is also a multi-species parity test against the upstream v3 example output
 
    ``uHat`` depends on many transcendental evaluations (cos/sin) and long floating-point
    reductions. In practice we observe tiny platform-dependent differences vs the frozen
-   Fortran fixture (absolute errors :math:`\\sim 10^{-9}` in the small scheme-4 test case),
+   Fortran fixture (absolute errors :math:`\sim 10^{-9}` in the small scheme-4 test case),
    so the parity test compares ``uHat`` with a slightly looser tolerance than most other
    datasets.
 
