@@ -18,6 +18,7 @@ from .v3_system import (
     full_system_operator_from_namelist,
     residual_v3_full_system,
     rhs_v3_full_system,
+    with_transport_rhs_settings,
 )
 
 
@@ -53,6 +54,7 @@ class V3LinearSolveResult:
 def solve_v3_full_system_linear_gmres(
     *,
     nml: Namelist,
+    which_rhs: int | None = None,
     x0: jnp.ndarray | None = None,
     tol: float = 1e-10,
     atol: float = 0.0,
@@ -71,6 +73,12 @@ def solve_v3_full_system_linear_gmres(
     and an outer Newton-Krylov iteration (not yet shipped as a stable API).
     """
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
+    if int(op.rhs_mode) in {2, 3}:
+        # v3 sets (dnHatdpsiHats, dTHatdpsiHats, EParallelHat) internally based on whichRHS.
+        # If the input file omits gradients (common for monoenergetic runs), callers must select whichRHS.
+        if which_rhs is None:
+            which_rhs = 1
+        op = with_transport_rhs_settings(op, which_rhs=int(which_rhs))
     rhs = rhs_v3_full_system(op)
 
     def mv(x):

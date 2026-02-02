@@ -71,6 +71,12 @@ Solve a supported v3 linear run matrix-free and write the solution vector:
 sfincs_jax solve-v3 --input /path/to/input.namelist --out-state stateVector.npy
 ```
 
+Transport-matrix modes (``RHSMode=2/3``) require selecting which RHS to solve:
+
+```bash
+sfincs_jax solve-v3 --input /path/to/input.namelist --which-rhs 1
+```
+
 Write a SFINCS-style `sfincsOutput.h5` using the JAX implementation (supported modes only):
 
 ```bash

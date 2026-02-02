@@ -17,6 +17,7 @@ def _cmd_solve_v3(args: argparse.Namespace) -> int:
     nml = read_sfincs_input(Path(args.input))
     result = solve_v3_full_system_linear_gmres(
         nml=nml,
+        which_rhs=int(args.which_rhs) if args.which_rhs is not None else None,
         tol=float(args.tol),
         atol=float(args.atol),
         restart=int(args.restart),
@@ -95,6 +96,11 @@ def main(argv: list[str] | None = None) -> int:
     p_solve.add_argument("--restart", default="80", help="GMRES restart")
     p_solve.add_argument("--maxiter", default=None, help="GMRES maxiter (default: library default)")
     p_solve.add_argument("--solve-method", default="batched", help="JAX GMRES solve_method")
+    p_solve.add_argument(
+        "--which-rhs",
+        default=None,
+        help="For RHSMode=2/3 transport-matrix runs, select whichRHS (v3 loops over multiple RHS).",
+    )
     p_solve.set_defaults(func=_cmd_solve_v3)
 
     p_run = sub.add_parser("run-fortran", help="Run the compiled Fortran SFINCS v3 executable.")
