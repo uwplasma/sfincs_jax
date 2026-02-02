@@ -18,6 +18,7 @@ small, parity-tested slices:
 - `geometryScheme=11/12` Boozer `.bc` parsing (B, D, covariant components) + drift-term parity fixtures
 - Collisionless operator terms (streaming/mirror, ExB, Er terms, magnetic drift slices) parity-tested
 - Collision operators (PAS and full linearized FP, no-Phi1 modes) parity-tested at the F-block level
+- Full linearized FP collisions with poloidally varying Phi1 (parity on a tiny fixture)
 - Full-system **matrix-free** matvec parity for two fixtures (no-Phi1, constraint schemes 1/2)
 - Full-system **RHS and residual** assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries (subset)
 - Experimental Newton–Krylov nonlinear solve (parity on a tiny Phi1-in-kinetic fixture)

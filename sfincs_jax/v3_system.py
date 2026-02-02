@@ -303,7 +303,7 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
     rest = x_full[op.f_size :]
     f = f_flat.reshape(op.fblock.f_shape)
 
-    y_f = apply_v3_fblock_operator(op.fblock, f)
+    y_f = apply_v3_fblock_operator(op.fblock, f, phi1_hat_base=op.phi1_hat_base if op.fblock.fp_phi1 is not None else None)
     factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
     ix0 = _ix_min(op.point_at_x0)
 
@@ -683,10 +683,10 @@ def full_system_operator_from_namelist(
     # Radial normalization factors (radialCoordinates.F90).
     input_radial = _get_int(geom_params, "inputRadialCoordinate", 3)
     input_radial_grad = _get_int(geom_params, "inputRadialCoordinateForGradients", 4)
-    if input_radial != 3 or input_radial_grad != 4:
+    if input_radial != 3 or input_radial_grad not in {0, 4}:
         raise NotImplementedError(
-            "sfincs_jax currently only supports inputRadialCoordinate=3 (rN) and "
-            "inputRadialCoordinateForGradients=4 (rHat) for gradient conversions."
+            "sfincs_jax currently supports inputRadialCoordinate=3 (rN) with "
+            "inputRadialCoordinateForGradients in {0 (psiHat), 4 (rHat)}."
         )
 
     geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
@@ -721,9 +721,14 @@ def full_system_operator_from_namelist(
     dn_hat_dpsi_hat = _grad_in_psihat("dNHatdrHats", "dNHatdpsiHats")
     dt_hat_dpsi_hat = _grad_in_psihat("dTHatdrHats", "dTHatdpsiHats")
 
-    # dPhiHat/dpsiHat from Er (radialCoordinates.F90 inputRadialCoordinateForGradients=4):
-    er = float(phys.get("ER", 0.0))
-    dphi_hat_dpsi_hat = jnp.asarray(ddrhat2ddpsihat * (-er), dtype=jnp.float64)
+    # dPhiHat/dpsiHat:
+    # - if inputRadialCoordinateForGradients=4, v3 uses Er with dPhiHat/drHat = -Er.
+    # - if inputRadialCoordinateForGradients=0, v3 expects dPhiHat/dpsiHat directly.
+    if int(input_radial_grad) == 4:
+        er = float(phys.get("ER", 0.0))
+        dphi_hat_dpsi_hat = jnp.asarray(ddrhat2ddpsihat * (-er), dtype=jnp.float64)
+    else:
+        dphi_hat_dpsi_hat = jnp.asarray(float(phys.get("DPHIHATDPSIHAT", 0.0)), dtype=jnp.float64)
 
     rhs_mode = _get_int(general, "RHSMode", 1)
     e_parallel_hat = float(phys.get("EPARALLELHAT", 0.0))

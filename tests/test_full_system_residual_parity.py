@@ -44,3 +44,6 @@ def test_full_system_residual_pas_tiny_with_phi1_linear_matches_fortran() -> Non
 def test_full_system_residual_pas_tiny_with_phi1_in_kinetic_matches_fortran() -> None:
     _run_case("pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear")
 
+
+def test_full_system_residual_fp_tiny_with_phi1_in_collision_matches_fortran() -> None:
+    _run_case("fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision")

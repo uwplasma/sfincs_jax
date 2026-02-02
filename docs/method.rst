@@ -198,6 +198,24 @@ In the v3 matrix assembly, the overall normalization is applied via ``nu_n`` (se
 In `sfincs_jax`, this model is implemented in `sfincs_jax.collisions` and parity-tested by comparing a full
 F-block matvec against a frozen PETSc Jacobian for the v3 example ``quick_2species_FPCollisions_noEr``.
 
+Poloidally varying collisions (Phi1 in the collision operator)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When ``includePhi1InCollisionOperator = .true.`` (and ``includePhi1InKineticEquation = .true.``), v3 modifies the
+collision operator coefficients through a poloidally varying effective density
+
+.. math::
+
+   n_a^{\mathrm{pol}}(\theta,\zeta) = n_a \exp\left(-\frac{Z_a \alpha}{T_a}\,\Phi_1(\theta,\zeta)\right),
+
+so that the Fokker--Planck operator remains diagonal in :math:`(\theta,\zeta)` but is no longer uniform on the
+flux surface.
+
+In `sfincs_jax`, the corresponding matrix-free operator is implemented as
+`sfincs_jax.collisions.FokkerPlanckV3Phi1Operator` and parity-tested against a frozen v3 PETSc matrix for the
+fixture ``fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision``. For derivations and implementation details,
+see the vendored upstream note linked from `docs/upstream_docs.rst`.
+
 Why JAX?
 --------
 

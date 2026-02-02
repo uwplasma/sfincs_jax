@@ -89,3 +89,27 @@ def test_full_system_rhs_pas_tiny_with_phi1_in_kinetic_matches_fortran() -> None
     rhs_ref = _rhs_ref_from_fortran_matrix_and_residual(mat_path=mat_path, vec_path=vec_path, residual_path=residual_path)
 
     np.testing.assert_allclose(rhs, rhs_ref, rtol=0, atol=3e-12)
+
+
+def test_full_system_rhs_fp_tiny_with_phi1_in_collision_matches_fortran() -> None:
+    here = Path(__file__).parent
+    input_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.input.namelist"
+    mat_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.stateVector.petscbin"
+    residual_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.residual.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op0 = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+    x_ref = read_petsc_vec(vec_path).values
+    phi1_flat = x_ref[op0.f_size : op0.f_size + op0.n_theta * op0.n_zeta]
+    phi1_hat_base = jnp.asarray(phi1_flat.reshape((op0.n_theta, op0.n_zeta)))
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0, phi1_hat_base=phi1_hat_base)
+
+    rhs = np.asarray(rhs_v3_full_system(op))
+    rhs_ref = _rhs_ref_from_fortran_matrix_and_residual(
+        mat_path=mat_path,
+        vec_path=vec_path,
+        residual_path=residual_path,
+    )
+
+    np.testing.assert_allclose(rhs, rhs_ref, rtol=0, atol=3e-12)

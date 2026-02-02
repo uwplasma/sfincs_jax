@@ -34,6 +34,9 @@ Implemented (parity-tested)
 - Full-system RHS and residual assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries for:
   ``pas_1species_PAS_noEr_tiny``, ``quick_2species_FPCollisions_noEr``,
   ``pas_1species_PAS_noEr_tiny_withPhi1_linear``, and ``pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear``.
+- Full linearized Fokker-Planck collisions with Phi1 in the collision operator
+  (``collisionOperator=0``, ``includePhi1InCollisionOperator=true``) parity-tested as full-system matvec + residual for:
+  ``fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision``.
 
 Not yet implemented
 -------------------

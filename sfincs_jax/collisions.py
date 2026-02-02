@@ -585,3 +585,275 @@ def apply_fokker_planck_v3(op: FokkerPlanckV3Operator, f: jnp.ndarray) -> jnp.nd
 
 
 apply_fokker_planck_v3_jit = jax.jit(apply_fokker_planck_v3, static_argnums=())
+
+
+@jtu.register_pytree_node_class
+@dataclass(frozen=True)
+class FokkerPlanckV3Phi1Operator:
+    """v3 `collisionOperator=0` collision operator including Phi1 in the collision operator.
+
+    This corresponds to the `includePhi1InCollisionOperator = .true.` branch in v3
+    `populateMatrix.F90`, in which the collisional coefficients become poloidally varying
+    through the factor `exp(-Z*alpha*Phi1Hat/THat)`.
+
+    Notes
+    -----
+    - The operator remains diagonal in (theta, zeta) and in Legendre index L, but it is no longer
+      uniform over the flux surface.
+    - This implementation targets the residual/Jacobian matrices used in parity fixtures
+      (notably `whichMatrix=3` in v3), i.e. it treats Phi1 as a frozen background field
+      when applying the matrix-free operator.
+    """
+
+    nu_n: jnp.ndarray  # scalar
+    krook: jnp.ndarray  # scalar
+    alpha: jnp.ndarray  # scalar
+    z_s: jnp.ndarray  # (S,)
+    n_hats: jnp.ndarray  # (S,)
+    t_hats: jnp.ndarray  # (S,)
+    nl: int
+
+    # Base tensors, independent of densities and Phi1:
+    # - nuDHat = sum_b n_pol[b] * k_nu[a,b,x]
+    k_nu: jnp.ndarray  # (S,S,X)
+    # - CD term: scales with n_pol[a]
+    k_cd: jnp.ndarray  # (S,S,X,X)
+    # - CE term: contributes to diagonal (a,a) and scales with n_pol[b]
+    k_ce: jnp.ndarray  # (S,S,X,X)
+    # - Rosenbluth term: scales with n_pol[a]
+    k_rosen: jnp.ndarray  # (S,S,NL,X,X)
+
+    n_xi_for_x: jnp.ndarray  # (X,) int32
+
+    def tree_flatten(self):
+        children = (
+            self.nu_n,
+            self.krook,
+            self.alpha,
+            self.z_s,
+            self.n_hats,
+            self.t_hats,
+            self.k_nu,
+            self.k_cd,
+            self.k_ce,
+            self.k_rosen,
+            self.n_xi_for_x,
+        )
+        aux = int(self.nl)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        (
+            nu_n,
+            krook,
+            alpha,
+            z_s,
+            n_hats,
+            t_hats,
+            k_nu,
+            k_cd,
+            k_ce,
+            k_rosen,
+            n_xi_for_x,
+        ) = children
+        return cls(
+            nu_n=nu_n,
+            krook=krook,
+            alpha=alpha,
+            z_s=z_s,
+            n_hats=n_hats,
+            t_hats=t_hats,
+            nl=int(aux),
+            k_nu=k_nu,
+            k_cd=k_cd,
+            k_ce=k_ce,
+            k_rosen=k_rosen,
+            n_xi_for_x=n_xi_for_x,
+        )
+
+
+def make_fokker_planck_v3_phi1_operator(
+    *,
+    x: np.ndarray,
+    x_weights: np.ndarray,
+    ddx: np.ndarray,
+    d2dx2: np.ndarray,
+    x_grid_k: float,
+    z_s: np.ndarray,
+    m_hats: np.ndarray,
+    n_hats: np.ndarray,
+    t_hats: np.ndarray,
+    nu_n: float,
+    krook: float,
+    n_xi: int,
+    nl: int,
+    alpha: float,
+    n_xi_for_x: np.ndarray,
+) -> FokkerPlanckV3Phi1Operator:
+    """Construct the poloidally varying v3 FP collision operator (`includePhi1InCollisionOperator=true`).
+
+    The returned operator factors out the (theta,zeta) dependence into a runtime scaling by
+    `n_pol = nHat * exp(-Z*alpha*Phi1Hat/THat)`.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    x_weights = np.asarray(x_weights, dtype=np.float64)
+    ddx = np.asarray(ddx, dtype=np.float64)
+    d2dx2 = np.asarray(d2dx2, dtype=np.float64)
+    z_s = np.asarray(z_s, dtype=np.float64)
+    m_hats = np.asarray(m_hats, dtype=np.float64)
+    n_hats = np.asarray(n_hats, dtype=np.float64)
+    t_hats = np.asarray(t_hats, dtype=np.float64)
+    n_xi_for_x = np.asarray(n_xi_for_x, dtype=np.int32)
+
+    n_species = int(z_s.size)
+    n_x = int(x.size)
+    sqrt_pi = float(np.sqrt(np.pi))
+    expx2 = np.exp(-(x * x))
+    x2 = x * x
+    x3 = x2 * x
+
+    xg = make_x_grid(n=n_x, k=float(x_grid_k), include_point_at_x0=False)
+
+    # Base Rosenbluth term, with nHat factored out (set nHat=1 in the helper).
+    rosen_base = rosenbluth_potential_terms_v3_np(
+        x=x,
+        x_weights=x_weights,
+        x_grid_k=float(x_grid_k),
+        xg=xg,
+        z_s=z_s,
+        m_hats=m_hats,
+        n_hats=np.ones_like(n_hats),
+        t_hats=t_hats,
+        nl=int(nl),
+    )  # (S,S,NL,X,X)
+
+    k_nu = np.zeros((n_species, n_species, n_x), dtype=np.float64)
+    k_cd = np.zeros((n_species, n_species, n_x, n_x), dtype=np.float64)
+    k_ce = np.zeros((n_species, n_species, n_x, n_x), dtype=np.float64)
+
+    for ia in range(n_species):
+        t32m = float(t_hats[ia]) * math.sqrt(float(t_hats[ia]) * float(m_hats[ia]))
+        for ib in range(n_species):
+            species_factor = float(
+                math.sqrt((t_hats[ia] * m_hats[ib]) / (t_hats[ib] * m_hats[ia]))
+            )
+            xb = x * species_factor
+            expxb2 = np.exp(-(xb * xb))
+            erfs = sp_special.erf(xb)
+            psi = (erfs - (2.0 / sqrt_pi) * xb * expxb2) / (2.0 * xb * xb)
+
+            # nuDHat contribution per unit nHat_b.
+            k_nu[ia, ib, :] = (3.0 * sqrt_pi / 4.0) / t32m * float(z_s[ia] ** 2) * float(
+                z_s[ib] ** 2
+            ) * (erfs - psi) / x3
+
+            if ia == ib:
+                f_to_f = np.eye(n_x, dtype=np.float64)
+            else:
+                alpxk = expx2 * (x**float(x_grid_k))
+                alpx = expxb2 * (xb**float(x_grid_k))
+                f_to_f = polynomial_interpolation_matrix_np(xk=x, x=xb, alpxk=alpxk, alpx=alpx)
+
+            # CD term per unit nHat_a.
+            species_factor_cd = 3.0 * float(m_hats[ia] / m_hats[ib]) * float(z_s[ia] ** 2) * float(
+                z_s[ib] ** 2
+            ) / t32m
+            k_cd[ia, ib, :, :] += (species_factor_cd * expx2)[:, None] * f_to_f
+
+            # CE term per unit nHat_b (adds into the diagonal block for species a).
+            species_factor_ce = 3.0 * sqrt_pi / 4.0 * float(z_s[ia] ** 2) * float(z_s[ib] ** 2) / t32m
+            coef_d2 = (psi / x)[:, None] * d2dx2
+            coef_dx = (
+                (
+                    -2.0
+                    * float(t_hats[ia] * m_hats[ib] / (t_hats[ib] * m_hats[ia]))
+                    * psi
+                    * (1.0 - float(m_hats[ia] / m_hats[ib]))
+                    + (erfs - psi) / x2
+                )[:, None]
+                * ddx
+            )
+            k_ce[ia, ib, :, :] += species_factor_ce * (coef_d2 + coef_dx)
+
+            diag_extra = (
+                species_factor_ce
+                * 4.0
+                / sqrt_pi
+                * float(t_hats[ia] / t_hats[ib])
+                * math.sqrt(float(t_hats[ia] * m_hats[ib] / (t_hats[ib] * m_hats[ia])))
+                * expxb2
+            )
+            k_ce[ia, ib, range(n_x), range(n_x)] += diag_extra
+
+    return FokkerPlanckV3Phi1Operator(
+        nu_n=jnp.asarray(float(nu_n), dtype=jnp.float64),
+        krook=jnp.asarray(float(krook), dtype=jnp.float64),
+        alpha=jnp.asarray(float(alpha), dtype=jnp.float64),
+        z_s=jnp.asarray(z_s, dtype=jnp.float64),
+        n_hats=jnp.asarray(n_hats, dtype=jnp.float64),
+        t_hats=jnp.asarray(t_hats, dtype=jnp.float64),
+        nl=int(nl),
+        k_nu=jnp.asarray(k_nu, dtype=jnp.float64),
+        k_cd=jnp.asarray(k_cd, dtype=jnp.float64),
+        k_ce=jnp.asarray(k_ce, dtype=jnp.float64),
+        k_rosen=jnp.asarray(rosen_base, dtype=jnp.float64),
+        n_xi_for_x=jnp.asarray(n_xi_for_x, dtype=jnp.int32),
+    )
+
+
+def apply_fokker_planck_v3_phi1(op: FokkerPlanckV3Phi1Operator, f: jnp.ndarray, *, phi1_hat: jnp.ndarray) -> jnp.ndarray:
+    """Apply the v3 `collisionOperator=0` collision operator including Phi1 in collisions."""
+    if f.ndim != 5:
+        raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    n_species, n_x, n_xi, n_theta, n_zeta = f.shape
+    if phi1_hat.shape != (n_theta, n_zeta):
+        raise ValueError(f"phi1_hat must have shape {(n_theta, n_zeta)}, got {phi1_hat.shape}")
+    if op.k_nu.shape != (n_species, n_species, n_x):
+        raise ValueError(f"op.k_nu has shape {op.k_nu.shape}, expected {(n_species, n_species, n_x)}")
+    if op.k_cd.shape != (n_species, n_species, n_x, n_x):
+        raise ValueError(f"op.k_cd has shape {op.k_cd.shape}, expected {(n_species, n_species, n_x, n_x)}")
+    if op.k_ce.shape != (n_species, n_species, n_x, n_x):
+        raise ValueError(f"op.k_ce has shape {op.k_ce.shape}, expected {(n_species, n_species, n_x, n_x)}")
+
+    # Effective poloidally varying densities: n_pol[s,t,z] = nHat[s] * exp(-Z*alpha*Phi1Hat/THat).
+    n_pol = op.n_hats[:, None, None] * jnp.exp(
+        -(op.z_s[:, None, None] * op.alpha / op.t_hats[:, None, None]) * phi1_hat[None, :, :]
+    )  # (S,T,Z)
+
+    # nuDHat_pol[a,x,t,z] = sum_b n_pol[b,t,z] * k_nu[a,b,x]
+    nu_d_hat = jnp.einsum("bTZ,abx->axTZ", n_pol, op.k_nu)  # (S,X,T,Z)
+
+    # Work in (S,L,X,T,Z) order for matrix multiplies.
+    f2 = jnp.transpose(f, (0, 2, 1, 3, 4))  # (S,L,X,T,Z)
+
+    # CD contribution (dense in species indices), scaled by n_pol[a].
+    y_cd = jnp.einsum("abij,bLjTZ->aLiTZ", op.k_cd, f2)  # (S,L,X,T,Z)
+    y_cd = y_cd * n_pol[:, None, None, :, :]
+
+    # CE contribution (diagonal in species index a, but sums over b).
+    ce_mat = jnp.einsum("bTZ,abij->aijTZ", n_pol, op.k_ce)  # (S,X,X,T,Z)
+    y_ce = jnp.einsum("aijTZ,aLjTZ->aLiTZ", ce_mat, f2)  # (S,L,X,T,Z)
+
+    # Pitch-angle scattering / Krook diagonal term.
+    l = jnp.arange(n_xi, dtype=jnp.float64)  # (L,)
+    factor_l = l * (l + 1.0) + 2.0 * op.krook  # (L,)
+    y_diag = 0.5 * op.nu_n * nu_d_hat[:, None, :, :, :] * factor_l[None, :, None, None, None] * f2
+
+    y = (-op.nu_n) * (y_cd + y_ce) + y_diag
+
+    # Rosenbluth term (only for L < NL), scaled by n_pol[a].
+    nl = int(min(int(op.nl), int(n_xi)))
+    if nl > 0:
+        y_rosen = jnp.einsum("abLij,bLjTZ->aLiTZ", op.k_rosen[:, :, :nl, :, :], f2[:, :nl, :, :, :])
+        y_rosen = y_rosen * n_pol[:, None, None, :, :]
+        y = y.at[:, :nl, :, :, :].add((-op.nu_n) * y_rosen)
+
+    # Back to (S,X,L,T,Z).
+    y_out = jnp.transpose(y, (0, 2, 1, 3, 4))
+
+    mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(y_out.dtype)  # (X,L)
+    return y_out * mask[None, :, :, None, None]
+
+
+apply_fokker_planck_v3_phi1_jit = jax.jit(apply_fokker_planck_v3_phi1, static_argnums=())

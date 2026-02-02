@@ -1,0 +1,75 @@
+! Tiny Fokker-Planck collision example including Phi1 in the collision operator.
+!
+! This fixture is designed to activate:
+! - collisionOperator = 0 (full linearized FP)
+! - includePhi1 = .true.
+! - includePhi1InKineticEquation = .true.
+! - includePhi1InCollisionOperator = .true.
+!
+! while keeping grids small enough for fast parity tests.
+
+&general
+  saveMatricesAndVectorsInBinary = .t.
+/
+
+&geometryParameters
+  geometryScheme = 4
+  inputRadialCoordinateForGradients = 0
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1.0d+0
+  nHats = 1.0d+0
+  THats = 1.0d+0
+
+  ! Provide gradients directly in psiHat:
+  dNHatdpsiHats = -0.3d+0
+  dTHatdpsiHats = -0.2d+0
+
+  withAdiabatic = .t.
+  adiabaticZ = -1
+  adiabaticNHat = 1.0d+0
+  adiabaticTHat = 1.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 8.4774d-3
+  Er = 0.0d+0
+
+  collisionOperator = 0
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .false.
+  magneticDriftScheme = 0
+
+  includePhi1 = .true.
+  includePhi1InKineticEquation = .true.
+  includePhi1InCollisionOperator = .true.
+  quasineutralityOption = 2
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 5
+  Nxi = 4
+  NL = 3
+  Nx = 4
+  solverTolerance = 1d-10
+/
+
+&otherNumericalParameters
+  xGridScheme = 5
+  Nxi_for_x_option = 0
+  xGrid_k = 0.0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/

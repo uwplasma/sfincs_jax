@@ -18,10 +18,13 @@ from .collisionless_exb import ExBThetaV3Operator, ExBZetaV3Operator, apply_exb_
 from .collisionless_er import ErXDotV3Operator, ErXiDotV3Operator, apply_er_xdot_v3, apply_er_xidot_v3
 from .collisions import (
     FokkerPlanckV3Operator,
+    FokkerPlanckV3Phi1Operator,
     PitchAngleScatteringV3Operator,
     apply_fokker_planck_v3,
+    apply_fokker_planck_v3_phi1,
     apply_pitch_angle_scattering_v3,
     make_fokker_planck_v3_operator,
+    make_fokker_planck_v3_phi1_operator,
     make_pitch_angle_scattering_v3_operator,
 )
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
@@ -186,7 +189,8 @@ def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Gr
 
     if bool(phys.get("INCLUDEPHI1", False)):
         raise NotImplementedError(
-            "sfincs_jax currently implements collisionOperator=0 only for includePhi1 = .false."
+            "sfincs_jax currently implements collisionOperator=0 only for includePhi1 = .false. "
+            "unless includePhi1InCollisionOperator is enabled."
         )
 
     x_grid_scheme = _get_int(other, "xGridScheme", 5)
@@ -221,6 +225,56 @@ def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Gr
     )
 
 
+def fokker_planck_collision_operator_with_phi1_from_namelist(
+    *, nml: Namelist, grids: V3Grids, alpha: float
+) -> FokkerPlanckV3Phi1Operator:
+    """Build the poloidally varying v3 FP collision operator (includePhi1InCollisionOperator=true)."""
+    species = nml.group("speciesParameters")
+    phys = nml.group("physicsParameters")
+    other = nml.group("otherNumericalParameters")
+
+    collision_operator = _get_int(phys, "collisionOperator", 0)
+    if collision_operator != 0:
+        raise NotImplementedError("collisionOperator must be 0 for the Fokker-Planck collision operator builder.")
+
+    if not bool(phys.get("INCLUDEPHI1", False)):
+        raise ValueError("includePhi1 must be true for includePhi1InCollisionOperator=true.")
+    if not bool(phys.get("INCLUDEPHI1INKINETICEQUATION", False)):
+        raise ValueError("includePhi1InKineticEquation must be true for includePhi1InCollisionOperator=true.")
+
+    x_grid_scheme = _get_int(other, "xGridScheme", 5)
+    if x_grid_scheme not in {5, 6}:
+        raise NotImplementedError(
+            f"sfincs_jax currently only supports collisionOperator=0 for xGridScheme in {{5,6}} (got {x_grid_scheme})."
+        )
+
+    x_grid_k = _get_float(other, "xGrid_k", 0.0)
+    z_s = _as_1d_float(species, "Zs")
+    m_hats = _as_1d_float(species, "mHats")
+    n_hats = _as_1d_float(species, "nHats")
+    t_hats = _as_1d_float(species, "THats")
+    nu_n = _get_float(phys, "nu_n", 0.0)
+    krook = _get_float(phys, "Krook", 0.0)
+
+    return make_fokker_planck_v3_phi1_operator(
+        x=np.asarray(grids.x, dtype=np.float64),
+        x_weights=np.asarray(grids.x_weights, dtype=np.float64),
+        ddx=np.asarray(grids.ddx, dtype=np.float64),
+        d2dx2=np.asarray(grids.d2dx2, dtype=np.float64),
+        x_grid_k=float(x_grid_k),
+        z_s=z_s,
+        m_hats=m_hats,
+        n_hats=n_hats,
+        t_hats=t_hats,
+        nu_n=float(nu_n),
+        krook=float(krook),
+        n_xi=int(grids.n_xi),
+        nl=int(grids.n_l),
+        alpha=float(alpha),
+        n_xi_for_x=np.asarray(grids.n_xi_for_x, dtype=np.int32),
+    )
+
+
 @jtu.register_pytree_node_class
 @dataclass(frozen=True)
 class V3FBlockOperator:
@@ -245,6 +299,7 @@ class V3FBlockOperator:
     magdrift_xidot: MagneticDriftXiDotV3Operator | None
     pas: PitchAngleScatteringV3Operator | None
     fp: FokkerPlanckV3Operator | None
+    fp_phi1: FokkerPlanckV3Phi1Operator | None
     er_xidot: ErXiDotV3Operator | None
     er_xdot: ErXDotV3Operator | None
     identity_shift: jnp.ndarray  # scalar, helps make toy solves well-conditioned
@@ -274,6 +329,7 @@ class V3FBlockOperator:
             self.magdrift_xidot,
             self.pas,
             self.fp,
+            self.fp_phi1,
             self.er_xidot,
             self.er_xdot,
             self.identity_shift,
@@ -283,7 +339,7 @@ class V3FBlockOperator:
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        collisionless, exb_theta, exb_zeta, magdrift_theta, magdrift_zeta, magdrift_xidot, pas, fp, er_xidot, er_xdot, identity_shift = children
+        collisionless, exb_theta, exb_zeta, magdrift_theta, magdrift_zeta, magdrift_xidot, pas, fp, fp_phi1, er_xidot, er_xdot, identity_shift = children
         n_species, n_x, n_xi, n_theta, n_zeta = aux
         return cls(
             collisionless=collisionless,
@@ -294,6 +350,7 @@ class V3FBlockOperator:
             magdrift_xidot=magdrift_xidot,
             pas=pas,
             fp=fp,
+            fp_phi1=fp_phi1,
             er_xidot=er_xidot,
             er_xdot=er_xdot,
             identity_shift=identity_shift,
@@ -311,12 +368,22 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     colless = collisionless_operator_from_namelist(nml=nml, grids=grids, geom=geom)
     phys = nml.group("physicsParameters")
     collision_operator = _get_int(phys, "collisionOperator", 0)
+    include_phi1 = bool(phys.get("INCLUDEPHI1", False))
+    include_phi1_in_collisions = bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False))
     if collision_operator == 1:
         pas = pas_collision_operator_from_namelist(nml=nml, grids=grids)
         fp = None
+        fp_phi1 = None
     elif collision_operator == 0:
         pas = None
-        fp = fokker_planck_collision_operator_from_namelist(nml=nml, grids=grids)
+        if include_phi1 and include_phi1_in_collisions:
+            fp = None
+            fp_phi1 = fokker_planck_collision_operator_with_phi1_from_namelist(
+                nml=nml, grids=grids, alpha=float(phys.get("ALPHA", 1.0))
+            )
+        else:
+            fp = fokker_planck_collision_operator_from_namelist(nml=nml, grids=grids)
+            fp_phi1 = None
     else:
         raise NotImplementedError(f"collisionOperator={collision_operator} is not supported.")
     include_xdot = bool(phys.get("INCLUDEXDOTTERM", False))
@@ -460,6 +527,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         magdrift_xidot=magdrift_xidot,
         pas=pas,
         fp=fp,
+        fp_phi1=fp_phi1,
         er_xidot=er_xidot,
         er_xdot=er_xdot,
         identity_shift=jnp.asarray(identity_shift, dtype=jnp.float64),
@@ -471,7 +539,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     )
 
 
-def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray) -> jnp.ndarray:
+def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_base: jnp.ndarray | None = None) -> jnp.ndarray:
     out = op.identity_shift * f
     out = out + apply_collisionless_v3(op.collisionless, f)
     out = out + apply_exb_theta_v3(op.exb_theta, f)
@@ -490,6 +558,10 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray) -> jnp.ndarra
         out = out + apply_pitch_angle_scattering_v3(op.pas, f)
     if op.fp is not None:
         out = out + apply_fokker_planck_v3(op.fp, f)
+    if op.fp_phi1 is not None:
+        if phi1_hat_base is None:
+            raise ValueError("phi1_hat_base is required when includePhi1InCollisionOperator is enabled.")
+        out = out + apply_fokker_planck_v3_phi1(op.fp_phi1, f, phi1_hat=phi1_hat_base)
     return out
 
 

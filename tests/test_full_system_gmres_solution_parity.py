@@ -146,3 +146,34 @@ def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_with_phi1_in_ki
 
     np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
     assert float(result.residual_norm) < 1e-9
+
+
+def test_full_system_gmres_recovers_fortran_statevector_fp_tiny_with_phi1_in_collision() -> None:
+    """Solve A x = b matrix-free and recover the Fortran v3 stateVector (tiny FP + Phi1 in collision operator)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.input.namelist"
+    mat_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op0 = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+
+    a = read_petsc_mat_aij(mat_path)
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op0.total_size,)
+    a_csr = csr_matrix((a.data, a.col_ind, a.row_ptr), shape=a.shape)
+
+    phi1_flat = x_ref[op0.f_size : op0.f_size + op0.n_theta * op0.n_zeta]
+    phi1_hat_base = jnp.asarray(phi1_flat.reshape((op0.n_theta, op0.n_zeta)))
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0, phi1_hat_base=phi1_hat_base)
+
+    b = a_csr.dot(x_ref)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(matvec=mv, b=jnp.asarray(b), tol=1e-12, restart=160, maxiter=900)
+    x = np.asarray(result.x)
+
+    np.testing.assert_allclose(x, x_ref, rtol=0, atol=2e-9)
+    assert float(result.residual_norm) < 2e-9

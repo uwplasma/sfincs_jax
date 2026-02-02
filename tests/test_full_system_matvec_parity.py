@@ -107,3 +107,28 @@ def test_full_system_matvec_pas_tiny_with_phi1_in_kinetic_matches_fortran_matrix
     y_ref = _csr_from_petsc(a).dot(x_ref)
 
     np.testing.assert_allclose(y_jax, y_ref, rtol=0, atol=3e-12)
+
+
+def test_full_system_matvec_fp_tiny_with_phi1_in_collision_matches_fortran_matrix() -> None:
+    """IncludePhi1InCollisionOperator parity check (tiny FP + Phi1)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.input.namelist"
+    mat_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+
+    op0 = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+    a = read_petsc_mat_aij(mat_path)
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op0.total_size,)
+    assert a.shape == (op0.total_size, op0.total_size)
+
+    phi1_flat = x_ref[op0.f_size : op0.f_size + op0.n_theta * op0.n_zeta]
+    phi1_hat_base = jnp.asarray(phi1_flat.reshape((op0.n_theta, op0.n_zeta)))
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0, phi1_hat_base=phi1_hat_base)
+
+    y_jax = np.asarray(apply_v3_full_system_operator(op, jnp.asarray(x_ref)))
+    y_ref = _csr_from_petsc(a).dot(x_ref)
+
+    np.testing.assert_allclose(y_jax, y_ref, rtol=0, atol=4e-12)
