@@ -4,9 +4,31 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
+
 from .compare import compare_sfincs_outputs
 from .fortran import run_sfincs_fortran
 from .io import read_sfincs_h5, write_sfincs_jax_output_h5
+from .namelist import read_sfincs_input
+from .v3_driver import solve_v3_full_system_linear_gmres
+
+
+def _cmd_solve_v3(args: argparse.Namespace) -> int:
+    nml = read_sfincs_input(Path(args.input))
+    result = solve_v3_full_system_linear_gmres(
+        nml=nml,
+        tol=float(args.tol),
+        atol=float(args.atol),
+        restart=int(args.restart),
+        maxiter=int(args.maxiter) if args.maxiter is not None else None,
+        solve_method=str(args.solve_method),
+    )
+    out_state = Path(args.out_state)
+    out_state.parent.mkdir(parents=True, exist_ok=True)
+    np.save(out_state, np.asarray(result.x))
+    print(str(out_state.resolve()))
+    print(f"residual_norm={float(result.residual_norm):.6e}")
+    return 0
 
 
 def _cmd_run_fortran(args: argparse.Namespace) -> int:
@@ -64,6 +86,16 @@ def _cmd_compare_h5(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sfincs_jax")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_solve = sub.add_parser("solve-v3", help="Solve a supported v3 linear problem matrix-free and write stateVector.npy.")
+    p_solve.add_argument("--input", required=True, help="Path to input.namelist")
+    p_solve.add_argument("--out-state", default="stateVector.npy", help="Where to write the solution vector (NumPy .npy)")
+    p_solve.add_argument("--tol", default="1e-10", help="GMRES relative tolerance")
+    p_solve.add_argument("--atol", default="0.0", help="GMRES absolute tolerance")
+    p_solve.add_argument("--restart", default="80", help="GMRES restart")
+    p_solve.add_argument("--maxiter", default=None, help="GMRES maxiter (default: library default)")
+    p_solve.add_argument("--solve-method", default="batched", help="JAX GMRES solve_method")
+    p_solve.set_defaults(func=_cmd_solve_v3)
 
     p_run = sub.add_parser("run-fortran", help="Run the compiled Fortran SFINCS v3 executable.")
     p_run.add_argument("--input", required=True, help="Path to input.namelist")

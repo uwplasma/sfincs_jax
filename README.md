@@ -19,6 +19,7 @@ small, parity-tested slices:
 - Collisionless operator terms (streaming/mirror, ExB, Er terms, magnetic drift slices) parity-tested
 - Collision operators (PAS and full linearized FP, no-Phi1 modes) parity-tested at the F-block level
 - Full-system **matrix-free** matvec parity for two fixtures (no-Phi1, constraint schemes 1/2)
+- Full-system **RHS and residual** assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries (subset)
 - Matrix-free residual/JVP scaffolding for implicit-diff workflows
 
 Current parity coverage is tracked in `docs/parity.rst` and via the v3 example audit in `docs/fortran_examples.rst`.
@@ -57,6 +58,12 @@ print(geom.b_hat.shape)  # (Ntheta, Nzeta)
 ```
 
 ## CLI
+
+Solve a supported v3 linear run matrix-free and write the solution vector:
+
+```bash
+sfincs_jax solve-v3 --input /path/to/input.namelist --out-state stateVector.npy
+```
 
 Write a SFINCS-style `sfincsOutput.h5` using the JAX implementation (supported modes only):
 
@@ -138,7 +145,7 @@ the original derivations and parameter definitions.
 
 High-level remaining milestones (see `docs/parity.rst` for the detailed, parity-tested inventory):
 
-- Implement RHS/residual construction (not just matvec parity)
+- Expand RHS/residual coverage to the full upstream physics model (all modes/options)
 - Implement full Phi1 coupling in the kinetic equation + collision operator
 - Implement additional geometry schemes (VMEC-based, filtered W7-X netCDF, etc.)
 - Achieve end-to-end solver parity across the full upstream v3 example suite
@@ -146,4 +153,3 @@ High-level remaining milestones (see `docs/parity.rst` for the detailed, parity-
 ## License
 
 See `LICENSE`.
-

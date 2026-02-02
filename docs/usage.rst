@@ -93,6 +93,17 @@ you can invoke the CLI module directly:
 
    python -m sfincs_jax run-fortran --input /path/to/input.namelist
 
+Solving a supported v3 linear run (matrix-free)
+------------------------------------------------------------
+
+.. code-block:: bash
+
+   sfincs_jax solve-v3 --input /path/to/input.namelist --out-state stateVector.npy
+
+.. code-block:: bash
+
+   python -m sfincs_jax solve-v3 --input /path/to/input.namelist --out-state stateVector.npy
+
 Writing `sfincsOutput.h5` with `sfincs_jax`
 --------------------------------------------------
 
