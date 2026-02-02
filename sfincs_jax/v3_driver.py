@@ -12,6 +12,8 @@ from jax import tree_util as jtu
 
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
+from .transport_matrix import transport_matrix_size_from_rhs_mode, v3_transport_matrix_from_state_vectors
+from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
     V3FullSystemOperator,
     apply_v3_full_system_operator,
@@ -202,4 +204,78 @@ def solve_v3_full_system_newton_krylov(
         residual_norm=jnp.linalg.norm(r),
         n_newton=int(max_newton),
         last_linear_residual_norm=last_linear_resid,
+    )
+
+
+@dataclass(frozen=True)
+class V3TransportMatrixSolveResult:
+    """Result of assembling a RHSMode=2/3 transport matrix by looping `whichRHS` solves."""
+
+    op0: V3FullSystemOperator
+    transport_matrix: jnp.ndarray  # (N,N) in mathematical (row, col) order
+    state_vectors_by_rhs: dict[int, jnp.ndarray]
+    residual_norms_by_rhs: dict[int, jnp.ndarray]
+
+
+def solve_v3_transport_matrix_linear_gmres(
+    *,
+    nml: Namelist,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 80,
+    maxiter: int | None = 400,
+    solve_method: str = "batched",
+    identity_shift: float = 0.0,
+    phi1_hat_base: jnp.ndarray | None = None,
+) -> V3TransportMatrixSolveResult:
+    """Compute a RHSMode=2/3 transport matrix by running all `whichRHS` solves matrix-free in JAX.
+
+    Notes
+    -----
+    This mirrors the v3 `solver.F90` RHSMode=2/3 path:
+    - Loop `whichRHS`
+    - Overwrite (dnHatdpsiHats, dTHatdpsiHats, EParallelHat)
+    - Build the RHS via `evaluateResidual(f=0)`
+    - Solve `A x = rhs`
+    - Use `diagnostics.F90` formulas to fill `transportMatrix`
+    """
+    op0 = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
+    rhs_mode = int(op0.rhs_mode)
+    n = transport_matrix_size_from_rhs_mode(rhs_mode)
+
+    # Geometry scalars needed for the transport-matrix formulas.
+    grids = grids_from_namelist(nml)
+    geom = geometry_from_namelist(nml=nml, grids=grids)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op0, x)
+
+    state_vectors: dict[int, jnp.ndarray] = {}
+    residual_norms: dict[int, jnp.ndarray] = {}
+    x_guess = x0
+
+    for which_rhs in range(1, n + 1):
+        op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
+        rhs = rhs_v3_full_system(op_rhs)
+        res = gmres_solve(
+            matvec=mv,
+            b=rhs,
+            x0=x_guess,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+        )
+        x_guess = res.x
+        state_vectors[which_rhs] = res.x
+        residual_norms[which_rhs] = res.residual_norm
+
+    tm = v3_transport_matrix_from_state_vectors(op0=op0, geom=geom, state_vectors_by_rhs=state_vectors)
+    return V3TransportMatrixSolveResult(
+        op0=op0,
+        transport_matrix=tm,
+        state_vectors_by_rhs=state_vectors,
+        residual_norms_by_rhs=residual_norms,
     )

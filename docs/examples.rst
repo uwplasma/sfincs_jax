@@ -27,6 +27,19 @@ Matrix-free linear solve demo (using frozen Fortran PETSc binaries):
 
    python examples/2_intermediate/04_solve_fortran_matrix_with_gmres.py
 
+Transport matrices (RHSMode=2/3)
+--------------------------------
+
+Upstream v3 uses ``RHSMode=2`` and ``RHSMode=3`` to compute transport matrices by looping over multiple
+right-hand sides (``whichRHS``) and assembling a matrix from diagnostic moments of the solved distribution.
+
+`sfincs_jax` provides both a Python driver and a CLI:
+
+.. code-block:: bash
+
+   python examples/2_intermediate/16_transport_matrix_rhsmode2_and_rhsmode3.py
+   sfincs_jax transport-matrix-v3 --input input.namelist --out-matrix transportMatrix.npy
+
 Some advanced examples require optional dependencies:
 
 .. code-block:: bash

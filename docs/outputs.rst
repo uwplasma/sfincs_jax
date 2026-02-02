@@ -14,6 +14,14 @@ CLI
 
    sfincs_jax write-output --input input.namelist --out sfincsOutput.h5
 
+For transport-matrix runs (``RHSMode=2`` or ``RHSMode=3``), the Fortran code loops over
+multiple right-hand sides (``whichRHS``) and assembles a ``transportMatrix`` in the output.
+To replicate that end-to-end behavior in `sfincs_jax`, enable:
+
+.. code-block:: bash
+
+   sfincs_jax write-output --input input.namelist --out sfincsOutput.h5 --compute-transport-matrix
+
 The default output uses a **Fortran-compatible array layout**, which is recommended if
 you intend to compare against Fortran v3 output using ``sfincs_jax compare-h5``.
 

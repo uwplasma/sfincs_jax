@@ -23,7 +23,7 @@ small, parity-tested slices:
 - Full-system **matrix-free** matvec parity for two fixtures (no-Phi1, constraint schemes 1/2)
 - Full-system **matrix-free** matvec + RHS + residual + GMRES-solution parity for VMEC `geometryScheme=5` fixtures (tiny PAS, with/without Phi1 QN blocks)
 - Full-system **RHS and residual** assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries (subset)
-- Monoenergetic transport coefficients (`RHSMode=3`): v3 `x=1` grid special-case parity + full-system matvec/RHS parity for a tiny `geometryScheme=1` fixture
+- Transport-matrix modes (`RHSMode=2/3`): v3 `whichRHS` loop RHS settings + `transportMatrix` assembly parity (including monoenergetic `x=1` / `xWeights=exp(1)` special-case)
 - Experimental Newton–Krylov nonlinear solve (parity on a tiny Phi1-in-kinetic fixture)
 - Matrix-free residual/JVP scaffolding for implicit-diff workflows
 - Implicit-differentiation through linear GMRES solves (`sfincs_jax.implicit_solve`)
@@ -77,10 +77,22 @@ Transport-matrix modes (``RHSMode=2/3``) require selecting which RHS to solve:
 sfincs_jax solve-v3 --input /path/to/input.namelist --which-rhs 1
 ```
 
+Compute the full transport matrix by looping ``whichRHS`` internally:
+
+```bash
+sfincs_jax transport-matrix-v3 --input /path/to/input.namelist --out-matrix transportMatrix.npy
+```
+
 Write a SFINCS-style `sfincsOutput.h5` using the JAX implementation (supported modes only):
 
 ```bash
 sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
+```
+
+For ``RHSMode=2/3`` runs, you can optionally also compute and write ``transportMatrix``:
+
+```bash
+sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5 --compute-transport-matrix
 ```
 
 Compare two `sfincsOutput.h5` files dataset-by-dataset:

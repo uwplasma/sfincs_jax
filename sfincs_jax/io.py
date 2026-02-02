@@ -987,11 +987,22 @@ def write_sfincs_jax_output_h5(
     output_path: Path,
     fortran_layout: bool = True,
     overwrite: bool = True,
+    compute_transport_matrix: bool = False,
 ) -> Path:
     """Create a SFINCS-style `sfincsOutput.h5` file from `sfincs_jax` for supported modes."""
     nml = read_sfincs_input(input_namelist)
     grids = grids_from_namelist(nml)
     data = sfincs_jax_output_dict(nml=nml, grids=grids)
+
+    if bool(compute_transport_matrix):
+        rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+        if rhs_mode in {2, 3}:
+            # Import lazily to keep geometry-only use-cases lightweight.
+            from .v3_driver import solve_v3_transport_matrix_linear_gmres
+
+            tm = solve_v3_transport_matrix_linear_gmres(nml=nml).transport_matrix
+            data["transportMatrix"] = np.asarray(tm, dtype=np.float64)
+
     data["input.namelist"] = input_namelist.read_text()
     write_sfincs_h5(path=output_path, data=data, fortran_layout=fortran_layout, overwrite=overwrite)
     return output_path.resolve()

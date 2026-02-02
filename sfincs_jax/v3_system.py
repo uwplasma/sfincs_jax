@@ -12,7 +12,9 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from .boozer_bc import read_boozer_bc_header
+from .diagnostics import b0_over_bbar as b0_over_bbar_jax
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
+from .diagnostics import g_hat_i_hat as g_hat_i_hat_jax
 from .namelist import Namelist
 from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
@@ -821,12 +823,19 @@ def full_system_operator_from_namelist(
 
     if int(rhs_mode) == 3:
         e_star = float(phys.get("ESTAR", phys.get("EStar", 0.0)))
+        g_hat_eff = float(geom.g_hat)
+        b0_eff = float(geom.b0_over_bbar)
+        if abs(g_hat_eff) < 1e-30 or abs(b0_eff) < 1e-30:
+            g_tmp, _i_tmp = g_hat_i_hat_jax(grids=grids, geom=geom)
+            b0_tmp = b0_over_bbar_jax(grids=grids, geom=geom)
+            g_hat_eff = float(g_tmp)
+            b0_eff = float(b0_tmp)
         dphi_hat_dpsi_hat = jnp.asarray(
             (2.0 / (float(alpha) * float(delta)))
             * float(e_star)
             * float(geom.iota)
-            * float(geom.b0_over_bbar)
-            / float(geom.g_hat),
+            * float(b0_eff)
+            / float(g_hat_eff),
             dtype=jnp.float64,
         )
 

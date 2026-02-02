@@ -40,7 +40,13 @@ API reference
 .. automodule:: sfincs_jax.v3_system
    :members:
 
+.. automodule:: sfincs_jax.transport_matrix
+   :members:
+
 .. automodule:: sfincs_jax.residual
+   :members:
+
+.. automodule:: sfincs_jax.v3_driver
    :members:
 
 .. automodule:: sfincs_jax.indices

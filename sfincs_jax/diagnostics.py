@@ -41,6 +41,40 @@ def fsab_hat2(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
     return jnp.sum(w * (geom.b_hat**2) / geom.d_hat) / vph
 
 
+def b0_over_bbar(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
+    """Compute `B0OverBBar` as in v3 `geometry.F90:computeBIntegrals` for non-Boozer coordinates.
+
+    v3 uses:
+      B0OverBBar = <B^3> / <B^2>
+
+    where <> denotes the Jacobian-weighted flux-surface average.
+    """
+    tw = jnp.asarray(grids.theta_weights, dtype=jnp.float64)  # (T,)
+    zw = jnp.asarray(grids.zeta_weights, dtype=jnp.float64)  # (Z,)
+    w = tw[:, None] * zw[None, :]  # (T,Z)
+    vph = vprime_hat(grids=grids, geom=geom)
+    fsab2 = fsab_hat2(grids=grids, geom=geom)
+    num = jnp.sum(w * (geom.b_hat**3) / geom.d_hat)
+    return num / (vph * fsab2)
+
+
+def g_hat_i_hat(*, grids: V3Grids, geom: BoozerGeometry) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Compute (GHat, IHat) from covariant components as in v3 `geometry.F90:computeBIntegrals`.
+
+    For non-Boozer coordinates, v3 reports:
+      GHat = <B_sub_zeta>, IHat = <B_sub_theta>
+
+    where <> is the (theta,zeta) average over 4π² using trapezoid weights.
+    """
+    tw = jnp.asarray(grids.theta_weights, dtype=jnp.float64)  # (T,)
+    zw = jnp.asarray(grids.zeta_weights, dtype=jnp.float64)  # (Z,)
+    w = tw[:, None] * zw[None, :]  # (T,Z)
+    denom = jnp.asarray(4.0 * jnp.pi * jnp.pi, dtype=jnp.float64)
+    g_hat = jnp.sum(w * geom.b_hat_sub_zeta) / denom
+    i_hat = jnp.sum(w * geom.b_hat_sub_theta) / denom
+    return g_hat, i_hat
+
+
 def _u_hat_loop(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
     """Reference implementation of `uHat` using explicit harmonic loops (slow but transparent).
 

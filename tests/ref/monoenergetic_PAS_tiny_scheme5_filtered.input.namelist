@@ -1,0 +1,61 @@
+! Tiny monoenergetic (RHSMode=3) PAS example for sfincs_jax parity testing (geometryScheme=5, VMEC wout netCDF).
+!
+! This fixture is intentionally small but exercises:
+! - geometryScheme=5 (VMEC wout reader)
+! - "filtered W7-X netCDF" workflow via min_Bmn_to_load
+! - RHSMode=3 monoenergetic overwrites (nuPrime/EStar -> nu_n, dPhiHat/dpsiHat)
+! - the v3 whichRHS loop (transport matrix RHS construction)
+! - PETSc binary outputs used for frozen parity fixtures
+
+&general
+  RHSMode = 3
+  saveMatricesAndVectorsInBinary = .true.
+/
+
+&geometryParameters
+  geometryScheme = 5
+  equilibriumFile = "wout_w7x_standardConfig.nc"
+
+  inputRadialCoordinate = 3  ! rN
+  rN_wish = 0.5
+
+  VMECRadialOption = 0
+  min_Bmn_to_load = 1e-3
+/
+
+&speciesParameters
+  ! Intentionally empty: monoenergetic runs can omit species inputs in v3.
+/
+
+&physicsParameters
+  nuPrime = 0.7d+0
+  EStar = 0.15d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .true.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 9
+  Nzeta = 9
+  Nxi = 6
+  NL = 3
+  Nx = 1
+  solverTolerance = 1d-12
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
+

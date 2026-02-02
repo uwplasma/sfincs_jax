@@ -248,13 +248,19 @@ def vmec_geometry_from_wout_file(
     # as the half-mesh interpolated value (consistent with v3).
     iota = float(w.iotas[i_half0] * w_half0 + w.iotas[i_half1] * w_half1)
 
-    # GHat and IHat are flux-surface averages for non-Boozer coordinates; keep placeholders here.
+    # v3 computes `B0OverBBar`, `GHat`, and `IHat` for VMEC geometries later in
+    # `geometry.F90:computeBIntegrals` for output/reporting. For the subset of geometry arrays
+    # we port here, keep the scalar placeholders in the geometry struct.
+    #
+    # Callers that need these flux functions (e.g. RHSMode=3 monoenergetic overwrites) should
+    # compute them from the arrays, matching v3 output.
+    b0_over_bbar = 0.0
     g_hat = 0.0
     i_hat = 0.0
 
     return BoozerGeometry(
         n_periods=n_periods,
-        b0_over_bbar=0.0,
+        b0_over_bbar=b0_over_bbar,
         iota=iota,
         g_hat=g_hat,
         i_hat=i_hat,

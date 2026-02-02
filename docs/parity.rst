@@ -34,9 +34,15 @@ Implemented (parity-tested)
   ``pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear``.
 - Full-system matvec + RHS + residual + GMRES-solution parity for ``geometryScheme=1`` (tokamak-like, Nzeta=1):
   ``pas_1species_PAS_noEr_tiny_scheme1``.
-- Monoenergetic transport coefficients (``RHSMode=3``): full-system matvec parity vs v3 solver matrix
-  (``whichMatrix=1``) plus RHS/residual parity for ``whichRHS=1`` (using v3's internal transport-matrix RHS settings):
-  ``monoenergetic_PAS_tiny_scheme1``.
+- Transport-matrix modes (``RHSMode=2/3``):
+
+  - v3 internal ``whichRHS`` RHS settings parity (RHS/residual at ``f=0``) for ``RHSMode=2`` and ``RHSMode=3``.
+  - Monoenergetic special-case ``x=1`` / ``xWeights=exp(1)`` (v3 ``createGrids.F90``) parity.
+  - Full-system matvec parity vs v3 solver matrix (``whichMatrix=1``) for tiny monoenergetic fixtures in:
+    ``monoenergetic_PAS_tiny_scheme1``, ``monoenergetic_PAS_tiny_scheme11``, and ``monoenergetic_PAS_tiny_scheme5_filtered``.
+  - ``transportMatrix`` assembly parity vs frozen Fortran v3 ``sfincsOutput.h5`` for:
+    ``monoenergetic_PAS_tiny_scheme{1,11,5_filtered}`` (``RHSMode=3``) and
+    ``transportMatrix_PAS_tiny_rhsMode2_scheme2`` (``RHSMode=2``).
 - Phi1/QN/lambda block parity (includePhi1=true, includePhi1InKineticEquation=false):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for
   ``pas_1species_PAS_noEr_tiny_withPhi1_linear``.

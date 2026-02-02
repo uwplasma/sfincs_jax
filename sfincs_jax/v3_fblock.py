@@ -27,7 +27,9 @@ from .collisions import (
     make_fokker_planck_v3_phi1_operator,
     make_pitch_angle_scattering_v3_operator,
 )
+from .diagnostics import b0_over_bbar as b0_over_bbar_jax
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
+from .diagnostics import g_hat_i_hat as g_hat_i_hat_jax
 from .geometry import BoozerGeometry
 from .magnetic_drifts import (
     MagneticDriftThetaV3Operator,
@@ -411,8 +413,23 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         nu_n_override = None
         if rhs_mode == 3:
             nu_prime = _get_float(phys, "nuPrime", 1.0)
-            denom = float(geom.g_hat) + float(geom.iota) * float(geom.i_hat)
-            nu_n_override = float(nu_prime) * float(geom.b0_over_bbar) / float(denom)
+            b0 = float(geom.b0_over_bbar)
+            g_hat = float(geom.g_hat)
+            i_hat = float(geom.i_hat)
+            denom = g_hat + float(geom.iota) * i_hat
+
+            # For VMEC geometryScheme=5, sfincs_jax stores (B0OverBBar, GHat, IHat) as placeholders in the
+            # geometry struct (matching how v3 computes/report these values later in `computeBIntegrals`).
+            # For RHSMode=3 we need the *effective* flux functions to match v3's nu_n overwrite.
+            if abs(denom) < 1e-30 or abs(b0) < 1e-30:
+                g_eff, i_eff = g_hat_i_hat_jax(grids=grids, geom=geom)
+                b0_eff = b0_over_bbar_jax(grids=grids, geom=geom)
+                g_hat = float(np.asarray(g_eff, dtype=np.float64))
+                i_hat = float(np.asarray(i_eff, dtype=np.float64))
+                b0 = float(np.asarray(b0_eff, dtype=np.float64))
+                denom = g_hat + float(geom.iota) * i_hat
+
+            nu_n_override = float(nu_prime) * b0 / float(denom)
         pas = pas_collision_operator_from_namelist(nml=nml, grids=grids, nu_n_override=nu_n_override)
         fp = None
         fp_phi1 = None
@@ -438,13 +455,20 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
 
     if rhs_mode == 3:
         e_star = _get_float(phys, "EStar", 0.0)
+        g_hat_eff = float(geom.g_hat)
+        b0_eff = float(geom.b0_over_bbar)
+        if abs(g_hat_eff) < 1e-30 or abs(b0_eff) < 1e-30:
+            g_tmp, _i_tmp = g_hat_i_hat_jax(grids=grids, geom=geom)
+            b0_tmp = b0_over_bbar_jax(grids=grids, geom=geom)
+            g_hat_eff = float(np.asarray(g_tmp, dtype=np.float64))
+            b0_eff = float(np.asarray(b0_tmp, dtype=np.float64))
         dphi = (
             2.0
             / (float(alpha) * float(delta))
             * float(e_star)
             * float(geom.iota)
-            * float(geom.b0_over_bbar)
-            / float(geom.g_hat)
+            * float(b0_eff)
+            / float(g_hat_eff)
         )
     else:
         dphi = _dphi_hat_dpsi_hat_from_er(nml=nml, er=er)
