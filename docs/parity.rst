@@ -26,11 +26,14 @@ Implemented (parity-tested)
 - Phi1/QN/lambda block parity (includePhi1=true, includePhi1InKineticEquation=false):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for
   ``pas_1species_PAS_noEr_tiny_withPhi1_linear``.
+- Phi1 in kinetic equation parity (includePhi1=true, includePhi1InKineticEquation=true):
+  full-system matvec + GMRES solution parity vs frozen PETSc binaries for
+  ``pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear``.
 
 Not yet implemented
 -------------------
 
 - Full kinetic solve (residual/RHS construction, linear/nonlinear solve, Rosenbluth potentials)
-- Full Phi1 coupling in the kinetic operator and collision operator (``includePhi1 = .true.`` end-to-end)
+- Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions)
 - VMEC-based geometry schemes and radial interpolation
 - ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme=4``

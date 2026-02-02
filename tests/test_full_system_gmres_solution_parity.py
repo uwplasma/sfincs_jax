@@ -65,3 +65,38 @@ def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_with_phi1_linea
 
     np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
     assert float(result.residual_norm) < 1e-9
+
+
+def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_with_phi1_in_kinetic() -> None:
+    """Solve A x = b matrix-free and recover the Fortran v3 stateVector (tiny PAS + Phi1 in kinetic equation)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+
+    # The v3 whichMatrix=3 assembly for includePhi1InKineticEquation linearizes around a base Phi1.
+    # Extract this base Phi1 from the frozen Fortran stateVector fixture and pass it into the
+    # matrix-free operator so we match the same linearization point.
+    op0 = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+    x_ref = read_petsc_vec(vec_path).values
+    phi1_flat = x_ref[op0.f_size : op0.f_size + op0.n_theta * op0.n_zeta]
+    phi1_hat_base = phi1_flat.reshape((op0.n_theta, op0.n_zeta))
+
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0, phi1_hat_base=jnp.asarray(phi1_hat_base))
+
+    a = read_petsc_mat_aij(mat_path)
+    assert x_ref.shape == (op.total_size,)
+    a_csr = csr_matrix((a.data, a.col_ind, a.row_ptr), shape=a.shape)
+
+    b = a_csr.dot(x_ref)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(matvec=mv, b=jnp.asarray(b), tol=1e-12, restart=120, maxiter=600)
+    x = np.asarray(result.x)
+
+    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    assert float(result.residual_norm) < 1e-9

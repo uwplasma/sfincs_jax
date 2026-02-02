@@ -1,0 +1,69 @@
+! Tiny PAS example including Phi1 in the kinetic equation, designed for parity testing in sfincs_jax.
+!
+! This is a parity-first fixture: it aims to activate a small, targeted subset of Phi1-in-DKE coupling
+! terms while keeping grids very small.
+
+&general
+  saveMatricesAndVectorsInBinary = .t.
+/
+
+&geometryParameters
+  geometryScheme = 4
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1.0d+0
+  nHats = 1.0d+0
+  THats = 1.0d+0
+
+  dNHatdrHats = -0.5d+0
+  dTHatdrHats = -2.0d+0
+
+  ! Provide gradients directly in psiHat to avoid ambiguity about radial coordinate conversions:
+  dNHatdpsiHats = -0.3d+0
+  dTHatdpsiHats = -0.2d+0
+
+  withAdiabatic = .t.
+  adiabaticZ = -1
+  adiabaticNHat = 1.0d+0
+  adiabaticTHat = 1.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 8.4774d-3
+  Er = 0.0d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .false.
+
+  includePhi1 = .true.
+  includePhi1InKineticEquation = .true.
+  includePhi1InCollisionOperator = .false.
+  quasineutralityOption = 2
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 5
+  Nxi = 4
+  NL = 2
+  Nx = 3
+  solverTolerance = 1d-10
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
