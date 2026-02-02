@@ -38,6 +38,14 @@ class BoozerGeometry:
     db_hat_sub_theta_dpsi_hat: jnp.ndarray
     db_hat_sub_zeta_dpsi_hat: jnp.ndarray
 
+    # Additional derivative datasets written by v3 `sfincsOutput.h5`:
+    db_hat_sub_theta_dzeta: jnp.ndarray
+    db_hat_sub_zeta_dtheta: jnp.ndarray
+    db_hat_sup_theta_dpsi_hat: jnp.ndarray
+    db_hat_sup_theta_dzeta: jnp.ndarray
+    db_hat_sup_zeta_dpsi_hat: jnp.ndarray
+    db_hat_sup_zeta_dtheta: jnp.ndarray
+
 
 def _scheme4_default_harmonics() -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Return the (l, n, amp0) harmonic table for `geometryScheme=4`.
@@ -121,6 +129,12 @@ def boozer_geometry_scheme4(
         db_hat_sub_psi_dzeta=zeros,
         db_hat_sub_theta_dpsi_hat=zeros,
         db_hat_sub_zeta_dpsi_hat=zeros,
+        db_hat_sub_theta_dzeta=zeros,
+        db_hat_sub_zeta_dtheta=zeros,
+        db_hat_sup_theta_dpsi_hat=zeros,
+        db_hat_sup_theta_dzeta=zeros,
+        db_hat_sup_zeta_dpsi_hat=zeros,
+        db_hat_sup_zeta_dtheta=zeros,
     )
 
 
@@ -427,6 +441,23 @@ def boozer_geometry_from_bc_file(
     b_hat_sup_theta = float(iota) * d_hat
     b_hat_sup_zeta = d_hat
 
+    # Additional v3 output derivatives (computed when nearby radii are available, as they are here).
+    denom = float(g_hat) + float(iota) * float(i_hat)
+    diotadpsi_hat = (float(iota_new) - float(iota_old)) / float(delta_psi_hat)
+
+    d_bsup_zeta_dpsi_hat = (
+        2.0 * b_hat * db_hat_dpsi_hat / denom
+        - (
+            db_hat_sub_zeta_dpsi_hat
+            + float(iota) * db_hat_sub_theta_dpsi_hat
+            + float(diotadpsi_hat) * float(i_hat)
+        )
+        / (denom * denom)
+    )
+    d_bsup_zeta_dtheta = 2.0 * b_hat * db_hat_dtheta / denom
+    d_bsup_theta_dpsi_hat = float(iota) * d_bsup_zeta_dpsi_hat + float(diotadpsi_hat) * d_hat
+    d_bsup_theta_dzeta = float(iota) * 2.0 * b_hat * db_hat_dzeta / denom
+
     # Compute BHat_sub_psi and its derivatives as in v3 (used in magnetic drifts):
     non_stel_sym = bool(np.any(~np.asarray(surf_old.parity)) or np.any(~np.asarray(surf_new.parity)))
     b_hat_sub_psi, db_hat_sub_psi_dtheta, db_hat_sub_psi_dzeta = _compute_u_and_bsubpsi(
@@ -462,4 +493,10 @@ def boozer_geometry_from_bc_file(
         db_hat_sub_psi_dzeta=jnp.asarray(db_hat_sub_psi_dzeta),
         db_hat_sub_theta_dpsi_hat=jnp.asarray(db_hat_sub_theta_dpsi_hat),
         db_hat_sub_zeta_dpsi_hat=jnp.asarray(db_hat_sub_zeta_dpsi_hat),
+        db_hat_sub_theta_dzeta=jnp.asarray(zeros),
+        db_hat_sub_zeta_dtheta=jnp.asarray(zeros),
+        db_hat_sup_theta_dpsi_hat=jnp.asarray(d_bsup_theta_dpsi_hat),
+        db_hat_sup_theta_dzeta=jnp.asarray(d_bsup_theta_dzeta),
+        db_hat_sup_zeta_dpsi_hat=jnp.asarray(d_bsup_zeta_dpsi_hat),
+        db_hat_sup_zeta_dtheta=jnp.asarray(d_bsup_zeta_dtheta),
     )

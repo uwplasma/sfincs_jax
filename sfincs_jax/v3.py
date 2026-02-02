@@ -13,6 +13,8 @@ from .geometry import BoozerGeometry, boozer_geometry_from_bc_file, boozer_geome
 from .grids import uniform_diff_matrices
 from .namelist import Namelist
 from .paths import resolve_existing_path
+from .vmec_geometry import vmec_geometry_from_wout_file
+from .vmec_wout import read_vmec_wout
 from .xgrid import XGrid, make_x_grid, make_x_polynomial_diff_matrices
 
 
@@ -118,9 +120,18 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
         n_periods = _n_periods_from_bc_file(str(equilibrium_file), base_dir=base_dir)
+    elif geometry_scheme == 5:
+        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        if equilibrium_file is None:
+            raise ValueError("geometryScheme=5 requires equilibriumFile in geometryParameters.")
+        base_dir = nml.source_path.parent if nml.source_path is not None else None
+        repo_root = Path(__file__).resolve().parents[1]
+        extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+        p = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
+        n_periods = int(read_vmec_wout(p).nfp)
     else:
         raise NotImplementedError(
-            "Only geometryScheme in {4,11,12} is supported for grid construction so far."
+            "Only geometryScheme in {4,5,11,12} is supported for grid construction so far."
         )
 
     # theta grid
@@ -289,4 +300,34 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
             vmecradial_option=vmecradial_option,
             geometry_scheme=int(geometry_scheme),
         )
-    raise NotImplementedError("Only geometryScheme in {4,11,12} is implemented so far.")
+    if geometry_scheme == 5:
+        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        if equilibrium_file is None:
+            raise ValueError("geometryScheme=5 requires equilibriumFile in geometryParameters.")
+        base_dir = nml.source_path.parent if nml.source_path is not None else None
+        repo_root = Path(__file__).resolve().parents[1]
+        extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+        p = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
+
+        r_n_wish = float(geom.get("RN_WISH", 0.5))
+        psi_n_wish = float(r_n_wish) * float(r_n_wish)
+        vmecradial_option = int(geom.get("VMECRADIALOPTION", 0))
+        vmec_nyq_opt = int(geom.get("VMEC_NYQUIST_OPTION", 1))
+        min_bmn_to_load = float(geom.get("MIN_BMN_TO_LOAD", 0.0))
+        ripple_scale = float(geom.get("RIPPLESCALE", 1.0))
+        helicity_n = int(geom.get("HELICITY_N", 0))
+        helicity_l = int(geom.get("HELICITY_L", 0))
+
+        return vmec_geometry_from_wout_file(
+            path=str(p),
+            theta=grids.theta,
+            zeta=grids.zeta,
+            psi_n_wish=psi_n_wish,
+            vmec_radial_option=vmecradial_option,
+            vmec_nyquist_option=vmec_nyq_opt,
+            min_bmn_to_load=min_bmn_to_load,
+            ripple_scale=ripple_scale,
+            helicity_n=helicity_n,
+            helicity_l=helicity_l,
+        )
+    raise NotImplementedError("Only geometryScheme in {4,5,11,12} is implemented so far.")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Dict
 
@@ -13,6 +14,7 @@ from .diagnostics import u_hat_np
 from .diagnostics import vprime_hat as vprime_hat_jax
 from .namelist import Namelist, read_sfincs_input
 from .paths import resolve_existing_path
+from .vmec_wout import _set_scale_factor, psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
 
 
@@ -414,6 +416,185 @@ def _gpsipsi_from_bc_file(
     return gpsipsi
 
 
+def _gpsipsi_from_wout_file(
+    *,
+    nml: Namelist,
+    grids: V3Grids,
+    psi_n_wish: float,
+    vmec_radial_option: int,
+) -> np.ndarray:
+    """Compute `gpsipsi` (written as `gpsiHatpsiHat`) for geometryScheme=5 (VMEC wout).
+
+    This mirrors the metric-based expression used in v3 `geometry.F90::computeBHat_VMEC`.
+    """
+    geom_params = nml.group("geometryParameters")
+    wout_path = _resolve_equilibrium_file_from_namelist(nml=nml)
+    w = read_vmec_wout(wout_path)
+
+    interp = vmec_interpolation(w=w, psi_n_wish=float(psi_n_wish), vmec_radial_option=int(vmec_radial_option))
+    (i_full0, i_full1) = interp.index_full
+    (w_full0, w_full1) = interp.weight_full
+    (i_half0, i_half1) = interp.index_half
+    (w_half0, w_half1) = interp.weight_half
+
+    theta = np.asarray(grids.theta, dtype=np.float64)
+    zeta = np.asarray(grids.zeta, dtype=np.float64)
+    theta1 = theta[None, :, None]
+    zeta1 = zeta[None, None, :]
+
+    ntheta = int(theta.shape[0])
+    nzeta = int(zeta.shape[0])
+
+    # Reproduce v3's mode-inclusion logic (same as used for BHat, etc).
+    n_periods = int(w.nfp)
+    xm_nyq = np.asarray(w.xm_nyq, dtype=np.float64)
+    xn_nyq = np.asarray(w.xn_nyq, dtype=np.float64)
+    b00 = float(w.bmnc[0, i_half0] * w_half0 + w.bmnc[0, i_half1] * w_half1)
+    if b00 == 0.0:
+        raise ValueError("VMEC bmnc(0,0) is zero; cannot apply min_Bmn_to_load filter.")
+
+    min_bmn_to_load = float(_get_float(geom_params, "min_Bmn_to_load", 0.0))
+    ripple_scale = float(_get_float(geom_params, "rippleScale", 1.0))
+    helicity_n = int(_get_int(geom_params, "helicity_n", 0))
+    helicity_l = int(_get_int(geom_params, "helicity_l", 0))
+    vmec_nyquist_option = int(
+        _get_int(geom_params, "VMEC_Nyquist_option", _get_int(geom_params, "VMEC_NYQUIST_OPTION", 1))
+    )
+    if vmec_nyquist_option == 0:
+        vmec_nyquist_option = 1
+    if vmec_nyquist_option not in {1, 2}:
+        raise ValueError("VMEC_Nyquist_option must be 1 (skip Nyquist) or 2 (include Nyquist).")
+
+    # v3 applies the scale factor *before* checking `min_Bmn_to_load`.
+    scale_all = np.array(
+        [
+            _set_scale_factor(
+                n=int(round(float(xn_nyq[k]) / float(n_periods))),
+                m=int(round(float(xm_nyq[k]))),
+                helicity_n=helicity_n,
+                helicity_l=helicity_l,
+                ripple_scale=ripple_scale,
+            )
+            for k in range(int(xm_nyq.shape[0]))
+        ],
+        dtype=np.float64,
+    )
+    b_mode = (w.bmnc[:, i_half0] * w_half0 + w.bmnc[:, i_half1] * w_half1) * scale_all
+    include = np.abs(b_mode / float(b00)) >= float(min_bmn_to_load)
+    if int(vmec_nyquist_option) == 1:
+        n_eff = xn_nyq / float(n_periods)
+        include = include & (np.abs(xm_nyq) < float(w.mpol)) & (np.abs(n_eff) <= float(w.ntor))
+
+    idx = np.nonzero(include)[0].astype(np.int32)
+    if idx.size == 0:
+        raise ValueError("No VMEC modes were included (min_Bmn_to_load too large?).")
+
+    # Map (m,n) in the non-Nyquist mode table to indices (for rmnc/zmns).
+    mode_to_index: dict[tuple[int, int], int] = {
+        (int(w.xm[k]), int(w.xn[k])): int(k) for k in range(int(w.xm.shape[0]))
+    }
+
+    # VMEC spacing in psiHat (v3): dpsi = phi(2)/(2*pi).
+    dpsi = float(w.phi[1]) / (2.0 * math.pi)
+
+    rmnc = np.asarray(w.rmnc, dtype=np.float64)
+    zmns = np.asarray(w.zmns, dtype=np.float64)
+    d_rmnc_dpsi_hat = np.zeros_like(rmnc)
+    d_zmns_dpsi_hat = np.zeros_like(zmns)
+    d_rmnc_dpsi_hat[:, 1:] = (rmnc[:, 1:] - rmnc[:, :-1]) / float(dpsi)
+    d_zmns_dpsi_hat[:, 1:] = (zmns[:, 1:] - zmns[:, :-1]) / float(dpsi)
+
+    r = np.zeros((ntheta, nzeta), dtype=np.float64)
+    dr_dtheta = np.zeros_like(r)
+    dr_dzeta = np.zeros_like(r)
+    dr_dpsi_hat = np.zeros_like(r)
+    dz_dtheta = np.zeros_like(r)
+    dz_dzeta = np.zeros_like(r)
+    dz_dpsi_hat = np.zeros_like(r)
+
+    chunk = 256
+    for i0 in range(0, int(idx.size), chunk):
+        sel_nyq = idx[i0 : min(int(idx.size), i0 + chunk)]
+        non_sel = np.array(
+            [mode_to_index.get((int(w.xm_nyq[k]), int(w.xn_nyq[k])), -1) for k in sel_nyq.tolist()],
+            dtype=np.int32,
+        )
+        mask = non_sel >= 0
+        if not np.any(mask):
+            continue
+        non_sel = non_sel[mask]
+        m = np.asarray(w.xm[non_sel], dtype=np.float64)[:, None, None]
+        n_nyq = np.asarray(w.xn[non_sel], dtype=np.float64)[:, None, None]
+
+        scale = np.array(
+            [
+                _set_scale_factor(
+                    n=int(round(float(w.xn[k]) / float(n_periods))),
+                    m=int(round(float(w.xm[k]))),
+                    helicity_n=helicity_n,
+                    helicity_l=helicity_l,
+                    ripple_scale=ripple_scale,
+                )
+                for k in non_sel.tolist()
+            ],
+            dtype=np.float64,
+        )[:, None, None]
+
+        angle = m * theta1 - n_nyq * zeta1
+        cos_a = np.cos(angle)
+        sin_a = np.sin(angle)
+
+        # R and Z live on the full mesh.
+        r_coef = (rmnc[non_sel, i_full0] * w_full0 + rmnc[non_sel, i_full1] * w_full1)[:, None, None] * scale
+        z_coef = (zmns[non_sel, i_full0] * w_full0 + zmns[non_sel, i_full1] * w_full1)[:, None, None] * scale
+
+        # d/dpsiHat coefficients live on the half mesh.
+        dr_dpsi_coef = (
+            d_rmnc_dpsi_hat[non_sel, i_half0] * w_half0 + d_rmnc_dpsi_hat[non_sel, i_half1] * w_half1
+        )[:, None, None] * scale
+        dz_dpsi_coef = (
+            d_zmns_dpsi_hat[non_sel, i_half0] * w_half0 + d_zmns_dpsi_hat[non_sel, i_half1] * w_half1
+        )[:, None, None] * scale
+
+        r += np.sum(r_coef * cos_a, axis=0)
+        dr_dtheta += np.sum(-m * r_coef * sin_a, axis=0)
+        dr_dzeta += np.sum(n_nyq * r_coef * sin_a, axis=0)
+        dr_dpsi_hat += np.sum(dr_dpsi_coef * cos_a, axis=0)
+
+        dz_dtheta += np.sum(m * z_coef * cos_a, axis=0)
+        dz_dzeta += np.sum(-n_nyq * z_coef * cos_a, axis=0)
+        dz_dpsi_hat += np.sum(dz_dpsi_coef * sin_a, axis=0)
+
+    cosz = np.cos(zeta)[None, :]
+    sinz = np.sin(zeta)[None, :]
+
+    dX_dtheta = dr_dtheta * cosz
+    dX_dzeta = dr_dzeta * cosz - r * sinz
+    dX_dpsi = dr_dpsi_hat * cosz
+
+    dY_dtheta = dr_dtheta * sinz
+    dY_dzeta = dr_dzeta * sinz + r * cosz
+    dY_dpsi = dr_dpsi_hat * sinz
+
+    dZ_dtheta = dz_dtheta
+    dZ_dzeta = dz_dzeta
+    dZ_dpsi = dz_dpsi_hat
+
+    g_tt = dX_dtheta * dX_dtheta + dY_dtheta * dY_dtheta + dZ_dtheta * dZ_dtheta
+    g_tz = dX_dtheta * dX_dzeta + dY_dtheta * dY_dzeta + dZ_dtheta * dZ_dzeta
+    g_zz = dX_dzeta * dX_dzeta + dY_dzeta * dY_dzeta + dZ_dzeta * dZ_dzeta
+    g_pt = dX_dpsi * dX_dtheta + dY_dpsi * dY_dtheta + dZ_dpsi * dZ_dtheta
+    g_pz = dX_dpsi * dX_dzeta + dY_dpsi * dY_dzeta + dZ_dpsi * dZ_dzeta
+    g_pp = dX_dpsi * dX_dpsi + dY_dpsi * dY_dpsi + dZ_dpsi * dZ_dpsi
+
+    denom = g_tt * g_zz - g_tz * g_tz
+    gpsipsi = 1.0 / (
+        g_pp
+        + (g_pt * (g_tz * g_pz - g_pt * g_zz) + g_pz * (g_pt * g_tz - g_tt * g_pz)) / denom
+    )
+    return gpsipsi
+
+
 def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     """Build a dictionary of `sfincsOutput.h5` datasets supported by `sfincs_jax`."""
     geom_params = nml.group("geometryParameters")
@@ -425,20 +606,26 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     precond = nml.group("preconditionerOptions")
 
     geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
-    if geometry_scheme not in {4, 11, 12}:
+    if geometry_scheme not in {4, 5, 11, 12}:
         raise NotImplementedError(
-            "sfincs_jax sfincsOutput writing currently supports geometryScheme in {4,11,12} only."
+            "sfincs_jax sfincsOutput writing currently supports geometryScheme in {4,5,11,12} only."
         )
 
     geom = geometry_from_namelist(nml=nml, grids=grids)
 
+    w_vmec = None
     if geometry_scheme == 4:
         psi_a_hat, a_hat = _scheme4_radial_constants()
-    else:
+    elif geometry_scheme in {11, 12}:
         bc_path = _resolve_equilibrium_file_from_namelist(nml=nml)
         header = read_boozer_bc_header(path=bc_path, geometry_scheme=int(geometry_scheme))
         psi_a_hat = float(header.psi_a_hat)
         a_hat = float(header.a_hat)
+    else:
+        wout_path = _resolve_equilibrium_file_from_namelist(nml=nml)
+        w_vmec = read_vmec_wout(wout_path)
+        psi_a_hat = float(psi_a_hat_from_wout(w_vmec))
+        a_hat = float(w_vmec.aminor_p)
 
     input_radial_coordinate = _get_int(geom_params, "inputRadialCoordinate", 3)
     psi_hat_wish_in = _get_float(geom_params, "psiHat_wish", -1.0)
@@ -455,9 +642,17 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
         r_n_wish_in=r_n_wish_in,
     )
 
-    # For Boozer schemes supported here, v3 sets rN = rN_wish.
-    r_n = float(r_n_wish)
-    psi_n = float(r_n) * float(r_n)
+    if geometry_scheme == 5:
+        if w_vmec is None:
+            raise RuntimeError("Internal error: missing VMEC wout handle for geometryScheme=5.")
+        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
+        interp = vmec_interpolation(w=w_vmec, psi_n_wish=float(psi_n_wish), vmec_radial_option=int(vmec_radial_option))
+        psi_n = float(interp.psi_n)
+        r_n = float(math.sqrt(float(psi_n)))
+    else:
+        # For the Boozer schemes supported here, v3 effectively uses rN = rN_wish.
+        r_n = float(r_n_wish)
+        psi_n = float(r_n) * float(r_n)
     psi_hat = float(psi_a_hat) * float(psi_n)
     r_hat = float(a_hat) * float(r_n)
 
@@ -540,7 +735,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
 
     out["EParallelHat"] = np.asarray(_get_float(phys, "EParallelHat", 0.0), dtype=np.float64)
     out["rippleScale"] = np.asarray(_get_float(geom_params, "rippleScale", 1.0), dtype=np.float64)
-    out["coordinateSystem"] = np.asarray(1, dtype=np.int32)
+    out["coordinateSystem"] = np.asarray(2 if geometry_scheme == 5 else 1, dtype=np.int32)
 
     out["integerToRepresentFalse"] = np.asarray(-1, dtype=np.int32)
     out["integerToRepresentTrue"] = np.asarray(1, dtype=np.int32)
@@ -649,22 +844,46 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
 
     # Geometry arrays (subset):
     out["NPeriods"] = np.asarray(int(geom.n_periods), dtype=np.int32)
-    out["B0OverBBar"] = np.asarray(float(geom.b0_over_bbar), dtype=np.float64)
-    out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
-    out["GHat"] = np.asarray(float(geom.g_hat), dtype=np.float64)
-    out["IHat"] = np.asarray(float(geom.i_hat), dtype=np.float64)
+    if geometry_scheme == 5:
+        tw = np.asarray(grids.theta_weights, dtype=np.float64)[:, None]
+        zw = np.asarray(grids.zeta_weights, dtype=np.float64)[None, :]
+        wgt = tw * zw
+        bh = np.asarray(geom.b_hat, dtype=np.float64)
+        jac = 1.0 / np.asarray(geom.d_hat, dtype=np.float64)
+        vprime = float(np.sum(wgt * jac))
+        fsab_b2 = float(np.sum(wgt * (bh * bh) * jac)) / vprime
+        b0 = float(np.sum(wgt * (bh**3) * jac)) / (vprime * fsab_b2)
+        g_hat = float(np.sum(wgt * np.asarray(geom.b_hat_sub_zeta, dtype=np.float64))) / (4.0 * np.pi * np.pi)
+        i_hat = float(np.sum(wgt * np.asarray(geom.b_hat_sub_theta, dtype=np.float64))) / (4.0 * np.pi * np.pi)
+        out["B0OverBBar"] = np.asarray(b0, dtype=np.float64)
+        out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
+        out["GHat"] = np.asarray(g_hat, dtype=np.float64)
+        out["IHat"] = np.asarray(i_hat, dtype=np.float64)
+    else:
+        out["B0OverBBar"] = np.asarray(float(geom.b0_over_bbar), dtype=np.float64)
+        out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
+        out["GHat"] = np.asarray(float(geom.g_hat), dtype=np.float64)
+        out["IHat"] = np.asarray(float(geom.i_hat), dtype=np.float64)
     out["VPrimeHat"] = np.asarray(float(np.asarray(vprime_hat_jax(grids=grids, geom=geom), dtype=np.float64)), dtype=np.float64)
     out["FSABHat2"] = np.asarray(float(np.asarray(fsab_hat2_jax(grids=grids, geom=geom), dtype=np.float64)), dtype=np.float64)
     if geometry_scheme in {11, 12}:
         r_n_wish = float(r_n_wish)
-        vmecradial_option = int(geom_params.get("VMECRADIALOPTION", 0))
+        vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
         out["gpsiHatpsiHat"] = _gpsipsi_from_bc_file(
             nml=nml,
             grids=grids,
             geom=geom,
             r_n_wish=r_n_wish,
-            vmecradial_option=vmecradial_option,
+            vmecradial_option=int(vmecradial_option),
             geometry_scheme=int(geometry_scheme),
+        )
+    elif geometry_scheme == 5:
+        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
+        out["gpsiHatpsiHat"] = _gpsipsi_from_wout_file(
+            nml=nml,
+            grids=grids,
+            psi_n_wish=float(psi_n_wish),
+            vmec_radial_option=int(vmec_radial_option),
         )
     else:
         out["gpsiHatpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
@@ -691,47 +910,38 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["dBHat_sub_psi_dzeta"] = np.asarray(geom.db_hat_sub_psi_dzeta, dtype=np.float64)
     out["BHat_sub_theta"] = np.asarray(geom.b_hat_sub_theta, dtype=np.float64)
     out["dBHat_sub_theta_dpsiHat"] = np.asarray(geom.db_hat_sub_theta_dpsi_hat, dtype=np.float64)
+    out["dBHat_sub_theta_dzeta"] = np.asarray(geom.db_hat_sub_theta_dzeta, dtype=np.float64)
     out["BHat_sub_zeta"] = np.asarray(geom.b_hat_sub_zeta, dtype=np.float64)
     out["dBHat_sub_zeta_dpsiHat"] = np.asarray(geom.db_hat_sub_zeta_dpsi_hat, dtype=np.float64)
+    out["dBHat_sub_zeta_dtheta"] = np.asarray(geom.db_hat_sub_zeta_dtheta, dtype=np.float64)
     out["BHat_sup_theta"] = np.asarray(geom.b_hat_sup_theta, dtype=np.float64)
+    out["dBHat_sup_theta_dpsiHat"] = np.asarray(geom.db_hat_sup_theta_dpsi_hat, dtype=np.float64)
+    out["dBHat_sup_theta_dzeta"] = np.asarray(geom.db_hat_sup_theta_dzeta, dtype=np.float64)
     out["BHat_sup_zeta"] = np.asarray(geom.b_hat_sup_zeta, dtype=np.float64)
-    out["dBHat_sub_theta_dzeta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
-    out["dBHat_sub_zeta_dtheta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+    out["dBHat_sup_zeta_dpsiHat"] = np.asarray(geom.db_hat_sup_zeta_dpsi_hat, dtype=np.float64)
+    out["dBHat_sup_zeta_dtheta"] = np.asarray(geom.db_hat_sup_zeta_dtheta, dtype=np.float64)
+    diotadpsi_hat = 0.0
     if geometry_scheme in {11, 12}:
         # Compute diotadpsiHat from the bracketing surfaces (v3 uses nearby radii for 11/12).
         p = _resolve_equilibrium_file_from_namelist(nml=nml)
         header, surf_old, surf_new = read_boozer_bc_bracketing_surfaces(
             path=p, geometry_scheme=int(geometry_scheme), r_n_wish=float(r_n_wish)
         )
-        delta_psi_hat = float(header.psi_a_hat) * (float(surf_new.r_n) * float(surf_new.r_n) - float(surf_old.r_n) * float(surf_old.r_n))
+        delta_psi_hat = float(header.psi_a_hat) * (
+            float(surf_new.r_n) * float(surf_new.r_n) - float(surf_old.r_n) * float(surf_old.r_n)
+        )
         # Toroidal direction sign switch: iota -> -iota, matching v3.
-        diotadpsi = (-(float(surf_new.iota)) - (-(float(surf_old.iota)))) / float(delta_psi_hat)
-        out["diotadpsiHat"] = np.asarray(float(diotadpsi), dtype=np.float64)
-
-        denom = float(geom.g_hat) + float(geom.iota) * float(geom.i_hat)
-        bhat = np.asarray(geom.b_hat, dtype=np.float64)
-        db_dpsi = np.asarray(geom.db_hat_dpsi_hat, dtype=np.float64)
-        dsubz_dpsi = np.asarray(geom.db_hat_sub_zeta_dpsi_hat, dtype=np.float64)
-        dsubt_dpsi = np.asarray(geom.db_hat_sub_theta_dpsi_hat, dtype=np.float64)
-        dsubt = float(geom.i_hat)
-
-        dB_sup_zeta_dpsi = 2.0 * bhat * db_dpsi / denom - (
-            dsubz_dpsi + float(geom.iota) * dsubt_dpsi + float(diotadpsi) * float(dsubt)
-        ) / (denom * denom)
-        dB_sup_zeta_dtheta = 2.0 * bhat * np.asarray(geom.db_hat_dtheta, dtype=np.float64) / denom
-        dB_sup_theta_dpsi = float(geom.iota) * dB_sup_zeta_dpsi + float(diotadpsi) * np.asarray(geom.d_hat, dtype=np.float64)
-        dB_sup_theta_dzeta = float(geom.iota) * 2.0 * bhat * np.asarray(geom.db_hat_dzeta, dtype=np.float64) / denom
-
-        out["dBHat_sup_theta_dpsiHat"] = np.asarray(dB_sup_theta_dpsi, dtype=np.float64)
-        out["dBHat_sup_theta_dzeta"] = np.asarray(dB_sup_theta_dzeta, dtype=np.float64)
-        out["dBHat_sup_zeta_dpsiHat"] = np.asarray(dB_sup_zeta_dpsi, dtype=np.float64)
-        out["dBHat_sup_zeta_dtheta"] = np.asarray(dB_sup_zeta_dtheta, dtype=np.float64)
-    else:
-        out["diotadpsiHat"] = np.asarray(0.0, dtype=np.float64)
-        out["dBHat_sup_theta_dpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
-        out["dBHat_sup_theta_dzeta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
-        out["dBHat_sup_zeta_dpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
-        out["dBHat_sup_zeta_dtheta"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+        diotadpsi_hat = (-(float(surf_new.iota)) - (-(float(surf_old.iota)))) / float(delta_psi_hat)
+    elif geometry_scheme == 5:
+        if w_vmec is None:
+            raise RuntimeError("Internal error: missing VMEC wout handle for geometryScheme=5.")
+        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
+        interp = vmec_interpolation(w=w_vmec, psi_n_wish=float(psi_n_wish), vmec_radial_option=int(vmec_radial_option))
+        j0, j1 = interp.index_half
+        dpsi_n = float(interp.psi_n_half[j1 - 1] - interp.psi_n_half[j0 - 1])
+        if dpsi_n != 0.0:
+            diotadpsi_hat = float(w_vmec.iotas[j1] - w_vmec.iotas[j0]) / dpsi_n / float(psi_a_hat)
+    out["diotadpsiHat"] = np.asarray(float(diotadpsi_hat), dtype=np.float64)
 
     out["uHat"] = np.asarray(u_hat_np(grids=grids, geom=geom), dtype=np.float64)
 

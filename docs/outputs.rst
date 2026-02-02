@@ -2,7 +2,7 @@ Outputs (sfincsOutput.h5)
 =========================
 
 SFINCS v3 writes results to an HDF5 file named ``sfincsOutput.h5``. `sfincs_jax` can now
-write a v3-style output file for supported modes (currently ``geometryScheme in {4,11,12}``).
+write a v3-style output file for supported modes (currently ``geometryScheme in {4,5,11,12}``).
 
 Writing output with `sfincs_jax`
 --------------------------------
@@ -36,6 +36,7 @@ Current coverage
 At the moment, `sfincs_jax` output writing supports:
 
 - ``geometryScheme = 4`` (simplified W7-X Boozer model)
+- ``geometryScheme = 5`` (VMEC ``wout_*.nc`` netCDF workflow)
 - ``geometryScheme = 11/12`` (Boozer `.bc` files for W7-X / general non-stellarator-symmetric equilibria)
 - v3 grids: ``theta``, ``zeta``, ``x`` and ``Nxi_for_x``
 - core geometry fields: ``BHat``, ``DHat`` and derivatives available in `sfincs_jax.geometry`
@@ -48,6 +49,7 @@ Output parity tests live in:
 
 - ``tests/test_output_h5_scheme4_parity.py`` (scheme 4)
 - ``tests/test_output_h5_scheme11_parity.py`` (scheme 11)
+- ``tests/test_output_h5_scheme5_parity.py`` (scheme 5)
 
 and compare the datasets above against frozen Fortran v3 fixtures in ``tests/ref``.
 

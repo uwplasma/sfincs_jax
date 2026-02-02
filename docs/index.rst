@@ -19,3 +19,4 @@ sfincs_jax
    api
    parity
    contributing
+   release_checklist

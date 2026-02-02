@@ -14,8 +14,9 @@ Documentation: build locally (`sphinx-build -b html docs docs/_build/html`) or v
 small, parity-tested slices:
 
 - v3 grids (`theta`, `zeta`, `x`) including the polynomial/Stieltjes x-grid
-- `sfincsOutput.h5` output parity for `geometryScheme=4` and `geometryScheme=11` vs frozen v3 fixtures
+- `sfincsOutput.h5` output parity for `geometryScheme in {4,5,11}` vs frozen v3 fixtures
 - `geometryScheme=11/12` Boozer `.bc` parsing (B, D, covariant components) + drift-term parity fixtures
+- `geometryScheme=5` VMEC `wout_*.nc` parsing + output parity fixture
 - Collisionless operator terms (streaming/mirror, ExB, Er terms, magnetic drift slices) parity-tested
 - Collision operators (PAS and full linearized FP, no-Phi1 modes) parity-tested at the F-block level
 - Full linearized FP collisions with poloidally varying Phi1 (parity on a tiny fixture)
@@ -105,6 +106,12 @@ Start here:
 ```bash
 python examples/1_simple/01_build_grids_and_geometry.py
 python examples/2_intermediate/11_autodiff_er_xidot_term.py  # requires ".[viz]"
+```
+
+Quick performance sanity check (JIT vs no-JIT):
+
+```bash
+python examples/2_intermediate/12_benchmark_jit_matvec.py
 ```
 
 Upstream example inputs (Fortran v3, multi-species, and MATLAB v3) are vendored in `examples/upstream/`
