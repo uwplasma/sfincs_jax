@@ -14,7 +14,7 @@ Documentation: build locally (`sphinx-build -b html docs docs/_build/html`) or v
 small, parity-tested slices:
 
 - v3 grids (`theta`, `zeta`, `x`) including the polynomial/Stieltjes x-grid
-- `geometryScheme=4` (simplified Boozer model) output parity (`sfincsOutput.h5`) vs frozen v3 fixtures
+- `sfincsOutput.h5` output parity for `geometryScheme=4` and `geometryScheme=11` vs frozen v3 fixtures
 - `geometryScheme=11/12` Boozer `.bc` parsing (B, D, covariant components) + drift-term parity fixtures
 - Collisionless operator terms (streaming/mirror, ExB, Er terms, magnetic drift slices) parity-tested
 - Collision operators (PAS and full linearized FP, no-Phi1 modes) parity-tested at the F-block level

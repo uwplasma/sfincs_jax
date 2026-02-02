@@ -7,9 +7,9 @@ Implemented (parity-tested)
 - v3 grids: ``theta``, ``zeta``, ``x`` (including the v3 polynomial/Stieltjes ``x`` grid)
 - Boozer geometryScheme=4 (simplified W7-X model): ``BHat`` and derivatives
 - Boozer geometryScheme=11 from `.bc` file inputs: ``BHat``, ``DHat``, ``BHat_sub_psi``, and derivatives (parity vs frozen fixture)
-- ``sfincsOutput.h5`` writing for ``geometryScheme=4`` with dataset-by-dataset parity against a frozen
-  Fortran v3 fixture (see ``docs/outputs.rst``). ``uHat`` is compared with a looser tolerance due to
-  tiny platform-dependent transcendental/reduction differences.
+- ``sfincsOutput.h5`` writing for ``geometryScheme=4`` and ``geometryScheme=11`` with dataset-by-dataset parity against frozen
+  Fortran v3 fixtures (see ``docs/outputs.rst``). ``uHat`` is compared with a looser tolerance due to tiny
+  platform-dependent transcendental/reduction differences.
 - Collisionless v3 operator slice: streaming + mirror (parity vs PETSc binaries for one example)
 - Collisionless v3 Er terms:
 
@@ -44,4 +44,4 @@ Not yet implemented
 - Full kinetic solve driver across the upstream example suite (run loop, solves, and HDF5 outputs)
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions)
 - VMEC-based geometry schemes and radial interpolation
-- ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme=4``
+- ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme in {4,11,12}``

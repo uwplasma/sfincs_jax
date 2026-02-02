@@ -2,7 +2,7 @@ Outputs (sfincsOutput.h5)
 =========================
 
 SFINCS v3 writes results to an HDF5 file named ``sfincsOutput.h5``. `sfincs_jax` can now
-write a v3-style output file for supported modes (currently ``geometryScheme=4``).
+write a v3-style output file for supported modes (currently ``geometryScheme in {4,11,12}``).
 
 Writing output with `sfincs_jax`
 --------------------------------
@@ -36,6 +36,7 @@ Current coverage
 At the moment, `sfincs_jax` output writing supports:
 
 - ``geometryScheme = 4`` (simplified W7-X Boozer model)
+- ``geometryScheme = 11/12`` (Boozer `.bc` files for W7-X / general non-stellarator-symmetric equilibria)
 - v3 grids: ``theta``, ``zeta``, ``x`` and ``Nxi_for_x``
 - core geometry fields: ``BHat``, ``DHat`` and derivatives available in `sfincs_jax.geometry`
 - basic scalar integrals: ``VPrimeHat`` and ``FSABHat2`` (see `sfincs_jax.diagnostics`)
@@ -43,8 +44,12 @@ At the moment, `sfincs_jax` output writing supports:
   ``psiAHat``, ``aHat``, ``rN``, ``Zs``, ``THats``)
 - `NTV`-related geometry diagnostic ``uHat`` (computed from harmonics of :math:`1/\hat B^2`)
 
-Output parity tests live in ``tests/test_output_h5_scheme4_parity.py`` and compare the
-datasets above against a frozen Fortran v3 fixture in ``tests/ref``.
+Output parity tests live in:
+
+- ``tests/test_output_h5_scheme4_parity.py`` (scheme 4)
+- ``tests/test_output_h5_scheme11_parity.py`` (scheme 11)
+
+and compare the datasets above against frozen Fortran v3 fixtures in ``tests/ref``.
 
 There is also a multi-species parity test against the upstream v3 example output
 (``quick_2species_FPCollisions_noEr``), implemented in
