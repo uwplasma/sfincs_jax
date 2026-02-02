@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 from jax import config as _jax_config
 
@@ -10,7 +11,10 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
+from .boozer_bc import read_boozer_bc_header
+from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .namelist import Namelist
+from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
 from .v3_fblock import V3FBlockOperator, apply_v3_fblock_operator, fblock_operator_from_namelist
 
@@ -72,6 +76,11 @@ class V3FullSystemOperator:
     dphi_hat_dpsi_hat: jnp.ndarray  # scalar
     phi1_hat_base: jnp.ndarray  # (T,Z)
 
+    rhs_mode: int
+    e_parallel_hat: jnp.ndarray  # scalar
+    e_parallel_hat_spec: jnp.ndarray  # (S,)
+    fsab_hat2: jnp.ndarray  # scalar
+
     z_s: jnp.ndarray  # (S,)
     m_hat: jnp.ndarray  # (S,)
     t_hat: jnp.ndarray  # (S,)
@@ -83,6 +92,8 @@ class V3FullSystemOperator:
     zeta_weights: jnp.ndarray  # (Z,)
     d_hat: jnp.ndarray  # (T,Z)
     b_hat: jnp.ndarray  # (T,Z)
+    db_hat_dtheta: jnp.ndarray  # (T,Z)
+    db_hat_dzeta: jnp.ndarray  # (T,Z)
     b_hat_sup_theta: jnp.ndarray  # (T,Z)
     b_hat_sup_zeta: jnp.ndarray  # (T,Z)
     b_hat_sub_theta: jnp.ndarray  # (T,Z)
@@ -108,6 +119,10 @@ class V3FullSystemOperator:
             self.include_phi1_in_kinetic,
             self.dphi_hat_dpsi_hat,
             self.phi1_hat_base,
+            self.rhs_mode,
+            self.e_parallel_hat,
+            self.e_parallel_hat_spec,
+            self.fsab_hat2,
             self.z_s,
             self.m_hat,
             self.t_hat,
@@ -118,6 +133,8 @@ class V3FullSystemOperator:
             self.zeta_weights,
             self.d_hat,
             self.b_hat,
+            self.db_hat_dtheta,
+            self.db_hat_dzeta,
             self.b_hat_sup_theta,
             self.b_hat_sup_zeta,
             self.b_hat_sub_theta,
@@ -147,6 +164,10 @@ class V3FullSystemOperator:
             include_phi1_in_kinetic,
             dphi_hat_dpsi_hat,
             phi1_hat_base,
+            rhs_mode,
+            e_parallel_hat,
+            e_parallel_hat_spec,
+            fsab_hat2,
             z_s,
             m_hat,
             t_hat,
@@ -157,6 +178,8 @@ class V3FullSystemOperator:
             zeta_weights,
             d_hat,
             b_hat,
+            db_hat_dtheta,
+            db_hat_dzeta,
             b_hat_sup_theta,
             b_hat_sup_zeta,
             b_hat_sub_theta,
@@ -180,6 +203,10 @@ class V3FullSystemOperator:
             include_phi1_in_kinetic=bool(include_phi1_in_kinetic),
             dphi_hat_dpsi_hat=dphi_hat_dpsi_hat,
             phi1_hat_base=phi1_hat_base,
+            rhs_mode=int(rhs_mode),
+            e_parallel_hat=e_parallel_hat,
+            e_parallel_hat_spec=e_parallel_hat_spec,
+            fsab_hat2=fsab_hat2,
             z_s=z_s,
             m_hat=m_hat,
             t_hat=t_hat,
@@ -190,6 +217,8 @@ class V3FullSystemOperator:
             zeta_weights=zeta_weights,
             d_hat=d_hat,
             b_hat=b_hat,
+            db_hat_dtheta=db_hat_dtheta,
+            db_hat_dzeta=db_hat_dzeta,
             b_hat_sup_theta=b_hat_sup_theta,
             b_hat_sup_zeta=b_hat_sup_zeta,
             b_hat_sub_theta=b_hat_sub_theta,
@@ -488,13 +517,128 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
 apply_v3_full_system_operator_jit = jax.jit(apply_v3_full_system_operator, static_argnums=())
 
 
+def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
+    """Assemble the v3 RHS vector used in `evaluateResidual.F90` (subset).
+
+    This implements the parts of `evaluateResidual.F90` that are independent of the unknown
+    distribution function `f1`, but may depend on the background Phi1 field:
+
+    - `dot(psi) * d f_M / d psi` drive (adds to L=0 and L=2 rows)
+    - inductive E_parallel term (adds to L=1 rows)
+
+    For `includePhi1InKineticEquation = .true.`, the drive is multiplied by
+    `exp(-Z*alpha*Phi1Hat/THat)` and includes the additional `Phi1Hat*dTHat/dpsiHat` term,
+    matching `evaluateResidual.F90` lines ~89-165.
+
+    Notes
+    -----
+    - `readExternalPhi1` and the specialized `EParallelHatSpec_bcdatFile` branch are not supported.
+    - QuasineutralityOption=1 RHS terms (nonlinear QN) are not yet implemented here.
+    """
+    f_rhs = jnp.zeros(op.fblock.f_shape, dtype=jnp.float64)
+
+    ix_min = _ix_min(bool(op.point_at_x0))
+    x = op.x
+    x2 = x * x
+    expx2 = jnp.exp(-x2)
+
+    dphi_hat_dpsi_hat_to_use = jnp.where(
+        (op.rhs_mode == 1) | (op.rhs_mode > 3),
+        op.dphi_hat_dpsi_hat,
+        jnp.asarray(0.0, dtype=jnp.float64),
+    )
+
+    geom2 = (
+        (op.b_hat_sub_zeta * op.db_hat_dtheta - op.b_hat_sub_theta * op.db_hat_dzeta)
+        * op.d_hat
+        / (op.b_hat * op.b_hat * op.b_hat)
+    )  # (T,Z)
+
+    mask_x = (jnp.arange(op.n_x) >= ix_min).astype(jnp.float64)  # (X,)
+
+    sqrt_pi = jnp.sqrt(jnp.pi)
+    two_pi = jnp.asarray(2.0 * jnp.pi, dtype=jnp.float64)
+    geom2_b = geom2[None, :, :]  # (1,T,Z)
+    x2_expx2 = x2 * expx2  # (X,)
+
+    for i_species in range(op.n_species):
+        z = op.z_s[i_species]
+        m_hat = op.m_hat[i_species]
+        t_hat = op.t_hat[i_species]
+        n_hat = op.n_hat[i_species]
+
+        dn = op.dn_hat_dpsi_hat[i_species]
+        dt = op.dt_hat_dpsi_hat[i_species]
+
+        sqrt_t = jnp.sqrt(t_hat)
+        sqrt_m = jnp.sqrt(m_hat)
+
+        x_part = x2_expx2 * (
+            dn / n_hat + (op.alpha * z / t_hat) * dphi_hat_dpsi_hat_to_use + (x2 - 1.5) * (dt / t_hat)
+        )  # (X,)
+
+        if bool(op.include_phi1) and bool(op.include_phi1_in_kinetic):
+            x_part2 = x2_expx2 * (dt / (t_hat * t_hat))  # (X,)
+            phi1 = op.phi1_hat_base  # (T,Z)
+            exp_phi1 = jnp.exp(-(z * op.alpha / t_hat) * phi1)  # (T,Z)
+            x_part_total = x_part[:, None, None] + (x_part2[:, None, None] * (z * op.alpha) * phi1[None, :, :])
+            x_part_total = x_part_total * exp_phi1[None, :, :]
+        else:
+            x_part_total = x_part[:, None, None]
+
+        pref = op.delta * n_hat * m_hat * sqrt_m / (two_pi * sqrt_pi * z * sqrt_t)
+
+        factor = pref * geom2_b * x_part_total  # (X,T,Z)
+        factor = factor * mask_x[:, None, None]
+
+        if op.n_xi > 0:
+            mask_l0 = (op.fblock.collisionless.n_xi_for_x > 0).astype(jnp.float64) * mask_x  # (X,)
+            f_rhs = f_rhs.at[i_species, :, 0, :, :].add((4.0 / 3.0) * factor * mask_l0[:, None, None])
+        if op.n_xi > 2:
+            mask_l2 = (op.fblock.collisionless.n_xi_for_x > 2).astype(jnp.float64) * mask_x  # (X,)
+            f_rhs = f_rhs.at[i_species, :, 2, :, :].add((2.0 / 3.0) * factor * mask_l2[:, None, None])
+
+        if op.n_xi > 1:
+            epar = op.e_parallel_hat + op.e_parallel_hat_spec[i_species]
+            factor_e = (
+                op.alpha
+                * z
+                * x
+                * expx2
+                * epar
+                * n_hat
+                * m_hat
+                / (jnp.pi * sqrt_pi * (t_hat * t_hat) * op.fsab_hat2)
+            )  # (X,)
+            factor_e = factor_e * mask_x
+            f_rhs = f_rhs.at[i_species, :, 1, :, :].add(factor_e[:, None, None] * op.b_hat[None, :, :])
+
+    rhs_f_flat = f_rhs.reshape((-1,))
+    rhs_phi1 = jnp.zeros((op.phi1_size,), dtype=jnp.float64)
+    rhs_extra = jnp.zeros((op.extra_size,), dtype=jnp.float64)
+    return jnp.concatenate([rhs_f_flat, rhs_phi1, rhs_extra], axis=0)
+
+
+def residual_v3_full_system(op: V3FullSystemOperator, x_full: jnp.ndarray) -> jnp.ndarray:
+    """Compute the full v3 residual `A(x) x - rhs(x)` for the currently implemented subset."""
+    x_full = jnp.asarray(x_full, dtype=jnp.float64)
+    op_use = op
+    if bool(op.include_phi1):
+        phi1_flat = x_full[op.f_size : op.f_size + op.n_theta * op.n_zeta]
+        phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
+        op_use = replace(op, phi1_hat_base=phi1)
+    return apply_v3_full_system_operator(op_use, x_full) - rhs_v3_full_system(op_use)
+
+
 def full_system_operator_from_namelist(
     *, nml: Namelist, identity_shift: float = 0.0, phi1_hat_base: jnp.ndarray | None = None
 ) -> V3FullSystemOperator:
     """Build the full-system operator (subset) from an input namelist."""
+    general = nml.group("general")
     phys = nml.group("physicsParameters")
     other = nml.group("otherNumericalParameters")
     species = nml.group("speciesParameters")
+    geom_params = nml.group("geometryParameters")
 
     include_phi1 = _get_bool(phys, "includePhi1", False)
     read_external_phi1 = _get_bool(phys, "readExternalPhi1", False)
@@ -536,12 +680,38 @@ def full_system_operator_from_namelist(
     alpha = float(phys.get("ALPHA", 1.0))
     include_phi1_in_kinetic = bool(phys.get("INCLUDEPHI1INKINETICEQUATION", False))
 
-    # v3 default for geometryScheme=4 forces rN=0.5, so psiN=0.25. Use the same conversion
-    # factor as radialCoordinates.F90 for inputRadialCoordinateForGradients=4.
-    psi_a_hat = float(nml.group("geometryParameters").get("PSIAHAT", -0.384935))
-    a_hat = float(nml.group("geometryParameters").get("AHAT", 0.5109))
-    psi_n = 0.25
-    ddrhat2ddpsihat = a_hat / (2.0 * psi_a_hat * jnp.sqrt(psi_n))
+    # Radial normalization factors (radialCoordinates.F90).
+    input_radial = _get_int(geom_params, "inputRadialCoordinate", 3)
+    input_radial_grad = _get_int(geom_params, "inputRadialCoordinateForGradients", 4)
+    if input_radial != 3 or input_radial_grad != 4:
+        raise NotImplementedError(
+            "sfincs_jax currently only supports inputRadialCoordinate=3 (rN) and "
+            "inputRadialCoordinateForGradients=4 (rHat) for gradient conversions."
+        )
+
+    geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
+    if geometry_scheme == 4:
+        psi_a_hat = -0.384935
+        a_hat = 0.5109
+        r_n = 0.5  # v3 forces rN=0.5 for geometryScheme=4.
+    elif geometry_scheme in {11, 12}:
+        eq = geom_params.get("EQUILIBRIUMFILE", None)
+        if eq is None:
+            raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
+        base_dir = nml.source_path.parent if nml.source_path is not None else None
+        repo_root = Path(__file__).resolve().parents[1]
+        extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+        p = resolve_existing_path(str(eq), base_dir=base_dir, extra_search_dirs=extra).path
+        header = read_boozer_bc_header(path=str(p), geometry_scheme=int(geometry_scheme))
+        psi_a_hat = float(header.psi_a_hat)
+        a_hat = float(header.a_hat)
+        r_n = float(geom_params.get("RN_WISH", 0.5))
+    else:
+        raise NotImplementedError(f"Radial conversions are not implemented for geometryScheme={geometry_scheme}.")
+
+    # With rHat = aHat * rN and psiHat = psiAHat * (rN^2):
+    # dpsiHat/drHat = 2*psiAHat*rN/aHat -> drHat/dpsiHat = aHat/(2*psiAHat*rN).
+    ddrhat2ddpsihat = float(a_hat) / (2.0 * float(psi_a_hat) * float(r_n))
 
     def _grad_in_psihat(key_drhat: str, key_psihat: str) -> jnp.ndarray:
         if key_drhat.upper() in species:
@@ -554,6 +724,20 @@ def full_system_operator_from_namelist(
     # dPhiHat/dpsiHat from Er (radialCoordinates.F90 inputRadialCoordinateForGradients=4):
     er = float(phys.get("ER", 0.0))
     dphi_hat_dpsi_hat = jnp.asarray(ddrhat2ddpsihat * (-er), dtype=jnp.float64)
+
+    rhs_mode = _get_int(general, "RHSMode", 1)
+    e_parallel_hat = float(phys.get("EPARALLELHAT", 0.0))
+    e_parallel_hat_spec_raw = phys.get("EPARALLELHATSPEC", None)
+    if e_parallel_hat_spec_raw is None:
+        e_parallel_hat_spec = jnp.zeros_like(zs)
+    else:
+        e_parallel_hat_spec = _as_1d_float_array(e_parallel_hat_spec_raw)
+        if e_parallel_hat_spec.shape == (1,) and zs.shape != (1,):
+            e_parallel_hat_spec = jnp.broadcast_to(e_parallel_hat_spec, zs.shape)
+        if e_parallel_hat_spec.shape != zs.shape:
+            raise ValueError(f"EParallelHatSpec must have shape {zs.shape}, got {e_parallel_hat_spec.shape}")
+
+    fsab_hat2 = jnp.asarray(fsab_hat2_jax(grids=grids, geom=geom), dtype=jnp.float64)
 
     if phi1_hat_base is None:
         phi1_hat_base = jnp.zeros((int(grids.theta.shape[0]), int(grids.zeta.shape[0])), dtype=jnp.float64)
@@ -579,6 +763,10 @@ def full_system_operator_from_namelist(
         include_phi1_in_kinetic=bool(include_phi1_in_kinetic),
         dphi_hat_dpsi_hat=dphi_hat_dpsi_hat,
         phi1_hat_base=phi1_hat_base,
+        rhs_mode=int(rhs_mode),
+        e_parallel_hat=jnp.asarray(e_parallel_hat, dtype=jnp.float64),
+        e_parallel_hat_spec=e_parallel_hat_spec,
+        fsab_hat2=fsab_hat2,
         z_s=zs,
         m_hat=mhat,
         t_hat=that,
@@ -589,6 +777,8 @@ def full_system_operator_from_namelist(
         zeta_weights=grids.zeta_weights,
         d_hat=geom.d_hat,
         b_hat=geom.b_hat,
+        db_hat_dtheta=geom.db_hat_dtheta,
+        db_hat_dzeta=geom.db_hat_dzeta,
         b_hat_sup_theta=geom.b_hat_sup_theta,
         b_hat_sup_zeta=geom.b_hat_sup_zeta,
         b_hat_sub_theta=geom.b_hat_sub_theta,

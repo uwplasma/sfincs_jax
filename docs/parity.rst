@@ -29,11 +29,14 @@ Implemented (parity-tested)
 - Phi1 in kinetic equation parity (includePhi1=true, includePhi1InKineticEquation=true):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for
   ``pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear``.
+- Full-system RHS and residual assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries for:
+  ``pas_1species_PAS_noEr_tiny``, ``quick_2species_FPCollisions_noEr``,
+  ``pas_1species_PAS_noEr_tiny_withPhi1_linear``, and ``pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear``.
 
 Not yet implemented
 -------------------
 
-- Full kinetic solve (residual/RHS construction, linear/nonlinear solve, Rosenbluth potentials)
+- Full kinetic solve driver across the upstream example suite (run loop, solves, and HDF5 outputs)
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions)
 - VMEC-based geometry schemes and radial interpolation
 - ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme=4``

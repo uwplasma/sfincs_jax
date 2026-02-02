@@ -9,7 +9,7 @@ from scipy.sparse import csr_matrix
 from sfincs_jax.namelist import read_sfincs_input
 from sfincs_jax.petsc_binary import read_petsc_mat_aij, read_petsc_vec
 from sfincs_jax.solver import gmres_solve
-from sfincs_jax.v3_system import apply_v3_full_system_operator, full_system_operator_from_namelist
+from sfincs_jax.v3_system import apply_v3_full_system_operator, full_system_operator_from_namelist, rhs_v3_full_system
 
 
 def test_full_system_gmres_recovers_fortran_statevector_pas_tiny() -> None:
@@ -40,6 +40,29 @@ def test_full_system_gmres_recovers_fortran_statevector_pas_tiny() -> None:
     assert float(result.residual_norm) < 1e-9
 
 
+def test_full_system_gmres_solves_physical_rhs_pas_tiny() -> None:
+    """Solve A x = RHS assembled by sfincs_jax and recover the Fortran v3 solution (tiny PAS case)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny.input.namelist"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+    rhs = rhs_v3_full_system(op)
+
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(matvec=mv, b=rhs, tol=1e-12, restart=80, maxiter=250)
+    x = np.asarray(result.x)
+
+    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    assert float(result.residual_norm) < 1e-9
+
+
 def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_with_phi1_linear() -> None:
     """Solve A x = b matrix-free and recover the Fortran v3 stateVector (tiny PAS + Phi1 blocks)."""
     here = Path(__file__).parent
@@ -61,6 +84,29 @@ def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_with_phi1_linea
         return apply_v3_full_system_operator(op, x)
 
     result = gmres_solve(matvec=mv, b=jnp.asarray(b), tol=1e-12, restart=100, maxiter=400)
+    x = np.asarray(result.x)
+
+    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    assert float(result.residual_norm) < 1e-9
+
+
+def test_full_system_gmres_solves_physical_rhs_pas_tiny_with_phi1_linear() -> None:
+    """Solve A x = RHS assembled by sfincs_jax and recover the Fortran v3 solution (tiny PAS + Phi1 blocks)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_linear.input.namelist"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_linear.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+    rhs = rhs_v3_full_system(op)
+
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(matvec=mv, b=rhs, tol=1e-12, restart=120, maxiter=600)
     x = np.asarray(result.x)
 
     np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
