@@ -310,7 +310,7 @@ class MagneticDriftXiDotV3Operator:
 
 
 def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
-    """Apply only the |ΔL|=2 part of the magnetic-drift d/dtheta term."""
+    """Apply only the :math:`\\Delta L = \\pm 2` part of the magnetic-drift d/dtheta term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
@@ -414,7 +414,7 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
 
 
 def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
-    """Apply only the |ΔL|=2 part of the magnetic-drift d/dzeta term."""
+    """Apply only the :math:`\\Delta L = \\pm 2` part of the magnetic-drift d/dzeta term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
@@ -513,7 +513,7 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
 
 
 def apply_magnetic_drift_xidot_v3_offdiag2(op: MagneticDriftXiDotV3Operator, f: jnp.ndarray) -> jnp.ndarray:
-    """Apply only the |ΔL|=2 part of the non-standard magnetic-drift d/dxi term."""
+    """Apply only the :math:`\\Delta L = \\pm 2` part of the non-standard magnetic-drift d/dxi term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     _n_species, n_x, n_xi, _n_theta, _n_zeta = f.shape
@@ -543,7 +543,7 @@ def apply_magnetic_drift_xidot_v3_offdiag2(op: MagneticDriftXiDotV3Operator, f: 
 
 
 def apply_magnetic_drift_xidot_v3(op: MagneticDriftXiDotV3Operator, f: jnp.ndarray) -> jnp.ndarray:
-    """Apply the full non-standard magnetic-drift d/dxi term (diag-in-L + |ΔL|=2)."""
+    """Apply the full non-standard magnetic-drift d/dxi term (diag-in-L + :math:`\\Delta L = \\pm 2`)."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     _n_species, n_x, n_xi, _n_theta, _n_zeta = f.shape

@@ -79,7 +79,7 @@ Pitch-angle scattering collisions (``collisionOperator = 1`` without Phi1):
    y_col = apply_pitch_angle_scattering_v3(cop, f)
 
 Running the Fortran v3 executable
---------------------------------
+---------------------------------
 
 .. code-block:: bash
 
@@ -87,7 +87,7 @@ Running the Fortran v3 executable
    sfincs_jax run-fortran --input /path/to/input.namelist
 
 Writing `sfincsOutput.h5` with `sfincs_jax`
-------------------------------------------
+--------------------------------------------------
 
 .. code-block:: bash
 

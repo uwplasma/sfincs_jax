@@ -62,6 +62,7 @@ class V3Grids:
     ddtheta: jnp.ndarray
     ddzeta: jnp.ndarray
     ddx: jnp.ndarray
+    d2dx2: jnp.ndarray
     ddtheta_magdrift_plus: jnp.ndarray
     ddtheta_magdrift_minus: jnp.ndarray
     ddzeta_magdrift_plus: jnp.ndarray
@@ -220,8 +221,9 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     x_weights = jnp.asarray(xg.dx_weights(x_grid_k))
 
     # x differentiation matrix (used by the Er xDot term and by collisions).
-    ddx_np, _d2dx2_np = make_x_polynomial_diff_matrices(np.asarray(xg.x, dtype=np.float64), k=x_grid_k)
+    ddx_np, d2dx2_np = make_x_polynomial_diff_matrices(np.asarray(xg.x, dtype=np.float64), k=x_grid_k)
     ddx = jnp.asarray(ddx_np)
+    d2dx2 = jnp.asarray(d2dx2_np)
 
     if xdot_derivative_scheme != 0:
         raise NotImplementedError(
@@ -258,6 +260,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         ddtheta=ddtheta,
         ddzeta=ddzeta,
         ddx=ddx,
+        d2dx2=d2dx2,
         ddtheta_magdrift_plus=ddtheta_magdrift_plus,
         ddtheta_magdrift_minus=ddtheta_magdrift_minus,
         ddzeta_magdrift_plus=ddzeta_magdrift_plus,

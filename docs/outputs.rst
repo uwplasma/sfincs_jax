@@ -1,11 +1,11 @@
 Outputs (sfincsOutput.h5)
-========================
+=========================
 
 SFINCS v3 writes results to an HDF5 file named ``sfincsOutput.h5``. `sfincs_jax` can now
 write a v3-style output file for supported modes (currently ``geometryScheme=4``).
 
 Writing output with `sfincs_jax`
--------------------------------
+--------------------------------
 
 CLI
 ^^^

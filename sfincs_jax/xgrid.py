@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable, Tuple
 
 import numpy as np
@@ -121,11 +122,37 @@ def _evaluate_polynomial(x: float, *, j: int, a: np.ndarray, b: np.ndarray) -> f
 class XGrid:
     x: np.ndarray
     gaussian_weights: np.ndarray
+    poly_a: np.ndarray  # (n+1,) 1-based recurrence "a" (a[0] unused)
+    poly_b: np.ndarray  # (n+2,) 1-based recurrence "b" (b[0] unused)
+    poly_c: np.ndarray  # (n+1,) 1-based norms "c" (c[0] unused)
+    k: float
+    include_point_at_x0: bool
+    x0: float
 
-    def dx_weights(self, k: float) -> np.ndarray:
+    def dx_weights(self, k: float | None = None) -> np.ndarray:
         """Return weights for plain `dx` integrals (Fortran divides by the weight function)."""
+        if k is None:
+            k = self.k
         w = np.exp(-(self.x * self.x)) * (self.x**k)
         return self.gaussian_weights / w
+
+
+@lru_cache(maxsize=32)
+def _make_x_grid_cached(
+    *,
+    n: int,
+    k: float,
+    include_point_at_x0: bool,
+    x0: float,
+    finite_bound: float,
+) -> XGrid:
+    return _make_x_grid_uncached(
+        n=n,
+        k=k,
+        include_point_at_x0=include_point_at_x0,
+        x0=x0,
+        finite_bound=finite_bound,
+    )
 
 
 def make_x_grid(
@@ -141,6 +168,24 @@ def make_x_grid(
     This routine is not performance-critical for the JAX solve (the grid is static). It is
     implemented primarily for parity with the Fortran v3 grids.
     """
+    return _make_x_grid_cached(
+        n=int(n),
+        k=float(k),
+        include_point_at_x0=bool(include_point_at_x0),
+        x0=float(x0),
+        finite_bound=float(finite_bound),
+    )
+
+
+def _make_x_grid_uncached(
+    *,
+    n: int,
+    k: float = 0.0,
+    include_point_at_x0: bool = False,
+    x0: float = 0.0,
+    finite_bound: float = 10.0,
+) -> XGrid:
+    """Uncached implementation of :func:`make_x_grid` (split out for memoization)."""
     if n < 1:
         raise ValueError(f"n must be >= 1, got {n}")
     if k < 0:
@@ -198,4 +243,13 @@ def make_x_grid(
         abscissae = abscissae.copy()
         abscissae[0] = x0
 
-    return XGrid(x=abscissae, gaussian_weights=weights)
+    return XGrid(
+        x=abscissae,
+        gaussian_weights=weights,
+        poly_a=a,
+        poly_b=b,
+        poly_c=c,
+        k=float(k),
+        include_point_at_x0=bool(include_point_at_x0),
+        x0=float(x0),
+    )

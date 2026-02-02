@@ -20,4 +20,10 @@ extensions = [
 templates_path = ["_templates"]
 exclude_patterns: list[str] = []
 
-html_theme = "sphinx_rtd_theme"
+try:
+    import sphinx_rtd_theme  # type: ignore[import-not-found]
+except Exception:
+    html_theme = "alabaster"
+else:
+    html_theme = "sphinx_rtd_theme"
+    html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]

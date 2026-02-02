@@ -13,17 +13,19 @@ Implemented (parity-tested)
 - Collisionless v3 operator slice: streaming + mirror (parity vs PETSc binaries for one example)
 - Collisionless v3 Er terms:
 
-  - non-standard ``d/dxi`` term (``includeElectricFieldTermInXiDot = .true.``): |ΔL|=2 parity vs Fortran Jacobian
-  - collisionless ``d/dx`` term (``includeXDotTerm = .true.``): |ΔL|=2 parity vs Fortran Jacobian
+  - non-standard ``d/dxi`` term (``includeElectricFieldTermInXiDot = .true.``): ΔL = ±2 parity vs Fortran Jacobian
+  - collisionless ``d/dx`` term (``includeXDotTerm = .true.``): ΔL = ±2 parity vs Fortran Jacobian
 
 - ExB drift term (``useDKESExBDrift = .false.``): ``d/dtheta`` parity vs Fortran Jacobian (geometryScheme=4)
-- Magnetic drift terms (``magneticDriftScheme=1``): parity-tested as |ΔL|=2 slices vs Fortran Jacobian (geometryScheme=11)
+- Magnetic drift terms (``magneticDriftScheme=1``): parity-tested as ΔL = ±2 slices vs Fortran Jacobian (geometryScheme=11)
 - Pitch-angle scattering collisions (``collisionOperator=1`` without Phi1): diagonal parity vs PETSc binaries for one small example
+- Full linearized Fokker-Planck collision operator (``collisionOperator=0`` without Phi1): F-block matvec parity vs a frozen
+  PETSc matrix for a 2-species ``geometryScheme=4`` fixture (``tests/ref/quick_2species_FPCollisions_noEr.whichMatrix_3.petscbin``).
 
 Not yet implemented
 -------------------
 
 - Full kinetic solve (residual/Jacobian assembly, linear/nonlinear solve, Rosenbluth potentials)
-- Full linearized Fokker-Planck collision operator (``collisionOperator=0``)
+- Full linearized Fokker-Planck collision operator with Phi1 variations (``includePhi1 = .true.``)
 - VMEC-based geometry schemes and radial interpolation
 - ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme=4``

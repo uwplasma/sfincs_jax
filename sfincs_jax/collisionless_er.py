@@ -152,7 +152,7 @@ apply_er_xidot_v3_jit = jax.jit(apply_er_xidot_v3, static_argnums=())
 
 
 def apply_er_xidot_v3_offdiag2(op: ErXiDotV3Operator, f: jnp.ndarray) -> jnp.ndarray:
-    """Apply only the |ΔL|=2 couplings of the v3 Er xiDot term."""
+    """Apply only the :math:`\\Delta L = \\pm 2` couplings of the v3 Er xiDot term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     _, n_x, n_xi, _, _ = f.shape
@@ -379,7 +379,7 @@ apply_er_xdot_v3_jit = jax.jit(apply_er_xdot_v3, static_argnums=())
 
 
 def apply_er_xdot_v3_offdiag2(op: ErXDotV3Operator, f: jnp.ndarray) -> jnp.ndarray:
-    """Apply only the |ΔL|=2 couplings of the v3 Er xDot term."""
+    """Apply only the :math:`\\Delta L = \\pm 2` couplings of the v3 Er xDot term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     _, n_x, n_xi, _, _ = f.shape

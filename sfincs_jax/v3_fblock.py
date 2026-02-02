@@ -16,7 +16,14 @@ from jax import tree_util as jtu
 from .collisionless import CollisionlessV3Operator, apply_collisionless_v3
 from .collisionless_exb import ExBThetaV3Operator, ExBZetaV3Operator, apply_exb_theta_v3, apply_exb_zeta_v3
 from .collisionless_er import ErXDotV3Operator, ErXiDotV3Operator, apply_er_xdot_v3, apply_er_xidot_v3
-from .collisions import PitchAngleScatteringV3Operator, apply_pitch_angle_scattering_v3, make_pitch_angle_scattering_v3_operator
+from .collisions import (
+    FokkerPlanckV3Operator,
+    PitchAngleScatteringV3Operator,
+    apply_fokker_planck_v3,
+    apply_pitch_angle_scattering_v3,
+    make_fokker_planck_v3_operator,
+    make_pitch_angle_scattering_v3_operator,
+)
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .geometry import BoozerGeometry
 from .magnetic_drifts import (
@@ -174,6 +181,52 @@ def pas_collision_operator_from_namelist(*, nml: Namelist, grids: V3Grids) -> Pi
     )
 
 
+def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Grids) -> FokkerPlanckV3Operator:
+    species = nml.group("speciesParameters")
+    phys = nml.group("physicsParameters")
+    other = nml.group("otherNumericalParameters")
+
+    collision_operator = _get_int(phys, "collisionOperator", 0)
+    if collision_operator != 0:
+        raise NotImplementedError("collisionOperator must be 0 for the Fokker-Planck collision operator builder.")
+
+    if bool(phys.get("INCLUDEPHI1", False)):
+        raise NotImplementedError(
+            "sfincs_jax currently implements collisionOperator=0 only for includePhi1 = .false."
+        )
+
+    x_grid_scheme = _get_int(other, "xGridScheme", 5)
+    if x_grid_scheme not in {5, 6}:
+        raise NotImplementedError(
+            f"sfincs_jax currently only supports collisionOperator=0 for xGridScheme in {{5,6}} (got {x_grid_scheme})."
+        )
+
+    x_grid_k = _get_float(other, "xGrid_k", 0.0)
+    z_s = _as_1d_float(species, "Zs")
+    m_hats = _as_1d_float(species, "mHats")
+    n_hats = _as_1d_float(species, "nHats")
+    t_hats = _as_1d_float(species, "THats")
+    nu_n = _get_float(phys, "nu_n", 0.0)
+    krook = _get_float(phys, "Krook", 0.0)
+
+    return make_fokker_planck_v3_operator(
+        x=np.asarray(grids.x, dtype=np.float64),
+        x_weights=np.asarray(grids.x_weights, dtype=np.float64),
+        ddx=np.asarray(grids.ddx, dtype=np.float64),
+        d2dx2=np.asarray(grids.d2dx2, dtype=np.float64),
+        x_grid_k=float(x_grid_k),
+        z_s=z_s,
+        m_hats=m_hats,
+        n_hats=n_hats,
+        t_hats=t_hats,
+        nu_n=float(nu_n),
+        krook=float(krook),
+        n_xi=int(grids.n_xi),
+        nl=int(grids.n_l),
+        n_xi_for_x=np.asarray(grids.n_xi_for_x, dtype=np.int32),
+    )
+
+
 @jtu.register_pytree_node_class
 @dataclass(frozen=True)
 class V3FBlockOperator:
@@ -183,7 +236,8 @@ class V3FBlockOperator:
     - collisionless streaming + mirror (±1 couplings in L)
     - ExB drift terms (d/dtheta and d/dzeta)
     - magnetic drifts (d/dtheta, d/dzeta, and the non-standard d/dxi term), when enabled
-    - pitch-angle scattering collisions (diagonal in L)
+    - pitch-angle scattering collisions (collisionOperator=1, diagonal in L)
+    - full linearized Fokker-Planck collisions (collisionOperator=0, no Phi1), when enabled
     - collisionless Er terms (xiDot and xDot), when enabled in the namelist
 
     As more v3 terms are ported, they will be composed here.
@@ -195,7 +249,8 @@ class V3FBlockOperator:
     magdrift_theta: MagneticDriftThetaV3Operator | None
     magdrift_zeta: MagneticDriftZetaV3Operator | None
     magdrift_xidot: MagneticDriftXiDotV3Operator | None
-    pas: PitchAngleScatteringV3Operator
+    pas: PitchAngleScatteringV3Operator | None
+    fp: FokkerPlanckV3Operator | None
     er_xidot: ErXiDotV3Operator | None
     er_xdot: ErXDotV3Operator | None
     identity_shift: jnp.ndarray  # scalar, helps make toy solves well-conditioned
@@ -224,6 +279,7 @@ class V3FBlockOperator:
             self.magdrift_zeta,
             self.magdrift_xidot,
             self.pas,
+            self.fp,
             self.er_xidot,
             self.er_xdot,
             self.identity_shift,
@@ -233,7 +289,7 @@ class V3FBlockOperator:
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        collisionless, exb_theta, exb_zeta, magdrift_theta, magdrift_zeta, magdrift_xidot, pas, er_xidot, er_xdot, identity_shift = children
+        collisionless, exb_theta, exb_zeta, magdrift_theta, magdrift_zeta, magdrift_xidot, pas, fp, er_xidot, er_xdot, identity_shift = children
         n_species, n_x, n_xi, n_theta, n_zeta = aux
         return cls(
             collisionless=collisionless,
@@ -243,6 +299,7 @@ class V3FBlockOperator:
             magdrift_zeta=magdrift_zeta,
             magdrift_xidot=magdrift_xidot,
             pas=pas,
+            fp=fp,
             er_xidot=er_xidot,
             er_xdot=er_xdot,
             identity_shift=identity_shift,
@@ -258,9 +315,16 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
     colless = collisionless_operator_from_namelist(nml=nml, grids=grids, geom=geom)
-    pas = pas_collision_operator_from_namelist(nml=nml, grids=grids)
-
     phys = nml.group("physicsParameters")
+    collision_operator = _get_int(phys, "collisionOperator", 0)
+    if collision_operator == 1:
+        pas = pas_collision_operator_from_namelist(nml=nml, grids=grids)
+        fp = None
+    elif collision_operator == 0:
+        pas = None
+        fp = fokker_planck_collision_operator_from_namelist(nml=nml, grids=grids)
+    else:
+        raise NotImplementedError(f"collisionOperator={collision_operator} is not supported.")
     include_xdot = bool(phys.get("INCLUDEXDOTTERM", False))
     include_er_xidot = bool(phys.get("INCLUDEELECTRICFIELDTERMINXIDOT", False))
     use_dkes_exb = bool(phys.get("USEDKESEXBDRIFT", False))
@@ -401,6 +465,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         magdrift_zeta=magdrift_zeta,
         magdrift_xidot=magdrift_xidot,
         pas=pas,
+        fp=fp,
         er_xidot=er_xidot,
         er_xdot=er_xdot,
         identity_shift=jnp.asarray(identity_shift, dtype=jnp.float64),
@@ -427,7 +492,10 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray) -> jnp.ndarra
         out = out + apply_er_xidot_v3(op.er_xidot, f)
     if op.er_xdot is not None:
         out = out + apply_er_xdot_v3(op.er_xdot, f)
-    out = out + apply_pitch_angle_scattering_v3(op.pas, f)
+    if op.pas is not None:
+        out = out + apply_pitch_angle_scattering_v3(op.pas, f)
+    if op.fp is not None:
+        out = out + apply_fokker_planck_v3(op.fp, f)
     return out
 
 

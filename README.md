@@ -62,12 +62,12 @@ sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
 - [x] v3 grids for geometryScheme=11/12 (read `NPeriods` from `.bc` header)
 - [x] Boozer geometryScheme=11/12 from `.bc` files (BHat and required covariant components)
 - [x] Collisionless v3 operator slice (streaming + mirror) with PETSc-binary parity test
-- [x] Collisionless v3 Er terms (`xiDot` + `xDot`) with PETSc-binary parity tests (|ΔL|=2)
+- [x] Collisionless v3 Er terms (`xiDot` + `xDot`) with PETSc-binary parity tests (ΔL = ±2)
 - [x] ExB drift term (`d/dtheta` for geometryScheme=4) with PETSc-binary parity test
-- [x] Magnetic drift terms (`d/dtheta`, `d/dzeta`, non-standard `d/dxi`) with PETSc-binary parity tests (|ΔL|=2 slices)
+- [x] Magnetic drift terms (`d/dtheta`, `d/dzeta`, non-standard `d/dxi`) with PETSc-binary parity tests (ΔL = ±2 slices)
 - [x] Pitch-angle scattering collisions (collisionOperator=1 without Phi1) with PETSc-binary parity test
 - [x] Combined F-block matvec parity (collisionless + PAS) vs PETSc matrix (F-block slice)
-- [ ] Full linearized Fokker-Planck collisions (collisionOperator=0)
+- [x] Full linearized Fokker-Planck collisions (collisionOperator=0, no Phi1) with F-block matvec parity vs PETSc matrix
 - [ ] Residual/Jacobian assembly in JAX (matrix-free where possible)
 - [ ] Full solver parity across the v3 example suite
 
