@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 
 from jax import config as _jax_config
 
@@ -28,6 +29,7 @@ from .magnetic_drifts import (
 )
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
+from .boozer_bc import read_boozer_bc_header
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
 
 
@@ -51,17 +53,66 @@ def _get_int(group: dict, key: str, default: int) -> int:
     return int(v)
 
 
-def _dphi_hat_dpsi_hat_from_er_scheme4(er: float) -> float:
-    """Compute dPhiHat/dpsiHat from Er for geometryScheme=4 (v3 defaults).
+def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
+    """Compute dPhiHat/dpsiHat from Er using v3 defaults (subset).
 
-    Matches geometry.F90 (scheme=4) + radialCoordinates.F90 with
-    inputRadialCoordinateForGradients=4 (default).
+    Notes
+    -----
+    This conversion depends on the input radial coordinate conventions. For now we support
+    the common defaults used throughout the v3 examples:
+
+    - inputRadialCoordinate = 3 (rN)
+    - inputRadialCoordinateForGradients = 4 (rHat)
+    - Er interpreted as :math:`E_r = - d\\hat\\Phi / d\\hat r`.
+
+    For `geometryScheme=4`, we use the v3 hard-coded W7-X constants. For `.bc` geometries
+    (geometryScheme 11/12), we read `psiAHat` and `aHat` from the `.bc` header.
     """
-    psi_a_hat = -0.384935
-    a_hat = 0.5109
-    psi_n = 0.25  # rN=0.5 is forced for geometryScheme=4
-    ddrhat2ddpsihat = a_hat / (2.0 * psi_a_hat * math.sqrt(psi_n))
-    return float(ddrhat2ddpsihat * (-er))
+    if float(er) == 0.0:
+        return 0.0
+
+    geom_params = nml.group("geometryParameters")
+    geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
+
+    input_radial = _get_int(geom_params, "inputRadialCoordinate", 3)
+    input_radial_grad = _get_int(geom_params, "inputRadialCoordinateForGradients", 4)
+    if input_radial != 3 or input_radial_grad != 4:
+        raise NotImplementedError(
+            "sfincs_jax currently only converts Er->dPhiHatdpsiHat for "
+            "inputRadialCoordinate=3 (rN) and inputRadialCoordinateForGradients=4 (rHat)."
+        )
+
+    if geometry_scheme == 4:
+        psi_a_hat = -0.384935
+        a_hat = 0.5109
+        r_n = 0.5  # v3 forces rN=0.5 for geometryScheme=4.
+    elif geometry_scheme in {11, 12}:
+        eq = geom_params.get("EQUILIBRIUMFILE", None)
+        if eq is None:
+            raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
+        base_dir = nml.source_path.parent if nml.source_path is not None else None
+        p = Path(str(eq).strip().strip('"').strip("'"))
+        if not p.is_absolute():
+            if base_dir is not None:
+                cand = (base_dir / p).resolve()
+                if cand.exists():
+                    p = cand
+            if not p.exists():
+                cand = (Path.cwd() / p).resolve()
+                if cand.exists():
+                    p = cand
+
+        header = read_boozer_bc_header(path=str(p), geometry_scheme=int(geometry_scheme))
+        psi_a_hat = float(header.psi_a_hat)
+        a_hat = float(header.a_hat)
+        r_n = float(geom_params.get("RN_WISH", 0.5))
+    else:
+        raise NotImplementedError(f"Er->dPhiHatdpsiHat conversion not implemented for geometryScheme={geometry_scheme}.")
+
+    # With rHat = aHat * rN and psiHat = psiAHat * (rN^2):
+    # dpsiHat/drHat = 2*psiAHat*rN/aHat -> drHat/dpsiHat = aHat/(2*psiAHat*rN).
+    drhat_dpsihat = float(a_hat) / (2.0 * float(psi_a_hat) * float(r_n))
+    return float((-float(er)) * drhat_dpsihat)
 
 
 def _fsab_hat2(*, grids: V3Grids, geom: BoozerGeometry) -> float:
@@ -218,8 +269,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     alpha = float(phys.get("ALPHA", 1.0))
     delta = float(phys.get("DELTA", 0.0))
 
-    # For now we assume geometryScheme=4 and v3 defaults for the radial conversion.
-    dphi = _dphi_hat_dpsi_hat_from_er_scheme4(er)
+    dphi = _dphi_hat_dpsi_hat_from_er(nml=nml, er=er)
     fsab_hat2 = _fsab_hat2(grids=grids, geom=geom)
 
     exb_theta = ExBThetaV3Operator(

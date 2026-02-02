@@ -46,6 +46,10 @@ At the moment, `sfincs_jax` output writing supports:
 Output parity tests live in ``tests/test_output_h5_scheme4_parity.py`` and compare the
 datasets above against a frozen Fortran v3 fixture in ``tests/ref``.
 
+There is also a multi-species parity test against the upstream v3 example output
+(``quick_2species_FPCollisions_noEr``), implemented in
+``tests/test_output_h5_scheme4_quick2species_parity.py``.
+
 .. note::
 
    ``uHat`` depends on many transcendental evaluations (cos/sin) and long floating-point
