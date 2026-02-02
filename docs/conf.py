@@ -27,6 +27,16 @@ except Exception:
 else:
     html_theme = "sphinx_rtd_theme"
 
-# Read the Docs and some locked-down environments can block certain CDNs. Pin MathJax
-# to a widely mirrored CDN to keep equation rendering reliable.
-mathjax_path = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-mml-chtml.min.js"
+# Read the Docs and some locked-down environments can block certain CDNs or inline styles.
+# Pin MathJax to a widely mirrored CDN, and prefer the TeX-only bundle to avoid MathML
+# fallbacks showing up as visible “math italic text” when CSS is restricted.
+mathjax_path = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-chtml.min.js"
+
+# Disable the assistive MathML render action (it can become visible if CSS is blocked).
+mathjax3_config = {
+    "options": {
+        "renderActions": {
+            "assistiveMml": [],
+        }
+    }
+}

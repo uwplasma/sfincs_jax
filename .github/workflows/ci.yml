@@ -19,3 +19,30 @@ jobs:
       - name: Tests
         run: |
           python -m pytest -q
+
+  examples-smoke:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Smoke-run examples (no optional deps)
+        run: |
+          python examples/1_simple/01_build_grids_and_geometry.py
+          python examples/1_simple/02_apply_collisionless_operator.py
+          python examples/1_simple/03_write_sfincs_output_python.py
+          python examples/1_simple/04_write_sfincs_output_cli.py
+          python examples/1_simple/05_write_output_upstream_quick2species_python.py
+          python examples/1_simple/06_write_output_upstream_quick2species_cli.py
+          python examples/2_intermediate/01_geometry_scheme4_parity.py
+          python examples/2_intermediate/02_collisionless_operator_matvec_parity.py
+          python examples/2_intermediate/03_differentiable_geometry_gradients.py
+          python examples/2_intermediate/04_solve_fortran_matrix_with_gmres.py
+          python examples/2_intermediate/08_output_parity_cli_driver.py
+          python examples/2_intermediate/09_output_key_coverage_report.py
+          python examples/2_intermediate/10_matrix_free_residual_and_jvp.py

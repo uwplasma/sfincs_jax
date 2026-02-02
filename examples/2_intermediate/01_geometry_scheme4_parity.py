@@ -29,8 +29,14 @@ from sfincs_jax.v3 import geometry_from_namelist, grids_from_namelist
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--input", required=True, help="Path to SFINCS input.namelist")
-    p.add_argument("--sfincs-output", default=None, help="Path to sfincsOutput.h5 (optional if --run-fortran)")
+    default_input = _REPO_ROOT / "tests" / "ref" / "output_scheme4_1species_tiny.input.namelist"
+    default_output = _REPO_ROOT / "tests" / "ref" / "output_scheme4_1species_tiny.sfincsOutput.h5"
+    p.add_argument("--input", default=str(default_input), help="Path to SFINCS input.namelist (default: repo fixture)")
+    p.add_argument(
+        "--sfincs-output",
+        default=str(default_output),
+        help="Path to sfincsOutput.h5 (default: matching repo fixture; optional if --run-fortran)",
+    )
     p.add_argument("--run-fortran", action="store_true", help="Run Fortran first to generate sfincsOutput.h5")
     p.add_argument("--fortran-exe", default=None, help="Path to Fortran executable (or set SFINCS_FORTRAN_EXE)")
     args = p.parse_args()
@@ -42,8 +48,6 @@ def main() -> int:
             exe=Path(args.fortran_exe) if args.fortran_exe else None,
         )
     else:
-        if args.sfincs_output is None:
-            raise SystemExit("--sfincs-output is required unless --run-fortran is set")
         out_path = Path(args.sfincs_output)
 
     nml = read_sfincs_input(input_path)
