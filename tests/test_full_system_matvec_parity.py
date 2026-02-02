@@ -55,3 +55,27 @@ def test_full_system_matvec_fp_2species_matches_fortran_matrix() -> None:
     # The v3 matrix is a fixed numeric object; any mismatch here indicates a true parity issue.
     np.testing.assert_allclose(y_jax, y_ref, rtol=0, atol=3e-12)
 
+
+def test_full_system_matvec_pas_tiny_with_phi1_linear_matches_fortran_matrix() -> None:
+    """IncludePhi1 parity check for the QN/lambda blocks in a tiny PAS case.
+
+    This fixture uses includePhi1=.true. but includePhi1InKineticEquation=.false., so Phi1 enters only
+    through the quasineutrality and <Phi1>=0 constraint blocks (parity-first step).
+    """
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_linear.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_linear.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_linear.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+
+    a = read_petsc_mat_aij(mat_path)
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+    assert a.shape == (op.total_size, op.total_size)
+
+    y_jax = np.asarray(apply_v3_full_system_operator(op, jnp.asarray(x_ref)))
+    y_ref = _csr_from_petsc(a).dot(x_ref)
+
+    np.testing.assert_allclose(y_jax, y_ref, rtol=0, atol=3e-12)

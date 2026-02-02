@@ -20,6 +20,11 @@
   THats = 1.0d+0
   dNHatdrHats = 0.0d+0
   dTHatdrHats = 0.0d+0
+
+  withAdiabatic = .true.
+  adiabaticZ = 1.0d+0
+  adiabaticNHat = 1.0d+0
+  adiabaticTHat = 1.0d+0
 /
 
 &physicsParameters
@@ -33,10 +38,6 @@
   includePhi1InKineticEquation = .false.
   includePhi1InCollisionOperator = .false.
   quasineutralityOption = 2
-  withAdiabatic = .true.
-  adiabaticZ = 1.0d+0
-  adiabaticNHat = 1.0d+0
-  adiabaticTHat = 1.0d+0
 /
 
 &resolutionParameters
@@ -51,4 +52,3 @@
   constraintScheme = 2
   Nxi_for_x_option = 1
 /
-

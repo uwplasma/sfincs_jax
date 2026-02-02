@@ -23,6 +23,9 @@ Implemented (parity-tested)
   PETSc matrix for a 2-species ``geometryScheme=4`` fixture (``tests/ref/quick_2species_FPCollisions_noEr.whichMatrix_3.petscbin``).
 - Full-system matvec parity (includePhi1=false, constraint schemes 1/2) vs frozen PETSc matrices for:
   ``pas_1species_PAS_noEr_tiny`` and ``quick_2species_FPCollisions_noEr``.
+- Phi1/QN/lambda block parity (includePhi1=true, includePhi1InKineticEquation=false):
+  full-system matvec + GMRES solution parity vs frozen PETSc binaries for
+  ``pas_1species_PAS_noEr_tiny_withPhi1_linear``.
 
 Not yet implemented
 -------------------

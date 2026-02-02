@@ -351,10 +351,11 @@ def full_system_operator_from_namelist(*, nml: Namelist, identity_shift: float =
     nhat = _as_1d_float_array(species.get("NHATS", 1.0))
 
     quasineutrality_option = _get_int(phys, "quasineutralityOption", 1)
-    with_adiabatic = _get_bool(phys, "withAdiabatic", False)
-    adiabatic_z = float(phys.get("ADIABATICZ", 1.0))
-    adiabatic_nhat = float(phys.get("ADIABATICNHAT", 0.0))
-    adiabatic_that = float(phys.get("ADIABATICTHAT", 1.0))
+    # In v3, adiabatic-species settings live in the speciesParameters namelist.
+    with_adiabatic = _get_bool(species, "withAdiabatic", False)
+    adiabatic_z = float(species.get("ADIABATICZ", 1.0))
+    adiabatic_nhat = float(species.get("ADIABATICNHAT", 0.0))
+    adiabatic_that = float(species.get("ADIABATICTHAT", 1.0))
     alpha = float(phys.get("ALPHA", 1.0))
 
     return V3FullSystemOperator(

@@ -1,0 +1,66 @@
+! Tiny PAS example including Phi1 blocks, designed for parity testing in sfincs_jax.
+!
+! This case enables includePhi1 with a simple quasineutralityOption=2+adiabatic diagonal term,
+! while keeping includePhi1InKineticEquation=.false. so the only Phi1 coupling is through the
+! QN/lambda blocks (parity-first step).
+
+&general
+  saveMatricesAndVectorsInBinary = .t.
+/
+
+&geometryParameters
+  geometryScheme = 4
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1.0d+0
+  nHats = 1.0d+0
+  THats = 1.0d+0
+  dNHatdrHats = -0.5d+0
+  dTHatdrHats = -2.0d+0
+
+  withAdiabatic = .t.
+  adiabaticZ = -1
+  adiabaticNHat = 1.0d+0
+  adiabaticTHat = 1.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 8.4774d-3
+  Er = 0.0d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .false.
+
+  includePhi1 = .true.
+  includePhi1InKineticEquation = .false.
+  includePhi1InCollisionOperator = .false.
+  quasineutralityOption = 2
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 5
+  Nxi = 4
+  NL = 2
+  Nx = 3
+  solverTolerance = 1d-10
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
+
