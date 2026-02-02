@@ -66,6 +66,11 @@ def read_vmec_wout(path: str | Path) -> VmecWout:
     p = Path(path).expanduser().resolve()
     if not p.exists():
         raise FileNotFoundError(str(p))
+    if p.suffix.lower() in {".txt", ".dat"}:
+        raise NotImplementedError(
+            "VMEC ASCII `wout_*.txt` files are not supported in sfincs_jax yet. "
+            "Use a netCDF `wout_*.nc` file (geometryScheme=5)."
+        )
 
     with netcdf_file(p, "r", mmap=False) as f:
         nfp = int(_read_var(f, "nfp"))

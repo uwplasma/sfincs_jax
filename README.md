@@ -109,6 +109,14 @@ python examples/1_simple/01_build_grids_and_geometry.py
 python examples/2_intermediate/11_autodiff_er_xidot_term.py  # requires ".[viz]"
 ```
 
+Optimization + publication-ready figures (optional extras):
+
+```bash
+pip install -e ".[opt,viz]"
+python examples/3_advanced/04_optimize_scheme4_harmonics_publication_figures.py
+python examples/3_advanced/05_calibrate_nu_n_to_fortran_residual_fixture.py
+```
+
 Quick performance sanity check (JIT vs no-JIT):
 
 ```bash

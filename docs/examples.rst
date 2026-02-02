@@ -39,6 +39,18 @@ Plotting examples require:
 
    pip install -e ".[viz]"
 
+Optimization + figures
+----------------------
+
+Two examples that showcase autodiff-driven optimization (and write publication-style figures when `matplotlib`
+is available):
+
+.. code-block:: bash
+
+   pip install -e ".[opt,viz]"
+   python examples/3_advanced/04_optimize_scheme4_harmonics_publication_figures.py
+   python examples/3_advanced/05_calibrate_nu_n_to_fortran_residual_fixture.py
+
 Upstream SFINCS example inputs
 --------------------------------
 
