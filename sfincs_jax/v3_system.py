@@ -649,7 +649,8 @@ def full_system_operator_from_namelist(
 
     collision_operator = _get_int(phys, "collisionOperator", 0)
     delta = float(phys.get("DELTA", 0.0))
-    constraint_scheme = _get_int(other, "constraintScheme", -1)
+    # In v3, `constraintScheme` is a physics input (readInput.F90) and is finalized in createGrids.F90.
+    constraint_scheme = _get_int(phys, "constraintScheme", -1)
     if constraint_scheme < 0:
         constraint_scheme = 1 if collision_operator == 0 else 2
 
@@ -691,7 +692,17 @@ def full_system_operator_from_namelist(
         )
 
     geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
-    if geometry_scheme == 4:
+    if geometry_scheme == 1:
+        # v3 defaults are in `globalVariables.F90`; allow the namelist to override them.
+        psi_a_hat = float(geom_params.get("PSIAHAT", 0.15596))
+        a_hat = float(geom_params.get("AHAT", 0.5585))
+        r_n = float(geom_params.get("RN_WISH", 0.5))
+    elif geometry_scheme == 2:
+        # v3 ignores *_wish and uses rN=0.5 for this simplified LHD model.
+        a_hat = 0.5585
+        psi_a_hat = (a_hat * a_hat) / 2.0
+        r_n = 0.5
+    elif geometry_scheme == 4:
         psi_a_hat = -0.384935
         a_hat = 0.5109
         r_n = 0.5  # v3 forces rN=0.5 for geometryScheme=4.
@@ -714,7 +725,12 @@ def full_system_operator_from_namelist(
         base_dir = nml.source_path.parent if nml.source_path is not None else None
         repo_root = Path(__file__).resolve().parents[1]
         extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
-        p = resolve_existing_path(str(eq), base_dir=base_dir, extra_search_dirs=extra).path
+        # Allow `.txt -> .nc` fallback for VMEC wout files.
+        try:
+            p = resolve_existing_path(str(eq), base_dir=base_dir, extra_search_dirs=extra).path
+        except FileNotFoundError:
+            p2 = Path(str(eq).strip().strip('"').strip("'")).with_suffix(".nc")
+            p = resolve_existing_path(str(p2), base_dir=base_dir, extra_search_dirs=extra).path
 
         w = read_vmec_wout(p)
         psi_a_hat = float(psi_a_hat_from_wout(w))

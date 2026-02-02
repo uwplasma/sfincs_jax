@@ -1,0 +1,143 @@
+ ****************************************************************************
+ SFINCS: Stellarator Fokker-Plank Iterative Neoclassical Conservative Solver
+ Version 3
+ Using double precision.
+ Serial job (1 process) detected.
+ Successfully read parameters from general namelist in input.namelist.
+ Successfully read parameters from geometryParameters namelist in input.namelist.
+ Successfully read parameters from speciesParameters namelist in input.namelist.
+ Successfully read parameters from physicsParameters namelist in input.namelist.
+ Successfully read parameters from resolutionParameters namelist in input.namelist.
+ Successfully read parameters from otherNumericalParameters namelist in input.namelist.
+ Successfully read parameters from preconditionerOptions namelist in input.namelist.
+ Successfully read parameters from export_f namelist in input.namelist.
+ ******************************************************************
+ ******************************************************************
+ **   WARNING: You almost certainly should have Nx at least 4.
+               (The exception is when RHSMode = 3, in which case Nx = 1.)
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ **   WARNING: Although values of NL in the range [2,8] work well, NL = 4 is usually recommended.
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ ******************************************************************
+ **   WARNING: You selected a small solverTolerance which may require more Krylov/KSP iterations than necessary.
+ **            Good values for solverTolerance are typically 1e-5 to 1e-7.
+ ******************************************************************
+ ******************************************************************
+ mumps detected
+ superlu_dist not detected
+ ---- Physics parameters: ----
+ Number of particle species =            1
+ Delta (rho* at reference parameters)          =    4.5694000000000004E-003
+ alpha (e Phi / T at reference parameters)     =    1.0000000000000000     
+ nu_n (collisionality at reference parameters) =    8.4773999999999995E-003
+ Linear run
+ ---- Numerical parameters: ----
+ Ntheta             =            9
+ Nzeta              =            1
+ Nxi                =            4
+ NL                 =            2
+ Nx                 =            3
+ solverTolerance    =    1.0000000000000000E-010
+ Theta derivative: centered finite differences, 5-point stencil
+ Zeta derivative: centered finite differences, 5-point stencil
+ For solving large linear systems, an iterative Krylov solver will be used.
+ Processor    0 owns theta indices   1 to   9 and zeta indices   1 to   1
+ Nxi_for_x_option:           0
+ x:  0.19055414979819199       0.84825186754457726        1.7997765784157276     
+ Nxi for each x:           4           4           4
+ min_x_for_L:           1           1           1           1
+ The matrix is          111 x         111  elements.
+ Selecting the flux surface to use based on rN_wish =   0.29999999999999999     
+ ---- Geometry parameters: ----
+ Geometry scheme =            1
+ psiAHat (Normalized toroidal flux at the last closed flux surface) =    4.4999999999999998E-002
+ aHat (Radius of the last closed flux surface in units of RHat) =   0.10000000000000001     
+ epsilon_t =   0.10000000000000001     
+ epsilon_h =    0.0000000000000000     
+ epsilon_antisymm =    0.0000000000000000     
+ GHat (Boozer component multiplying grad zeta) =    1.0000000000000000     
+ IHat (Boozer component multiplying grad theta) =    0.0000000000000000     
+ iota (Rotational transform) =    1.3100000000000001     
+ ---- Geometry parameters: ----
+ Geometry scheme =            1
+ psiAHat (Normalized toroidal flux at the last closed flux surface) =    4.4999999999999998E-002
+    0 KSP Residual norm 5.566701561814e-03 
+    1 KSP Residual norm 8.361202520540e-16 
+ aHat (Radius of the last closed flux surface in units of RHat) =   0.10000000000000001     
+ epsilon_t =   0.10000000000000001     
+ epsilon_h =    0.0000000000000000     
+ epsilon_antisymm =    0.0000000000000000     
+ GHat (Boozer component multiplying grad zeta) =    1.0000000000000000     
+ IHat (Boozer component multiplying grad theta) =    0.0000000000000000     
+ iota (Rotational transform) =    1.3100000000000001     
+ ------------------------------------------------------
+ Done creating grids.
+ Requested/actual flux surface for this calculation, in various radial coordinates:
+   psiHat =    4.0499999999999998E-003 /   4.0499999999999998E-003
+   psiN   =    8.9999999999999997E-002 /   8.9999999999999997E-002
+   rHat   =    3.0000000000000002E-002 /   2.9999999999999999E-002
+   rN     =   0.29999999999999999      /  0.29999999999999999     
+ Selecting the input gradients of n & T from the specified ddrHat values.
+ Selecting the input gradient of Phi from the specified Er.
+ Entering main solver loop.
+ Initializing f0
+ Beginning preallocation for whichMatrix =            1
+ Beginning preallocation for whichMatrix =            0
+ Since this is a linear run, we will only take a single step, and not iterate Newton's method.
+ Solver package which will be used: mumps                                                                           
+ ------------------------------------------------------
+ Finished initialization.
+ Beginning the main solve.  This could take a while ...
+ evaluateResidual called.
+ State vector is 0 so I will skip building the first matrix when evaluating the residual.
+ Saving residual in binary format: sfincsBinary_iteration_000_residual
+--------- Residual function norm:  1.4593560E-03 -----------------------------
+ evaluateJacobian called.
+ Running populateMatrix with whichMatrix =            0
+ Time to pre-assemble Jacobian preconditioner matrix:    8.9041655883193016E-005  seconds.
+ Time to assemble Jacobian preconditioner matrix:    6.6666398197412491E-006  seconds.
+ # of nonzeros in Jacobian preconditioner matrix:         933 , allocated:        6402 , mallocs:           0  (should be 0)
+ Saving matrix in binary format: sfincsBinary_iteration_000_whichMatrix_0
+ Running populateMatrix with whichMatrix =            1
+ Time to pre-assemble Jacobian matrix:    6.5333326347172260E-005  seconds.
+ Time to assemble Jacobian matrix:    2.5000190362334251E-006  seconds.
+ # of nonzeros in Jacobian matrix:         933 , allocated:        6402 , mallocs:           0  (should be 0)
+ Saving matrix in binary format: sfincsBinary_iteration_000_whichMatrix_1
+ evaluateResidual called.
+ Beginning preallocation for whichMatrix =            3
+ Running populateMatrix with whichMatrix =            3
+ Time to pre-assemble residual f1 matrix:    5.9666694141924381E-005  seconds.
+ Time to assemble residual f1 matrix:    2.2500753402709961E-006  seconds.
+ # of nonzeros in residual f1 matrix:         933 , allocated:        6402 , mallocs:           0  (should be 0)
+ Saving matrix in binary format: sfincsBinary_iteration_000_whichMatrix_3
+ Saving residual in binary format: sfincsBinary_iteration_001_residual
+--------- Completed iteration    1 of SNES -----------------------------------
+--------- Residual function norm:  5.5694669E-17 -----------------------------
+ Linear iteration (KSP) converged.  KSPConvergedReason =            2
+   KSP_CONVERGED_RTOL: Norm decreased by rtol.
+ Computing diagnostics.
+ Initializing f0
+    FSADensityPerturbation:     2.1246784340417433E-020
+    FSABFlow:                   2.4962063387563953E-003
+    max and min Mach #:         1.3214808711443482E-002  -7.2616744542896676E-003
+    FSAPressurePerturbation:    1.6997427472333946E-020
+    NTV:                        1.7426839826360553E-017
+    particleFlux_vm0_psiHat     3.4593422297754036E-020
+    particleFlux_vm_psiHat      6.2654556728883225E-008
+    classicalParticleFlux       0.0000000000000000     
+    classicalHeatFlux           0.0000000000000000     
+    momentumFlux_vm0_psiHat     0.0000000000000000     
+    momentumFlux_vm_psiHat     -1.6423559864919283E-021
+    heatFlux_vm0_psiHat         2.2618776117762253E-020
+    heatFlux_vm_psiHat          4.4119615163010439E-008
+    sources:   -6.5461657186576262E-021  -2.5208850113691894E-021   3.9642800903045345E-019
+ FSABjHat (bootstrap current):    2.4962063387563953E-003
+ Saving diagnostics to h5 file for iteration            1
+ Saving state vector in binary format: sfincsBinary_iteration_000_stateVector
+ Done with the main solve.  Time to solve:    1.7959875054657459E-002  seconds.
+ Goodbye!

@@ -38,6 +38,9 @@ def test_full_system_residual_pas_tiny_scheme5_matches_fortran() -> None:
 def test_full_system_residual_pas_tiny_scheme5_with_phi1_linear_matches_fortran() -> None:
     _run_case("pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear")
 
+def test_full_system_residual_pas_tiny_scheme1_matches_fortran() -> None:
+    _run_case("pas_1species_PAS_noEr_tiny_scheme1")
+
 
 def test_full_system_residual_fp_2species_matches_fortran() -> None:
     _run_case("quick_2species_FPCollisions_noEr")
