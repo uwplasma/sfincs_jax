@@ -36,7 +36,7 @@ class ExBThetaV3Operator:
     b_hat: jnp.ndarray  # (Ntheta, Nzeta)
     b_hat_sub_zeta: jnp.ndarray  # (Ntheta, Nzeta)
 
-    use_dkes_exb_drift: jnp.ndarray  # scalar bool
+    use_dkes_exb_drift: bool
     fsab_hat2: jnp.ndarray  # scalar, only used when use_dkes_exb_drift=True
 
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
@@ -50,16 +50,14 @@ class ExBThetaV3Operator:
             self.d_hat,
             self.b_hat,
             self.b_hat_sub_zeta,
-            self.use_dkes_exb_drift,
             self.fsab_hat2,
             self.n_xi_for_x,
         )
-        aux = None
+        aux = bool(self.use_dkes_exb_drift)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        del aux
         (
             alpha,
             delta,
@@ -68,7 +66,6 @@ class ExBThetaV3Operator:
             d_hat,
             b_hat,
             b_hat_sub_zeta,
-            use_dkes_exb_drift,
             fsab_hat2,
             n_xi_for_x,
         ) = children
@@ -80,7 +77,7 @@ class ExBThetaV3Operator:
             d_hat=d_hat,
             b_hat=b_hat,
             b_hat_sub_zeta=b_hat_sub_zeta,
-            use_dkes_exb_drift=use_dkes_exb_drift,
+            use_dkes_exb_drift=bool(aux),
             fsab_hat2=fsab_hat2,
             n_xi_for_x=n_xi_for_x,
         )
@@ -100,7 +97,7 @@ class ExBZetaV3Operator:
     b_hat: jnp.ndarray  # (Ntheta, Nzeta)
     b_hat_sub_theta: jnp.ndarray  # (Ntheta, Nzeta)
 
-    use_dkes_exb_drift: jnp.ndarray  # scalar bool
+    use_dkes_exb_drift: bool
     fsab_hat2: jnp.ndarray  # scalar, only used when use_dkes_exb_drift=True
 
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
@@ -114,16 +111,14 @@ class ExBZetaV3Operator:
             self.d_hat,
             self.b_hat,
             self.b_hat_sub_theta,
-            self.use_dkes_exb_drift,
             self.fsab_hat2,
             self.n_xi_for_x,
         )
-        aux = None
+        aux = bool(self.use_dkes_exb_drift)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        del aux
         (
             alpha,
             delta,
@@ -132,7 +127,6 @@ class ExBZetaV3Operator:
             d_hat,
             b_hat,
             b_hat_sub_theta,
-            use_dkes_exb_drift,
             fsab_hat2,
             n_xi_for_x,
         ) = children
@@ -144,7 +138,7 @@ class ExBZetaV3Operator:
             d_hat=d_hat,
             b_hat=b_hat,
             b_hat_sub_theta=b_hat_sub_theta,
-            use_dkes_exb_drift=use_dkes_exb_drift,
+            use_dkes_exb_drift=bool(aux),
             fsab_hat2=fsab_hat2,
             n_xi_for_x=n_xi_for_x,
         )
@@ -169,7 +163,7 @@ def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     if n_x != op.n_xi_for_x.shape[0]:
         raise ValueError("f x axis does not match n_xi_for_x")
 
-    if bool(op.use_dkes_exb_drift):
+    if op.use_dkes_exb_drift:
         denom = op.fsab_hat2.astype(jnp.float64)
         coef = (op.d_hat * op.b_hat_sub_zeta / denom).astype(jnp.float64)  # (T,Z)
     else:
@@ -198,7 +192,7 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     if n_x != op.n_xi_for_x.shape[0]:
         raise ValueError("f x axis does not match n_xi_for_x")
 
-    if bool(op.use_dkes_exb_drift):
+    if op.use_dkes_exb_drift:
         denom = op.fsab_hat2.astype(jnp.float64)
         coef = (op.d_hat * op.b_hat_sub_theta / denom).astype(jnp.float64)  # (T,Z)
     else:
@@ -216,4 +210,3 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
 
 apply_exb_theta_v3_jit = jax.jit(apply_exb_theta_v3, static_argnums=())
 apply_exb_zeta_v3_jit = jax.jit(apply_exb_zeta_v3, static_argnums=())
-

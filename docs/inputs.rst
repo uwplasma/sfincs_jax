@@ -38,3 +38,16 @@ Practical notes for users
 
 - If you want differentiability, prefer workflows that construct a `V3FullSystemOperator` once and then
   treat its fields as differentiable parameters (see ``docs/performance.rst``).
+
+Transport-matrix modes (``RHSMode=2/3``)
+----------------------------------------------------------------------
+
+In upstream v3, ``RHSMode=2`` and ``RHSMode=3`` (transport-matrix modes) run a loop over ``whichRHS`` and
+overwrite the equilibrium gradients and/or inductive field **internally** before building each RHS via
+``evaluateResidual(f=0)``. `sfincs_jax` exposes the same behavior via
+:func:`sfincs_jax.v3_system.with_transport_rhs_settings` so parity fixtures can reproduce the v3 solver
+RHS exactly.
+
+For ``RHSMode=3`` (monoenergetic coefficients), v3 also overwrites the speed grid to a single point at
+``x=1`` with ``xWeights=exp(1)`` (see v3 ``createGrids.F90``). `sfincs_jax` matches this behavior in
+:func:`sfincs_jax.v3.grids_from_namelist`.

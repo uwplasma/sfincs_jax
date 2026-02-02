@@ -695,9 +695,10 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["solverTolerance"] = np.asarray(_get_float(resolution, "solverTolerance", 1e-8), dtype=np.float64)
 
     # Physics parameters (subset):
-    out["Delta"] = np.asarray(_get_float(phys, "Delta", 0.0), dtype=np.float64)
+    # Defaults match v3 `globalVariables.F90`, which upstream examples sometimes rely on.
+    out["Delta"] = np.asarray(_get_float(phys, "Delta", 4.5694e-3), dtype=np.float64)
     out["alpha"] = np.asarray(_get_float(phys, "alpha", 1.0), dtype=np.float64)
-    out["nu_n"] = np.asarray(_get_float(phys, "nu_n", 0.0), dtype=np.float64)
+    out["nu_n"] = np.asarray(_get_float(phys, "nu_n", 8.330e-3), dtype=np.float64)
     out["Er"] = np.asarray(_get_float(phys, "Er", 0.0), dtype=np.float64)
     out["collisionOperator"] = np.asarray(_get_int(phys, "collisionOperator", 0), dtype=np.int32)
     out["magneticDriftScheme"] = np.asarray(_get_int(phys, "magneticDriftScheme", 0), dtype=np.int32)
@@ -718,24 +719,42 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["inputRadialCoordinateForGradients"] = np.asarray(int(input_radial_grad), dtype=np.int32)
 
     conv = _conversion_factors_to_from_dpsi_hat(psi_a_hat=psi_a_hat, a_hat=a_hat, r_n=r_n)
+    rhs_mode = int(_get_int(general, "RHSMode", 1))
     dphi_dpsihat_in = _get_float(phys, "dPhiHatdpsiHat", 0.0)
     dphi_dpsin_in = _get_float(phys, "dPhiHatdpsiN", 0.0)
     dphi_drhat_in = _get_float(phys, "dPhiHatdrHat", 0.0)
     dphi_drn_in = _get_float(phys, "dPhiHatdrN", 0.0)
     er_in = float(out["Er"])
 
-    if int(input_radial_grad) == 0:
-        dphi_dpsihat = float(dphi_dpsihat_in)
-    elif int(input_radial_grad) == 1:
-        dphi_dpsihat = float(conv["ddpsiN2ddpsiHat"]) * float(dphi_dpsin_in)
-    elif int(input_radial_grad) == 2:
-        dphi_dpsihat = float(conv["ddrHat2ddpsiHat"]) * float(dphi_drhat_in)
-    elif int(input_radial_grad) == 3:
-        dphi_dpsihat = float(conv["ddrN2ddpsiHat"]) * float(dphi_drn_in)
-    elif int(input_radial_grad) == 4:
-        dphi_dpsihat = float(conv["ddrHat2ddpsiHat"]) * (-float(er_in))
+    if rhs_mode == 3:
+        # Monoenergetic coefficient computation (v3 `sfincs_main.F90` overwrites nu_n and dPhiHatdpsiHat).
+        nu_prime = _get_float(phys, "nuPrime", 1.0)
+        e_star = _get_float(phys, "EStar", 0.0)
+        denom = float(geom.g_hat) + float(geom.iota) * float(geom.i_hat)
+        out["nuPrime"] = np.asarray(float(nu_prime), dtype=np.float64)
+        out["EStar"] = np.asarray(float(e_star), dtype=np.float64)
+        out["nu_n"] = np.asarray(float(nu_prime) * float(geom.b0_over_bbar) / denom, dtype=np.float64)
+        dphi_dpsihat = (
+            2.0
+            / (float(out["alpha"]) * float(out["Delta"]))
+            * float(e_star)
+            * float(geom.iota)
+            * float(geom.b0_over_bbar)
+            / float(geom.g_hat)
+        )
     else:
-        raise NotImplementedError(f"Unsupported inputRadialCoordinateForGradients={input_radial_grad}")
+        if int(input_radial_grad) == 0:
+            dphi_dpsihat = float(dphi_dpsihat_in)
+        elif int(input_radial_grad) == 1:
+            dphi_dpsihat = float(conv["ddpsiN2ddpsiHat"]) * float(dphi_dpsin_in)
+        elif int(input_radial_grad) == 2:
+            dphi_dpsihat = float(conv["ddrHat2ddpsiHat"]) * float(dphi_drhat_in)
+        elif int(input_radial_grad) == 3:
+            dphi_dpsihat = float(conv["ddrN2ddpsiHat"]) * float(dphi_drn_in)
+        elif int(input_radial_grad) == 4:
+            dphi_dpsihat = float(conv["ddrHat2ddpsiHat"]) * (-float(er_in))
+        else:
+            raise NotImplementedError(f"Unsupported inputRadialCoordinateForGradients={input_radial_grad}")
 
     # Convert from d/dpsiHat to all other coordinates (matches v3).
     out["dPhiHatdpsiHat"] = np.asarray(dphi_dpsihat, dtype=np.float64)
@@ -752,7 +771,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["integerToRepresentTrue"] = np.asarray(1, dtype=np.int32)
 
     out["useIterativeLinearSolver"] = _fortran_logical(True)
-    out["RHSMode"] = np.asarray(_get_int(general, "RHSMode", 1), dtype=np.int32)
+    out["RHSMode"] = np.asarray(int(rhs_mode), dtype=np.int32)
     # In v3, `NIterations` is written as 0 during initializeOutputFile(), and is later
     # overwritten by updateOutputFile(iterationNum, ...). For the small output parity
     # fixtures, geometryScheme=4 typically retains 0, while 11/12 generally writes 1.

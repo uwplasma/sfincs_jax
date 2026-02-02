@@ -65,6 +65,19 @@ def _get_int(group: dict, key: str, default: int) -> int:
     return int(v)
 
 
+def _as_1d_float_default(group: dict, key: str, *, default: float) -> np.ndarray:
+    """Read a namelist value as a 1D float64 numpy array, with a scalar default."""
+    k = key.upper()
+    if k not in group:
+        return np.atleast_1d(np.asarray(default, dtype=np.float64))
+    return np.atleast_1d(np.asarray(group[k], dtype=np.float64))
+
+
+# Defaults from v3 `globalVariables.F90`, used when upstream inputs omit these values.
+_V3_DEFAULT_DELTA = 4.5694e-3
+_V3_DEFAULT_NU_N = 8.330e-3
+
+
 def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
     """Compute dPhiHat/dpsiHat from Er using v3 defaults (subset).
 
@@ -150,8 +163,9 @@ def collisionless_operator_from_namelist(
     geom: BoozerGeometry,
 ) -> CollisionlessV3Operator:
     species = nml.group("speciesParameters")
-    t_hats = _as_1d_float(species, "THats")
-    m_hats = _as_1d_float(species, "mHats")
+    # Monoenergetic runs (RHSMode=3) can omit speciesParameters entirely in upstream examples.
+    t_hats = _as_1d_float_default(species, "THats", default=1.0)
+    m_hats = _as_1d_float_default(species, "mHats", default=1.0)
     return CollisionlessV3Operator(
         x=grids.x,
         ddtheta=grids.ddtheta,
@@ -167,7 +181,9 @@ def collisionless_operator_from_namelist(
     )
 
 
-def pas_collision_operator_from_namelist(*, nml: Namelist, grids: V3Grids) -> PitchAngleScatteringV3Operator:
+def pas_collision_operator_from_namelist(
+    *, nml: Namelist, grids: V3Grids, nu_n_override: float | None = None
+) -> PitchAngleScatteringV3Operator:
     species = nml.group("speciesParameters")
     phys = nml.group("physicsParameters")
 
@@ -178,11 +194,11 @@ def pas_collision_operator_from_namelist(*, nml: Namelist, grids: V3Grids) -> Pi
             "(pitch-angle scattering)."
         )
 
-    z_s = _as_1d_float(species, "Zs")
-    m_hats = _as_1d_float(species, "mHats")
-    n_hats = _as_1d_float(species, "nHats")
-    t_hats = _as_1d_float(species, "THats")
-    nu_n = _get_float(phys, "nu_n", 0.0)
+    z_s = _as_1d_float_default(species, "Zs", default=1.0)
+    m_hats = _as_1d_float_default(species, "mHats", default=1.0)
+    n_hats = _as_1d_float_default(species, "nHats", default=1.0)
+    t_hats = _as_1d_float_default(species, "THats", default=1.0)
+    nu_n = float(nu_n_override) if nu_n_override is not None else _get_float(phys, "nu_n", _V3_DEFAULT_NU_N)
     krook = _get_float(phys, "Krook", 0.0)
 
     return make_pitch_angle_scattering_v3_operator(
@@ -223,7 +239,7 @@ def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Gr
     m_hats = _as_1d_float(species, "mHats")
     n_hats = _as_1d_float(species, "nHats")
     t_hats = _as_1d_float(species, "THats")
-    nu_n = _get_float(phys, "nu_n", 0.0)
+    nu_n = _get_float(phys, "nu_n", _V3_DEFAULT_NU_N)
     krook = _get_float(phys, "Krook", 0.0)
 
     return make_fokker_planck_v3_operator(
@@ -272,7 +288,7 @@ def fokker_planck_collision_operator_with_phi1_from_namelist(
     m_hats = _as_1d_float(species, "mHats")
     n_hats = _as_1d_float(species, "nHats")
     t_hats = _as_1d_float(species, "THats")
-    nu_n = _get_float(phys, "nu_n", 0.0)
+    nu_n = _get_float(phys, "nu_n", _V3_DEFAULT_NU_N)
     krook = _get_float(phys, "Krook", 0.0)
 
     return make_fokker_planck_v3_phi1_operator(
@@ -385,12 +401,19 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
     colless = collisionless_operator_from_namelist(nml=nml, grids=grids, geom=geom)
+    general = nml.group("general")
     phys = nml.group("physicsParameters")
+    rhs_mode = _get_int(general, "RHSMode", 1)
     collision_operator = _get_int(phys, "collisionOperator", 0)
     include_phi1 = bool(phys.get("INCLUDEPHI1", False))
     include_phi1_in_collisions = bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False))
     if collision_operator == 1:
-        pas = pas_collision_operator_from_namelist(nml=nml, grids=grids)
+        nu_n_override = None
+        if rhs_mode == 3:
+            nu_prime = _get_float(phys, "nuPrime", 1.0)
+            denom = float(geom.g_hat) + float(geom.iota) * float(geom.i_hat)
+            nu_n_override = float(nu_prime) * float(geom.b0_over_bbar) / float(denom)
+        pas = pas_collision_operator_from_namelist(nml=nml, grids=grids, nu_n_override=nu_n_override)
         fp = None
         fp_phi1 = None
     elif collision_operator == 0:
@@ -411,9 +434,20 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     magnetic_drift_scheme = _get_int(phys, "magneticDriftScheme", 0)
     er = float(phys.get("ER", 0.0))
     alpha = float(phys.get("ALPHA", 1.0))
-    delta = float(phys.get("DELTA", 0.0))
+    delta = float(phys.get("DELTA", _V3_DEFAULT_DELTA))
 
-    dphi = _dphi_hat_dpsi_hat_from_er(nml=nml, er=er)
+    if rhs_mode == 3:
+        e_star = _get_float(phys, "EStar", 0.0)
+        dphi = (
+            2.0
+            / (float(alpha) * float(delta))
+            * float(e_star)
+            * float(geom.iota)
+            * float(geom.b0_over_bbar)
+            / float(geom.g_hat)
+        )
+    else:
+        dphi = _dphi_hat_dpsi_hat_from_er(nml=nml, er=er)
     fsab_hat2 = _fsab_hat2(grids=grids, geom=geom)
 
     exb_theta = ExBThetaV3Operator(
@@ -424,7 +458,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         d_hat=geom.d_hat,
         b_hat=geom.b_hat,
         b_hat_sub_zeta=geom.b_hat_sub_zeta,
-        use_dkes_exb_drift=jnp.asarray(use_dkes_exb),
+        use_dkes_exb_drift=bool(use_dkes_exb),
         fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
         n_xi_for_x=grids.n_xi_for_x,
     )
@@ -436,7 +470,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         d_hat=geom.d_hat,
         b_hat=geom.b_hat,
         b_hat_sub_theta=geom.b_hat_sub_theta,
-        use_dkes_exb_drift=jnp.asarray(use_dkes_exb),
+        use_dkes_exb_drift=bool(use_dkes_exb),
         fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
         n_xi_for_x=grids.n_xi_for_x,
     )
@@ -449,8 +483,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             raise NotImplementedError("sfincs_jax currently only builds magnetic drifts for magneticDriftScheme=1.")
 
         species = nml.group("speciesParameters")
-        t_hat = float(_as_1d_float(species, "THats")[0])
-        z = float(_as_1d_float(species, "Zs")[0])
+        t_hat = float(_as_1d_float_default(species, "THats", default=1.0)[0])
+        z = float(_as_1d_float_default(species, "Zs", default=1.0)[0])
 
         magdrift_theta = MagneticDriftThetaV3Operator(
             delta=jnp.asarray(delta, dtype=jnp.float64),

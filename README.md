@@ -23,6 +23,7 @@ small, parity-tested slices:
 - Full-system **matrix-free** matvec parity for two fixtures (no-Phi1, constraint schemes 1/2)
 - Full-system **matrix-free** matvec + RHS + residual + GMRES-solution parity for VMEC `geometryScheme=5` fixtures (tiny PAS, with/without Phi1 QN blocks)
 - Full-system **RHS and residual** assembly parity vs frozen Fortran v3 `evaluateResidual.F90` binaries (subset)
+- Monoenergetic transport coefficients (`RHSMode=3`): v3 `x=1` grid special-case parity + full-system matvec/RHS parity for a tiny `geometryScheme=1` fixture
 - Experimental Newton–Krylov nonlinear solve (parity on a tiny Phi1-in-kinetic fixture)
 - Matrix-free residual/JVP scaffolding for implicit-diff workflows
 - Implicit-differentiation through linear GMRES solves (`sfincs_jax.implicit_solve`)

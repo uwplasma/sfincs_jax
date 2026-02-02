@@ -20,6 +20,7 @@ from .v3_fblock import V3FBlockOperator, apply_v3_fblock_operator, fblock_operat
 from .vmec_wout import psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
 
 _THRESHOLD_FOR_INCLUSION = 1e-12  # Matches v3 `sparsify.F90`.
+_V3_DEFAULT_DELTA = 4.5694e-3  # v3 `globalVariables.F90`
 
 
 def _get_int(group: dict, key: str, default: int) -> int:
@@ -105,22 +106,26 @@ class V3FullSystemOperator:
     ddx: jnp.ndarray  # (X,X)
 
     def tree_flatten(self):
+        # Keep Python ints/bools in `aux` so the operator can be used as a JAX PyTree in JITted code.
+        # Shape-affecting options are static in practice (e.g. includePhi1 changes the vector layout).
+        aux = (
+            int(self.constraint_scheme),
+            bool(self.point_at_x0),
+            bool(self.include_phi1),
+            int(self.quasineutrality_option),
+            bool(self.with_adiabatic),
+            bool(self.include_phi1_in_kinetic),
+            int(self.rhs_mode),
+        )
         children = (
             self.fblock,
-            self.constraint_scheme,
-            self.point_at_x0,
-            self.include_phi1,
-            self.quasineutrality_option,
-            self.with_adiabatic,
             self.alpha,
             self.delta,
             self.adiabatic_z,
             self.adiabatic_nhat,
             self.adiabatic_that,
-            self.include_phi1_in_kinetic,
             self.dphi_hat_dpsi_hat,
             self.phi1_hat_base,
-            self.rhs_mode,
             self.e_parallel_hat,
             self.e_parallel_hat_spec,
             self.fsab_hat2,
@@ -144,28 +149,28 @@ class V3FullSystemOperator:
             self.x_weights,
             self.ddx,
         )
-        aux = None
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        del aux
         (
-            fblock,
             constraint_scheme,
             point_at_x0,
             include_phi1,
             quasineutrality_option,
             with_adiabatic,
+            include_phi1_in_kinetic,
+            rhs_mode,
+        ) = aux
+        (
+            fblock,
             alpha,
             delta,
             adiabatic_z,
             adiabatic_nhat,
             adiabatic_that,
-            include_phi1_in_kinetic,
             dphi_hat_dpsi_hat,
             phi1_hat_base,
-            rhs_mode,
             e_parallel_hat,
             e_parallel_hat_spec,
             fsab_hat2,
@@ -620,6 +625,54 @@ def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
     return jnp.concatenate([rhs_f_flat, rhs_phi1, rhs_extra], axis=0)
 
 
+def with_transport_rhs_settings(op: V3FullSystemOperator, *, which_rhs: int) -> V3FullSystemOperator:
+    """Return an operator with v3's internal RHSMode-dependent RHS settings applied.
+
+    In v3, when `RHSMode` is used to compute a transport matrix (e.g. monoenergetic coefficients),
+    the solver loops over `whichRHS` and *overwrites* (dnHatdpsiHats, dTHatdpsiHats, EParallelHat)
+    before building the RHS via `evaluateResidual(f=0)`.
+
+    This helper replicates that behavior for the currently supported modes:
+    - RHSMode=3 (monoenergetic): which_rhs=1..2
+    - RHSMode=2 (energy-integrated): which_rhs=1..3
+    """
+    w = int(which_rhs)
+    if int(op.rhs_mode) == 3:
+        if w == 1:
+            dn = jnp.ones_like(op.dn_hat_dpsi_hat)
+            dt = jnp.zeros_like(op.dt_hat_dpsi_hat)
+            epar = jnp.asarray(0.0, dtype=jnp.float64)
+        elif w == 2:
+            dn = jnp.zeros_like(op.dn_hat_dpsi_hat)
+            dt = jnp.zeros_like(op.dt_hat_dpsi_hat)
+            epar = jnp.asarray(1.0, dtype=jnp.float64)
+        else:
+            raise ValueError("RHSMode=3 expects which_rhs in {1,2}.")
+        return replace(op, dn_hat_dpsi_hat=dn, dt_hat_dpsi_hat=dt, e_parallel_hat=epar)
+
+    if int(op.rhs_mode) == 2:
+        if w == 1:
+            dn = jnp.ones_like(op.dn_hat_dpsi_hat)
+            dt = jnp.zeros_like(op.dt_hat_dpsi_hat)
+            epar = jnp.asarray(0.0, dtype=jnp.float64)
+        elif w == 2:
+            # v3 sets (1/n)*dn/dpsi + (3/2)*dT/dpsi = 0 while dT/dpsi is nonzero:
+            # dnHatdpsiHats = (3/2)*nHats(1)*THats(1), dTHatdpsiHats = 1.
+            dn_val = (1.5) * op.n_hat[0] * op.t_hat[0]
+            dn = jnp.broadcast_to(dn_val, op.dn_hat_dpsi_hat.shape)
+            dt = jnp.ones_like(op.dt_hat_dpsi_hat)
+            epar = jnp.asarray(0.0, dtype=jnp.float64)
+        elif w == 3:
+            dn = jnp.zeros_like(op.dn_hat_dpsi_hat)
+            dt = jnp.zeros_like(op.dt_hat_dpsi_hat)
+            epar = jnp.asarray(1.0, dtype=jnp.float64)
+        else:
+            raise ValueError("RHSMode=2 expects which_rhs in {1,2,3}.")
+        return replace(op, dn_hat_dpsi_hat=dn, dt_hat_dpsi_hat=dt, e_parallel_hat=epar)
+
+    return op
+
+
 def residual_v3_full_system(op: V3FullSystemOperator, x_full: jnp.ndarray) -> jnp.ndarray:
     """Compute the full v3 residual `A(x) x - rhs(x)` for the currently implemented subset."""
     x_full = jnp.asarray(x_full, dtype=jnp.float64)
@@ -648,7 +701,8 @@ def full_system_operator_from_namelist(
     include_phi1 = include_phi1 and (not read_external_phi1)
 
     collision_operator = _get_int(phys, "collisionOperator", 0)
-    delta = float(phys.get("DELTA", 0.0))
+    delta = float(phys.get("DELTA", _V3_DEFAULT_DELTA))
+    rhs_mode = _get_int(general, "RHSMode", 1)
     # In v3, `constraintScheme` is a physics input (readInput.F90) and is finalized in createGrids.F90.
     constraint_scheme = _get_int(phys, "constraintScheme", -1)
     if constraint_scheme < 0:
@@ -765,7 +819,17 @@ def full_system_operator_from_namelist(
     else:
         dphi_hat_dpsi_hat = jnp.asarray(float(phys.get("DPHIHATDPSIHAT", 0.0)), dtype=jnp.float64)
 
-    rhs_mode = _get_int(general, "RHSMode", 1)
+    if int(rhs_mode) == 3:
+        e_star = float(phys.get("ESTAR", phys.get("EStar", 0.0)))
+        dphi_hat_dpsi_hat = jnp.asarray(
+            (2.0 / (float(alpha) * float(delta)))
+            * float(e_star)
+            * float(geom.iota)
+            * float(geom.b0_over_bbar)
+            / float(geom.g_hat),
+            dtype=jnp.float64,
+        )
+
     e_parallel_hat = float(phys.get("EPARALLELHAT", 0.0))
     e_parallel_hat_spec_raw = phys.get("EPARALLELHATSPEC", None)
     if e_parallel_hat_spec_raw is None:

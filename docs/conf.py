@@ -38,7 +38,9 @@ mathjax_path = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-cht
 mathjax3_config = {
     "options": {
         "renderActions": {
-            "assistiveMml": [],
+            # Properly disable assistive MathML output. If it is generated but not hidden (e.g. CSS stripped),
+            # it can show up as “math italic text” with invisible operator glyphs (⁢, ⁡, …) on RTD pages.
+            "assistiveMml": [0, "", ""],
         }
     }
 }

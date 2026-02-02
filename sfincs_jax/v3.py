@@ -110,6 +110,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     res = nml.group("resolutionParameters")
     other = nml.group("otherNumericalParameters")
     geom = nml.group("geometryParameters")
+    general = nml.group("general")
 
     ntheta = _get_int(res, "Ntheta", 15)
     nzeta = _get_int(res, "Nzeta", 15)
@@ -132,6 +133,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     x_grid_k = _get_float(other, "xGrid_k", 0.0)
     nxi_for_x_option = _get_int(other, "Nxi_for_x_option", 1)
     xdot_derivative_scheme = _get_int(other, "xDotDerivativeScheme", 0)
+    rhs_mode = _get_int(general, "RHSMode", 1)
 
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
     if geometry_scheme == 4:
@@ -244,28 +246,38 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
             )
 
     # x grid
-    if x_grid_scheme in {1, 5}:
-        include_x0 = False
-    elif x_grid_scheme in {2, 6}:
-        include_x0 = True
+    #
+    # v3 special-case: for monoenergetic transport coefficients (RHSMode=3), `createGrids.F90`
+    # overwrites the x-grid and weights to a single point at x=1, regardless of xGridScheme:
+    #   x = 1; xWeights = exp(1); pointAtX0 = .false.
+    if rhs_mode == 3:
+        x = jnp.asarray(np.full((nx,), 1.0, dtype=np.float64))
+        x_weights = jnp.asarray(np.full((nx,), math.exp(1.0), dtype=np.float64))
+        ddx = jnp.zeros((nx, nx), dtype=jnp.float64)
+        d2dx2 = jnp.zeros((nx, nx), dtype=jnp.float64)
     else:
-        raise NotImplementedError(
-            f"Only xGridScheme in {{1,2,5,6}} is implemented (got {x_grid_scheme})."
-        )
+        if x_grid_scheme in {1, 5}:
+            include_x0 = False
+        elif x_grid_scheme in {2, 6}:
+            include_x0 = True
+        else:
+            raise NotImplementedError(
+                f"Only xGridScheme in {{1,2,5,6}} is implemented (got {x_grid_scheme})."
+            )
 
-    xg: XGrid = make_x_grid(n=nx, k=x_grid_k, include_point_at_x0=include_x0)
-    x = jnp.asarray(xg.x)
-    x_weights = jnp.asarray(xg.dx_weights(x_grid_k))
+        xg: XGrid = make_x_grid(n=nx, k=x_grid_k, include_point_at_x0=include_x0)
+        x = jnp.asarray(xg.x)
+        x_weights = jnp.asarray(xg.dx_weights(x_grid_k))
 
-    # x differentiation matrix (used by the Er xDot term and by collisions).
-    ddx_np, d2dx2_np = make_x_polynomial_diff_matrices(np.asarray(xg.x, dtype=np.float64), k=x_grid_k)
-    ddx = jnp.asarray(ddx_np)
-    d2dx2 = jnp.asarray(d2dx2_np)
+        # x differentiation matrix (used by the Er xDot term and by collisions).
+        ddx_np, d2dx2_np = make_x_polynomial_diff_matrices(np.asarray(xg.x, dtype=np.float64), k=x_grid_k)
+        ddx = jnp.asarray(ddx_np)
+        d2dx2 = jnp.asarray(d2dx2_np)
 
-    if xdot_derivative_scheme != 0:
-        raise NotImplementedError(
-            "Only xDotDerivativeScheme=0 is implemented (ddx_xDot_plus/minus = ddx)."
-        )
+        if xdot_derivative_scheme != 0:
+            raise NotImplementedError(
+                "Only xDotDerivativeScheme=0 is implemented (ddx_xDot_plus/minus = ddx)."
+            )
 
     # Nxi_for_x logic (see createGrids.F90).
     x_np = np.asarray(x, dtype=float)

@@ -5,6 +5,7 @@ Implemented (parity-tested)
 ---------------------------
 
 - v3 grids: ``theta``, ``zeta``, ``x`` (including the v3 polynomial/Stieltjes ``x`` grid)
+  and the monoenergetic (``RHSMode=3``) special-case ``x=1`` / ``xWeights=exp(1)`` grid used in v3 ``createGrids.F90``.
 - Boozer geometryScheme=1 (three-helicity analytic model): ``BHat`` and derivatives (via output parity fixtures)
 - Boozer geometryScheme=2 (simplified LHD model): ``BHat`` and derivatives (via output parity fixtures)
 - Boozer geometryScheme=4 (simplified W7-X model): ``BHat`` and derivatives
@@ -33,6 +34,9 @@ Implemented (parity-tested)
   ``pas_1species_PAS_noEr_tiny_scheme5_withPhi1_linear``.
 - Full-system matvec + RHS + residual + GMRES-solution parity for ``geometryScheme=1`` (tokamak-like, Nzeta=1):
   ``pas_1species_PAS_noEr_tiny_scheme1``.
+- Monoenergetic transport coefficients (``RHSMode=3``): full-system matvec parity vs v3 solver matrix
+  (``whichMatrix=1``) plus RHS/residual parity for ``whichRHS=1`` (using v3's internal transport-matrix RHS settings):
+  ``monoenergetic_PAS_tiny_scheme1``.
 - Phi1/QN/lambda block parity (includePhi1=true, includePhi1InKineticEquation=false):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for
   ``pas_1species_PAS_noEr_tiny_withPhi1_linear``.

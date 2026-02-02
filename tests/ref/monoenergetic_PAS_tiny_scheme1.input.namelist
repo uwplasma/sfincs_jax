@@ -1,0 +1,62 @@
+! Tiny monoenergetic (RHSMode=3) PAS example for sfincs_jax parity testing (geometryScheme=1).
+!
+! This fixture mirrors the upstream v3 monoenergetic workflow:
+! - RHSMode=3 triggers nuPrime/EStar overwrites of (nu_n, dPhiHatdpsiHat) in v3.
+! - The solver loops over whichRHS=1..2 and internally sets (dnHatdpsiHat, dTHatdpsiHat, EParallelHat).
+!
+! The PETSc binaries stored alongside this file were generated from the Fortran v3 executable with
+! saveMatricesAndVectorsInBinary = .true.
+
+&general
+  RHSMode = 3
+  saveMatricesAndVectorsInBinary = .true.
+/
+
+&geometryParameters
+  geometryScheme = 1
+  ! Use a non-axisymmetric 3-helicity model, but keep the grid tiny.
+  epsilon_t = -0.07053d+0
+  epsilon_h = 0.05067d+0
+  iota = 0.4542d+0
+  GHat = 3.7481d+0
+  IHat = 0d+0
+  helicity_l = 2
+  helicity_n = 10
+  B0OverBBar = 1d+0
+/
+
+&speciesParameters
+  ! Intentionally empty: monoenergetic runs can omit species inputs in v3.
+/
+
+&physicsParameters
+  nuPrime = 1.196132d-3
+  EStar = 0.0d+0
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .true.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 9
+  Nzeta = 9
+  Nxi = 6
+  NL = 3
+  Nx = 1
+  solverTolerance = 1d-12
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
+
