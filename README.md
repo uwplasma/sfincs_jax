@@ -68,7 +68,7 @@ sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
 - [x] Pitch-angle scattering collisions (collisionOperator=1 without Phi1) with PETSc-binary parity test
 - [x] Combined F-block matvec parity (collisionless + PAS) vs PETSc matrix (F-block slice)
 - [x] Full linearized Fokker-Planck collisions (collisionOperator=0, no Phi1) with F-block matvec parity vs PETSc matrix
-- [ ] Residual/Jacobian assembly in JAX (matrix-free where possible)
+- [x] Residual/Jacobian (JVP) scaffolding for F-block (matrix-free)
 - [ ] Full solver parity across the v3 example suite
 
 ## Why JAX?

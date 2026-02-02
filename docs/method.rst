@@ -224,3 +224,23 @@ The v3 codebase is large, so `sfincs_jax` is built in small parity-checked slice
 3. Only then expand functionality.
 
 This approach keeps the port correct and refactorable while still moving quickly.
+
+Matrix-free residual and Jacobian application
+---------------------------------------------
+
+For iterative solvers and implicit differentiation, it is useful to work with a residual
+function rather than an assembled sparse matrix. For the (linear) v3 F-block this residual is
+
+.. math::
+
+   r(x) = A x - b,
+
+where :math:`A` is represented by a matrix-free matvec and :math:`b` is a right-hand side.
+
+In `sfincs_jax`, the residual interface lives in `sfincs_jax.residual`:
+
+- :class:`sfincs_jax.residual.V3FBlockLinearSystem` computes ``residual(x)`` and
+  provides a matrix-free Jacobian matvec ``jacobian_matvec(v)``.
+- For linear operators, the Jacobian matvec is identical to the operator matvec; for nonlinear
+  residuals later in the port, `jax.jvp` provides an efficient Jacobian-vector product (JVP)
+  without ever forming a dense or sparse Jacobian matrix.

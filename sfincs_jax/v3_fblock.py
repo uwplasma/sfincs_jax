@@ -37,6 +37,7 @@ from .magnetic_drifts import (
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
 from .boozer_bc import read_boozer_bc_header
+from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
 
 
@@ -98,16 +99,9 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
         if eq is None:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
-        p = Path(str(eq).strip().strip('"').strip("'"))
-        if not p.is_absolute():
-            if base_dir is not None:
-                cand = (base_dir / p).resolve()
-                if cand.exists():
-                    p = cand
-            if not p.exists():
-                cand = (Path.cwd() / p).resolve()
-                if cand.exists():
-                    p = cand
+        repo_root = Path(__file__).resolve().parents[1]
+        extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+        p = resolve_existing_path(str(eq), base_dir=base_dir, extra_search_dirs=extra).path
 
         header = read_boozer_bc_header(path=str(p), geometry_scheme=int(geometry_scheme))
         psi_a_hat = float(header.psi_a_hat)

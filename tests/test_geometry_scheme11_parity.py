@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from sfincs_jax.namelist import read_sfincs_input
 from sfincs_jax.v3 import geometry_from_namelist, grids_from_namelist
@@ -17,9 +18,15 @@ def test_geometry_scheme11_matches_fortran_fixture() -> None:
     input_path = here / "ref" / "magdrift_1species_tiny.input.namelist"
     fixture_path = here / "ref" / "magdrift_1species_tiny.geometry.npz"
 
-    nml = read_sfincs_input(input_path)
-    grids = grids_from_namelist(nml)
-    geom = geometry_from_namelist(nml=nml, grids=grids)
+    # CI only checks out the sfincs_jax repo; the upstream `sfincs/` folder is not available.
+    # Force equilibriumFile resolution to use our vendored fixture directory.
+    eq_dir = str(here / "ref")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("SFINCS_JAX_EQUILIBRIA_DIRS", eq_dir)
+
+        nml = read_sfincs_input(input_path)
+        grids = grids_from_namelist(nml)
+        geom = geometry_from_namelist(nml=nml, grids=grids)
 
     mapping = {
         "BHat": np.asarray(geom.b_hat),

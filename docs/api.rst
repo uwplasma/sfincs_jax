@@ -37,6 +37,9 @@ API reference
 .. automodule:: sfincs_jax.v3_fblock
    :members:
 
+.. automodule:: sfincs_jax.residual
+   :members:
+
 .. automodule:: sfincs_jax.indices
    :members:
 
@@ -47,4 +50,7 @@ API reference
    :members:
 
 .. automodule:: sfincs_jax.solver
+   :members:
+
+.. automodule:: sfincs_jax.paths
    :members:

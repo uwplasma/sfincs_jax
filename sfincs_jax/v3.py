@@ -12,6 +12,7 @@ import numpy as np
 from .geometry import BoozerGeometry, boozer_geometry_from_bc_file, boozer_geometry_scheme4
 from .grids import uniform_diff_matrices
 from .namelist import Namelist
+from .paths import resolve_existing_path
 from .xgrid import XGrid, make_x_grid, make_x_polynomial_diff_matrices
 
 
@@ -22,16 +23,9 @@ def _n_periods_from_bc_file(path: str, *, base_dir: Path | None = None) -> int:
     path, resolved relative to the run directory (i.e. the directory containing
     ``input.namelist``).
     """
-    p = Path(path.strip().strip('"').strip("'"))
-    if not p.is_absolute():
-        candidates: list[Path] = []
-        if base_dir is not None:
-            candidates.append((base_dir / p).resolve())
-        candidates.append((Path.cwd() / p).resolve())
-        for c in candidates:
-            if c.exists():
-                p = c
-                break
+    repo_root = Path(__file__).resolve().parents[1]
+    extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+    p = resolve_existing_path(path, base_dir=base_dir, extra_search_dirs=extra).path
     with open(p, "r") as f:
         for line in f:
             if line.startswith("CC"):
@@ -281,16 +275,9 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         if equilibrium_file is None:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
-        p = Path(str(equilibrium_file).strip().strip('"').strip("'"))
-        if not p.is_absolute():
-            if base_dir is not None:
-                cand = (base_dir / p).resolve()
-                if cand.exists():
-                    p = cand
-            if not p.exists():
-                cand = (Path.cwd() / p).resolve()
-                if cand.exists():
-                    p = cand
+        repo_root = Path(__file__).resolve().parents[1]
+        extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+        p = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
 
         r_n_wish = float(geom.get("RN_WISH", 0.5))
         vmecradial_option = int(geom.get("VMECRADIALOPTION", 0))

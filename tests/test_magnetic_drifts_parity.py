@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import jax.numpy as jnp
+import pytest
 
 from sfincs_jax.indices import V3Indexing
 from sfincs_jax.magnetic_drifts import (
@@ -15,8 +16,23 @@ from sfincs_jax.magnetic_drifts import (
     apply_magnetic_drift_xidot_v3_offdiag2,
 )
 from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax.namelist import Namelist
 from sfincs_jax.petsc_binary import read_petsc_mat_aij
+from sfincs_jax.v3 import V3Grids
 from sfincs_jax.v3 import grids_from_namelist
+
+
+def _read_nml_and_grids(*, input_path: Path) -> tuple[Namelist, V3Grids]:
+    """Read namelist + grids, forcing equilibriumFile lookup to use vendored fixtures.
+
+    GitHub Actions checks out only the `sfincs_jax` repo, so `../sfincs/equilibria/...` does not exist.
+    """
+    eq_dir = str(Path(__file__).parent / "ref")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("SFINCS_JAX_EQUILIBRIA_DIRS", eq_dir)
+        nml = read_sfincs_input(input_path)
+        grids = grids_from_namelist(nml)
+    return nml, grids
 
 
 def _load_geom_npz(path: Path) -> dict[str, np.ndarray]:
@@ -91,8 +107,7 @@ def test_magnetic_drift_theta_offdiag2_offdiag_theta_matches_fortran() -> None:
     mat_path = here / "ref" / "magdrift_1species_tiny.whichMatrix_1.petscbin"
     geom_path = here / "ref" / "magdrift_1species_tiny.geometry.npz"
 
-    nml = read_sfincs_input(input_path)
-    grids = grids_from_namelist(nml)
+    nml, grids = _read_nml_and_grids(input_path=input_path)
     geom = _load_geom_npz(geom_path)
 
     species = nml.group("speciesParameters")
@@ -166,8 +181,7 @@ def test_magnetic_drift_zeta_offdiag2_offdiag_zeta_matches_fortran() -> None:
     mat_path = here / "ref" / "magdrift_1species_tiny.whichMatrix_1.petscbin"
     geom_path = here / "ref" / "magdrift_1species_tiny.geometry.npz"
 
-    nml = read_sfincs_input(input_path)
-    grids = grids_from_namelist(nml)
+    nml, grids = _read_nml_and_grids(input_path=input_path)
     geom = _load_geom_npz(geom_path)
 
     species = nml.group("speciesParameters")
@@ -247,8 +261,7 @@ def test_magnetic_drift_diag_theta_zeta_offdiag2_matches_fortran() -> None:
     mat_path = here / "ref" / "magdrift_1species_tiny.whichMatrix_1.petscbin"
     geom_path = here / "ref" / "magdrift_1species_tiny.geometry.npz"
 
-    nml = read_sfincs_input(input_path)
-    grids = grids_from_namelist(nml)
+    nml, grids = _read_nml_and_grids(input_path=input_path)
     geom = _load_geom_npz(geom_path)
 
     species = nml.group("speciesParameters")
