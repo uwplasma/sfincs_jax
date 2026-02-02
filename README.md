@@ -39,6 +39,21 @@ export SFINCS_FORTRAN_EXE=/path/to/sfincs/fortran/version3/sfincs
 sfincs_jax run-fortran --input /path/to/input.namelist
 ```
 
+## Writing `sfincsOutput.h5` with `sfincs_jax`
+
+For supported modes (currently `geometryScheme=4`), `sfincs_jax` can write a SFINCS-style
+`sfincsOutput.h5` file:
+
+```bash
+sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
+```
+
+You can compare a JAX output file with a Fortran v3 output file (dataset-by-dataset):
+
+```bash
+sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
+```
+
 ## Roadmap
 
 - [x] Packaging + CLI scaffolding

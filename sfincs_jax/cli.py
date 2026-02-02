@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .compare import compare_sfincs_outputs
 from .fortran import run_sfincs_fortran
-from .io import read_sfincs_h5
+from .io import read_sfincs_h5, write_sfincs_jax_output_h5
 
 
 def _cmd_run_fortran(args: argparse.Namespace) -> int:
@@ -16,6 +16,17 @@ def _cmd_run_fortran(args: argparse.Namespace) -> int:
         workdir=Path(args.workdir) if args.workdir else None,
     )
     print(str(output_path))
+    return 0
+
+
+def _cmd_write_output(args: argparse.Namespace) -> int:
+    out_path = write_sfincs_jax_output_h5(
+        input_namelist=Path(args.input),
+        output_path=Path(args.out),
+        fortran_layout=bool(args.fortran_layout),
+        overwrite=bool(args.overwrite),
+    )
+    print(str(out_path))
     return 0
 
 
@@ -59,6 +70,25 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--exe", default=None, help="Path to Fortran v3 sfincs executable")
     p_run.add_argument("--workdir", default=None, help="Directory to run in (default: temp dir)")
     p_run.set_defaults(func=_cmd_run_fortran)
+
+    p_out = sub.add_parser("write-output", help="Write a SFINCS-style sfincsOutput.h5 using sfincs_jax.")
+    p_out.add_argument("--input", required=True, help="Path to input.namelist")
+    p_out.add_argument("--out", default="sfincsOutput.h5", help="Where to write sfincsOutput.h5")
+    p_out.add_argument(
+        "--no-fortran-layout",
+        dest="fortran_layout",
+        action="store_false",
+        default=True,
+        help="Disable Fortran-compatible array layout (not recommended for parity)",
+    )
+    p_out.add_argument(
+        "--no-overwrite",
+        dest="overwrite",
+        action="store_false",
+        default=True,
+        help="Fail if output already exists",
+    )
+    p_out.set_defaults(func=_cmd_write_output)
 
     p_dump = sub.add_parser("dump-h5", help="Dump SFINCS HDF5 output to JSON (small files only).")
     p_dump.add_argument("--sfincs-output", required=True, help="Path to sfincsOutput.h5")

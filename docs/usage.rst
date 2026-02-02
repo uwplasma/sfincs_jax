@@ -85,3 +85,20 @@ Running the Fortran v3 executable
 
    export SFINCS_FORTRAN_EXE=/path/to/sfincs/fortran/version3/sfincs
    sfincs_jax run-fortran --input /path/to/input.namelist
+
+Writing `sfincsOutput.h5` with `sfincs_jax`
+------------------------------------------
+
+.. code-block:: bash
+
+   sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
+
+.. code-block:: python
+
+   from pathlib import Path
+   from sfincs_jax.io import write_sfincs_jax_output_h5
+
+   write_sfincs_jax_output_h5(
+       input_namelist=Path("input.namelist"),
+       output_path=Path("sfincsOutput.h5"),
+   )

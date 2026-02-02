@@ -10,6 +10,7 @@ sfincs_jax
    installation
    method
    usage
+   outputs
    examples
    api
    parity

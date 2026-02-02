@@ -16,6 +16,7 @@ from .collisionless import CollisionlessV3Operator, apply_collisionless_v3
 from .collisionless_exb import ExBThetaV3Operator, ExBZetaV3Operator, apply_exb_theta_v3, apply_exb_zeta_v3
 from .collisionless_er import ErXDotV3Operator, ErXiDotV3Operator, apply_er_xdot_v3, apply_er_xidot_v3
 from .collisions import PitchAngleScatteringV3Operator, apply_pitch_angle_scattering_v3, make_pitch_angle_scattering_v3_operator
+from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .geometry import BoozerGeometry
 from .magnetic_drifts import (
     MagneticDriftThetaV3Operator,
@@ -65,14 +66,7 @@ def _dphi_hat_dpsi_hat_from_er_scheme4(er: float) -> float:
 
 def _fsab_hat2(*, grids: V3Grids, geom: BoozerGeometry) -> float:
     """Compute FSABHat2 as in v3 `geometry.F90:computeBIntegrals`."""
-    tw = np.asarray(grids.theta_weights, dtype=np.float64)  # (T,)
-    zw = np.asarray(grids.zeta_weights, dtype=np.float64)  # (Z,)
-    d_hat = np.asarray(geom.d_hat, dtype=np.float64)  # (T,Z)
-    b_hat = np.asarray(geom.b_hat, dtype=np.float64)  # (T,Z)
-
-    w = tw[:, None] * zw[None, :]  # (T,Z)
-    vprime_hat = float(np.sum(w / d_hat))
-    return float(np.sum(w * (b_hat**2) / d_hat) / vprime_hat)
+    return float(np.asarray(fsab_hat2_jax(grids=grids, geom=geom), dtype=np.float64))
 
 
 def collisionless_operator_from_namelist(

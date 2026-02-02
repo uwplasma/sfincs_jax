@@ -34,3 +34,9 @@ Each example is a standalone script:
 ```bash
 python examples/1_simple/01_build_grids_and_geometry.py
 ```
+
+New in this repo:
+
+- Write `sfincsOutput.h5` via Python: `examples/1_simple/03_write_sfincs_output_python.py`
+- Write `sfincsOutput.h5` via CLI: `examples/1_simple/04_write_sfincs_output_cli.py`
+- Output parity vs Fortran fixture: `examples/2_intermediate/07_output_parity_vs_fortran_fixture.py`

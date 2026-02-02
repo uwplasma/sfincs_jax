@@ -1,0 +1,54 @@
+! Minimal output fixture for sfincs_jax `sfincsOutput.h5` parity (geometryScheme=4).
+
+&general
+  saveMatricesAndVectorsInBinary = .false.
+/
+
+&geometryParameters
+  geometryScheme = 4
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1.0d+0
+  nHats = 1.0d+0
+  THats = 1.0d+0
+  dNHatdrHats = -0.5d+0
+  dTHatdrHats = -2.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 0.0d+0
+  Er = 0.5d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .false.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 5
+  Nxi = 6
+  NL = 3
+  Nx = 4
+  solverTolerance = 1d-8
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+  xGridScheme = 5
+  xDotDerivativeScheme = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/

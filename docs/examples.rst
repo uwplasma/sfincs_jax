@@ -14,6 +14,13 @@ Run from the repo root:
    cd sfincs_jax
    python examples/1_simple/01_build_grids_and_geometry.py
 
+Writing `sfincsOutput.h5` (Python + CLI):
+
+.. code-block:: bash
+
+   python examples/1_simple/03_write_sfincs_output_python.py
+   python examples/1_simple/04_write_sfincs_output_cli.py
+
 Matrix-free linear solve demo (using frozen Fortran PETSc binaries):
 
 .. code-block:: bash
