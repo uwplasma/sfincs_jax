@@ -13,10 +13,12 @@ sfincs_jax
    system_equations
    usage
    outputs
+   performance
    upstream_docs
    fortran_examples
    examples
    api
    parity
+   references
    contributing
    release_checklist

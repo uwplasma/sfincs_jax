@@ -46,3 +46,5 @@ jobs:
           python examples/2_intermediate/08_output_parity_cli_driver.py
           python examples/2_intermediate/09_output_key_coverage_report.py
           python examples/2_intermediate/10_matrix_free_residual_and_jvp.py
+          python examples/2_intermediate/13_solve_scheme5_tiny_parity.py
+          python examples/2_intermediate/14_autodiff_sensitivity_nu_n_scheme5.py

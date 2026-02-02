@@ -104,6 +104,12 @@ Solving a supported v3 linear run (matrix-free)
 
    python -m sfincs_jax solve-v3 --input /path/to/input.namelist --out-state stateVector.npy
 
+.. note::
+
+   The matrix-free solve path is parity-tested on a growing subset of v3 options.
+   In particular, VMEC ``geometryScheme=5`` is now supported for the parity-tested tiny PAS case
+   (see ``tests/ref/pas_1species_PAS_noEr_tiny_scheme5.input.namelist``).
+
 Writing `sfincsOutput.h5` with `sfincs_jax`
 --------------------------------------------------
 

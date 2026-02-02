@@ -63,6 +63,56 @@ def test_full_system_gmres_solves_physical_rhs_pas_tiny() -> None:
     assert float(result.residual_norm) < 1e-9
 
 
+def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_scheme5() -> None:
+    """Solve A x = b matrix-free and recover the Fortran v3 stateVector (tiny PAS, geometryScheme=5)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+
+    a = read_petsc_mat_aij(mat_path)
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+    a_csr = csr_matrix((a.data, a.col_ind, a.row_ptr), shape=a.shape)
+
+    b = a_csr.dot(x_ref)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(matvec=mv, b=jnp.asarray(b), tol=1e-12, restart=80, maxiter=220)
+    x = np.asarray(result.x)
+
+    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    assert float(result.residual_norm) < 1e-9
+
+
+def test_full_system_gmres_solves_physical_rhs_pas_tiny_scheme5() -> None:
+    """Solve A x = RHS assembled by sfincs_jax and recover the Fortran v3 solution (tiny PAS, geometryScheme=5)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5.input.namelist"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme5.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+    rhs = rhs_v3_full_system(op)
+
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(matvec=mv, b=rhs, tol=1e-12, restart=80, maxiter=280)
+    x = np.asarray(result.x)
+
+    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    assert float(result.residual_norm) < 1e-9
+
+
 def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_with_phi1_linear() -> None:
     """Solve A x = b matrix-free and recover the Fortran v3 stateVector (tiny PAS + Phi1 blocks)."""
     here = Path(__file__).parent

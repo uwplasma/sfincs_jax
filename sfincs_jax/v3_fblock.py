@@ -42,6 +42,7 @@ from .solver import GMRESSolveResult, gmres_solve
 from .boozer_bc import read_boozer_bc_header
 from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
+from .vmec_wout import psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
 
 
 def _as_1d_float(group: dict, key: str) -> np.ndarray:
@@ -110,6 +111,24 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
         psi_a_hat = float(header.psi_a_hat)
         a_hat = float(header.a_hat)
         r_n = float(geom_params.get("RN_WISH", 0.5))
+    elif geometry_scheme == 5:
+        eq = geom_params.get("EQUILIBRIUMFILE", None)
+        if eq is None:
+            raise ValueError("geometryScheme=5 requires equilibriumFile in geometryParameters.")
+        base_dir = nml.source_path.parent if nml.source_path is not None else None
+        repo_root = Path(__file__).resolve().parents[1]
+        extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+        p = resolve_existing_path(str(eq), base_dir=base_dir, extra_search_dirs=extra).path
+
+        w = read_vmec_wout(p)
+        psi_a_hat = float(psi_a_hat_from_wout(w))
+        a_hat = float(w.aminor_p)
+
+        r_n_wish = float(geom_params.get("RN_WISH", 0.5))
+        psi_n_wish = float(r_n_wish) * float(r_n_wish)
+        vmecradial_option = int(geom_params.get("VMECRADIALOPTION", 0))
+        interp = vmec_interpolation(w=w, psi_n_wish=psi_n_wish, vmec_radial_option=vmecradial_option)
+        r_n = float(interp.psi_n) ** 0.5
     else:
         raise NotImplementedError(f"Er->dPhiHatdpsiHat conversion not implemented for geometryScheme={geometry_scheme}.")
 

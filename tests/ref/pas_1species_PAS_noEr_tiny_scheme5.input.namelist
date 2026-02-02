@@ -1,0 +1,57 @@
+! Auto-generated tiny PAS collision example for sfincs_jax (VMEC geometryScheme=5).
+
+&general
+  saveMatricesAndVectorsInBinary = .t.
+/
+
+&geometryParameters
+  geometryScheme = 5
+  equilibriumFile = "wout_w7x_standardConfig.nc"
+  rN_wish = 0.5d+0
+  VMECRadialOption = 0
+  VMEC_Nyquist_option = 1
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1.0d+0
+  nHats = 1.0d+0
+  THats = 1.0d+0
+  dNHatdrHats = -0.5d+0
+  dTHatdrHats = -2.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 8.4774d-3
+  Er = 0.0d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .false.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 5
+  Nxi = 4
+  NL = 2
+  Nx = 3
+  solverTolerance = 1d-8
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
+
