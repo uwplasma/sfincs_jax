@@ -45,6 +45,17 @@ From the `sfincs_jax` repository root:
 
 You can point at a different Fortran checkout using ``--examples-root``.
 
+Smoke-testing the vendored suite
+--------------------------------
+
+To run `sfincs_jax write-output` across the vendored suite (and optionally attempt a Fortran comparison),
+use:
+
+.. code-block:: bash
+
+   python scripts/compare_v3_example_suite.py --limit 10
+
+
 Audit table
 -----------
 
