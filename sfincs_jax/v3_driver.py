@@ -364,10 +364,14 @@ def solve_v3_transport_matrix_linear_gmres(
     # which prevents end-to-end transport-matrix parity. For small systems, fall back to a dense
     # JAX solve (still differentiable) by assembling the matrix from matvecs.
     solve_method_use = solve_method
-    if int(rhs_mode) == 2 and str(solve_method).lower() in {"batched", "incremental"} and int(op0.total_size) <= 5000:
-        solve_method_use = "dense"
-        if emit is not None:
-            emit(0, f"solve_v3_transport_matrix_linear_gmres: using dense solve for RHSMode=2 (n={int(op0.total_size)})")
+    if int(op0.total_size) <= 5000 and str(solve_method).lower() in {"batched", "incremental"}:
+        # On some JAX versions/platforms, `jax.scipy.sparse.linalg.gmres` can return NaNs for
+        # small ill-conditioned problems (observed in CI for RHSMode=3 scheme12 fixtures).
+        # Dense assembly is cheap at these sizes and improves robustness.
+        if int(rhs_mode) in {2, 3}:
+            solve_method_use = "dense"
+            if emit is not None:
+                emit(0, f"solve_v3_transport_matrix_linear_gmres: using dense solve for RHSMode={rhs_mode} (n={int(op0.total_size)})")
 
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
