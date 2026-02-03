@@ -9,6 +9,7 @@ _jax_config.update("jax_enable_x64", True)
 import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
+from jax import vmap
 from jax.scipy.sparse.linalg import gmres
 
 
@@ -51,6 +52,22 @@ def gmres_solve(
     b = jnp.asarray(b)
     if x0 is not None:
         x0 = jnp.asarray(x0)
+
+    method = str(solve_method).lower()
+    if method == "dense":
+        n = int(b.size)
+        if b.ndim != 1:
+            raise ValueError(f"dense solve requires a 1D vector b, got shape {b.shape}")
+        # Guardrail: dense assembly is quadratic memory/time.
+        if n > 5000:
+            raise ValueError(f"dense solve is disabled for n={n} (too large). Use GMRES.")
+
+        eye = jnp.eye(n, dtype=b.dtype)
+        # Assemble columns A[:,j] = matvec(e_j).
+        a = vmap(matvec, in_axes=1, out_axes=1)(eye)
+        x = jnp.linalg.solve(a, b)
+        r = b - a @ x
+        return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 
     x, _info = gmres(
         matvec,

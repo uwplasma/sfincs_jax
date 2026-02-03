@@ -275,6 +275,15 @@ def solve_v3_transport_matrix_linear_gmres(
     if emit is not None:
         emit(1, f"solve_v3_transport_matrix_linear_gmres: rhs_mode={rhs_mode} whichRHS_count={n} total_size={int(op0.total_size)}")
 
+    # JAX's built-in GMRES stagnates at ~1e-6 residual on some small RHSMode=2 parity fixtures,
+    # which prevents end-to-end transport-matrix parity. For small systems, fall back to a dense
+    # JAX solve (still differentiable) by assembling the matrix from matvecs.
+    solve_method_use = solve_method
+    if int(rhs_mode) == 2 and str(solve_method).lower() in {"batched", "incremental"} and int(op0.total_size) <= 5000:
+        solve_method_use = "dense"
+        if emit is not None:
+            emit(0, f"solve_v3_transport_matrix_linear_gmres: using dense solve for RHSMode=2 (n={int(op0.total_size)})")
+
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
@@ -309,7 +318,7 @@ def solve_v3_transport_matrix_linear_gmres(
             atol=atol,
             restart=restart,
             maxiter=maxiter,
-            solve_method=solve_method,
+            solve_method=solve_method_use,
         )
         x_guess = res.x
         state_vectors[which_rhs] = res.x

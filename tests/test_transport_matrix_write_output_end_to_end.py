@@ -11,6 +11,7 @@ from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
 @pytest.mark.parametrize(
     "base",
     (
+        "transportMatrix_PAS_tiny_rhsMode2_scheme2",
         "monoenergetic_PAS_tiny_scheme11",
         "monoenergetic_PAS_tiny_scheme5_filtered",
     ),
