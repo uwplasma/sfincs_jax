@@ -17,8 +17,13 @@ They are meant for learning the workflow, not for production physics.
 """
 
 from pathlib import Path
+import sys
 
 import numpy as np
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from sfincs_jax.namelist import read_sfincs_input
 from sfincs_jax.v3_driver import solve_v3_transport_matrix_linear_gmres
@@ -49,7 +54,7 @@ def _try_plot_matrix(matrix: np.ndarray, *, out_png: Path, title: str) -> None:
 
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
-    out_dir = root / "examples" / "2_intermediate" / "output" / "16_transport_matrix"
+    out_dir = root / "examples" / "transport" / "output" / "16_transport_matrix"
 
     # RHSMode=2 (3x3) energy-integrated transport matrix in the simplified LHD model.
     input_rhsmode2 = _write_text(
@@ -151,10 +156,9 @@ def main() -> None:
         tm = np.asarray(result.transport_matrix)
         print(f"\n{label} transportMatrix (mathematical row/col order):\n{tm}\n")
 
-        fig_path = root / "examples" / "2_intermediate" / "figures" / f"16_transport_matrix_{label.replace('=', '').replace(' ', '_')}.png"
+        fig_path = root / "examples" / "transport" / "figures" / f"16_transport_matrix_{label.replace('=', '').replace(' ', '_')}.png"
         _try_plot_matrix(tm, out_png=fig_path, title=f"{label} transportMatrix")
 
 
 if __name__ == "__main__":
     main()
-
