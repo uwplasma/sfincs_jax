@@ -13,6 +13,7 @@ from .io import read_sfincs_h5, write_sfincs_jax_output_h5
 from .namelist import read_sfincs_input
 from .postprocess_upstream import run_upstream_util
 from .scans import linspace_including_endpoints, run_er_scan
+from .ambipolar import solve_ambipolar_from_scan_dir
 from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_transport_matrix_linear_gmres
 
 
@@ -235,8 +236,35 @@ def _cmd_scan_er(args: argparse.Namespace) -> int:
         out_dir=Path(args.out_dir),
         values=values,
         compute_transport_matrix=bool(args.compute_transport_matrix),
+        compute_solution=bool(getattr(args, "compute_solution", False)),
         emit=lambda level, msg: _emit(msg, level=level, args=args),
     )
+    _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
+    return 0
+
+
+def _cmd_ambipolar_solve(args: argparse.Namespace) -> int:
+    t0 = _now()
+    _emit("################################################################", level=0, args=args)
+    _emit(" sfincs_jax ambipolar-solve", level=0, args=args)
+    _emit(f" scan-dir={Path(args.scan_dir).resolve()}", level=0, args=args)
+    _emit_runtime_info(args=args)
+
+    res = solve_ambipolar_from_scan_dir(
+        scan_dir=Path(args.scan_dir),
+        write_pickle=True,
+        write_json=True,
+        n_fine=int(args.n_fine),
+    )
+
+    if res.roots_er.size == 0:
+        _emit(" ambipolar-solve: no sign change found (no roots).", level=0, args=args)
+    else:
+        for i, (rv, re, rt) in enumerate(zip(res.roots_var, res.roots_er, res.root_types, strict=False), start=1):
+            _emit(f" root[{i}] {res.var_name}={float(rv):.16g} Er={float(re):.16g} type={rt}", level=0, args=args)
+
+    _emit(f" wrote {Path(args.scan_dir).resolve() / 'ambipolarSolutions.dat'}", level=1, args=args)
+    _emit(f" wrote {Path(args.scan_dir).resolve() / 'ambipolarSolutions.json'}", level=2, args=args)
     _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
     return 0
 
@@ -273,11 +301,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also compute RHSMode=2/3 transport-matrix outputs (slow).",
     )
+    p_scan.add_argument(
+        "--compute-solution",
+        action="store_true",
+        help="For RHSMode=1 runs, also solve and write solution-derived fields (may be slow).",
+    )
     p_scan.add_argument("--min", default="-1.0", help="Minimum value (ignored if --values is provided).")
     p_scan.add_argument("--max", default="1.0", help="Maximum value (ignored if --values is provided).")
     p_scan.add_argument("--n", default="5", help="Number of points (ignored if --values is provided).")
     p_scan.add_argument("--values", default=None, nargs="+", help="Explicit list of values to use.")
     p_scan.set_defaults(func=_cmd_scan_er)
+
+    p_ambi = sub.add_parser(
+        "ambipolar-solve",
+        help="Given an existing scan-er directory, solve for ambipolar Er roots and write ambipolarSolutions.dat.",
+    )
+    p_ambi.add_argument("--scan-dir", required=True, help="Scan directory produced by `sfincs_jax scan-er`.")
+    p_ambi.add_argument("--n-fine", default="500", help="Number of fine-grid points for bracketing (default: 500).")
+    p_ambi.set_defaults(func=_cmd_ambipolar_solve)
 
     p_run = sub.add_parser("run-fortran", help="Run the compiled Fortran SFINCS v3 executable.")
     p_run.add_argument("--input", required=True, help="Path to input.namelist")

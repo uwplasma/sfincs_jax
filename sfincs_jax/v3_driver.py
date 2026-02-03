@@ -20,6 +20,7 @@ from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
     V3FullSystemOperator,
     apply_v3_full_system_operator,
+    apply_v3_full_system_operator_jit,
     full_system_operator_from_namelist,
     residual_v3_full_system,
     rhs_v3_full_system,
@@ -98,7 +99,9 @@ def solve_v3_full_system_linear_gmres(
         emit(2, f"solve_v3_full_system_linear_gmres: rhs_norm={float(jnp.linalg.norm(rhs)):.6e}")
 
     def mv(x):
-        return apply_v3_full_system_operator(op, x)
+        # Use the JIT-compiled operator application to reduce Python overhead in repeated matvecs
+        # (e.g. during GMRES iterations and Er scans).
+        return apply_v3_full_system_operator_jit(op, x)
 
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
@@ -174,7 +177,10 @@ def solve_v3_full_system_newton_krylov(
     last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
 
     for k in range(int(max_newton)):
-        r = residual_v3_full_system(op, x)
+        # Compute residual and a *single* linearization for this Newton step that can be reused
+        # by GMRES. This avoids applying JAX's autodiff transform inside every matvec call,
+        # which is a major performance bottleneck for includePhi1 solves.
+        r, jvp = jax.linearize(lambda xx: residual_v3_full_system(op, xx), x)
         rnorm = jnp.linalg.norm(r)
         if float(rnorm) < float(tol):
             return V3NewtonKrylovResult(
@@ -184,10 +190,6 @@ def solve_v3_full_system_newton_krylov(
                 n_newton=k,
                 last_linear_residual_norm=last_linear_resid,
             )
-
-        def jvp(v):
-            # J(x) v via forward-mode AD.
-            return jax.jvp(lambda xx: residual_v3_full_system(op, xx), (x,), (v,))[1]
 
         # Solve J s = -r
         lin = gmres_solve(
@@ -256,7 +258,7 @@ def solve_v3_full_system_newton_krylov_history(
     accepted: list[jnp.ndarray] = []
 
     for k in range(int(max_newton)):
-        r = residual_v3_full_system(op, x)
+        r, jvp = jax.linearize(lambda xx: residual_v3_full_system(op, xx), x)
         rnorm = jnp.linalg.norm(r)
         if float(rnorm) < float(tol):
             return (
@@ -269,9 +271,6 @@ def solve_v3_full_system_newton_krylov_history(
                 ),
                 accepted,
             )
-
-        def jvp(v):
-            return jax.jvp(lambda xx: residual_v3_full_system(op, xx), (x,), (v,))[1]
 
         lin = gmres_solve(
             matvec=jvp,

@@ -1,0 +1,63 @@
+! Auto-generated tiny PAS collision example for sfincs_jax (geometryScheme=12, Boozer .bc).
+!
+! This fixture targets end-to-end linear solve + output parity on a non-stellarator-symmetric `.bc` geometry:
+! - geometryScheme=12 (.bc reader + non-stellarator-symmetric mode tables)
+! - collisionOperator=1 (PAS)
+! - RHSMode=1 full-system solve
+! - sfincsOutput.h5 includes solution-derived fields (flows/fluxes/moments)
+
+&general
+  saveMatricesAndVectorsInBinary = .t.
+/
+
+&geometryParameters
+  geometryScheme = 12
+  equilibriumFile = "nonStelSym_tiny_geometryScheme12.bc"
+
+  inputRadialCoordinate = 3  ! rN
+  rN_wish = 0.6d+0
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1.0d+0
+  nHats = 1.0d+0
+  THats = 1.0d+0
+  dNHatdrHats = -0.5d+0
+  dTHatdrHats = -2.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+  nu_n = 8.4774d-3
+  Er = 0.0d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .false.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 5
+  Nzeta = 5
+  Nxi = 4
+  NL = 2
+  Nx = 3
+  solverTolerance = 1d-10
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
+

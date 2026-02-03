@@ -85,6 +85,7 @@ def run_er_scan(
     out_dir: Path,
     values: Sequence[float],
     compute_transport_matrix: bool = False,
+    compute_solution: bool = False,
     emit: EmitFn | None = None,
 ) -> ScanResult:
     """Run an E_r (or dPhiHatd*) scan using `sfincs_jax` and write `sfincsOutput.h5` in each run dir.
@@ -97,6 +98,8 @@ def run_er_scan(
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    template_txt = input_namelist.read_text()
+
     nml0 = read_sfincs_input(input_namelist)
     var = _er_scan_var_name(nml=nml0)
     # Use a deterministic order that matches upstream `sfincsScan_2`, which generates values
@@ -105,11 +108,14 @@ def run_er_scan(
     if emit is not None:
         emit(0, f"scan-er: input={input_namelist}")
         emit(0, f"scan-er: out_dir={out_dir}")
-        emit(0, f"scan-er: variable={var} n={len(vals)} compute_transport_matrix={bool(compute_transport_matrix)}")
+        emit(
+            0,
+            f"scan-er: variable={var} n={len(vals)} compute_solution={bool(compute_solution)} compute_transport_matrix={bool(compute_transport_matrix)}",
+        )
 
     # Write a scan-style `input.namelist` in the scan directory so vendored upstream
     # `utils/sfincsScanPlot_*` scripts can infer the directory list.
-    scan_txt = input_namelist.read_text()
+    scan_txt = template_txt
     if not scan_txt.endswith("\n"):
         scan_txt += "\n"
     scan_txt += f"!ss NErs = {len(vals)}\n"
@@ -127,8 +133,7 @@ def run_er_scan(
             emit(0, f"scan-er: [{i}/{len(vals)}] {run_dir.name} {var}={v:.16g}")
 
         # Patch input.namelist for this run:
-        txt = input_namelist.read_text()
-        txt2 = _patch_scalar_in_group(txt=txt, group="physicsParameters", key=var, value=float(v))
+        txt2 = _patch_scalar_in_group(txt=template_txt, group="physicsParameters", key=var, value=float(v))
         w_input = run_dir / "input.namelist"
         w_input.write_text(txt2)
 
@@ -141,6 +146,7 @@ def run_er_scan(
             output_path=out_path,
             overwrite=True,
             compute_transport_matrix=bool(compute_transport_matrix),
+            compute_solution=bool(compute_solution),
             emit=emit,
         )
         outputs.append(out_path)
