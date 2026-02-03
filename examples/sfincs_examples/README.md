@@ -58,3 +58,14 @@ They expect specific fields inside `sfincsOutput.h5`.
 
 Over time, more datasets will be added for broader postprocessing parity.
 
+To run an upstream `utils/` script in a non-interactive way:
+
+```bash
+sfincs_jax postprocess-upstream --case-dir /path/to/case --util sfincsScanPlot_1 -- pdf
+```
+
+If you are not running from a `sfincs_jax` repo checkout, set:
+
+```bash
+export SFINCS_JAX_UPSTREAM_UTILS_DIR=/path/to/utils
+```

@@ -1009,8 +1009,11 @@ def write_sfincs_jax_output_h5(
     fortran_layout: bool = True,
     overwrite: bool = True,
     compute_transport_matrix: bool = False,
+    emit: "Callable[[int, str], None] | None" = None,
 ) -> Path:
     """Create a SFINCS-style `sfincsOutput.h5` file from `sfincs_jax` for supported modes."""
+    if emit is not None:
+        emit(0, "write_sfincs_jax_output_h5: reading namelist + building grids/geometry")
     nml = read_sfincs_input(input_namelist)
     grids = grids_from_namelist(nml)
     data = sfincs_jax_output_dict(nml=nml, grids=grids)
@@ -1023,7 +1026,9 @@ def write_sfincs_jax_output_h5(
 
             resolution = nml.group("resolutionParameters")
             solver_tol = _get_float(resolution, "solverTolerance", 1e-10)
-            result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol))
+            if emit is not None:
+                emit(0, f"write_sfincs_jax_output_h5: computing transportMatrix for RHSMode={rhs_mode} (solverTolerance={solver_tol:g})")
+            result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol), emit=emit)
             data["transportMatrix"] = np.asarray(result.transport_matrix, dtype=np.float64)
 
             # Also write a minimal set of diagnostics that the upstream v3 postprocessing
@@ -1036,5 +1041,7 @@ def write_sfincs_jax_output_h5(
             data["heatFlux_vm_psiHat"] = np.asarray(result.heat_flux_vm_psi_hat.T, dtype=np.float64)
 
     data["input.namelist"] = input_namelist.read_text()
+    if emit is not None:
+        emit(0, f"write_sfincs_jax_output_h5: writing {output_path}")
     write_sfincs_h5(path=output_path, data=data, fortran_layout=fortran_layout, overwrite=overwrite)
     return output_path.resolve()

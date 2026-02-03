@@ -6,6 +6,8 @@ from jax import config as _jax_config
 
 _jax_config.update("jax_enable_x64", True)
 
+from collections.abc import Callable
+
 import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
@@ -13,6 +15,7 @@ from jax import tree_util as jtu
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
 from .transport_matrix import transport_matrix_size_from_rhs_mode, v3_transport_matrix_from_state_vectors
+from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
     V3FullSystemOperator,
@@ -65,6 +68,7 @@ def solve_v3_full_system_linear_gmres(
     solve_method: str = "batched",
     identity_shift: float = 0.0,
     phi1_hat_base: jnp.ndarray | None = None,
+    emit: Callable[[int, str], None] | None = None,
 ) -> V3LinearSolveResult:
     """Solve the current v3 full-system linear problem `A x = rhs` matrix-free using GMRES.
 
@@ -74,6 +78,9 @@ def solve_v3_full_system_linear_gmres(
     (e.g. includePhi1InKineticEquation=false). For nonlinear runs, use `residual_v3_full_system`
     and an outer Newton-Krylov iteration (not yet shipped as a stable API).
     """
+    t = Timer()
+    if emit is not None:
+        emit(1, "solve_v3_full_system_linear_gmres: building operator")
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
     if int(op.rhs_mode) in {2, 3}:
         # v3 sets (dnHatdpsiHats, dTHatdpsiHats, EParallelHat) internally based on whichRHS.
@@ -81,11 +88,20 @@ def solve_v3_full_system_linear_gmres(
         if which_rhs is None:
             which_rhs = 1
         op = with_transport_rhs_settings(op, which_rhs=int(which_rhs))
+        if emit is not None:
+            emit(1, f"solve_v3_full_system_linear_gmres: applied transport RHS settings whichRHS={int(which_rhs)}")
+    if emit is not None:
+        emit(1, f"solve_v3_full_system_linear_gmres: total_size={int(op.total_size)}")
+        emit(1, "solve_v3_full_system_linear_gmres: assembling RHS")
     rhs = rhs_v3_full_system(op)
+    if emit is not None:
+        emit(2, f"solve_v3_full_system_linear_gmres: rhs_norm={float(jnp.linalg.norm(rhs)):.6e}")
 
     def mv(x):
         return apply_v3_full_system_operator(op, x)
 
+    if emit is not None:
+        emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
     result = gmres_solve(
         matvec=mv,
         b=rhs,
@@ -96,6 +112,9 @@ def solve_v3_full_system_linear_gmres(
         maxiter=maxiter,
         solve_method=solve_method,
     )
+    if emit is not None:
+        emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
+        emit(1, f"solve_v3_full_system_linear_gmres: elapsed_s={t.elapsed_s():.3f}")
     return V3LinearSolveResult(op=op, rhs=rhs, gmres=result)
 
 
@@ -233,6 +252,7 @@ def solve_v3_transport_matrix_linear_gmres(
     solve_method: str = "batched",
     identity_shift: float = 0.0,
     phi1_hat_base: jnp.ndarray | None = None,
+    emit: Callable[[int, str], None] | None = None,
 ) -> V3TransportMatrixSolveResult:
     """Compute a RHSMode=2/3 transport matrix by running all `whichRHS` solves matrix-free in JAX.
 
@@ -245,9 +265,14 @@ def solve_v3_transport_matrix_linear_gmres(
     - Solve `A x = rhs`
     - Use `diagnostics.F90` formulas to fill `transportMatrix`
     """
+    t_all = Timer()
+    if emit is not None:
+        emit(0, "solve_v3_transport_matrix_linear_gmres: starting whichRHS loop")
     op0 = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
     rhs_mode = int(op0.rhs_mode)
     n = transport_matrix_size_from_rhs_mode(rhs_mode)
+    if emit is not None:
+        emit(1, f"solve_v3_transport_matrix_linear_gmres: rhs_mode={rhs_mode} whichRHS_count={n} total_size={int(op0.total_size)}")
 
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
@@ -261,8 +286,11 @@ def solve_v3_transport_matrix_linear_gmres(
     diag_hf: list[jnp.ndarray] = []
 
     for which_rhs in range(1, n + 1):
+        t_rhs = Timer()
         op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
         rhs = rhs_v3_full_system(op_rhs)
+        if emit is not None:
+            emit(0, f"whichRHS={which_rhs}/{n}: assembling+solving (rhs_norm={float(jnp.linalg.norm(rhs)):.6e})")
 
         # In upstream v3, the transport RHS settings are applied globally before each solve.
         # While the *intended* transport-matrix workflow keeps the operator independent of whichRHS,
@@ -284,6 +312,8 @@ def solve_v3_transport_matrix_linear_gmres(
         x_guess = res.x
         state_vectors[which_rhs] = res.x
         residual_norms[which_rhs] = res.residual_norm
+        if emit is not None:
+            emit(0, f"whichRHS={which_rhs}: residual_norm={float(res.residual_norm):.6e} elapsed_s={t_rhs.elapsed_s():.3f}")
         # Collect diagnostics for parity with v3 `sfincsOutput.h5` and postprocessing scripts.
         from .transport_matrix import v3_transport_diagnostics_vm_only
 
@@ -293,6 +323,9 @@ def solve_v3_transport_matrix_linear_gmres(
         diag_hf.append(diag.heat_flux_vm_psi_hat)
 
     tm = v3_transport_matrix_from_state_vectors(op0=op0, geom=geom, state_vectors_by_rhs=state_vectors)
+    if emit is not None:
+        emit(0, "solve_v3_transport_matrix_linear_gmres: done")
+        emit(1, f"solve_v3_transport_matrix_linear_gmres: elapsed_s={t_all.elapsed_s():.3f}")
     return V3TransportMatrixSolveResult(
         op0=op0,
         transport_matrix=tm,

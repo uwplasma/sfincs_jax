@@ -11,6 +11,7 @@ from .compare import compare_sfincs_outputs
 from .fortran import run_sfincs_fortran
 from .io import read_sfincs_h5, write_sfincs_jax_output_h5
 from .namelist import read_sfincs_input
+from .postprocess_upstream import run_upstream_util
 from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_transport_matrix_linear_gmres
 
 
@@ -82,6 +83,7 @@ def _cmd_solve_v3(args: argparse.Namespace) -> int:
         restart=int(args.restart),
         maxiter=int(args.maxiter) if args.maxiter is not None else None,
         solve_method=str(args.solve_method),
+        emit=lambda level, msg: _emit(msg, level=level, args=args),
     )
     out_state = Path(args.out_state)
     out_state.parent.mkdir(parents=True, exist_ok=True)
@@ -121,6 +123,7 @@ def _cmd_write_output(args: argparse.Namespace) -> int:
         fortran_layout=bool(args.fortran_layout),
         overwrite=bool(args.overwrite),
         compute_transport_matrix=bool(args.compute_transport_matrix),
+        emit=lambda level, msg: _emit(msg, level=level, args=args),
     )
     _emit(f" wrote sfincsOutput.h5 -> {out_path}", level=0, args=args)
     _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
@@ -142,6 +145,7 @@ def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
         restart=int(args.restart),
         maxiter=int(args.maxiter) if args.maxiter is not None else None,
         solve_method=str(args.solve_method),
+        emit=lambda level, msg: _emit(msg, level=level, args=args),
     )
 
     out_tm = Path(args.out_matrix)
@@ -273,6 +277,44 @@ def main(argv: list[str] | None = None) -> int:
     p_cmp.add_argument("--atol", default="1e-12")
     p_cmp.add_argument("--show-all", action="store_true", help="Print all keys (not just failures)")
     p_cmp.set_defaults(func=_cmd_compare_h5)
+
+    p_pp = sub.add_parser(
+        "postprocess-upstream",
+        help="Run a vendored upstream v3 utils/ postprocessing script (best-effort, requires sfincsOutput.h5).",
+    )
+    p_pp.add_argument("--case-dir", required=True, help="Directory containing sfincsOutput.h5")
+    p_pp.add_argument("--util", required=True, help="Upstream util script name (e.g. sfincsScanPlot_1)")
+    p_pp.add_argument("--utils-dir", default=None, help="Override utils/ directory (else auto-detect / env var)")
+    p_pp.add_argument("--interactive", action="store_true", help="Do not override input() (may hang in CI)")
+    p_pp.add_argument(
+        "util_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded to the upstream script (e.g. 'pdf'). Prefix with '--' to separate args.",
+    )
+
+    def _cmd_postprocess_upstream(args: argparse.Namespace) -> int:
+        t0 = _now()
+        _emit("################################################################", level=0, args=args)
+        _emit(" sfincs_jax postprocess-upstream", level=0, args=args)
+        _emit(f" case_dir={Path(args.case_dir).resolve()}", level=0, args=args)
+        _emit(f" util={args.util}", level=0, args=args)
+        if args.utils_dir is not None:
+            _emit(f" utils_dir={Path(args.utils_dir).resolve()}", level=1, args=args)
+        util_args = list(args.util_args or [])
+        if util_args and util_args[0] == "--":
+            util_args = util_args[1:]
+        run_upstream_util(
+            util=str(args.util),
+            case_dir=Path(args.case_dir),
+            args=util_args,
+            utils_dir=Path(args.utils_dir) if args.utils_dir is not None else None,
+            noninteractive=not bool(args.interactive),
+            emit=lambda level, msg: _emit(msg, level=level, args=args),
+        )
+        _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
+        return 0
+
+    p_pp.set_defaults(func=_cmd_postprocess_upstream)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

@@ -4,7 +4,12 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import sys
 import time
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from sfincs_jax.compare import compare_sfincs_outputs
 from sfincs_jax.fortran import run_sfincs_fortran
@@ -120,4 +125,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -109,6 +109,15 @@ Compare two `sfincsOutput.h5` files dataset-by-dataset:
 sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
 ```
 
+## Postprocessing (upstream utils)
+
+SFINCS Fortran v3 ships a set of plotting scripts under `utils/`. This repo vendors those scripts in
+`examples/sfincs_examples/utils/`. To run one non-interactively:
+
+```bash
+sfincs_jax postprocess-upstream --case-dir /path/to/case --util sfincsScanPlot_1 -- pdf
+```
+
 ## Benchmarking against the Fortran v3 executable
 
 If you have the upstream Fortran v3 binary available locally:

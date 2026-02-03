@@ -145,3 +145,15 @@ For transport-matrix runs (``RHSMode=2`` or ``RHSMode=3``), you can also request
        output_path=Path("sfincsOutput.h5"),
        compute_transport_matrix=True,
    )
+
+Running upstream postprocessing scripts (utils/)
+------------------------------------------------
+
+The upstream Fortran v3 codebase ships a set of plotting scripts under `utils/`.
+This repository vendors those scripts in `examples/sfincs_examples/utils/`.
+
+If you have a directory containing `sfincsOutput.h5`, you can run one of these scripts non-interactively:
+
+.. code-block:: bash
+
+   sfincs_jax postprocess-upstream --case-dir /path/to/case --util sfincsScanPlot_1 -- pdf

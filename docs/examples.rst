@@ -26,6 +26,7 @@ Matrix-free linear solve demo (using frozen Fortran PETSc binaries):
 .. code-block:: bash
 
    python examples/2_intermediate/04_solve_fortran_matrix_with_gmres.py
+   python examples/2_intermediate/18_autodiff_gradient_nu_n_residual.py
 
 Transport matrices (RHSMode=2/3)
 --------------------------------
@@ -39,6 +40,23 @@ right-hand sides (``whichRHS``) and assembling a matrix from diagnostic moments 
 
    python examples/2_intermediate/16_transport_matrix_rhsmode2_and_rhsmode3.py
    sfincs_jax transport-matrix-v3 --input input.namelist --out-matrix transportMatrix.npy
+
+Upstream postprocessing (utils/)
+--------------------------------
+
+SFINCS Fortran v3 includes a set of plotting scripts under `utils/`. `sfincs_jax` vendors these scripts
+in `examples/sfincs_examples/utils/` and can run them non-interactively:
+
+.. code-block:: bash
+
+   sfincs_jax postprocess-upstream --case-dir /path/to/case --util sfincsScanPlot_1 -- pdf
+
+There is also a small end-to-end demo that generates PDF figures for a tiny transport-matrix case:
+
+.. code-block:: bash
+
+   pip install -e ".[viz]"
+   python examples/2_intermediate/17_postprocess_upstream_scanplot_1_transport_matrix.py
 
 Some advanced examples require optional dependencies:
 

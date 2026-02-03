@@ -37,6 +37,10 @@ mathjax_path = "https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-cht
 # Disable the assistive MathML render action (it can become visible if CSS is blocked).
 mathjax3_config = {
     "options": {
+        # Prefer to disable assistive MathML generation entirely. If it is generated but not hidden
+        # (e.g. CSS stripped or theme quirks), it can show up as visible “math italic text” with
+        # invisible operator glyphs (⁢, ⁡, …) on some hosted docs.
+        "enableAssistiveMml": False,
         "renderActions": {
             # Properly disable assistive MathML output. If it is generated but not hidden (e.g. CSS stripped),
             # it can show up as “math italic text” with invisible operator glyphs (⁢, ⁡, …) on RTD pages.

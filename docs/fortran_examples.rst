@@ -16,6 +16,12 @@ is vendored in this repository under ``examples/sfincs_examples``. A best-effort
 This page provides a *mechanical audit* of the upstream example namelists to make it
 easy to track what still needs to be ported.
 
+.. note::
+
+   The audit table only checks whether `sfincs_jax` can parse the namelist, build grids/geometry,
+   and write a `sfincsOutput.h5`-style file (and, optionally, whether RHSMode=2/3 transport-matrix
+   solves are *declared*). It does **not** imply end-to-end solver parity for that case.
+
 How the audit is generated
 --------------------------
 

@@ -3,3 +3,10 @@ mjx-assistive-mml,
 .MJX_Assistive_MathML {
   display: none !important;
 }
+
+/* Some RTD environments expose the embedded MathML (rather than hiding it as "assistive"),
+   which can appear as visible italicized text with invisible operator glyphs (⁢, ⁡, …).
+   Hide MathML explicitly while keeping the CHTML output visible. */
+math[xmlns="http://www.w3.org/1998/Math/MathML"] {
+  display: none !important;
+}

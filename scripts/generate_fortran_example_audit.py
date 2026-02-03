@@ -43,6 +43,7 @@ class ExampleRow:
     name: str
     relpath: str
     geometry_scheme: int | None
+    rhs_mode: int | None
     n_species: int | None
     collision_operator: int | None
     include_phi1: bool
@@ -51,15 +52,18 @@ class ExampleRow:
     use_dkes_exb: bool
     magnetic_drift_scheme: int | None
     sfincs_jax_support: str
+    transport_matrix_support: str
 
 
-def classify_support(input_path: Path) -> Tuple[str, ExampleRow]:
+def classify_support(input_path: Path, *, try_transport_solves: bool = False) -> Tuple[str, ExampleRow]:
     nml = read_sfincs_input(input_path)
     geom = nml.group("geometryParameters")
     phys = nml.group("physicsParameters")
     species = nml.group("speciesParameters")
+    general = nml.group("general")
 
     geometry_scheme = _get_int(geom, "geometryScheme")
+    rhs_mode = _get_int(general, "RHSMode", 1)
     n_species = _get_nspecies(species)
     collision_operator = _get_int(phys, "collisionOperator")
     include_phi1 = _get_bool(phys, "includePhi1", False)
@@ -88,10 +92,25 @@ def classify_support(input_path: Path) -> Tuple[str, ExampleRow]:
             except Exception:  # noqa: BLE001
                 pass
 
+    tm_support = "-"
+    if rhs_mode in {2, 3} and support == "write-output":
+        tm_support = "declared"
+        if try_transport_solves:
+            try:
+                from sfincs_jax.v3_driver import solve_v3_transport_matrix_linear_gmres
+
+                res = nml.group("resolutionParameters")
+                solver_tol = float(res.get("SOLVERTOLERANCE", 1e-10))
+                _ = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=solver_tol)
+                tm_support = "solve-ok"
+            except Exception as e:  # noqa: BLE001
+                tm_support = f"solve-fail ({type(e).__name__})"
+
     row = ExampleRow(
         name=input_path.parent.name,
         relpath=str(input_path.parent),
         geometry_scheme=geometry_scheme,
+        rhs_mode=rhs_mode,
         n_species=n_species,
         collision_operator=collision_operator,
         include_phi1=include_phi1,
@@ -100,6 +119,7 @@ def classify_support(input_path: Path) -> Tuple[str, ExampleRow]:
         use_dkes_exb=use_dkes_exb,
         magnetic_drift_scheme=magnetic_drift_scheme,
         sfincs_jax_support=support,
+        transport_matrix_support=tm_support,
     )
     return support, row
 
@@ -134,11 +154,12 @@ def write_rst_table(rows: List[ExampleRow], out_path: Path) -> None:
 
     lines.append(".. list-table:: Fortran v3 example inputs (audit)\n")
     lines.append("   :header-rows: 1\n")
-    lines.append("   :widths: 26 10 7 9 7 7 7 9 10\n")
+    lines.append("   :widths: 26 10 7 7 9 7 7 7 9 10 16\n")
     lines.append("\n")
     header = [
         "Example",
         "geometryScheme",
+        "RHSMode",
         "Nspecies",
         "collisionOp",
         "Phi1",
@@ -146,6 +167,7 @@ def write_rst_table(rows: List[ExampleRow], out_path: Path) -> None:
         "Er-xiDot",
         "DKES ExB",
         "`sfincs_jax`",
+        "transport-matrix",
     ]
     lines.append("   * - " + "\n     - ".join(header) + "\n")
 
@@ -156,6 +178,7 @@ def write_rst_table(rows: List[ExampleRow], out_path: Path) -> None:
         row_vals = [
             _rst_escape(r.name),
             _rst_escape("" if r.geometry_scheme is None else str(r.geometry_scheme)),
+            _rst_escape("" if r.rhs_mode is None else str(r.rhs_mode)),
             _rst_escape("" if r.n_species is None else str(r.n_species)),
             _rst_escape("" if r.collision_operator is None else str(r.collision_operator)),
             b(r.include_phi1),
@@ -163,6 +186,7 @@ def write_rst_table(rows: List[ExampleRow], out_path: Path) -> None:
             b(r.include_er_xidot),
             b(r.use_dkes_exb),
             _rst_escape(r.sfincs_jax_support),
+            _rst_escape(r.transport_matrix_support),
         ]
         lines.append("   * - " + "\n     - ".join(row_vals) + "\n")
 
@@ -174,7 +198,7 @@ def main() -> int:
     ap.add_argument(
         "--examples-root",
         type=Path,
-        default=Path(__file__).resolve().parents[2] / "sfincs" / "fortran" / "version3" / "examples",
+        default=None,
         help="Path to SFINCS Fortran v3 examples directory.",
     )
     ap.add_argument(
@@ -183,15 +207,27 @@ def main() -> int:
         default=Path(__file__).resolve().parents[1] / "docs" / "_generated" / "fortran_examples_table.rst",
         help="Output RST file path (included by Sphinx).",
     )
+    ap.add_argument(
+        "--try-transport-solves",
+        action="store_true",
+        help="For RHSMode=2/3 cases, attempt the whichRHS transport-matrix solves (may be slow).",
+    )
     args = ap.parse_args()
 
-    examples_root: Path = args.examples_root
+    # Prefer the vendored example suite in this repo if present; otherwise fall back to
+    # the sibling upstream checkout layout used in development.
+    if args.examples_root is None:
+        vendored = Path(__file__).resolve().parents[1] / "examples" / "sfincs_examples"
+        upstream = Path(__file__).resolve().parents[2] / "sfincs" / "fortran" / "version3" / "examples"
+        examples_root = vendored if vendored.exists() else upstream
+    else:
+        examples_root = Path(args.examples_root)
     if not examples_root.exists():
         raise SystemExit(f"examples root does not exist: {examples_root}")
 
     rows: List[ExampleRow] = []
     for input_path in sorted(examples_root.rglob("input.namelist")):
-        _support, row = classify_support(input_path)
+        _support, row = classify_support(input_path, try_transport_solves=bool(args.try_transport_solves))
         rows.append(row)
 
     write_rst_table(rows, args.out)
