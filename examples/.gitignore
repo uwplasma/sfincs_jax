@@ -1,0 +1,6 @@
+# Generated outputs (examples are intended to be run in-place):
+**/output/
+**/figures/
+**/__pycache__/
+.ipynb_checkpoints/
+

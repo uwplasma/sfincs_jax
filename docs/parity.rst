@@ -1,6 +1,38 @@
 Parity status
 =============
 
+High-level summary (parity-tested)
+----------------------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 12 60
+
+   * - Area
+     - Status
+     - Notes
+   * - Grids (``theta``, ``zeta``, ``x``)
+     - Yes
+     - Includes monoenergetic ``x=1`` / ``xWeights=exp(1)`` special-case
+   * - Geometry schemes ``1/2/4``
+     - Yes
+     - Output parity fixtures
+   * - Geometry scheme ``5`` (VMEC ``wout_*.nc``)
+     - Partial
+     - Core arrays + output parity fixture for a small case
+   * - Geometry schemes ``11/12`` (Boozer ``.bc``)
+     - Yes
+     - Geometry + transport-matrix end-to-end fixtures
+   * - Linear runs (RHSMode=1)
+     - Partial
+     - Matrix-free GMRES parity on a growing set of tiny fixtures
+   * - Transport matrices (RHSMode=2/3)
+     - Yes
+     - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
+   * - Full upstream v3 example suite
+     - No
+     - See ``docs/fortran_examples.rst`` for the current audit
+
 Implemented (parity-tested)
 ---------------------------
 
@@ -41,7 +73,7 @@ Implemented (parity-tested)
   - Full-system matvec parity vs v3 solver matrix (``whichMatrix=1``) for tiny monoenergetic fixtures in:
     ``monoenergetic_PAS_tiny_scheme1``, ``monoenergetic_PAS_tiny_scheme11``, and ``monoenergetic_PAS_tiny_scheme5_filtered``.
   - ``transportMatrix`` assembly parity vs frozen Fortran v3 ``sfincsOutput.h5`` for:
-    ``monoenergetic_PAS_tiny_scheme{1,11,5_filtered}`` (``RHSMode=3``) and
+    ``monoenergetic_PAS_tiny_scheme{1,11,12,5_filtered}`` (``RHSMode=3``) and
     ``transportMatrix_PAS_tiny_rhsMode2_scheme2`` (``RHSMode=2``).
 - Phi1/QN/lambda block parity (includePhi1=true, includePhi1InKineticEquation=false):
   full-system matvec + GMRES solution parity vs frozen PETSc binaries for

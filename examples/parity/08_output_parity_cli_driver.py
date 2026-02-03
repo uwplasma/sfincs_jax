@@ -1,7 +1,7 @@
 """Compare a `sfincs_jax` output file (generated via CLI) against a Fortran fixture.
 
 Run:
-  python examples/2_intermediate/08_output_parity_cli_driver.py
+  python examples/parity/08_output_parity_cli_driver.py
 """
 
 from __future__ import annotations

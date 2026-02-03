@@ -6,6 +6,8 @@ A parity-first **JAX** port of **SFINCS Fortran v3**, with a focus on:
 - **Performance** via JIT + vectorization (matrix-free operator application).
 - **End-to-end differentiability** to enable gradient-based sensitivity, calibration, and optimization.
 
+![BHat on a Boozer (θ, ζ) grid](docs/_static/figures/magdrift_bhat.png)
+
 Documentation: build locally (`sphinx-build -b html docs docs/_build/html`) or view on Read the Docs.
 
 ## What exists today
@@ -30,15 +32,48 @@ small, parity-tested slices:
 
 Current parity coverage is tracked in `docs/parity.rst` and via the v3 example audit in `docs/fortran_examples.rst`.
 
+## Parity status (summary)
+
+This table is a *high-level* view of what is currently parity-tested. See `docs/parity.rst` for the detailed inventory.
+
+| Area | Status | Notes |
+|---|---|---|
+| Grids (`theta`, `zeta`, `x`) | ✅ | Includes monoenergetic `x=1`, `xWeights=exp(1)` special-case |
+| Geometry (schemes 1/2/4) | ✅ | `sfincsOutput.h5` parity fixtures |
+| Geometry (scheme 5 VMEC `wout_*.nc`) | ✅ (subset) | Core arrays + output parity fixture |
+| Geometry (schemes 11/12 `.bc`) | ✅ | Includes transport-matrix end-to-end fixtures |
+| Collisionless operator | ✅ (subset) | Streaming/mirror, ExB, Er slices, magnetic drift slices |
+| Collision operators | ✅ (subset) | PAS + linearized FP, including a tiny Phi1-in-collision fixture |
+| Linear solve (RHSMode=1) | ✅ (fixtures) | Matrix-free GMRES parity on tiny cases |
+| Transport matrices (RHSMode=2/3) | ✅ (fixtures) | End-to-end `transportMatrix` parity (2×2 and 3×3 cases) |
+| Nonlinear Newton–Krylov | ⚠️ experimental | Tiny parity fixture only |
+| Full upstream v3 example suite | 🚧 | See `docs/fortran_examples.rst` |
+
 ## Install
 
-Editable install (development):
+Regular users (from PyPI):
 
 ```bash
+pip install sfincs_jax
+```
+
+From source (recommended for parity work and examples):
+
+```bash
+git clone https://github.com/uwplasma/sfincs_jax.git
+cd sfincs_jax
+pip install .
+```
+
+Development install:
+
+```bash
+git clone https://github.com/uwplasma/sfincs_jax.git
+cd sfincs_jax
 pip install -e ".[dev]"
 ```
 
-Optional extras:
+Optional extras (install as needed):
 
 ```bash
 # Docs:
@@ -148,38 +183,42 @@ Fortran benchmark on a normal workstation/HPC environment and copy the resulting
 
 ## Examples
 
-Examples are structured by difficulty:
+Examples are structured by topic:
 
-- `examples/1_simple/`: basic API usage (no Fortran required)
-- `examples/2_intermediate/`: parity checks + autodiff demos
-- `examples/3_advanced/`: optimization/implicit-diff patterns (may require extras)
+- `examples/getting_started/`: minimal “hello world” workflows (no Fortran required)
+- `examples/parity/`: parity + validation vs frozen v3 fixtures
+- `examples/transport/`: `RHSMode=2/3` transport-matrix workflows + upstream scanplot scripts
+- `examples/autodiff/`: autodiff + implicit-diff demonstrations
+- `examples/optimization/`: optimization patterns (may require extras)
+- `examples/performance/`: JIT/performance microbenchmarks
+- `examples/publication_figures/`: publication-style figure generation
 
 Start here:
 
 ```bash
-python examples/1_simple/01_build_grids_and_geometry.py
-python examples/2_intermediate/11_autodiff_er_xidot_term.py  # requires ".[viz]"
-python examples/2_intermediate/18_transport_matrix_er_scan_upstream_scanplot2.py  # requires ".[viz]"
+python examples/getting_started/01_build_grids_and_geometry.py
+python examples/autodiff/11_autodiff_er_xidot_term.py  # requires ".[viz]"
+python examples/transport/18_transport_matrix_er_scan_upstream_scanplot2.py  # requires ".[viz]"
 ```
 
 Optimization + publication-ready figures (optional extras):
 
 ```bash
 pip install -e ".[opt,viz]"
-python examples/3_advanced/04_optimize_scheme4_harmonics_publication_figures.py
-python examples/3_advanced/05_calibrate_nu_n_to_fortran_residual_fixture.py
+python examples/optimization/04_optimize_scheme4_harmonics_publication_figures.py
+python examples/optimization/05_calibrate_nu_n_to_fortran_residual_fixture.py
 ```
 
 Implicit differentiation through solves (advanced):
 
 ```bash
-python examples/3_advanced/06_implicit_diff_through_gmres_solve_scheme5.py
+python examples/autodiff/06_implicit_diff_through_gmres_solve_scheme5.py
 ```
 
 Quick performance sanity check (JIT vs no-JIT):
 
 ```bash
-python examples/2_intermediate/12_benchmark_jit_matvec.py
+python examples/performance/12_benchmark_jit_matvec.py
 ```
 
 Upstream inputs and scripts are vendored so existing SFINCS users can find familiar starting points:

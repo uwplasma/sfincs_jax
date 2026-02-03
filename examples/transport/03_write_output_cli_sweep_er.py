@@ -6,7 +6,7 @@ This example demonstrates using the `sfincs_jax` CLI in a simple parametric stud
   - read outputs and visualize the resulting `dPhiHatdpsiHat`
 
 Run:
-  python examples/3_advanced/03_write_output_cli_sweep_er.py
+  python examples/transport/03_write_output_cli_sweep_er.py
 
 Plotting requires:
   pip install -e ".[viz]"

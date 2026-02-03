@@ -6,7 +6,7 @@ This example demonstrates:
   - (optional) plotting a heatmap of BHat differences
 
 Run:
-  python examples/2_intermediate/07_output_parity_vs_fortran_fixture.py
+  python examples/parity/07_output_parity_vs_fortran_fixture.py
 
 Plotting requires:
   pip install -e ".[viz]"
@@ -108,4 +108,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

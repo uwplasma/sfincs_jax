@@ -7,7 +7,7 @@ This script compares:
 and prints keys that exist in the Fortran file but are not written by `sfincs_jax` yet.
 
 Run:
-  python examples/2_intermediate/09_output_key_coverage_report.py
+  python examples/parity/09_output_key_coverage_report.py
 """
 
 from __future__ import annotations

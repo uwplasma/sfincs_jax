@@ -6,7 +6,7 @@ This script produces a small set of polished figures that illustrate:
   - The upwind-selector mask over (θ, ζ)
   - Representative coefficient fields that multiply angular derivatives and |ΔL|=2 couplings
 
-Outputs are written as both PNG and PDF in `examples/2_intermediate/figures/`.
+Outputs are written as both PNG and PDF in `examples/publication_figures/figures/`.
 
 Requirements:
   pip install -e ".[viz]"
@@ -177,4 +177,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

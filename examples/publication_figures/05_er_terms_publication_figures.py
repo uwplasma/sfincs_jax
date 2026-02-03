@@ -5,7 +5,7 @@ This script produces a small set of polished figures that illustrate:
   - The Er-driven coefficients appearing in the v3 xiDot and xDot terms
   - The ExB drift coefficient multiplying the v3 d/dtheta term (for this geometry, IHat=0 so d/dzeta vanishes)
 
-Outputs are written as both PNG and PDF in `examples/2_intermediate/figures/`.
+Outputs are written as both PNG and PDF in `examples/publication_figures/figures/`.
 
 Requirements:
   pip install -e ".[viz]"

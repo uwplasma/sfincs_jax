@@ -6,6 +6,12 @@ Method overview
 SFINCS (v3) computes neoclassical transport in stellarators by solving a drift-kinetic
 equation (DKE) for the non-adiabatic part of the distribution function on a flux surface.
 
+.. figure:: _static/figures/magdrift_bhat.png
+   :alt: Example Boozer field magnitude BHat(θ, ζ)
+   :width: 85%
+
+   Example v3 `geometryScheme=11/12` Boozer field magnitude :math:`\hat B(\theta,\zeta)` on a discrete grid.
+
 Discretization (v3)
 -------------------
 

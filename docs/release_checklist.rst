@@ -30,11 +30,11 @@ Smoke-run the examples that do not require optional dependencies:
 
 .. code-block:: bash
 
-   python examples/1_simple/01_build_grids_and_geometry.py
-   python examples/1_simple/02_apply_collisionless_operator.py
-   python examples/1_simple/03_write_sfincs_output_python.py
-   python examples/1_simple/04_write_sfincs_output_cli.py
-   python examples/2_intermediate/10_matrix_free_residual_and_jvp.py
+   python examples/getting_started/01_build_grids_and_geometry.py
+   python examples/getting_started/02_apply_collisionless_operator.py
+   python examples/getting_started/03_write_sfincs_output_python.py
+   python examples/getting_started/04_write_sfincs_output_cli.py
+   python examples/autodiff/10_matrix_free_residual_and_jvp.py
 
 Regenerate the upstream example audit table if upstream inputs or support levels change:
 

@@ -22,10 +22,10 @@ The Fortran v3 inputs (namelist files, `.bc`, `wout_*.nc`) are *not* differentia
 However, once a `V3FullSystemOperator` is constructed, you can treat its fields as parameters and
 differentiate objectives with respect to them. For example:
 
-- Differentiate a residual norm w.r.t. ``nu_n`` (see ``examples/2_intermediate/14_autodiff_sensitivity_nu_n_scheme5.py``).
+- Differentiate a residual norm w.r.t. ``nu_n`` (see ``examples/autodiff/14_autodiff_sensitivity_nu_n_scheme5.py``).
 - Differentiate a diagnostics functional w.r.t. a differentiable geometry parameter in ``geometryScheme=4`` optimization demos.
 - Differentiate **through a linear solve** via implicit differentiation (see
-  ``examples/3_advanced/06_implicit_diff_through_gmres_solve_scheme5.py``).
+  ``examples/autodiff/06_implicit_diff_through_gmres_solve_scheme5.py``).
 
 
 JAX-native performance patterns used in `sfincs_jax`

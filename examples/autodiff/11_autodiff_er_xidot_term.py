@@ -12,7 +12,7 @@ We:
 
 Run:
   pip install -e ".[viz]"
-  python examples/2_intermediate/11_autodiff_er_xidot_term.py
+  python examples/autodiff/11_autodiff_er_xidot_term.py
 """
 
 from __future__ import annotations

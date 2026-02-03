@@ -1,10 +1,19 @@
 ## Examples
 
-The examples are organized by difficulty:
+The examples are organized by **topic** (rather than “difficulty”), so you can jump directly to what you need.
 
-- `examples/1_simple/`: basic API usage (no Fortran required)
-- `examples/2_intermediate/`: parity checks and auto-diff demos
-- `examples/3_advanced/`: optimization / implicit-diff patterns (may require extras)
+- `examples/getting_started/`: minimal “hello world” workflows (no Fortran required)
+- `examples/parity/`: parity + validation against frozen v3 fixtures
+- `examples/transport/`: `RHSMode=2/3` transport-matrix workflows + upstream scanplot scripts
+- `examples/autodiff/`: AD / implicit-diff examples
+- `examples/optimization/`: optimization with Optax/JAX-native tooling
+- `examples/performance/`: JIT + performance microbenchmarks
+- `examples/publication_figures/`: publication-ready figure generation
+
+Also included:
+
+- `examples/sfincs_examples/`: a vendored copy of the upstream v3 example suite + helper scripts.
+- `examples/upstream/`: curated upstream inputs used in tests and docs.
 
 ### Setup
 
@@ -32,14 +41,13 @@ pip install -e ".[viz]"
 Each example is a standalone script:
 
 ```bash
-python examples/1_simple/01_build_grids_and_geometry.py
+python examples/getting_started/01_build_grids_and_geometry.py
 ```
 
 New in this repo:
 
-- Write `sfincsOutput.h5` via Python: `examples/1_simple/03_write_sfincs_output_python.py`
-- Write `sfincsOutput.h5` via CLI: `examples/1_simple/04_write_sfincs_output_cli.py`
-- Write output using a vendored upstream v3 input (Python): `examples/1_simple/05_write_output_upstream_quick2species_python.py`
-- Write output using a vendored upstream v3 input (CLI): `examples/1_simple/06_write_output_upstream_quick2species_cli.py`
-- Output parity vs Fortran fixture: `examples/2_intermediate/07_output_parity_vs_fortran_fixture.py`
-- Differentiate through an operator term (Er xiDot): `examples/2_intermediate/11_autodiff_er_xidot_term.py` (requires `.[viz]`)
+- Write `sfincsOutput.h5` via Python: `examples/getting_started/03_write_sfincs_output_python.py`
+- Write `sfincsOutput.h5` via CLI: `examples/getting_started/04_write_sfincs_output_cli.py`
+- Output parity vs Fortran fixture: `examples/parity/07_output_parity_vs_fortran_fixture.py`
+- Transport matrices (RHSMode 2/3): `examples/transport/16_transport_matrix_rhsmode2_and_rhsmode3.py`
+- Differentiate a residual norm w.r.t. `nu_n`: `examples/autodiff/18_autodiff_gradient_nu_n_residual.py`

@@ -8,7 +8,7 @@ We compute the flux-surface average <B^2> (in v3-normalized form `FSABHat2`) for
 three harmonic amplitudes used in that model.
 
 Run:
-  python examples/3_advanced/02_differentiable_fsabhat2_gradients.py
+  python examples/autodiff/02_differentiable_fsabhat2_gradients.py
 
 Plotting requires:
   pip install -e ".[viz]"
@@ -70,4 +70,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

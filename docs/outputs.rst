@@ -66,6 +66,7 @@ Output parity tests live in:
 - ``tests/test_output_h5_scheme2_parity.py`` (scheme 2)
 - ``tests/test_output_h5_scheme11_parity.py`` (scheme 11)
 - ``tests/test_output_h5_scheme5_parity.py`` (scheme 5)
+- ``tests/test_transport_matrix_write_output_end_to_end.py`` (transport matrices, including geometryScheme=11/12 fixtures)
 
 and compare the datasets above against frozen Fortran v3 fixtures in ``tests/ref``.
 
