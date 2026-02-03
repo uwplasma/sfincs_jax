@@ -35,8 +35,26 @@ def test_write_output_compute_transport_matrix_matches_fortran_fixture(base: str
     for key, atol in (
         ("transportMatrix", 5e-10),
         ("FSABFlow", 5e-10),
+        ("FSABjHat", 5e-10),
+        ("FSABjHatOverRootFSAB2", 5e-10),
+        ("FSABVelocityUsingFSADensity", 5e-10),
         ("particleFlux_vm_psiHat", 5e-10),
         ("heatFlux_vm_psiHat", 5e-10),
+        ("particleFlux_vm0_psiHat", 5e-10),
+        ("heatFlux_vm0_psiHat", 5e-10),
+        ("particleFluxBeforeSurfaceIntegral_vm", 5e-10),
+        ("heatFluxBeforeSurfaceIntegral_vm", 5e-10),
+        ("particleFluxBeforeSurfaceIntegral_vm0", 5e-10),
+        ("heatFluxBeforeSurfaceIntegral_vm0", 5e-10),
+        ("particleFlux_vm_psiHat_vs_x", 5e-10),
+        ("heatFlux_vm_psiHat_vs_x", 5e-10),
+        ("sources", 5e-10),
+        ("particleFlux_vm_psiN", 5e-10),
+        ("particleFlux_vm_rHat", 5e-10),
+        ("particleFlux_vm_rN", 5e-10),
+        ("heatFlux_vm_psiN", 5e-10),
+        ("heatFlux_vm_rHat", 5e-10),
+        ("heatFlux_vm_rN", 5e-10),
     ):
         np.testing.assert_allclose(
             np.asarray(out[key], dtype=np.float64),
@@ -45,3 +63,7 @@ def test_write_output_compute_transport_matrix_matches_fortran_fixture(base: str
             atol=float(atol),
         )
 
+    # Timings are expected to differ between Fortran and JAX runs, but we still write them for provenance.
+    assert "elapsed time (s)" in out
+    assert np.asarray(out["elapsed time (s)"]).shape == np.asarray(ref["elapsed time (s)"]).shape
+    assert np.all(np.asarray(out["elapsed time (s)"], dtype=np.float64) >= 0.0)
