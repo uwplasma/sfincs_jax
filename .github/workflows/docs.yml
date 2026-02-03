@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    env:
+      JAX_ENABLE_X64: "True"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,4 +21,3 @@ jobs:
       - name: Build docs
         run: |
           sphinx-build -W -b html docs docs/_build/html
-
