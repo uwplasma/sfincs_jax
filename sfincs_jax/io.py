@@ -1023,22 +1023,45 @@ def write_sfincs_jax_output_h5(
         if rhs_mode in {2, 3}:
             # Import lazily to keep geometry-only use-cases lightweight.
             from .v3_driver import solve_v3_transport_matrix_linear_gmres
+            from .transport_matrix import v3_transport_output_fields_vm_only
 
             resolution = nml.group("resolutionParameters")
             solver_tol = _get_float(resolution, "solverTolerance", 1e-10)
             if emit is not None:
                 emit(0, f"write_sfincs_jax_output_h5: computing transportMatrix for RHSMode={rhs_mode} (solverTolerance={solver_tol:g})")
             result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol), emit=emit)
-            data["transportMatrix"] = np.asarray(result.transport_matrix, dtype=np.float64)
 
-            # Also write a minimal set of diagnostics that the upstream v3 postprocessing
-            # scripts expect for RHSMode>1 runs. v3 writes these as (Nspecies, whichRHS) arrays.
+            # For RHSMode=2/3, upstream postprocessing scripts expect a number of additional
+            # transport diagnostics in `sfincsOutput.h5`. Compute a larger subset from the
+            # solved state vectors, then write them in a layout that matches Fortran output
+            # *as read by Python*.
             #
-            # Our HDF5 writer mimics Fortran layout by transposing arrays before writing, so to
-            # match the Fortran output *as read by Python*, we pre-transpose here.
-            data["FSABFlow"] = np.asarray(result.fsab_flow.T, dtype=np.float64)
-            data["particleFlux_vm_psiHat"] = np.asarray(result.particle_flux_vm_psi_hat.T, dtype=np.float64)
-            data["heatFlux_vm_psiHat"] = np.asarray(result.heat_flux_vm_psi_hat.T, dtype=np.float64)
+            # This is intentionally limited to the parity-tested vm-only branch (no vE terms)
+            # for now; missing vE/vd/Phi1-related fields will be added as solver parity expands.
+            fields = v3_transport_output_fields_vm_only(op0=result.op0, state_vectors_by_rhs=result.state_vectors_by_rhs)
+
+            # Add transportMatrix (Fortran reads it transposed vs mathematical row/col).
+            fields["transportMatrix"] = np.asarray(result.transport_matrix, dtype=np.float64).T
+            fields["elapsed time (s)"] = np.asarray(result.elapsed_time_s, dtype=np.float64)
+
+            # Add coordinate variants used by upstream scan plotting scripts.
+            conv = _conversion_factors_to_from_dpsi_hat(
+                psi_a_hat=float(data["psiAHat"]),
+                a_hat=float(data["aHat"]),
+                r_n=float(data["rN"]),
+            )
+            for base in ("particleFlux_vm_psiHat", "heatFlux_vm_psiHat", "particleFlux_vm0_psiHat", "heatFlux_vm0_psiHat"):
+                if base not in fields:
+                    continue
+                v = np.asarray(fields[base], dtype=np.float64)  # (S,whichRHS) as read in Python
+                fields[base.replace("_psiHat", "_psiN")] = v * float(conv["ddpsiN2ddpsiHat"])
+                fields[base.replace("_psiHat", "_rHat")] = v * float(conv["ddrHat2ddpsiHat"])
+                fields[base.replace("_psiHat", "_rN")] = v * float(conv["ddrN2ddpsiHat"])
+
+            # Store these new datasets in "pre-transposed" form so that `write_sfincs_h5(..., fortran_layout=True)`
+            # produces the desired Python-read shape.
+            for k, v in fields.items():
+                data[k] = _fortran_h5_layout(v)
 
     data["input.namelist"] = input_namelist.read_text()
     if emit is not None:

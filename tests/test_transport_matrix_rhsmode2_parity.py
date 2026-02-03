@@ -10,6 +10,7 @@ from sfincs_jax.io import read_sfincs_h5
 from sfincs_jax.namelist import read_sfincs_input
 from sfincs_jax.petsc_binary import read_petsc_vec
 from sfincs_jax.transport_matrix import v3_transport_matrix_from_state_vectors
+from sfincs_jax.transport_matrix import v3_transport_output_fields_vm_only
 from sfincs_jax.v3 import geometry_from_namelist, grids_from_namelist
 from sfincs_jax.v3_system import (
     apply_v3_full_system_operator,
@@ -60,6 +61,69 @@ def test_transport_matrix_rhsmode2_matches_fortran_output() -> None:
     np.testing.assert_allclose(pf, pf_ref, rtol=0, atol=5e-10)
     np.testing.assert_allclose(hf, hf_ref, rtol=0, atol=5e-10)
     np.testing.assert_allclose(fsab, fsab_ref, rtol=0, atol=5e-10)
+
+    # Validate additional output fields used by the upstream scan plotting scripts.
+    fields = v3_transport_output_fields_vm_only(op0=op0, state_vectors_by_rhs=state_vecs)
+
+    np.testing.assert_allclose(np.asarray(fields["FSABjHat"]), np.asarray(out["FSABjHat"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(
+        np.asarray(fields["FSABjHatOverRootFSAB2"]),
+        np.asarray(out["FSABjHatOverRootFSAB2"]),
+        rtol=0,
+        atol=5e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(fields["FSABVelocityUsingFSADensity"]),
+        np.asarray(out["FSABVelocityUsingFSADensity"]),
+        rtol=0,
+        atol=5e-10,
+    )
+
+    # Before-surface-integral and vs_x fields:
+    np.testing.assert_allclose(
+        np.asarray(fields["particleFluxBeforeSurfaceIntegral_vm"]),
+        np.asarray(out["particleFluxBeforeSurfaceIntegral_vm"]),
+        rtol=0,
+        atol=5e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(fields["heatFluxBeforeSurfaceIntegral_vm"]),
+        np.asarray(out["heatFluxBeforeSurfaceIntegral_vm"]),
+        rtol=0,
+        atol=5e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(fields["particleFlux_vm_psiHat_vs_x"]),
+        np.asarray(out["particleFlux_vm_psiHat_vs_x"]),
+        rtol=0,
+        atol=5e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(fields["heatFlux_vm_psiHat_vs_x"]),
+        np.asarray(out["heatFlux_vm_psiHat_vs_x"]),
+        rtol=0,
+        atol=5e-10,
+    )
+
+    # Coordinate variants follow v3 radial-coordinate conversion factors:
+    psi_a_hat = float(np.asarray(out["psiAHat"]))
+    a_hat = float(np.asarray(out["aHat"]))
+    r_n = float(np.asarray(out["rN"]))
+    ddpsiN2ddpsiHat = 1.0 / psi_a_hat
+    ddrHat2ddpsiHat = a_hat / (2.0 * psi_a_hat * r_n)
+    ddrN2ddpsiHat = 1.0 / (2.0 * psi_a_hat * r_n)
+
+    pf = np.asarray(fields["particleFlux_vm_psiHat"], dtype=np.float64)
+    hf = np.asarray(fields["heatFlux_vm_psiHat"], dtype=np.float64)
+    np.testing.assert_allclose(pf * ddpsiN2ddpsiHat, np.asarray(out["particleFlux_vm_psiN"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(pf * ddrHat2ddpsiHat, np.asarray(out["particleFlux_vm_rHat"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(pf * ddrN2ddpsiHat, np.asarray(out["particleFlux_vm_rN"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(hf * ddpsiN2ddpsiHat, np.asarray(out["heatFlux_vm_psiN"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(hf * ddrHat2ddpsiHat, np.asarray(out["heatFlux_vm_rHat"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(hf * ddrN2ddpsiHat, np.asarray(out["heatFlux_vm_rN"]), rtol=0, atol=5e-10)
+
+    # sources are the constraint-scheme-2 extra unknowns (per-x L=0 source), in (X,S,whichRHS) order.
+    np.testing.assert_allclose(np.asarray(fields["sources"]), np.asarray(out["sources"]), rtol=0, atol=5e-10)
 
 
 @pytest.mark.parametrize("which_rhs", (1, 2, 3))

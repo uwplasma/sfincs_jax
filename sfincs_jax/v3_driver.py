@@ -239,6 +239,7 @@ class V3TransportMatrixSolveResult:
     fsab_flow: jnp.ndarray  # (S, N)
     particle_flux_vm_psi_hat: jnp.ndarray  # (S, N)
     heat_flux_vm_psi_hat: jnp.ndarray  # (S, N)
+    elapsed_time_s: jnp.ndarray  # (N,)
 
 
 def solve_v3_transport_matrix_linear_gmres(
@@ -284,6 +285,7 @@ def solve_v3_transport_matrix_linear_gmres(
     diag_fsab_flow: list[jnp.ndarray] = []
     diag_pf: list[jnp.ndarray] = []
     diag_hf: list[jnp.ndarray] = []
+    elapsed_s: list[jnp.ndarray] = []
 
     for which_rhs in range(1, n + 1):
         t_rhs = Timer()
@@ -321,6 +323,7 @@ def solve_v3_transport_matrix_linear_gmres(
         diag_fsab_flow.append(diag.fsab_flow)
         diag_pf.append(diag.particle_flux_vm_psi_hat)
         diag_hf.append(diag.heat_flux_vm_psi_hat)
+        elapsed_s.append(jnp.asarray(t_rhs.elapsed_s(), dtype=jnp.float64))
 
     tm = v3_transport_matrix_from_state_vectors(op0=op0, geom=geom, state_vectors_by_rhs=state_vectors)
     if emit is not None:
@@ -334,4 +337,5 @@ def solve_v3_transport_matrix_linear_gmres(
         fsab_flow=jnp.stack(diag_fsab_flow, axis=1),
         particle_flux_vm_psi_hat=jnp.stack(diag_pf, axis=1),
         heat_flux_vm_psi_hat=jnp.stack(diag_hf, axis=1),
+        elapsed_time_s=jnp.stack(elapsed_s, axis=0),
     )
