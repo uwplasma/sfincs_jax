@@ -357,7 +357,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         p = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
 
         r_n_wish = float(geom.get("RN_WISH", 0.5))
-        vmecradial_option = int(geom.get("VMECRADIALOPTION", 0))
+        vmecradial_option = int(_get_int(geom, "VMECRadialOption", 1))
         return boozer_geometry_from_bc_file(
             path=str(p),
             theta=grids.theta,
@@ -377,7 +377,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
 
         r_n_wish = float(geom.get("RN_WISH", 0.5))
         psi_n_wish = float(r_n_wish) * float(r_n_wish)
-        vmecradial_option = int(geom.get("VMECRADIALOPTION", 0))
+        vmecradial_option = int(_get_int(geom, "VMECRadialOption", 1))
         vmec_nyq_opt = int(geom.get("VMEC_NYQUIST_OPTION", 1))
         min_bmn_to_load = float(geom.get("MIN_BMN_TO_LOAD", 0.0))
         ripple_scale = float(geom.get("RIPPLESCALE", 1.0))

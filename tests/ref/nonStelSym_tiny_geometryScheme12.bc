@@ -1,0 +1,22 @@
+CC Boozer-coordinate data file (synthetic, non-stellarator-symmetric format for geometryScheme=12).
+CC This file is intentionally tiny and only intended for automated parity testing.
+CC
+CC It follows the v3 geometryScheme=12 reader in `sfincs/fortran/version3/geometry.F90`,
+CC where each (m,n) line contains 2 integers and 8 numbers:
+CC   Rcos  Rsin  Zcos  Zsin  Dcos  Dsin  Bcos  Bsin
+CC
+CC Header:
+ m0b  n0b nsurf nper  flux/[Tm^2]     a/[m]     R/[m]   avol/[m]  Rvol/[m] Vol/[m^3]
+   2    0    2    1  1.000000E+00   1.00000   1.00000   1.00000   1.00000    1.0000
+       s         iota  curr_pol/nper    curr_tor    pprime   sqrt g(0,0)
+                            [A]            [A]   dp/ds,[Pa] (dV/ds)/nper
+  1.6000000000000000E-01  4.0000000000000000E-01  1.0000000000000000E+00  1.0000000000000000E+00  0.0000000000000000E+00  1.0000000000000000E+00
+  --------
+    0    0  1  0  0  0  0  0  1  0
+    1    0  0.1  0  0  0.1  0  0.2  0.05  0
+s
+
+  3.6000000000000002E-01  4.5000000000000001E-01  1.2000000000000000E+00  1.1000000000000001E+00  0.0000000000000000E+00  1.0000000000000000E+00
+  --------
+    0    0  1  0  0  0  0  0  1  0
+    1    0  0.15  0  0  0.15  0  0.25  0.075  0

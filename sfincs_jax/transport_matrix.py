@@ -243,8 +243,6 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     x_full = jnp.asarray(x_full, dtype=jnp.float64)
     if x_full.shape != (op.total_size,):
         raise ValueError(f"x_full must have shape {(op.total_size,)}, got {x_full.shape}")
-    if int(op.rhs_mode) != 1:
-        raise ValueError(f"v3_rhsmode1_output_fields_vm_only requires RHSMode=1, got {int(op.rhs_mode)}")
 
     f_delta = x_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
     f0 = f0_v3_from_operator(op)

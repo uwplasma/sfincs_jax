@@ -496,7 +496,7 @@ def boozer_geometry_from_bc_file(
     theta: jnp.ndarray,
     zeta: jnp.ndarray,
     r_n_wish: float,
-    vmecradial_option: int = 0,
+    vmecradial_option: int = 1,
     geometry_scheme: int = 11,
 ) -> BoozerGeometry:
     """Compute Boozer geometry from a v3 `.bc` file (geometryScheme 11/12).

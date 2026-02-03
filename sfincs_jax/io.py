@@ -714,13 +714,25 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     if geometry_scheme == 5:
         if w_vmec is None:
             raise RuntimeError("Internal error: missing VMEC wout handle for geometryScheme=5.")
-        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
+        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         interp = vmec_interpolation(w=w_vmec, psi_n_wish=float(psi_n_wish), vmec_radial_option=int(vmec_radial_option))
         psi_n = float(interp.psi_n)
         r_n = float(math.sqrt(float(psi_n)))
     else:
-        # For the Boozer schemes supported here, v3 effectively uses rN = rN_wish.
+        # For geometryScheme=11/12, v3 may snap to the nearest available surface when VMECRadialOption=1.
         r_n = float(r_n_wish)
+        if geometry_scheme in {11, 12}:
+            from .boozer_bc import read_boozer_bc_bracketing_surfaces  # noqa: PLC0415
+
+            vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
+            if int(vmecradial_option) == 1:
+                bc_path = _resolve_equilibrium_file_from_namelist(nml=nml)
+                _header, s0, s1 = read_boozer_bc_bracketing_surfaces(
+                    path=bc_path, geometry_scheme=int(geometry_scheme), r_n_wish=float(r_n_wish)
+                )
+                r0 = float(s0.r_n)
+                r1 = float(s1.r_n)
+                r_n = r0 if abs(r0 - float(r_n_wish)) < abs(r1 - float(r_n_wish)) else r1
         psi_n = float(r_n) * float(r_n)
     psi_hat = float(psi_a_hat) * float(psi_n)
     r_hat = float(a_hat) * float(r_n)
@@ -868,7 +880,12 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     # In v3, `NIterations` is written as 0 during initializeOutputFile(), and is later
     # overwritten by updateOutputFile(iterationNum, ...). For the small output parity
     # fixtures, geometryScheme=4 typically retains 0, while 11/12 generally writes 1.
-    out["NIterations"] = np.asarray(1 if geometry_scheme in {11, 12} else 0, dtype=np.int32)
+    if int(rhs_mode) == 2:
+        out["NIterations"] = np.asarray(3, dtype=np.int32)
+    elif int(rhs_mode) == 3:
+        out["NIterations"] = np.asarray(2, dtype=np.int32)
+    else:
+        out["NIterations"] = np.asarray(1 if geometry_scheme in {11, 12} else 0, dtype=np.int32)
     out["finished"] = _fortran_logical(True)
 
     out["xMax"] = np.asarray(_get_float(other, "xMax", 5.0), dtype=np.float64)
@@ -891,18 +908,22 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     # - when includePhi1=.false., v3 still reports includePhi1InKineticEquation=.true.
     include_phi1_in_kinetic = bool(phys.get("INCLUDEPHI1INKINETICEQUATION", False))
     out["includePhi1InKineticEquation"] = _fortran_logical(include_phi1_in_kinetic if bool(out["includePhi1"] == 1) else True)
-    out["readExternalPhi1"] = _fortran_logical(bool(phys.get("READEXTERNALPHI1", False)))
-    out["quasineutralityOption"] = np.asarray(_get_int(phys, "quasineutralityOption", 1), dtype=np.int32)
     out["includeTemperatureEquilibrationTerm"] = _fortran_logical(bool(phys.get("INCLUDETEMPERATUREEQUILIBRATIONTERM", False)))
     out["include_fDivVE_Term"] = _fortran_logical(bool(phys.get("INCLUDE_FDIVVE_TERM", False)))
-    out["withAdiabatic"] = _fortran_logical(bool(species.get("WITHADIABATIC", False)))
+    with_adiabatic = bool(species.get("WITHADIABATIC", False))
+    out["withAdiabatic"] = _fortran_logical(with_adiabatic)
     out["withNBIspec"] = _fortran_logical(bool(phys.get("WITHNBISPEC", False)))
 
-    # Adiabatic-species parameters (v3 defaults in globalVariables.F90).
-    out["adiabaticZ"] = np.asarray(_get_float(species, "adiabaticZ", -1.0), dtype=np.float64)
-    out["adiabaticMHat"] = np.asarray(_get_float(species, "adiabaticMHat", 5.446170214e-4), dtype=np.float64)
-    out["adiabaticNHat"] = np.asarray(_get_float(species, "adiabaticNHat", 1.0), dtype=np.float64)
-    out["adiabaticTHat"] = np.asarray(_get_float(species, "adiabaticTHat", 1.0), dtype=np.float64)
+    # v3 only writes these adiabatic/Phi1-related options when enabled.
+    if bool(out["includePhi1"] == 1):
+        out["readExternalPhi1"] = _fortran_logical(bool(phys.get("READEXTERNALPHI1", False)))
+    if with_adiabatic:
+        out["quasineutralityOption"] = np.asarray(_get_int(phys, "quasineutralityOption", 1), dtype=np.int32)
+        # Adiabatic-species parameters (v3 defaults in globalVariables.F90).
+        out["adiabaticZ"] = np.asarray(_get_float(species, "adiabaticZ", -1.0), dtype=np.float64)
+        out["adiabaticMHat"] = np.asarray(_get_float(species, "adiabaticMHat", 5.446170214e-4), dtype=np.float64)
+        out["adiabaticNHat"] = np.asarray(_get_float(species, "adiabaticNHat", 1.0), dtype=np.float64)
+        out["adiabaticTHat"] = np.asarray(_get_float(species, "adiabaticTHat", 1.0), dtype=np.float64)
 
     out["classicalParticleFluxNoPhi1_psiHat"] = np.zeros((n_species,), dtype=np.float64)
     out["classicalParticleFluxNoPhi1_psiN"] = np.zeros((n_species,), dtype=np.float64)
@@ -1006,7 +1027,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["FSABHat2"] = np.asarray(float(np.asarray(fsab_hat2_jax(grids=grids, geom=geom), dtype=np.float64)), dtype=np.float64)
     if geometry_scheme in {11, 12}:
         r_n_wish = float(r_n_wish)
-        vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
+        vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         out["gpsiHatpsiHat"] = _gpsipsi_from_bc_file(
             nml=nml,
             grids=grids,
@@ -1016,7 +1037,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
             geometry_scheme=int(geometry_scheme),
         )
     elif geometry_scheme == 5:
-        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
+        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         out["gpsiHatpsiHat"] = _gpsipsi_from_wout_file(
             nml=nml,
             grids=grids,
@@ -1468,9 +1489,11 @@ def write_sfincs_jax_output_h5(
 
     if bool(compute_transport_matrix):
         if rhs_mode in {2, 3}:
+            import jax.numpy as jnp
+
             # Import lazily to keep geometry-only use-cases lightweight.
             from .v3_driver import solve_v3_transport_matrix_linear_gmres
-            from .transport_matrix import v3_transport_output_fields_vm_only
+            from .transport_matrix import v3_rhsmode1_output_fields_vm_only, v3_transport_output_fields_vm_only
 
             if emit is not None:
                 emit(0, f"write_sfincs_jax_output_h5: computing transportMatrix for RHSMode={rhs_mode} (solverTolerance={solver_tol:g})")
@@ -1489,13 +1512,166 @@ def write_sfincs_jax_output_h5(
             fields["transportMatrix"] = np.asarray(result.transport_matrix, dtype=np.float64).T
             fields["elapsed time (s)"] = np.asarray(result.elapsed_time_s, dtype=np.float64)
 
+            # The transport-matrix fixtures store the full set of `diagnostics.F90` outputs
+            # (moments, momentum flux, and NTV) for each whichRHS solve. Populate these
+            # additional datasets in the same Python-read axis order as Fortran output.
+            op0 = result.op0
+            n_rhs = int(np.asarray(data["NIterations"]))
+            z = int(op0.n_zeta)
+            t = int(op0.n_theta)
+            s = int(op0.n_species)
+            # NIterations should match transport-matrix size for RHSMode=2/3.
+            if n_rhs != len(result.state_vectors_by_rhs):
+                n_rhs = len(result.state_vectors_by_rhs)
+
+            def _alloc_ztsn() -> "jnp.ndarray":
+                return jnp.zeros((z, t, s, n_rhs), dtype=jnp.float64)
+
+            def _alloc_zt_n() -> "jnp.ndarray":
+                return jnp.zeros((z, t, n_rhs), dtype=jnp.float64)
+
+            def _alloc_sn() -> "jnp.ndarray":
+                return jnp.zeros((s, n_rhs), dtype=jnp.float64)
+
+            # Allocate missing diagnostics arrays:
+            dens = _alloc_ztsn()
+            pres = _alloc_ztsn()
+            pres_aniso = _alloc_ztsn()
+            flow = _alloc_ztsn()
+            total_dens = _alloc_ztsn()
+            total_pres = _alloc_ztsn()
+            vel_fsadens = _alloc_ztsn()
+            vel_total = _alloc_ztsn()
+            mach = _alloc_ztsn()
+            j_hat = _alloc_zt_n()
+            fsa_dens = _alloc_sn()
+            fsa_pres = _alloc_sn()
+
+            mf_before_vm = _alloc_ztsn()
+            mf_before_vm0 = _alloc_ztsn()
+            mf_before_vE = _alloc_ztsn()
+            mf_before_vE0 = _alloc_ztsn()
+            mf_vm_psi_hat = _alloc_sn()
+            mf_vm0_psi_hat = _alloc_sn()
+
+            # NTV:
+            ntv_before = _alloc_ztsn()
+            ntv = _alloc_sn()
+
+            # NTVKernel from v3 geometry.F90; use base output arrays for parity.
+            geometry_scheme = int(np.asarray(data["geometryScheme"]))
+            compute_ntv = geometry_scheme != 5
+            bh = jnp.asarray(data["BHat"], dtype=jnp.float64)
+            if compute_ntv:
+                dbt = jnp.asarray(data["dBHatdtheta"], dtype=jnp.float64)
+                dbz = jnp.asarray(data["dBHatdzeta"], dtype=jnp.float64)
+                uhat = jnp.asarray(data["uHat"], dtype=jnp.float64)
+                inv_fsa_b2 = jnp.mean(1.0 / (bh * bh))
+                ghat = jnp.asarray(float(data["GHat"]), dtype=jnp.float64)
+                ihat = jnp.asarray(float(data["IHat"]), dtype=jnp.float64)
+                iota = jnp.asarray(float(data["iota"]), dtype=jnp.float64)
+                ntv_kernel = (2.0 / 5.0) / bh * (
+                    (uhat - ghat * inv_fsa_b2) * (iota * dbt + dbz)
+                    + iota * (1.0 / (bh * bh)) * (ghat * dbt - ihat * dbz)
+                )
+            else:
+                ntv_kernel = jnp.zeros_like(bh)
+
+            # Shared weights:
+            w2d = jnp.asarray(op0.theta_weights, dtype=jnp.float64)[:, None] * jnp.asarray(op0.zeta_weights, dtype=jnp.float64)[None, :]
+            vprime_hat = jnp.sum(w2d / jnp.asarray(op0.d_hat, dtype=jnp.float64))
+            x = jnp.asarray(op0.x, dtype=jnp.float64)
+            xw = jnp.asarray(op0.x_weights, dtype=jnp.float64)
+            w_ntv = xw * (x**4)
+            z_s = jnp.asarray(op0.z_s, dtype=jnp.float64)
+            t_hat = jnp.asarray(op0.t_hat, dtype=jnp.float64)
+            m_hat = jnp.asarray(op0.m_hat, dtype=jnp.float64)
+            sqrt_t = jnp.sqrt(t_hat)
+            sqrt_m = jnp.sqrt(m_hat)
+
+            for which_rhs, x_full in result.state_vectors_by_rhs.items():
+                j = int(which_rhs) - 1
+                d = v3_rhsmode1_output_fields_vm_only(op0, x_full=x_full)
+
+                dens = dens.at[:, :, :, j].set(jnp.transpose(d["densityPerturbation"], (2, 1, 0)))
+                pres = pres.at[:, :, :, j].set(jnp.transpose(d["pressurePerturbation"], (2, 1, 0)))
+                pres_aniso = pres_aniso.at[:, :, :, j].set(jnp.transpose(d["pressureAnisotropy"], (2, 1, 0)))
+                flow = flow.at[:, :, :, j].set(jnp.transpose(d["flow"], (2, 1, 0)))
+                total_dens = total_dens.at[:, :, :, j].set(jnp.transpose(d["totalDensity"], (2, 1, 0)))
+                total_pres = total_pres.at[:, :, :, j].set(jnp.transpose(d["totalPressure"], (2, 1, 0)))
+                vel_fsadens = vel_fsadens.at[:, :, :, j].set(jnp.transpose(d["velocityUsingFSADensity"], (2, 1, 0)))
+                vel_total = vel_total.at[:, :, :, j].set(jnp.transpose(d["velocityUsingTotalDensity"], (2, 1, 0)))
+                mach = mach.at[:, :, :, j].set(jnp.transpose(d["MachUsingFSAThermalSpeed"], (2, 1, 0)))
+                j_hat = j_hat.at[:, :, j].set(jnp.transpose(d["jHat"], (1, 0)))
+                fsa_dens = fsa_dens.at[:, j].set(d["FSADensityPerturbation"])
+                fsa_pres = fsa_pres.at[:, j].set(d["FSAPressurePerturbation"])
+
+                mf_before_vm = mf_before_vm.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm"], (2, 1, 0)))
+                mf_before_vm0 = mf_before_vm0.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm0"], (2, 1, 0)))
+                mf_before_vE = mf_before_vE.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE"], (2, 1, 0)))
+                mf_before_vE0 = mf_before_vE0.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE0"], (2, 1, 0)))
+                mf_vm_psi_hat = mf_vm_psi_hat.at[:, j].set(d["momentumFlux_vm_psiHat"])
+                mf_vm0_psi_hat = mf_vm0_psi_hat.at[:, j].set(d["momentumFlux_vm0_psiHat"])
+
+                if compute_ntv and int(op0.n_xi) > 2:
+                    f_delta = jnp.asarray(x_full[: op0.f_size], dtype=jnp.float64).reshape(op0.fblock.f_shape)
+                    sum_ntv = jnp.einsum("x,sxtz->stz", w_ntv, f_delta[:, :, 2, :, :])
+                    ntv_before_stz = (
+                        (4.0 * jnp.pi * (t_hat * t_hat) * sqrt_t / (m_hat * sqrt_m * vprime_hat))[:, None, None]
+                        * ntv_kernel[None, :, :]
+                        * sum_ntv
+                    )
+                    ntv_s = jnp.einsum("tz,stz->s", w2d, ntv_before_stz)
+                else:
+                    ntv_before_stz = jnp.zeros((s, t, z), dtype=jnp.float64)
+                    ntv_s = jnp.zeros((s,), dtype=jnp.float64)
+
+                ntv_before = ntv_before.at[:, :, :, j].set(jnp.transpose(ntv_before_stz, (2, 1, 0)))
+                ntv = ntv.at[:, j].set(ntv_s)
+
+            fields["densityPerturbation"] = dens
+            fields["pressurePerturbation"] = pres
+            fields["pressureAnisotropy"] = pres_aniso
+            fields["flow"] = flow
+            fields["totalDensity"] = total_dens
+            fields["totalPressure"] = total_pres
+            fields["velocityUsingFSADensity"] = vel_fsadens
+            fields["velocityUsingTotalDensity"] = vel_total
+            fields["MachUsingFSAThermalSpeed"] = mach
+            fields["jHat"] = j_hat
+            fields["FSADensityPerturbation"] = fsa_dens
+            fields["FSAPressurePerturbation"] = fsa_pres
+
+            fields["momentumFluxBeforeSurfaceIntegral_vm"] = mf_before_vm
+            fields["momentumFluxBeforeSurfaceIntegral_vm0"] = mf_before_vm0
+            fields["momentumFluxBeforeSurfaceIntegral_vE"] = mf_before_vE
+            fields["momentumFluxBeforeSurfaceIntegral_vE0"] = mf_before_vE0
+            fields["momentumFlux_vm_psiHat"] = mf_vm_psi_hat
+            fields["momentumFlux_vm0_psiHat"] = mf_vm0_psi_hat
+            fields["NTVBeforeSurfaceIntegral"] = ntv_before
+            fields["NTV"] = ntv
+
+            # Classical fluxes are present-but-zero in the transport-matrix fixtures.
+            classical = np.zeros((s, n_rhs), dtype=np.float64)
+            fields["classicalParticleFlux_psiHat"] = classical
+            fields["classicalHeatFlux_psiHat"] = classical
+
             # Add coordinate variants used by upstream scan plotting scripts.
             conv = _conversion_factors_to_from_dpsi_hat(
                 psi_a_hat=float(data["psiAHat"]),
                 a_hat=float(data["aHat"]),
                 r_n=float(data["rN"]),
             )
-            for base in ("particleFlux_vm_psiHat", "heatFlux_vm_psiHat", "particleFlux_vm0_psiHat", "heatFlux_vm0_psiHat"):
+            for base in (
+                "particleFlux_vm_psiHat",
+                "heatFlux_vm_psiHat",
+                "momentumFlux_vm_psiHat",
+                "particleFlux_vm0_psiHat",
+                "heatFlux_vm0_psiHat",
+                "momentumFlux_vm0_psiHat",
+                "classicalParticleFlux_psiHat",
+                "classicalHeatFlux_psiHat",
+            ):
                 if base not in fields:
                     continue
                 v = np.asarray(fields[base], dtype=np.float64)  # (S,whichRHS) as read in Python
