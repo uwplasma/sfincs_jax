@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shutil
 import sys
 import time
 
@@ -13,7 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from sfincs_jax.compare import compare_sfincs_outputs
 from sfincs_jax.fortran import run_sfincs_fortran
-from sfincs_jax.io import write_sfincs_jax_output_h5
+from sfincs_jax.io import localize_equilibrium_file_in_place, write_sfincs_jax_output_h5
 from sfincs_jax.namelist import read_sfincs_input
 
 
@@ -40,6 +41,17 @@ def _matches(pattern: str | None, p: Path) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run sfincs_jax on the vendored upstream Fortran v3 example suite.")
     parser.add_argument("--root", default=Path(__file__).resolve().parent, type=Path, help="Suite root directory")
+    parser.add_argument(
+        "--out-root",
+        default=Path("/tmp") / "sfincs_jax_v3_example_suite",
+        type=Path,
+        help="Scratch directory in which cases are copied and executed (default: /tmp/...).",
+    )
+    parser.add_argument(
+        "--in-place",
+        action="store_true",
+        help="Run cases in-place (will write outputs into the vendored example directories).",
+    )
     parser.add_argument("--pattern", default=None, help="Regex filter on case path (case-insensitive)")
     parser.add_argument("--limit", default=None, type=int, help="Stop after N cases")
     parser.add_argument("--write-output", action="store_true", help="Run `sfincs_jax write-output` for each case")
@@ -74,19 +86,35 @@ def main() -> int:
 
     for i, input_path in enumerate(inputs, start=1):
         case_dir = input_path.parent
+        case = case_dir.name
         if args.verbose:
             print(f"[{i}/{len(inputs)}] {case_dir}")
 
         try:
-            nml = read_sfincs_input(input_path)
+            if args.in_place:
+                workdir = case_dir
+                w_input = input_path
+            else:
+                workdir = Path(args.out_root).resolve() / case
+                if workdir.exists() and not args.dry_run:
+                    shutil.rmtree(workdir)
+                if not args.dry_run:
+                    shutil.copytree(case_dir, workdir)
+                w_input = workdir / "input.namelist"
+
+            if not args.dry_run:
+                # Ensure equilibriumFile is runnable from the copied workdir.
+                localize_equilibrium_file_in_place(input_namelist=w_input, overwrite=False)
+
+            nml = read_sfincs_input(w_input)
             rhs_mode = int(nml.group("general").get("RHSMODE", 1))
 
             jax_out = None
             if args.write_output:
-                jax_out = case_dir / "sfincsOutput_jax.h5"
+                jax_out = workdir / "sfincsOutput_jax.h5"
                 if not args.dry_run:
                     write_sfincs_jax_output_h5(
-                        input_namelist=input_path,
+                        input_namelist=w_input,
                         output_path=jax_out,
                         overwrite=True,
                         compute_transport_matrix=bool(args.compute_transport_matrix and rhs_mode in {2, 3}),
@@ -94,19 +122,19 @@ def main() -> int:
 
             f_out = None
             if args.compare_fortran:
-                if args.dry_run:
-                    f_out = case_dir / "sfincsOutput_fortran.h5"
-                else:
-                    # Run in the case directory to match upstream relative paths.
-                    f_out = run_sfincs_fortran(input_namelist=input_path, exe=args.fortran_exe, workdir=case_dir)
+                f_out = workdir / "sfincsOutput_fortran.h5"
+                if not args.dry_run:
+                    # Run in the workdir so the localized equilibrium file is used.
+                    tmp = run_sfincs_fortran(input_namelist=w_input, exe=args.fortran_exe, workdir=workdir)
+                    tmp.replace(f_out)
 
             if args.compare_fortran and jax_out is not None and f_out is not None and not args.dry_run:
                 compare_sfincs_outputs(a=jax_out, b=f_out, rtol=float(args.rtol), atol=float(args.atol))
 
-            results.append(CaseResult(case_dir=case_dir, input_namelist=input_path, ok=True, sfincs_jax_output=jax_out, fortran_output=f_out))
+            results.append(CaseResult(case_dir=workdir, input_namelist=w_input, ok=True, sfincs_jax_output=jax_out, fortran_output=f_out))
 
         except Exception as e:  # noqa: BLE001
-            results.append(CaseResult(case_dir=case_dir, input_namelist=input_path, ok=False, error=str(e)))
+            results.append(CaseResult(case_dir=case_dir if args.in_place else (Path(args.out_root) / case_dir.name), input_namelist=input_path, ok=False, error=str(e)))
             if args.verbose:
                 print(f"  FAIL: {e}")
 

@@ -10,6 +10,10 @@ import shutil
 import sys
 import time
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from sfincs_jax.compare import compare_sfincs_outputs
 from sfincs_jax.fortran import run_sfincs_fortran
 from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
@@ -38,38 +42,10 @@ def _iter_inputs(examples_root: Path) -> list[Path]:
 
 
 def _patch_equilibrium_file_in_place(input_path: Path) -> None:
-    """Replace equilibriumFile with an absolute path so Fortran can run from a copied workdir."""
-    nml = read_sfincs_input(input_path)
-    geom = nml.group("geometryParameters")
-    eq = geom.get("EQUILIBRIUMFILE", None)
-    if eq is None:
-        return
+    """Patch `equilibriumFile` to be runnable from a copied workdir."""
+    from sfincs_jax.io import localize_equilibrium_file_in_place  # noqa: PLC0415
 
-    # Reuse the same resolution logic as sfincs_jax output writing.
-    from sfincs_jax.io import _resolve_equilibrium_file_from_namelist  # noqa: PLC0415
-
-    resolved = _resolve_equilibrium_file_from_namelist(nml=nml)
-    resolved_s = str(resolved)
-
-    txt = input_path.read_text()
-    # Match both single- and double-quoted cases, and tolerate spacing.
-    pat = re.compile(r"(?im)^\\s*equilibriumFile\\s*=\\s*(['\\\"])(.*?)\\1\\s*$")
-    m = pat.search(txt)
-    if m is None:
-        # Fallback: unquoted token.
-        pat2 = re.compile(r"(?im)^\\s*equilibriumFile\\s*=\\s*([^!\\n\\r]+)\\s*$")
-        m2 = pat2.search(txt)
-        if m2 is None:
-            return
-        old = m2.group(1).strip()
-        new_line = f'  equilibriumFile = \"{resolved_s}\"'
-        txt2 = txt.replace(m2.group(0), new_line)
-    else:
-        quote = m.group(1)
-        new_line = f"  equilibriumFile = {quote}{resolved_s}{quote}"
-        txt2 = txt.replace(m.group(0), new_line)
-
-    input_path.write_text(txt2)
+    localize_equilibrium_file_in_place(input_namelist=input_path, overwrite=False)
 
 
 def main() -> int:

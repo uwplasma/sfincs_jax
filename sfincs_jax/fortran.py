@@ -18,6 +18,7 @@ def run_sfincs_fortran(
     exe: Path | None = None,
     workdir: Path | None = None,
     env: dict[str, str] | None = None,
+    localize_equilibrium: bool = True,
 ) -> Path:
     """Run the compiled Fortran SFINCS v3 executable.
 
@@ -45,7 +46,16 @@ def run_sfincs_fortran(
     workdir = workdir.resolve()
     workdir.mkdir(parents=True, exist_ok=True)
 
-    shutil.copyfile(input_namelist, workdir / "input.namelist")
+    dst_input = workdir / "input.namelist"
+    if input_namelist != dst_input:
+        shutil.copyfile(input_namelist, dst_input)
+
+    if bool(localize_equilibrium):
+        # Many upstream inputs set equilibriumFile relative to the upstream SFINCS repo.
+        # When we run in a temporary workdir, localize the referenced file next to input.namelist.
+        from .io import localize_equilibrium_file_in_place  # noqa: PLC0415
+
+        localize_equilibrium_file_in_place(input_namelist=dst_input, overwrite=False)
 
     log_path = workdir / "sfincs.log"
     with log_path.open("w") as log:

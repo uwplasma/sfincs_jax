@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict
 
@@ -156,6 +158,62 @@ def _resolve_equilibrium_file_from_namelist(*, nml: Namelist) -> Path:
     repo_root = Path(__file__).resolve().parents[1]
     extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
     return resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
+
+
+def localize_equilibrium_file_in_place(*, input_namelist: Path, overwrite: bool = False) -> Path | None:
+    """Copy `equilibriumFile` next to `input.namelist` and patch it to a local basename.
+
+    This helper is useful for running the vendored upstream example suite: many upstream v3
+    example `input.namelist` files set `equilibriumFile` relative to the *upstream SFINCS repo*,
+    not relative to the run directory. When a case is copied into a scratch directory, the
+    compiled Fortran executable would otherwise fail to find the equilibrium file.
+
+    Parameters
+    ----------
+    input_namelist:
+      Path to `input.namelist` to patch.
+    overwrite:
+      If true, overwrite any existing local copy next to `input.namelist`.
+
+    Returns
+    -------
+    The path to the localized equilibrium file (next to `input.namelist`) if the namelist has
+    an `equilibriumFile` entry, otherwise `None`.
+    """
+    input_namelist = Path(input_namelist).resolve()
+    nml = read_sfincs_input(input_namelist)
+    geom_params = nml.group("geometryParameters")
+    equilibrium_file = geom_params.get("EQUILIBRIUMFILE", None)
+    if equilibrium_file is None:
+        return None
+
+    resolved = _resolve_equilibrium_file_from_namelist(nml=nml)
+    dst = input_namelist.parent / resolved.name
+    if overwrite or (not dst.exists()):
+        shutil.copyfile(resolved, dst)
+
+    # Patch the namelist to use the local basename (keeps paths short and run-directory relative).
+    txt = input_namelist.read_text()
+
+    # Match both single- and double-quoted cases, and tolerate spacing.
+    pat = re.compile(r"(?im)^\s*equilibriumFile\s*=\s*(['\"])(.*?)\1\s*$")
+    m = pat.search(txt)
+    if m is None:
+        # Fallback: unquoted token.
+        pat2 = re.compile(r"(?im)^\s*equilibriumFile\s*=\s*([^!\n\r]+)\s*$")
+        m2 = pat2.search(txt)
+        if m2 is None:
+            return dst
+        new_line = f'  equilibriumFile = \"{dst.name}\"'
+        txt2 = txt.replace(m2.group(0), new_line)
+    else:
+        quote = m.group(1)
+        new_line = f"  equilibriumFile = {quote}{dst.name}{quote}"
+        txt2 = txt.replace(m.group(0), new_line)
+
+    if txt2 != txt:
+        input_namelist.write_text(txt2)
+    return dst
 
 
 def _scheme4_radial_constants() -> tuple[float, float]:
