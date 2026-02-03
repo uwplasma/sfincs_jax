@@ -226,6 +226,92 @@ def solve_v3_full_system_newton_krylov(
     )
 
 
+def solve_v3_full_system_newton_krylov_history(
+    *,
+    nml: Namelist,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    max_newton: int = 12,
+    gmres_tol: float = 1e-10,
+    gmres_restart: int = 80,
+    gmres_maxiter: int | None = 400,
+    solve_method: str = "batched",
+    identity_shift: float = 0.0,
+) -> tuple[V3NewtonKrylovResult, list[jnp.ndarray]]:
+    """Newton–Krylov solve that also returns the per-iteration accepted states.
+
+    The returned history matches v3's convention of saving diagnostics for iteration numbers
+    starting at 1, i.e. it includes the sequence of *accepted* Newton iterates and excludes
+    the initial guess `x0`.
+    """
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift)
+    if x0 is None:
+        x = jnp.zeros((op.total_size,), dtype=jnp.float64)
+    else:
+        x = jnp.asarray(x0, dtype=jnp.float64)
+        if x.shape != (op.total_size,):
+            raise ValueError(f"x0 must have shape {(op.total_size,)}, got {x.shape}")
+
+    last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
+    accepted: list[jnp.ndarray] = []
+
+    for k in range(int(max_newton)):
+        r = residual_v3_full_system(op, x)
+        rnorm = jnp.linalg.norm(r)
+        if float(rnorm) < float(tol):
+            return (
+                V3NewtonKrylovResult(
+                    op=op,
+                    x=x,
+                    residual_norm=rnorm,
+                    n_newton=k,
+                    last_linear_residual_norm=last_linear_resid,
+                ),
+                accepted,
+            )
+
+        def jvp(v):
+            return jax.jvp(lambda xx: residual_v3_full_system(op, xx), (x,), (v,))[1]
+
+        lin = gmres_solve(
+            matvec=jvp,
+            b=-r,
+            tol=float(gmres_tol),
+            restart=int(gmres_restart),
+            maxiter=gmres_maxiter,
+            solve_method=str(solve_method),
+        )
+        s = lin.x
+        last_linear_resid = lin.residual_norm
+
+        step = 1.0
+        rnorm0 = float(rnorm)
+        for _ in range(12):
+            x_try = x + step * s
+            r_try = residual_v3_full_system(op, x_try)
+            rnorm_try = float(jnp.linalg.norm(r_try))
+            if rnorm_try <= 0.9 * rnorm0:
+                x = x_try
+                accepted.append(x)
+                break
+            step *= 0.5
+        else:
+            x = x + (1.0 / 64.0) * s
+            accepted.append(x)
+
+    r = residual_v3_full_system(op, x)
+    return (
+        V3NewtonKrylovResult(
+            op=op,
+            x=x,
+            residual_norm=jnp.linalg.norm(r),
+            n_newton=int(max_newton),
+            last_linear_residual_norm=last_linear_resid,
+        ),
+        accepted,
+    )
+
+
 @dataclass(frozen=True)
 class V3TransportMatrixSolveResult:
     """Result of assembling a RHSMode=2/3 transport matrix by looping `whichRHS` solves."""
