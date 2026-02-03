@@ -47,6 +47,8 @@ Implemented (parity-tested)
 - ``sfincsOutput.h5`` writing for ``geometryScheme in {1,2,4,5,11,12}`` with dataset-by-dataset parity against frozen
   Fortran v3 fixtures (see ``docs/outputs.rst``). ``uHat`` is compared with a looser tolerance due to tiny
   platform-dependent transcendental/reduction differences.
+- Classical transport (`calculateClassicalFlux`) for geometries with `gpsiHatpsiHat` support:
+  `geometryScheme=5` (VMEC) and `geometryScheme=11/12` (.bc) — parity-tested via frozen `sfincsOutput.h5` fixtures.
 - Collisionless v3 operator slice: streaming + mirror (parity vs PETSc binaries for one example)
 - Collisionless v3 Er terms:
 

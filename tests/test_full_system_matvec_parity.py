@@ -77,6 +77,27 @@ def test_full_system_matvec_pas_tiny_scheme1_matches_fortran_matrix() -> None:
     np.testing.assert_allclose(y_jax, y_ref, rtol=0, atol=3e-12)
 
 
+def test_full_system_matvec_pas_tiny_scheme11_matches_fortran_matrix() -> None:
+    """Boozer .bc geometryScheme=11: matrix-free matvec parity vs frozen PETSc whichMatrix=3."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme11.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme11.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny_scheme11.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+
+    a = read_petsc_mat_aij(mat_path)
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+    assert a.shape == (op.total_size, op.total_size)
+
+    y_jax = np.asarray(apply_v3_full_system_operator(op, jnp.asarray(x_ref)))
+    y_ref = _csr_from_petsc(a).dot(x_ref)
+
+    np.testing.assert_allclose(y_jax, y_ref, rtol=0, atol=3e-12)
+
+
 def test_full_system_matvec_pas_tiny_scheme5_with_phi1_linear_matches_fortran_matrix() -> None:
     """VMEC geometryScheme=5 + includePhi1 (QN/lambda only): matvec parity vs frozen PETSc whichMatrix=3."""
     here = Path(__file__).parent

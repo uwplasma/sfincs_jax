@@ -42,6 +42,16 @@ Regenerate the upstream example audit table if upstream inputs or support levels
 
    python scripts/generate_fortran_example_audit.py
 
+Best-effort suite smoke run (vendored upstream inputs):
+
+.. code-block:: bash
+
+   # Write outputs only:
+   python scripts/compare_v3_example_suite.py --limit 10
+
+   # Optionally include RHSMode=1 solves (can be slow):
+   python scripts/compare_v3_example_suite.py --limit 10 --compute-solution
+
 Packaging sanity check
 ----------------------
 

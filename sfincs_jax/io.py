@@ -1107,6 +1107,46 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     else:
         out["uHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
 
+    # Classical transport (v3 `classicalTransport.F90`).
+    #
+    # v3 computes the classical particle/heat fluxes once (with Phi1=0) before solving the main system.
+    # These are written as `classical*NoPhi1_*` datasets. The per-iteration `classical*_*` datasets are
+    # computed during diagnostics; when includePhi1 is false, they match the NoPhi1 values.
+    import jax.numpy as jnp  # noqa: PLC0415
+
+    from .classical_transport import classical_flux_v3  # noqa: PLC0415
+
+    pf0, hf0 = classical_flux_v3(
+        use_phi1=False,
+        theta_weights=jnp.asarray(grids.theta_weights, dtype=jnp.float64),
+        zeta_weights=jnp.asarray(grids.zeta_weights, dtype=jnp.float64),
+        d_hat=jnp.asarray(out["DHat"], dtype=jnp.float64),
+        gpsipsi=jnp.asarray(out["gpsiHatpsiHat"], dtype=jnp.float64),
+        b_hat=jnp.asarray(out["BHat"], dtype=jnp.float64),
+        vprime_hat=jnp.asarray(out["VPrimeHat"], dtype=jnp.float64),
+        alpha=jnp.asarray(out["alpha"], dtype=jnp.float64),
+        phi1_hat=jnp.zeros_like(jnp.asarray(out["BHat"], dtype=jnp.float64)),
+        delta=jnp.asarray(out["Delta"], dtype=jnp.float64),
+        nu_n=jnp.asarray(out["nu_n"], dtype=jnp.float64),
+        z_s=jnp.asarray(out["Zs"], dtype=jnp.float64),
+        m_hat=jnp.asarray(out["mHats"], dtype=jnp.float64),
+        t_hat=jnp.asarray(out["THats"], dtype=jnp.float64),
+        n_hat=jnp.asarray(out["nHats"], dtype=jnp.float64),
+        dn_hat_dpsi_hat=jnp.asarray(out["dnHatdpsiHat"], dtype=jnp.float64),
+        dt_hat_dpsi_hat=jnp.asarray(out["dTHatdpsiHat"], dtype=jnp.float64),
+    )
+
+    pf0 = np.asarray(pf0, dtype=np.float64)
+    hf0 = np.asarray(hf0, dtype=np.float64)
+    out["classicalParticleFluxNoPhi1_psiHat"] = pf0
+    out["classicalHeatFluxNoPhi1_psiHat"] = hf0
+    out["classicalParticleFluxNoPhi1_psiN"] = pf0 * float(conv["ddpsiN2ddpsiHat"])
+    out["classicalParticleFluxNoPhi1_rHat"] = pf0 * float(conv["ddrHat2ddpsiHat"])
+    out["classicalParticleFluxNoPhi1_rN"] = pf0 * float(conv["ddrN2ddpsiHat"])
+    out["classicalHeatFluxNoPhi1_psiN"] = hf0 * float(conv["ddpsiN2ddpsiHat"])
+    out["classicalHeatFluxNoPhi1_rHat"] = hf0 * float(conv["ddrHat2ddpsiHat"])
+    out["classicalHeatFluxNoPhi1_rN"] = hf0 * float(conv["ddrN2ddpsiHat"])
+
     return out
 
 
@@ -1304,17 +1344,127 @@ def write_sfincs_jax_output_h5(
         ):
             _store_flux_variants_N(base, [d[base] for d in diags])
 
-        # Classical fluxes (not yet implemented in sfincs_jax): present-but-zero parity fields.
-        n_species = int(np.asarray(data["Nspecies"]))
-        classical = np.zeros((n_species, n_iter), dtype=np.float64)
-        data["classicalParticleFlux_psiHat"] = _fortran_h5_layout(classical)
-        data["classicalHeatFlux_psiHat"] = _fortran_h5_layout(classical)
-        data["classicalParticleFlux_psiN"] = _fortran_h5_layout(classical * float(conv["ddpsiN2ddpsiHat"]))
-        data["classicalHeatFlux_psiN"] = _fortran_h5_layout(classical * float(conv["ddpsiN2ddpsiHat"]))
-        data["classicalParticleFlux_rHat"] = _fortran_h5_layout(classical * float(conv["ddrHat2ddpsiHat"]))
-        data["classicalHeatFlux_rHat"] = _fortran_h5_layout(classical * float(conv["ddrHat2ddpsiHat"]))
-        data["classicalParticleFlux_rN"] = _fortran_h5_layout(classical * float(conv["ddrN2ddpsiHat"]))
-        data["classicalHeatFlux_rN"] = _fortran_h5_layout(classical * float(conv["ddrN2ddpsiHat"]))
+        # Classical fluxes (v3 `classicalTransport.F90:calculateClassicalFlux`) written per-iteration.
+        from .classical_transport import classical_flux_v3  # noqa: PLC0415
+
+        theta_w = jnp.asarray(result.op.theta_weights, dtype=jnp.float64)
+        zeta_w = jnp.asarray(result.op.zeta_weights, dtype=jnp.float64)
+        d_hat = jnp.asarray(result.op.d_hat, dtype=jnp.float64)
+        gpsipsi = jnp.asarray(data["gpsiHatpsiHat"], dtype=jnp.float64)
+        b_hat = jnp.asarray(result.op.b_hat, dtype=jnp.float64)
+        vprime_hat = jnp.asarray(data["VPrimeHat"], dtype=jnp.float64)
+
+        alpha = jnp.asarray(data["alpha"], dtype=jnp.float64)
+        delta = jnp.asarray(data["Delta"], dtype=jnp.float64)
+        nu_n = jnp.asarray(data["nu_n"], dtype=jnp.float64)
+        z_s = jnp.asarray(data["Zs"], dtype=jnp.float64)
+        m_hat = jnp.asarray(data["mHats"], dtype=jnp.float64)
+        t_hat = jnp.asarray(data["THats"], dtype=jnp.float64)
+        n_hat = jnp.asarray(data["nHats"], dtype=jnp.float64)
+        dn_hat_dpsi_hat = jnp.asarray(data["dnHatdpsiHat"], dtype=jnp.float64)
+        dt_hat_dpsi_hat = jnp.asarray(data["dTHatdpsiHat"], dtype=jnp.float64)
+
+        classical_pf_list: list[np.ndarray] = []
+        classical_hf_list: list[np.ndarray] = []
+        for j in range(n_iter):
+            if phi1_list:
+                phi1 = jnp.asarray(phi1_list[j], dtype=jnp.float64)
+                use_phi1 = True
+            else:
+                phi1 = jnp.zeros_like(b_hat)
+                use_phi1 = False
+            pf_j, hf_j = classical_flux_v3(
+                use_phi1=use_phi1,
+                theta_weights=theta_w,
+                zeta_weights=zeta_w,
+                d_hat=d_hat,
+                gpsipsi=gpsipsi,
+                b_hat=b_hat,
+                vprime_hat=vprime_hat,
+                alpha=alpha,
+                phi1_hat=phi1,
+                delta=delta,
+                nu_n=nu_n,
+                z_s=z_s,
+                m_hat=m_hat,
+                t_hat=t_hat,
+                n_hat=n_hat,
+                dn_hat_dpsi_hat=dn_hat_dpsi_hat,
+                dt_hat_dpsi_hat=dt_hat_dpsi_hat,
+            )
+            classical_pf_list.append(np.asarray(pf_j, dtype=np.float64))
+            classical_hf_list.append(np.asarray(hf_j, dtype=np.float64))
+
+        classical_pf = np.stack(classical_pf_list, axis=-1)  # (S,N)
+        classical_hf = np.stack(classical_hf_list, axis=-1)  # (S,N)
+        data["classicalParticleFlux_psiHat"] = _fortran_h5_layout(classical_pf)
+        data["classicalHeatFlux_psiHat"] = _fortran_h5_layout(classical_hf)
+        data["classicalParticleFlux_psiN"] = _fortran_h5_layout(classical_pf * float(conv["ddpsiN2ddpsiHat"]))
+        data["classicalHeatFlux_psiN"] = _fortran_h5_layout(classical_hf * float(conv["ddpsiN2ddpsiHat"]))
+        data["classicalParticleFlux_rHat"] = _fortran_h5_layout(classical_pf * float(conv["ddrHat2ddpsiHat"]))
+        data["classicalHeatFlux_rHat"] = _fortran_h5_layout(classical_hf * float(conv["ddrHat2ddpsiHat"]))
+        data["classicalParticleFlux_rN"] = _fortran_h5_layout(classical_pf * float(conv["ddrN2ddpsiHat"]))
+        data["classicalHeatFlux_rN"] = _fortran_h5_layout(classical_hf * float(conv["ddrN2ddpsiHat"]))
+
+        # NTV (non-stellarator-symmetric torque) parity:
+        #
+        # v3 computes NTV using an `NTVKernel` derived from geometry arrays (including `uHat`) and the
+        # L=2 component of the solved delta-f. Earlier parity fixtures (tokamak-like scheme1) have
+        # vanishing NTV and can tolerate a 0 placeholder, but non-axisymmetric `.bc` cases (scheme11/12)
+        # have nonzero NTV and require a real implementation for end-to-end parity.
+        geometry_scheme = int(np.asarray(data["geometryScheme"]))
+        compute_ntv = geometry_scheme != 5  # matches v3 behavior
+        if compute_ntv:
+            bh = jnp.asarray(data["BHat"], dtype=jnp.float64)
+            dbt = jnp.asarray(data["dBHatdtheta"], dtype=jnp.float64)
+            dbz = jnp.asarray(data["dBHatdzeta"], dtype=jnp.float64)
+            uhat = jnp.asarray(data["uHat"], dtype=jnp.float64)
+            inv_fsa_b2 = jnp.mean(1.0 / (bh * bh))
+            ghat = jnp.asarray(float(data["GHat"]), dtype=jnp.float64)
+            ihat = jnp.asarray(float(data["IHat"]), dtype=jnp.float64)
+            iota = jnp.asarray(float(data["iota"]), dtype=jnp.float64)
+            ntv_kernel = (2.0 / 5.0) / bh * (
+                (uhat - ghat * inv_fsa_b2) * (iota * dbt + dbz) + iota * (1.0 / (bh * bh)) * (ghat * dbt - ihat * dbz)
+            )
+        else:
+            ntv_kernel = jnp.zeros_like(jnp.asarray(data["BHat"], dtype=jnp.float64))
+
+        w2d = jnp.asarray(result.op.theta_weights, dtype=jnp.float64)[:, None] * jnp.asarray(result.op.zeta_weights, dtype=jnp.float64)[
+            None, :
+        ]
+        vprime_hat = jnp.sum(w2d / jnp.asarray(result.op.d_hat, dtype=jnp.float64))
+        x = jnp.asarray(result.op.x, dtype=jnp.float64)
+        xw = jnp.asarray(result.op.x_weights, dtype=jnp.float64)
+        w_ntv = xw * (x**4)
+
+        z_s = jnp.asarray(result.op.z_s, dtype=jnp.float64)
+        t_hat = jnp.asarray(result.op.t_hat, dtype=jnp.float64)
+        m_hat = jnp.asarray(result.op.m_hat, dtype=jnp.float64)
+        sqrt_t = jnp.sqrt(t_hat)
+        sqrt_m = jnp.sqrt(m_hat)
+
+        ntv_before_list: list[np.ndarray] = []
+        ntv_list: list[np.ndarray] = []
+        if compute_ntv and int(result.op.n_xi) > 2:
+            for x_full in xs:
+                f_delta = jnp.asarray(x_full[: result.op.f_size], dtype=jnp.float64).reshape(result.op.fblock.f_shape)
+                sum_ntv = jnp.einsum("x,sxtz->stz", w_ntv, f_delta[:, :, 2, :, :])
+                ntv_before_stz = (
+                    (4.0 * jnp.pi * (t_hat * t_hat) * sqrt_t / (m_hat * sqrt_m * vprime_hat))[:, None, None]
+                    * ntv_kernel[None, :, :]
+                    * sum_ntv
+                )
+                ntv_s = jnp.einsum("tz,stz->s", w2d, ntv_before_stz)
+                ntv_before_list.append(np.asarray(ntv_before_stz, dtype=np.float64))
+                ntv_list.append(np.asarray(ntv_s, dtype=np.float64))
+        else:
+            zeros_before = np.zeros((int(result.op.n_species), int(result.op.n_theta), int(result.op.n_zeta)), dtype=np.float64)
+            zeros_s = np.zeros((int(result.op.n_species),), dtype=np.float64)
+            ntv_before_list = [zeros_before for _ in range(n_iter)]
+            ntv_list = [zeros_s for _ in range(n_iter)]
+
+        data["NTVBeforeSurfaceIntegral"] = _fortran_h5_layout(_stz_to_ztsN(ntv_before_list))
+        data["NTV"] = _fortran_h5_layout(_s_to_sN(ntv_list))
 
         # Phi1 outputs + vE/NTV diagnostics:
         if phi1_list:

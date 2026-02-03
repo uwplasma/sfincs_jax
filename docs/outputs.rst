@@ -58,6 +58,10 @@ At the moment, `sfincs_jax` output writing supports:
 - `NTV`-related geometry diagnostic ``uHat`` (computed from harmonics of :math:`1/\hat B^2`)
 - transport-matrix output fields for RHSMode=2/3 runs: ``transportMatrix`` and the minimal
   diagnostics needed by upstream plotting scripts (see above)
+- v3 classical transport fluxes (`calculateClassicalFlux`) for geometries with `gpsiHatpsiHat` support
+  (VMEC `geometryScheme=5` and `.bc` `geometryScheme=11/12`), written as:
+  ``classicalParticleFluxNoPhi1_*`` / ``classicalHeatFluxNoPhi1_*`` (static) and
+  ``classicalParticleFlux_*`` / ``classicalHeatFlux_*`` (per-iteration diagnostics)
 
 Output parity tests live in:
 

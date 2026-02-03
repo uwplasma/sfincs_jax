@@ -44,6 +44,7 @@ This table is a *high-level* view of what is currently parity-tested. See `docs/
 | Geometry (schemes 11/12 `.bc`) | ✅ | Includes transport-matrix end-to-end fixtures |
 | Collisionless operator | ✅ (subset) | Streaming/mirror, ExB, Er slices, magnetic drift slices |
 | Collision operators | ✅ (subset) | PAS + linearized FP, including a tiny Phi1-in-collision fixture |
+| Classical transport fluxes | ✅ (subset) | `calculateClassicalFlux` parity for schemes with `gpsiHatpsiHat` support (5/11/12) |
 | Linear solve (RHSMode=1) | ✅ (fixtures) | Matrix-free GMRES parity on tiny cases |
 | Transport matrices (RHSMode=2/3) | ✅ (fixtures) | End-to-end `transportMatrix` parity (2×2 and 3×3 cases) |
 | Nonlinear Newton–Krylov | ⚠️ experimental | Tiny parity fixture only |

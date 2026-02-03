@@ -58,6 +58,7 @@ def main() -> int:
     ap.add_argument("--rtol", type=float, default=1e-10)
     ap.add_argument("--atol", type=float, default=1e-10)
     ap.add_argument("--compute-transport-matrix", action="store_true", help="Enable for RHSMode=2/3 cases (slow)")
+    ap.add_argument("--compute-solution", action="store_true", help="Enable for RHSMode=1 cases (may be slow)")
     ap.add_argument("-v", "--verbose", action="count", default=0)
     args = ap.parse_args()
 
@@ -104,6 +105,7 @@ def main() -> int:
                 input_namelist=w_input,
                 output_path=jax_path,
                 compute_transport_matrix=bool(args.compute_transport_matrix and rhs_mode in {2, 3}),
+                compute_solution=bool(args.compute_solution and rhs_mode == 1),
             )
             ok_write = True
             note = None

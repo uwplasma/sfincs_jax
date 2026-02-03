@@ -566,60 +566,62 @@ def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
 
     sqrt_pi = jnp.sqrt(jnp.pi)
     two_pi = jnp.asarray(2.0 * jnp.pi, dtype=jnp.float64)
-    geom2_b = geom2[None, :, :]  # (1,T,Z)
     x2_expx2 = x2 * expx2  # (X,)
 
-    for i_species in range(op.n_species):
-        z = op.z_s[i_species]
-        m_hat = op.m_hat[i_species]
-        t_hat = op.t_hat[i_species]
-        n_hat = op.n_hat[i_species]
+    # Vectorize across species to reduce Python-loop overhead and improve XLA fusion for multi-species runs.
+    z = op.z_s  # (S,)
+    m_hat = op.m_hat  # (S,)
+    t_hat = op.t_hat  # (S,)
+    n_hat = op.n_hat  # (S,)
+    dn = op.dn_hat_dpsi_hat  # (S,)
+    dt = op.dt_hat_dpsi_hat  # (S,)
 
-        dn = op.dn_hat_dpsi_hat[i_species]
-        dt = op.dt_hat_dpsi_hat[i_species]
+    sqrt_t = jnp.sqrt(t_hat)  # (S,)
+    sqrt_m = jnp.sqrt(m_hat)  # (S,)
 
-        sqrt_t = jnp.sqrt(t_hat)
-        sqrt_m = jnp.sqrt(m_hat)
+    # (S,X)
+    x_part = x2_expx2[None, :] * (
+        dn[:, None] / n_hat[:, None]
+        + (op.alpha * z / t_hat)[:, None] * dphi_hat_dpsi_hat_to_use
+        + (x2[None, :] - 1.5) * (dt / t_hat)[:, None]
+    )
 
-        x_part = x2_expx2 * (
-            dn / n_hat + (op.alpha * z / t_hat) * dphi_hat_dpsi_hat_to_use + (x2 - 1.5) * (dt / t_hat)
-        )  # (X,)
+    if bool(op.include_phi1) and bool(op.include_phi1_in_kinetic):
+        # (S,X)
+        x_part2 = x2_expx2[None, :] * (dt / (t_hat * t_hat))[:, None]
+        phi1 = op.phi1_hat_base  # (T,Z)
+        exp_phi1 = jnp.exp(-(z[:, None, None] * op.alpha / t_hat[:, None, None]) * phi1[None, :, :])  # (S,T,Z)
+        x_part_total = x_part[:, :, None, None] + (x_part2[:, :, None, None] * (z * op.alpha)[:, None, None, None] * phi1[None, None, :, :])
+        x_part_total = x_part_total * exp_phi1[:, None, :, :]  # (S,X,T,Z)
+    else:
+        x_part_total = x_part[:, :, None, None]  # (S,X,1,1)
 
-        if bool(op.include_phi1) and bool(op.include_phi1_in_kinetic):
-            x_part2 = x2_expx2 * (dt / (t_hat * t_hat))  # (X,)
-            phi1 = op.phi1_hat_base  # (T,Z)
-            exp_phi1 = jnp.exp(-(z * op.alpha / t_hat) * phi1)  # (T,Z)
-            x_part_total = x_part[:, None, None] + (x_part2[:, None, None] * (z * op.alpha) * phi1[None, :, :])
-            x_part_total = x_part_total * exp_phi1[None, :, :]
-        else:
-            x_part_total = x_part[:, None, None]
+    pref = op.delta * n_hat * m_hat * sqrt_m / (two_pi * sqrt_pi * z * sqrt_t)  # (S,)
 
-        pref = op.delta * n_hat * m_hat * sqrt_m / (two_pi * sqrt_pi * z * sqrt_t)
+    factor = pref[:, None, None, None] * geom2[None, None, :, :] * x_part_total  # (S,X,T,Z)
+    factor = factor * mask_x[None, :, None, None]
 
-        factor = pref * geom2_b * x_part_total  # (X,T,Z)
-        factor = factor * mask_x[:, None, None]
+    if op.n_xi > 0:
+        mask_l0 = (op.fblock.collisionless.n_xi_for_x > 0).astype(jnp.float64) * mask_x  # (X,)
+        f_rhs = f_rhs.at[:, :, 0, :, :].add((4.0 / 3.0) * factor * mask_l0[None, :, None, None])
+    if op.n_xi > 2:
+        mask_l2 = (op.fblock.collisionless.n_xi_for_x > 2).astype(jnp.float64) * mask_x  # (X,)
+        f_rhs = f_rhs.at[:, :, 2, :, :].add((2.0 / 3.0) * factor * mask_l2[None, :, None, None])
 
-        if op.n_xi > 0:
-            mask_l0 = (op.fblock.collisionless.n_xi_for_x > 0).astype(jnp.float64) * mask_x  # (X,)
-            f_rhs = f_rhs.at[i_species, :, 0, :, :].add((4.0 / 3.0) * factor * mask_l0[:, None, None])
-        if op.n_xi > 2:
-            mask_l2 = (op.fblock.collisionless.n_xi_for_x > 2).astype(jnp.float64) * mask_x  # (X,)
-            f_rhs = f_rhs.at[i_species, :, 2, :, :].add((2.0 / 3.0) * factor * mask_l2[:, None, None])
-
-        if op.n_xi > 1:
-            epar = op.e_parallel_hat + op.e_parallel_hat_spec[i_species]
-            factor_e = (
-                op.alpha
-                * z
-                * x
-                * expx2
-                * epar
-                * n_hat
-                * m_hat
-                / (jnp.pi * sqrt_pi * (t_hat * t_hat) * op.fsab_hat2)
-            )  # (X,)
-            factor_e = factor_e * mask_x
-            f_rhs = f_rhs.at[i_species, :, 1, :, :].add(factor_e[:, None, None] * op.b_hat[None, :, :])
+    if op.n_xi > 1:
+        epar = op.e_parallel_hat + op.e_parallel_hat_spec  # (S,)
+        factor_e = (
+            op.alpha
+            * z[:, None]
+            * x[None, :]
+            * expx2[None, :]
+            * epar[:, None]
+            * n_hat[:, None]
+            * m_hat[:, None]
+            / (jnp.pi * sqrt_pi * (t_hat * t_hat)[:, None] * op.fsab_hat2)
+        )  # (S,X)
+        factor_e = factor_e * mask_x[None, :]
+        f_rhs = f_rhs.at[:, :, 1, :, :].add(factor_e[:, :, None, None] * op.b_hat[None, None, :, :])
 
     rhs_f_flat = f_rhs.reshape((-1,))
     rhs_phi1 = jnp.zeros((op.phi1_size,), dtype=jnp.float64)

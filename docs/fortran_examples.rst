@@ -55,6 +55,22 @@ use:
 
    python scripts/compare_v3_example_suite.py --limit 10
 
+You can also enable end-to-end solves for RHSMode=1 and/or transport-matrix solves for RHSMode=2/3:
+
+.. code-block:: bash
+
+   # RHSMode=1: solve + write solution-derived fields (may be slow):
+   python scripts/compare_v3_example_suite.py --limit 10 --compute-solution
+
+   # RHSMode=2/3: loop whichRHS and write transportMatrix (slow):
+   python scripts/compare_v3_example_suite.py --limit 10 --compute-transport-matrix
+
+If you have the Fortran v3 executable available locally, you can compare common datasets:
+
+.. code-block:: bash
+
+   python scripts/compare_v3_example_suite.py --limit 10 --fortran-exe /path/to/sfincs
+
 
 Audit table
 -----------
