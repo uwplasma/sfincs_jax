@@ -94,6 +94,13 @@ Write a SFINCS-style `sfincsOutput.h5` using the JAX implementation (supported m
 sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
 ```
 
+For ``RHSMode=1`` runs, you can optionally solve the linear system and write solution-derived fields
+(flows, fluxes, constraints, etc.):
+
+```bash
+sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5 --compute-solution
+```
+
 For ``RHSMode=2/3`` runs, you can optionally also compute and write ``transportMatrix``:
 
 ```bash

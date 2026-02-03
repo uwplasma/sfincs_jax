@@ -752,6 +752,18 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["Nxi_for_x_option"] = np.asarray(_get_int(other, "Nxi_for_x_option", 0), dtype=np.int32)
     out["solverTolerance"] = np.asarray(_get_float(resolution, "solverTolerance", 1e-8), dtype=np.float64)
 
+    # geometryScheme=1 (tokamak/helical model) scalars used by upstream outputs:
+    if geometry_scheme == 1:
+        helicity_l = int(_get_int(geom_params, "helicity_l", 0))
+        helicity_n = int(_get_int(geom_params, "helicity_n", 0))
+        out["epsilon_t"] = np.asarray(_get_float(geom_params, "epsilon_t", 0.0), dtype=np.float64)
+        out["epsilon_h"] = np.asarray(_get_float(geom_params, "epsilon_h", 0.0), dtype=np.float64)
+        out["epsilon_antisymm"] = np.asarray(_get_float(geom_params, "epsilon_antisymm", 0.0), dtype=np.float64)
+        out["helicity_l"] = np.asarray(helicity_l, dtype=np.int32)
+        out["helicity_n"] = np.asarray(helicity_n, dtype=np.int32)
+        out["helicity_antisymm_l"] = np.asarray(_get_int(geom_params, "helicity_antisymm_l", helicity_l), dtype=np.int32)
+        out["helicity_antisymm_n"] = np.asarray(_get_int(geom_params, "helicity_antisymm_n", 0), dtype=np.int32)
+
     # Physics parameters (subset):
     # Defaults match v3 `globalVariables.F90`, which upstream examples sometimes rely on.
     out["Delta"] = np.asarray(_get_float(phys, "Delta", 4.5694e-3), dtype=np.float64)
@@ -1067,6 +1079,7 @@ def write_sfincs_jax_output_h5(
     fortran_layout: bool = True,
     overwrite: bool = True,
     compute_transport_matrix: bool = False,
+    compute_solution: bool = False,
     emit: "Callable[[int, str], None] | None" = None,
 ) -> Path:
     """Create a SFINCS-style `sfincsOutput.h5` file from `sfincs_jax` for supported modes."""
@@ -1076,15 +1089,155 @@ def write_sfincs_jax_output_h5(
     grids = grids_from_namelist(nml)
     data = sfincs_jax_output_dict(nml=nml, grids=grids)
 
+    rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+    resolution = nml.group("resolutionParameters")
+    solver_tol = _get_float(resolution, "solverTolerance", 1e-10)
+
+    if bool(compute_solution) and rhs_mode == 1:
+        # Import lazily to keep geometry-only use-cases lightweight.
+        from .transport_matrix import v3_rhsmode1_output_fields_vm_only
+        from .v3_driver import solve_v3_full_system_linear_gmres
+        from .verbose import Timer
+
+        # For small linear problems, prefer a dense solve to avoid "stagnation at ~1e-6"
+        # corner cases in matrix-free GMRES and to keep output parity tight.
+        solve_method = "batched"
+        if emit is not None:
+            emit(0, "write_sfincs_jax_output_h5: computing RHSMode=1 solution + diagnostics")
+        t = Timer()
+        # Build a provisional operator to decide on the solve method based on size.
+        from .v3_system import full_system_operator_from_namelist
+
+        op0 = full_system_operator_from_namelist(nml=nml)
+        if int(op0.total_size) <= 5000:
+            solve_method = "dense"
+            if emit is not None:
+                emit(1, f"write_sfincs_jax_output_h5: using dense solve (n={int(op0.total_size)})")
+
+        result = solve_v3_full_system_linear_gmres(
+            nml=nml,
+            tol=float(solver_tol),
+            solve_method=solve_method,
+            emit=emit,
+        )
+        diag = v3_rhsmode1_output_fields_vm_only(result.op, x_full=result.x)
+
+        def _stz_to_zts1(a) -> np.ndarray:
+            aa = np.asarray(a, dtype=np.float64)  # (S,T,Z)
+            return np.transpose(aa, (2, 1, 0))[:, :, :, None]  # (Z,T,S,1)
+
+        def _tz_to_zt1(a) -> np.ndarray:
+            aa = np.asarray(a, dtype=np.float64)  # (T,Z)
+            return np.transpose(aa, (1, 0))[:, :, None]  # (Z,T,1)
+
+        def _s_to_s1(a) -> np.ndarray:
+            aa = np.asarray(a, dtype=np.float64).reshape((-1,))  # (S,)
+            return aa[:, None]  # (S,1)
+
+        def _xS_to_xS1(a) -> np.ndarray:
+            aa = np.asarray(a, dtype=np.float64)  # (X,S) or (2,S)
+            return aa[:, :, None]  # (X,S,1) or (2,S,1)
+
+        # Surface moments:
+        for k in (
+            "densityPerturbation",
+            "pressurePerturbation",
+            "pressureAnisotropy",
+            "flow",
+            "totalDensity",
+            "totalPressure",
+            "velocityUsingFSADensity",
+            "velocityUsingTotalDensity",
+            "MachUsingFSAThermalSpeed",
+            "particleFluxBeforeSurfaceIntegral_vm",
+            "particleFluxBeforeSurfaceIntegral_vm0",
+            "particleFluxBeforeSurfaceIntegral_vE",
+            "particleFluxBeforeSurfaceIntegral_vE0",
+            "heatFluxBeforeSurfaceIntegral_vm",
+            "heatFluxBeforeSurfaceIntegral_vm0",
+            "heatFluxBeforeSurfaceIntegral_vE",
+            "heatFluxBeforeSurfaceIntegral_vE0",
+            "momentumFluxBeforeSurfaceIntegral_vm",
+            "momentumFluxBeforeSurfaceIntegral_vm0",
+            "momentumFluxBeforeSurfaceIntegral_vE",
+            "momentumFluxBeforeSurfaceIntegral_vE0",
+            "NTVBeforeSurfaceIntegral",
+        ):
+            if k in diag:
+                data[k] = _fortran_h5_layout(_stz_to_zts1(diag[k]))
+
+        # Flux-surface averages and per-species integrated fluxes:
+        for k in (
+            "FSADensityPerturbation",
+            "FSAPressurePerturbation",
+            "FSABFlow",
+            "FSABVelocityUsingFSADensity",
+            "FSABVelocityUsingFSADensityOverB0",
+            "FSABVelocityUsingFSADensityOverRootFSAB2",
+            "NTV",
+        ):
+            if k in diag:
+                data[k] = _fortran_h5_layout(_s_to_s1(diag[k]))
+
+        # jHat lives on the (theta,zeta) grid but is summed over species.
+        if "jHat" in diag:
+            data["jHat"] = _fortran_h5_layout(_tz_to_zt1(diag["jHat"]))
+
+        # vs-x arrays and constraint sources:
+        for k in ("particleFlux_vm_psiHat_vs_x", "heatFlux_vm_psiHat_vs_x", "FSABFlow_vs_x", "sources"):
+            if k in diag:
+                data[k] = _fortran_h5_layout(_xS_to_xS1(diag[k]))
+
+        # FSABjHat diagnostics are summed over species and stored per-RHS:
+        for k in ("FSABjHat", "FSABjHatOverB0", "FSABjHatOverRootFSAB2"):
+            if k in diag:
+                data[k] = _fortran_h5_layout(np.asarray([float(np.asarray(diag[k]))], dtype=np.float64))
+
+        # Coordinate variants for the vm/vm0 fluxes (psiHat -> psiN,rHat,rN).
+        conv = _conversion_factors_to_from_dpsi_hat(
+            psi_a_hat=float(data["psiAHat"]),
+            a_hat=float(data["aHat"]),
+            r_n=float(data["rN"]),
+        )
+        def _store_flux_variants(base: str, v_s: np.ndarray) -> None:
+            v = np.asarray(v_s, dtype=np.float64).reshape((-1, 1))  # (S,1) in Python-read order
+            data[base] = _fortran_h5_layout(v)
+            data[base.replace("_psiHat", "_psiN")] = _fortran_h5_layout(v * float(conv["ddpsiN2ddpsiHat"]))
+            data[base.replace("_psiHat", "_rHat")] = _fortran_h5_layout(v * float(conv["ddrHat2ddpsiHat"]))
+            data[base.replace("_psiHat", "_rN")] = _fortran_h5_layout(v * float(conv["ddrN2ddpsiHat"]))
+
+        for base in (
+            "particleFlux_vm_psiHat",
+            "particleFlux_vm0_psiHat",
+            "heatFlux_vm_psiHat",
+            "heatFlux_vm0_psiHat",
+            "momentumFlux_vm_psiHat",
+            "momentumFlux_vm0_psiHat",
+        ):
+            if base in diag:
+                _store_flux_variants(base, np.asarray(diag[base], dtype=np.float64))
+
+        # Classical fluxes (not yet implemented in sfincs_jax): present-but-zero parity fields.
+        n_species = int(np.asarray(data["Nspecies"]))
+        classical_psi_hat = np.zeros((n_species, 1), dtype=np.float64)
+        data["classicalParticleFlux_psiHat"] = _fortran_h5_layout(classical_psi_hat)
+        data["classicalHeatFlux_psiHat"] = _fortran_h5_layout(classical_psi_hat)
+        data["classicalParticleFlux_psiN"] = _fortran_h5_layout(classical_psi_hat * float(conv["ddpsiN2ddpsiHat"]))
+        data["classicalHeatFlux_psiN"] = _fortran_h5_layout(classical_psi_hat * float(conv["ddpsiN2ddpsiHat"]))
+        data["classicalParticleFlux_rHat"] = _fortran_h5_layout(classical_psi_hat * float(conv["ddrHat2ddpsiHat"]))
+        data["classicalHeatFlux_rHat"] = _fortran_h5_layout(classical_psi_hat * float(conv["ddrHat2ddpsiHat"]))
+        data["classicalParticleFlux_rN"] = _fortran_h5_layout(classical_psi_hat * float(conv["ddrN2ddpsiHat"]))
+        data["classicalHeatFlux_rN"] = _fortran_h5_layout(classical_psi_hat * float(conv["ddrN2ddpsiHat"]))
+
+        # Timings are not expected to match Fortran, but include them for provenance.
+        data["elapsed time (s)"] = np.asarray(float(t.elapsed_s()), dtype=np.float64)[None]
+
     if bool(compute_transport_matrix):
-        rhs_mode = int(nml.group("general").get("RHSMODE", 1))
         if rhs_mode in {2, 3}:
             # Import lazily to keep geometry-only use-cases lightweight.
             from .v3_driver import solve_v3_transport_matrix_linear_gmres
             from .transport_matrix import v3_transport_output_fields_vm_only
 
-            resolution = nml.group("resolutionParameters")
-            solver_tol = _get_float(resolution, "solverTolerance", 1e-10)
             if emit is not None:
                 emit(0, f"write_sfincs_jax_output_h5: computing transportMatrix for RHSMode={rhs_mode} (solverTolerance={solver_tol:g})")
             result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol), emit=emit)

@@ -132,12 +132,15 @@ def _cmd_write_output(args: argparse.Namespace) -> int:
     _emit_runtime_info(args=args)
     if bool(args.compute_transport_matrix):
         _emit(" compute_transport_matrix=true (will run whichRHS solves for RHSMode=2/3)", level=0, args=args)
+    if bool(getattr(args, "compute_solution", False)):
+        _emit(" compute_solution=true (will solve RHSMode=1 and write solution-derived fields)", level=0, args=args)
     out_path = write_sfincs_jax_output_h5(
         input_namelist=Path(args.input),
         output_path=Path(args.out),
         fortran_layout=bool(args.fortran_layout),
         overwrite=bool(args.overwrite),
         compute_transport_matrix=bool(args.compute_transport_matrix),
+        compute_solution=bool(getattr(args, "compute_solution", False)),
         emit=lambda level, msg: _emit(msg, level=level, args=args),
     )
     _emit(f" wrote sfincsOutput.h5 -> {out_path}", level=0, args=args)
@@ -303,6 +306,11 @@ def main(argv: list[str] | None = None) -> int:
         "--compute-transport-matrix",
         action="store_true",
         help="For RHSMode=2/3 runs, also perform the whichRHS solves and write `transportMatrix` (may be slow).",
+    )
+    p_out.add_argument(
+        "--compute-solution",
+        action="store_true",
+        help="For RHSMode=1 runs, also solve the linear system and write solution-derived fields (may be slow).",
     )
     p_out.set_defaults(func=_cmd_write_output)
 
