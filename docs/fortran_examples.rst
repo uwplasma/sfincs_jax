@@ -6,6 +6,13 @@ SFINCS Fortran v3 ships with an extensive set of example inputs in
 are **not** yet implemented end-to-end in `sfincs_jax` (e.g. VMEC-based geometry,
 full collision operators, ``Phi1`` coupling, ambipolar solves, etc.).
 
+For convenience, a copy of the upstream example suite (and the upstream ``utils`` postprocessing scripts)
+is vendored in this repository under ``examples/sfincs_examples``. A best-effort runner is provided:
+
+.. code-block:: bash
+
+   python examples/sfincs_examples/run_sfincs_jax.py --write-output
+
 This page provides a *mechanical audit* of the upstream example namelists to make it
 easy to track what still needs to be ported.
 
@@ -36,4 +43,3 @@ Audit table
 -----------
 
 .. include:: _generated/fortran_examples_table.rst
-

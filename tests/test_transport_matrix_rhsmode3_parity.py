@@ -48,3 +48,22 @@ def test_transport_matrix_rhsmode3_matches_fortran_output(base: str) -> None:
     assert tm_ref.shape == (2, 2)
     # Fortran writes arrays in column-major order; as read by Python, the dataset appears transposed.
     np.testing.assert_allclose(tm.T, tm_ref, rtol=0, atol=2e-10)
+
+    # Also validate the diagnostic fields used by upstream scan plotting scripts.
+    # For these extensible diagnostic arrays, the Fortran output is already in (species, whichRHS) order as read by Python.
+    pf_ref = np.asarray(out["particleFlux_vm_psiHat"], dtype=np.float64)
+    hf_ref = np.asarray(out["heatFlux_vm_psiHat"], dtype=np.float64)
+    fsab_ref = np.asarray(out["FSABFlow"], dtype=np.float64)
+
+    # Compute from the solved state vectors:
+    from sfincs_jax.transport_matrix import v3_transport_diagnostics_vm_only
+
+    d1 = v3_transport_diagnostics_vm_only(op0, x_full=state_vecs[1])
+    d2 = v3_transport_diagnostics_vm_only(op0, x_full=state_vecs[2])
+    pf = np.stack([np.asarray(d1.particle_flux_vm_psi_hat), np.asarray(d2.particle_flux_vm_psi_hat)], axis=1)
+    hf = np.stack([np.asarray(d1.heat_flux_vm_psi_hat), np.asarray(d2.heat_flux_vm_psi_hat)], axis=1)
+    fsab = np.stack([np.asarray(d1.fsab_flow), np.asarray(d2.fsab_flow)], axis=1)
+
+    np.testing.assert_allclose(pf, pf_ref, rtol=0, atol=5e-10)
+    np.testing.assert_allclose(hf, hf_ref, rtol=0, atol=5e-10)
+    np.testing.assert_allclose(fsab, fsab_ref, rtol=0, atol=5e-10)

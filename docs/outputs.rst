@@ -2,7 +2,7 @@ Outputs (sfincsOutput.h5)
 =========================
 
 SFINCS v3 writes results to an HDF5 file named ``sfincsOutput.h5``. `sfincs_jax` can now
-write a v3-style output file for supported modes (currently ``geometryScheme in {4,5,11,12}``).
+write a v3-style output file for supported modes (currently ``geometryScheme in {1,2,4,5,11,12}``).
 
 Writing output with `sfincs_jax`
 --------------------------------
@@ -21,6 +21,9 @@ To replicate that end-to-end behavior in `sfincs_jax`, enable:
 .. code-block:: bash
 
    sfincs_jax write-output --input input.namelist --out sfincsOutput.h5 --compute-transport-matrix
+
+In this mode, `sfincs_jax` also writes the RHSMode>1 diagnostics used by upstream scan plotting scripts:
+``FSABFlow``, ``particleFlux_vm_psiHat``, and ``heatFlux_vm_psiHat``.
 
 The default output uses a **Fortran-compatible array layout**, which is recommended if
 you intend to compare against Fortran v3 output using ``sfincs_jax compare-h5``.
@@ -46,12 +49,15 @@ At the moment, `sfincs_jax` output writing supports:
 - ``geometryScheme = 4`` (simplified W7-X Boozer model)
 - ``geometryScheme = 5`` (VMEC ``wout_*.nc`` netCDF workflow)
 - ``geometryScheme = 11/12`` (Boozer `.bc` files for W7-X / general non-stellarator-symmetric equilibria)
+- ``geometryScheme = 1/2`` (analytic Boozer models used by several v3 examples)
 - v3 grids: ``theta``, ``zeta``, ``x`` and ``Nxi_for_x``
 - core geometry fields: ``BHat``, ``DHat`` and derivatives available in `sfincs_jax.geometry`
 - basic scalar integrals: ``VPrimeHat`` and ``FSABHat2`` (see `sfincs_jax.diagnostics`)
 - selected run parameters, radial-coordinate conversions, and species arrays (e.g. ``Delta``, ``alpha``, ``Er``, ``dPhiHatdpsiHat``,
   ``psiAHat``, ``aHat``, ``rN``, ``Zs``, ``THats``)
 - `NTV`-related geometry diagnostic ``uHat`` (computed from harmonics of :math:`1/\hat B^2`)
+- transport-matrix output fields for RHSMode=2/3 runs: ``transportMatrix`` and the minimal
+  diagnostics needed by upstream plotting scripts (see above)
 
 Output parity tests live in:
 

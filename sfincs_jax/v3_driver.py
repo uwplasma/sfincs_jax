@@ -215,6 +215,11 @@ class V3TransportMatrixSolveResult:
     transport_matrix: jnp.ndarray  # (N,N) in mathematical (row, col) order
     state_vectors_by_rhs: dict[int, jnp.ndarray]
     residual_norms_by_rhs: dict[int, jnp.ndarray]
+    # Diagnostics in the same normalized units as v3 `diagnostics.F90`.
+    # Arrays are returned in mathematical axis order: (species, whichRHS).
+    fsab_flow: jnp.ndarray  # (S, N)
+    particle_flux_vm_psi_hat: jnp.ndarray  # (S, N)
+    heat_flux_vm_psi_hat: jnp.ndarray  # (S, N)
 
 
 def solve_v3_transport_matrix_linear_gmres(
@@ -248,16 +253,24 @@ def solve_v3_transport_matrix_linear_gmres(
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
 
-    def mv(x):
-        return apply_v3_full_system_operator(op0, x)
-
     state_vectors: dict[int, jnp.ndarray] = {}
     residual_norms: dict[int, jnp.ndarray] = {}
     x_guess = x0
+    diag_fsab_flow: list[jnp.ndarray] = []
+    diag_pf: list[jnp.ndarray] = []
+    diag_hf: list[jnp.ndarray] = []
 
     for which_rhs in range(1, n + 1):
         op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
         rhs = rhs_v3_full_system(op_rhs)
+
+        # In upstream v3, the transport RHS settings are applied globally before each solve.
+        # While the *intended* transport-matrix workflow keeps the operator independent of whichRHS,
+        # several parity fixtures (notably RHSMode=2) expect the matrix-free operator to see the
+        # same "current" settings as RHS construction, so we apply the matvec using `op_rhs`.
+        def mv(x):
+            return apply_v3_full_system_operator(op_rhs, x)
+
         res = gmres_solve(
             matvec=mv,
             b=rhs,
@@ -271,6 +284,13 @@ def solve_v3_transport_matrix_linear_gmres(
         x_guess = res.x
         state_vectors[which_rhs] = res.x
         residual_norms[which_rhs] = res.residual_norm
+        # Collect diagnostics for parity with v3 `sfincsOutput.h5` and postprocessing scripts.
+        from .transport_matrix import v3_transport_diagnostics_vm_only
+
+        diag = v3_transport_diagnostics_vm_only(op0, x_full=res.x)
+        diag_fsab_flow.append(diag.fsab_flow)
+        diag_pf.append(diag.particle_flux_vm_psi_hat)
+        diag_hf.append(diag.heat_flux_vm_psi_hat)
 
     tm = v3_transport_matrix_from_state_vectors(op0=op0, geom=geom, state_vectors_by_rhs=state_vectors)
     return V3TransportMatrixSolveResult(
@@ -278,4 +298,7 @@ def solve_v3_transport_matrix_linear_gmres(
         transport_matrix=tm,
         state_vectors_by_rhs=state_vectors,
         residual_norms_by_rhs=residual_norms,
+        fsab_flow=jnp.stack(diag_fsab_flow, axis=1),
+        particle_flux_vm_psi_hat=jnp.stack(diag_pf, axis=1),
+        heat_flux_vm_psi_hat=jnp.stack(diag_hf, axis=1),
     )

@@ -81,3 +81,10 @@ Upstream SFINCS example inputs
 For convenience, `sfincs_jax` also vendors the original SFINCS example inputs (Fortran v3, multi-species,
 and MATLAB v3) in `examples/upstream/`. These files are intended as recognizable reference points for
 SFINCS users; not all of them are runnable end-to-end in `sfincs_jax` yet.
+
+The full upstream Fortran v3 example suite (plus the upstream postprocessing scripts) is also vendored in
+`examples/sfincs_examples/`. A best-effort runner is provided:
+
+.. code-block:: bash
+
+   python examples/sfincs_examples/run_sfincs_jax.py --write-output

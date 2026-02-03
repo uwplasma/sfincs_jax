@@ -46,6 +46,21 @@ def test_transport_matrix_rhsmode2_matches_fortran_output() -> None:
     # Fortran writes arrays in column-major order; as read by Python, the dataset appears transposed.
     np.testing.assert_allclose(tm.T, tm_ref, rtol=0, atol=5e-10)
 
+    pf_ref = np.asarray(out["particleFlux_vm_psiHat"], dtype=np.float64)
+    hf_ref = np.asarray(out["heatFlux_vm_psiHat"], dtype=np.float64)
+    fsab_ref = np.asarray(out["FSABFlow"], dtype=np.float64)
+
+    from sfincs_jax.transport_matrix import v3_transport_diagnostics_vm_only
+
+    d = [v3_transport_diagnostics_vm_only(op0, x_full=state_vecs[k]) for k in (1, 2, 3)]
+    pf = np.stack([np.asarray(di.particle_flux_vm_psi_hat) for di in d], axis=1)
+    hf = np.stack([np.asarray(di.heat_flux_vm_psi_hat) for di in d], axis=1)
+    fsab = np.stack([np.asarray(di.fsab_flow) for di in d], axis=1)
+
+    np.testing.assert_allclose(pf, pf_ref, rtol=0, atol=5e-10)
+    np.testing.assert_allclose(hf, hf_ref, rtol=0, atol=5e-10)
+    np.testing.assert_allclose(fsab, fsab_ref, rtol=0, atol=5e-10)
+
 
 @pytest.mark.parametrize("which_rhs", (1, 2, 3))
 def test_transport_matrix_rhsmode2_rhs_matches_fortran_residual_at_zero_state(which_rhs: int) -> None:

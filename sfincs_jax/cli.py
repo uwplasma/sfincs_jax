@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import time
 
 import numpy as np
 
@@ -13,8 +14,66 @@ from .namelist import read_sfincs_input
 from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_transport_matrix_linear_gmres
 
 
+def _now() -> float:
+    return time.perf_counter()
+
+
+def _emit(msg: str, *, level: int, args: argparse.Namespace) -> None:
+    """Simple structured stdout logging for the CLI.
+
+    We intentionally avoid the stdlib `logging` module here to keep CLI output
+    deterministic across platforms and to make it easy to compare with upstream
+    SFINCS logs.
+    """
+    verbose = int(getattr(args, "verbose", 0) or 0)
+    quiet = bool(getattr(args, "quiet", False))
+    if quiet:
+        return
+    if verbose >= level:
+        print(msg)
+
+
+def _emit_namelist_summary(*, nml, args: argparse.Namespace) -> None:
+    geom = nml.group("geometryParameters")
+    phys = nml.group("physicsParameters")
+    res = nml.group("resolutionParameters")
+    general = nml.group("general")
+
+    def _g(group: dict, key: str, default=None):
+        return group.get(key.upper(), default)
+
+    _emit("----------------------------------------------------------------", level=1, args=args)
+    _emit(" input.namelist summary", level=1, args=args)
+    _emit(f" geometryScheme={_g(geom, 'geometryScheme', '?')}", level=1, args=args)
+    _emit(f" RHSMode={_g(general, 'RHSMode', '?')}", level=1, args=args)
+    _emit(f" collisionOperator={_g(phys, 'collisionOperator', '?')}", level=1, args=args)
+    _emit(f" includePhi1={bool(_g(phys, 'includePhi1', False))}", level=1, args=args)
+    _emit(f" includePhi1InKineticEquation={bool(_g(phys, 'includePhi1InKineticEquation', False))}", level=2, args=args)
+    _emit(f" includePhi1InCollisionOperator={bool(_g(phys, 'includePhi1InCollisionOperator', False))}", level=2, args=args)
+    _emit(f" useDKESExBDrift={bool(_g(phys, 'useDKESExBDrift', False))}", level=2, args=args)
+    _emit(
+        " resolution:"
+        f" Ntheta={_g(res, 'Ntheta', '?')}"
+        f" Nzeta={_g(res, 'Nzeta', '?')}"
+        f" Nxi={_g(res, 'Nxi', '?')}"
+        f" NL={_g(res, 'NL', '?')}"
+        f" Nx={_g(res, 'Nx', '?')}",
+        level=1,
+        args=args,
+    )
+    _emit(f" solverTolerance={_g(res, 'solverTolerance', '?')}", level=2, args=args)
+
+
 def _cmd_solve_v3(args: argparse.Namespace) -> int:
+    t0 = _now()
     nml = read_sfincs_input(Path(args.input))
+    _emit("################################################################", level=0, args=args)
+    _emit(" sfincs_jax solve-v3", level=0, args=args)
+    _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
+    _emit_namelist_summary(nml=nml, args=args)
+    _emit(f" tol={args.tol} atol={args.atol} restart={args.restart} maxiter={args.maxiter} solve_method={args.solve_method}", level=1, args=args)
+    if args.which_rhs is not None:
+        _emit(f" whichRHS={args.which_rhs}", level=0, args=args)
     result = solve_v3_full_system_linear_gmres(
         nml=nml,
         which_rhs=int(args.which_rhs) if args.which_rhs is not None else None,
@@ -27,22 +86,35 @@ def _cmd_solve_v3(args: argparse.Namespace) -> int:
     out_state = Path(args.out_state)
     out_state.parent.mkdir(parents=True, exist_ok=True)
     np.save(out_state, np.asarray(result.x))
-    print(str(out_state.resolve()))
-    print(f"residual_norm={float(result.residual_norm):.6e}")
+    _emit(f" wrote stateVector -> {out_state.resolve()}", level=0, args=args)
+    _emit(f" residual_norm={float(result.residual_norm):.6e}", level=0, args=args)
+    _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
     return 0
 
 
 def _cmd_run_fortran(args: argparse.Namespace) -> int:
+    t0 = _now()
+    _emit("################################################################", level=0, args=args)
+    _emit(" sfincs_jax run-fortran", level=0, args=args)
+    _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
     output_path = run_sfincs_fortran(
         input_namelist=Path(args.input),
         exe=Path(args.exe) if args.exe else None,
         workdir=Path(args.workdir) if args.workdir else None,
     )
-    print(str(output_path))
+    _emit(f" wrote sfincsOutput.h5 -> {output_path}", level=0, args=args)
+    _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
     return 0
 
 
 def _cmd_write_output(args: argparse.Namespace) -> int:
+    t0 = _now()
+    _emit("################################################################", level=0, args=args)
+    _emit(" sfincs_jax write-output", level=0, args=args)
+    _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
+    _emit(f" out={Path(args.out).resolve()}", level=0, args=args)
+    if bool(args.compute_transport_matrix):
+        _emit(" compute_transport_matrix=true (will run whichRHS solves for RHSMode=2/3)", level=0, args=args)
     out_path = write_sfincs_jax_output_h5(
         input_namelist=Path(args.input),
         output_path=Path(args.out),
@@ -50,12 +122,19 @@ def _cmd_write_output(args: argparse.Namespace) -> int:
         overwrite=bool(args.overwrite),
         compute_transport_matrix=bool(args.compute_transport_matrix),
     )
-    print(str(out_path))
+    _emit(f" wrote sfincsOutput.h5 -> {out_path}", level=0, args=args)
+    _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
     return 0
 
 
 def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
+    t0 = _now()
     nml = read_sfincs_input(Path(args.input))
+    _emit("################################################################", level=0, args=args)
+    _emit(" sfincs_jax transport-matrix-v3", level=0, args=args)
+    _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
+    _emit_namelist_summary(nml=nml, args=args)
+    _emit(f" tol={args.tol} atol={args.atol} restart={args.restart} maxiter={args.maxiter} solve_method={args.solve_method}", level=1, args=args)
     result = solve_v3_transport_matrix_linear_gmres(
         nml=nml,
         tol=float(args.tol),
@@ -68,7 +147,7 @@ def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
     out_tm = Path(args.out_matrix)
     out_tm.parent.mkdir(parents=True, exist_ok=True)
     np.save(out_tm, np.asarray(result.transport_matrix))
-    print(str(out_tm.resolve()))
+    _emit(f" wrote transportMatrix -> {out_tm.resolve()}", level=0, args=args)
 
     if args.out_state_prefix is not None:
         pref = Path(args.out_state_prefix)
@@ -76,10 +155,11 @@ def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
         for which_rhs, x in sorted(result.state_vectors_by_rhs.items()):
             p = pref.with_name(f"{pref.name}.whichRHS{which_rhs}.npy")
             np.save(p, np.asarray(x))
-            print(str(p.resolve()))
+            _emit(f" wrote stateVector(whichRHS={which_rhs}) -> {p.resolve()}", level=1, args=args)
 
     for which_rhs, rn in sorted(result.residual_norms_by_rhs.items()):
-        print(f"whichRHS={which_rhs} residual_norm={float(rn):.6e}")
+        _emit(f" whichRHS={which_rhs} residual_norm={float(rn):.6e}", level=0, args=args)
+    _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
     return 0
 
 
@@ -116,6 +196,8 @@ def _cmd_compare_h5(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sfincs_jax")
+    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (repeatable).")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Reduce output to a minimum.")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_solve = sub.add_parser("solve-v3", help="Solve a supported v3 linear problem matrix-free and write stateVector.npy.")

@@ -86,6 +86,10 @@ Running the Fortran v3 executable
    export SFINCS_FORTRAN_EXE=/path/to/sfincs/fortran/version3/sfincs
    sfincs_jax run-fortran --input /path/to/input.namelist
 
+.. tip::
+
+   All CLI subcommands support ``-v/--verbose`` (repeatable) and ``-q/--quiet``.
+
 If you are developing from a source checkout and have not installed the console script,
 you can invoke the CLI module directly:
 
@@ -129,4 +133,15 @@ Writing `sfincsOutput.h5` with `sfincs_jax`
    write_sfincs_jax_output_h5(
        input_namelist=Path("input.namelist"),
        output_path=Path("sfincsOutput.h5"),
+   )
+
+For transport-matrix runs (``RHSMode=2`` or ``RHSMode=3``), you can also request the
+``whichRHS`` loop and write ``transportMatrix``:
+
+.. code-block:: python
+
+   write_sfincs_jax_output_h5(
+       input_namelist=Path("input.namelist"),
+       output_path=Path("sfincsOutput.h5"),
+       compute_transport_matrix=True,
    )

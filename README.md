@@ -65,6 +65,11 @@ print(geom.b_hat.shape)  # (Ntheta, Nzeta)
 
 ## CLI
 
+All subcommands support:
+
+- `-v/--verbose` (repeatable): print more progress information
+- `-q/--quiet`: suppress non-essential output
+
 Solve a supported v3 linear run matrix-free and write the solution vector:
 
 ```bash
@@ -94,6 +99,9 @@ For ``RHSMode=2/3`` runs, you can optionally also compute and write ``transportM
 ```bash
 sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5 --compute-transport-matrix
 ```
+
+In this mode, `sfincs_jax` also writes a small set of RHSMode>1 diagnostics used by upstream plotting scripts:
+`FSABFlow`, `particleFlux_vm_psiHat`, and `heatFlux_vm_psiHat`.
 
 Compare two `sfincsOutput.h5` files dataset-by-dataset:
 
@@ -149,8 +157,17 @@ Quick performance sanity check (JIT vs no-JIT):
 python examples/2_intermediate/12_benchmark_jit_matvec.py
 ```
 
-Upstream example inputs (Fortran v3, multi-species, and MATLAB v3) are vendored in `examples/upstream/`
-so existing SFINCS users can find familiar starting points.
+Upstream inputs and scripts are vendored so existing SFINCS users can find familiar starting points:
+
+- `examples/upstream/`: curated upstream inputs used by parity tests / docs
+- `examples/sfincs_examples/`: full upstream Fortran v3 `examples/` suite (copy)
+- `examples/sfincs_examples/utils/`: upstream postprocessing scripts (copy)
+
+To run the full vendored suite on `sfincs_jax` (best-effort, not all examples supported yet):
+
+```bash
+python examples/sfincs_examples/run_sfincs_jax.py --write-output
+```
 
 ## Why JAX?
 

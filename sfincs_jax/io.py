@@ -730,17 +730,38 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
         # Monoenergetic coefficient computation (v3 `sfincs_main.F90` overwrites nu_n and dPhiHatdpsiHat).
         nu_prime = _get_float(phys, "nuPrime", 1.0)
         e_star = _get_float(phys, "EStar", 0.0)
-        denom = float(geom.g_hat) + float(geom.iota) * float(geom.i_hat)
+        if geometry_scheme == 5:
+            # For VMEC-based geometries, the geometry builder intentionally leaves (B0OverBBar, GHat, IHat)
+            # as placeholders in the geometry struct, matching the upstream v3 staging. Compute the needed
+            # flux functions from the arrays, consistent with the output-file parity path below.
+            tw = np.asarray(grids.theta_weights, dtype=np.float64)[:, None]
+            zw = np.asarray(grids.zeta_weights, dtype=np.float64)[None, :]
+            wgt = tw * zw
+            bh = np.asarray(geom.b_hat, dtype=np.float64)
+            jac = 1.0 / np.asarray(geom.d_hat, dtype=np.float64)
+            vprime = float(np.sum(wgt * jac))
+            fsab_b2 = float(np.sum(wgt * (bh * bh) * jac)) / vprime
+            b0_over_bbar = float(np.sum(wgt * (bh**3) * jac)) / (vprime * fsab_b2)
+            g_hat = float(np.sum(wgt * np.asarray(geom.b_hat_sub_zeta, dtype=np.float64))) / (4.0 * np.pi * np.pi)
+            i_hat = float(np.sum(wgt * np.asarray(geom.b_hat_sub_theta, dtype=np.float64))) / (4.0 * np.pi * np.pi)
+        else:
+            b0_over_bbar = float(geom.b0_over_bbar)
+            g_hat = float(geom.g_hat)
+            i_hat = float(geom.i_hat)
+
+        denom = float(g_hat) + float(geom.iota) * float(i_hat)
         out["nuPrime"] = np.asarray(float(nu_prime), dtype=np.float64)
         out["EStar"] = np.asarray(float(e_star), dtype=np.float64)
-        out["nu_n"] = np.asarray(float(nu_prime) * float(geom.b0_over_bbar) / denom, dtype=np.float64)
+        if denom == 0.0:
+            raise ZeroDivisionError("RHSMode=3 monoenergetic overwrite: (GHat + iota*IHat) == 0")
+        out["nu_n"] = np.asarray(float(nu_prime) * float(b0_over_bbar) / denom, dtype=np.float64)
         dphi_dpsihat = (
             2.0
             / (float(out["alpha"]) * float(out["Delta"]))
             * float(e_star)
             * float(geom.iota)
-            * float(geom.b0_over_bbar)
-            / float(geom.g_hat)
+            * float(b0_over_bbar)
+            / float(g_hat)
         )
     else:
         if int(input_radial_grad) == 0:
@@ -1000,8 +1021,19 @@ def write_sfincs_jax_output_h5(
             # Import lazily to keep geometry-only use-cases lightweight.
             from .v3_driver import solve_v3_transport_matrix_linear_gmres
 
-            tm = solve_v3_transport_matrix_linear_gmres(nml=nml).transport_matrix
-            data["transportMatrix"] = np.asarray(tm, dtype=np.float64)
+            resolution = nml.group("resolutionParameters")
+            solver_tol = _get_float(resolution, "solverTolerance", 1e-10)
+            result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol))
+            data["transportMatrix"] = np.asarray(result.transport_matrix, dtype=np.float64)
+
+            # Also write a minimal set of diagnostics that the upstream v3 postprocessing
+            # scripts expect for RHSMode>1 runs. v3 writes these as (Nspecies, whichRHS) arrays.
+            #
+            # Our HDF5 writer mimics Fortran layout by transposing arrays before writing, so to
+            # match the Fortran output *as read by Python*, we pre-transpose here.
+            data["FSABFlow"] = np.asarray(result.fsab_flow.T, dtype=np.float64)
+            data["particleFlux_vm_psiHat"] = np.asarray(result.particle_flux_vm_psi_hat.T, dtype=np.float64)
+            data["heatFlux_vm_psiHat"] = np.asarray(result.heat_flux_vm_psi_hat.T, dtype=np.float64)
 
     data["input.namelist"] = input_namelist.read_text()
     write_sfincs_h5(path=output_path, data=data, fortran_layout=fortran_layout, overwrite=overwrite)
