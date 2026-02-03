@@ -53,6 +53,11 @@ python examples/sfincs_examples/run_sfincs_jax.py \\
 The scripts in `utils/` are copied from upstream (e.g. `utils/sfincsScanPlot_1`).
 They expect specific fields inside `sfincsOutput.h5`.
 
+Many of these scripts also read default parameters from `globalVariables.F90`. In the upstream
+layout, this file lives next to `utils/`, so this repo vendors it as:
+
+- `examples/sfincs_examples/globalVariables.F90`
+
 `sfincs_jax` currently writes the fields needed by the transport-matrix plotting scripts for RHSMode=2/3:
 `transportMatrix`, `FSABFlow`, `particleFlux_vm_psiHat`, and `heatFlux_vm_psiHat`.
 

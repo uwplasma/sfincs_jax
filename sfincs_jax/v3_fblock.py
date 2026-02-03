@@ -109,7 +109,17 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
             "inputRadialCoordinate=3 (rN) and inputRadialCoordinateForGradients=4 (rHat)."
         )
 
-    if geometry_scheme == 4:
+    if geometry_scheme == 1:
+        # v3 defaults are in `globalVariables.F90`; allow the namelist to override them.
+        psi_a_hat = float(geom_params.get("PSIAHAT", 0.15596))
+        a_hat = float(geom_params.get("AHAT", 0.5585))
+        r_n = float(geom_params.get("RN_WISH", 0.5))
+    elif geometry_scheme == 2:
+        # v3 ignores *_wish and uses rN=0.5 for this simplified LHD model.
+        a_hat = 0.5585
+        psi_a_hat = (a_hat * a_hat) / 2.0
+        r_n = 0.5
+    elif geometry_scheme == 4:
         psi_a_hat = -0.384935
         a_hat = 0.5109
         r_n = 0.5  # v3 forces rN=0.5 for geometryScheme=4.

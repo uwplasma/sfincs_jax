@@ -12,6 +12,7 @@ from .fortran import run_sfincs_fortran
 from .io import read_sfincs_h5, write_sfincs_jax_output_h5
 from .namelist import read_sfincs_input
 from .postprocess_upstream import run_upstream_util
+from .scans import linspace_including_endpoints, run_er_scan
 from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_transport_matrix_linear_gmres
 
 
@@ -43,12 +44,12 @@ def _emit_namelist_summary(*, nml, args: argparse.Namespace) -> None:
     def _g(group: dict, key: str, default=None):
         return group.get(key.upper(), default)
 
-    _emit("----------------------------------------------------------------", level=1, args=args)
-    _emit(" input.namelist summary", level=1, args=args)
-    _emit(f" geometryScheme={_g(geom, 'geometryScheme', '?')}", level=1, args=args)
-    _emit(f" RHSMode={_g(general, 'RHSMode', '?')}", level=1, args=args)
-    _emit(f" collisionOperator={_g(phys, 'collisionOperator', '?')}", level=1, args=args)
-    _emit(f" includePhi1={bool(_g(phys, 'includePhi1', False))}", level=1, args=args)
+    _emit("----------------------------------------------------------------", level=0, args=args)
+    _emit(" input.namelist summary", level=0, args=args)
+    _emit(f" geometryScheme={_g(geom, 'geometryScheme', '?')}", level=0, args=args)
+    _emit(f" RHSMode={_g(general, 'RHSMode', '?')}", level=0, args=args)
+    _emit(f" collisionOperator={_g(phys, 'collisionOperator', '?')}", level=0, args=args)
+    _emit(f" includePhi1={bool(_g(phys, 'includePhi1', False))}", level=0, args=args)
     _emit(f" includePhi1InKineticEquation={bool(_g(phys, 'includePhi1InKineticEquation', False))}", level=2, args=args)
     _emit(f" includePhi1InCollisionOperator={bool(_g(phys, 'includePhi1InCollisionOperator', False))}", level=2, args=args)
     _emit(f" useDKESExBDrift={bool(_g(phys, 'useDKESExBDrift', False))}", level=2, args=args)
@@ -59,10 +60,22 @@ def _emit_namelist_summary(*, nml, args: argparse.Namespace) -> None:
         f" Nxi={_g(res, 'Nxi', '?')}"
         f" NL={_g(res, 'NL', '?')}"
         f" Nx={_g(res, 'Nx', '?')}",
-        level=1,
+        level=0,
         args=args,
     )
     _emit(f" solverTolerance={_g(res, 'solverTolerance', '?')}", level=2, args=args)
+
+
+def _emit_runtime_info(*, args: argparse.Namespace) -> None:
+    """Emit basic runtime info helpful for benchmarking and bug reports."""
+    try:
+        import jax  # noqa: PLC0415
+        import jax.numpy as _jnp  # noqa: PLC0415
+
+        _emit(f" jax={jax.__version__} backend={jax.default_backend()} devices={jax.devices()}", level=2, args=args)
+        _emit(f" jax_enable_x64={bool(_jnp.array(0.0).dtype == _jnp.float64)}", level=3, args=args)
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _cmd_solve_v3(args: argparse.Namespace) -> int:
@@ -72,6 +85,7 @@ def _cmd_solve_v3(args: argparse.Namespace) -> int:
     _emit(" sfincs_jax solve-v3", level=0, args=args)
     _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
     _emit_namelist_summary(nml=nml, args=args)
+    _emit_runtime_info(args=args)
     _emit(f" tol={args.tol} atol={args.atol} restart={args.restart} maxiter={args.maxiter} solve_method={args.solve_method}", level=1, args=args)
     if args.which_rhs is not None:
         _emit(f" whichRHS={args.which_rhs}", level=0, args=args)
@@ -115,6 +129,7 @@ def _cmd_write_output(args: argparse.Namespace) -> int:
     _emit(" sfincs_jax write-output", level=0, args=args)
     _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
     _emit(f" out={Path(args.out).resolve()}", level=0, args=args)
+    _emit_runtime_info(args=args)
     if bool(args.compute_transport_matrix):
         _emit(" compute_transport_matrix=true (will run whichRHS solves for RHSMode=2/3)", level=0, args=args)
     out_path = write_sfincs_jax_output_h5(
@@ -137,6 +152,7 @@ def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
     _emit(" sfincs_jax transport-matrix-v3", level=0, args=args)
     _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
     _emit_namelist_summary(nml=nml, args=args)
+    _emit_runtime_info(args=args)
     _emit(f" tol={args.tol} atol={args.atol} restart={args.restart} maxiter={args.maxiter} solve_method={args.solve_method}", level=1, args=args)
     result = solve_v3_transport_matrix_linear_gmres(
         nml=nml,
@@ -198,6 +214,30 @@ def _cmd_compare_h5(args: argparse.Namespace) -> int:
     return 0 if not bad else 2
 
 
+def _cmd_scan_er(args: argparse.Namespace) -> int:
+    t0 = _now()
+    _emit("################################################################", level=0, args=args)
+    _emit(" sfincs_jax scan-er", level=0, args=args)
+    _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
+    _emit(f" out-dir={Path(args.out_dir).resolve()}", level=0, args=args)
+    _emit_runtime_info(args=args)
+
+    if args.values is not None:
+        values = [float(x) for x in args.values]
+    else:
+        values = list(linspace_including_endpoints(float(args.min), float(args.max), int(args.n)))
+
+    run_er_scan(
+        input_namelist=Path(args.input),
+        out_dir=Path(args.out_dir),
+        values=values,
+        compute_transport_matrix=bool(args.compute_transport_matrix),
+        emit=lambda level, msg: _emit(msg, level=level, args=args),
+    )
+    _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sfincs_jax")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (repeatable).")
@@ -218,6 +258,23 @@ def main(argv: list[str] | None = None) -> int:
         help="For RHSMode=2/3 transport-matrix runs, select whichRHS (v3 loops over multiple RHS).",
     )
     p_solve.set_defaults(func=_cmd_solve_v3)
+
+    p_scan = sub.add_parser(
+        "scan-er",
+        help="Run an Er (or dPhiHatd*) scan by writing sfincsOutput.h5 in multiple run directories.",
+    )
+    p_scan.add_argument("--input", required=True, help="Path to input.namelist (template).")
+    p_scan.add_argument("--out-dir", required=True, help="Directory to create scan subdirectories inside.")
+    p_scan.add_argument(
+        "--compute-transport-matrix",
+        action="store_true",
+        help="Also compute RHSMode=2/3 transport-matrix outputs (slow).",
+    )
+    p_scan.add_argument("--min", default="-1.0", help="Minimum value (ignored if --values is provided).")
+    p_scan.add_argument("--max", default="1.0", help="Maximum value (ignored if --values is provided).")
+    p_scan.add_argument("--n", default="5", help="Number of points (ignored if --values is provided).")
+    p_scan.add_argument("--values", default=None, nargs="+", help="Explicit list of values to use.")
+    p_scan.set_defaults(func=_cmd_scan_er)
 
     p_run = sub.add_parser("run-fortran", help="Run the compiled Fortran SFINCS v3 executable.")
     p_run.add_argument("--input", required=True, help="Path to input.namelist")

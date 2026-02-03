@@ -101,7 +101,8 @@ sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5 --
 ```
 
 In this mode, `sfincs_jax` also writes a small set of RHSMode>1 diagnostics used by upstream plotting scripts:
-`FSABFlow`, `particleFlux_vm_psiHat`, and `heatFlux_vm_psiHat`.
+`FSABFlow`, `FSABjHat`, `particleFlux_vm_psiHat`, `heatFlux_vm_psiHat`, before-surface-integral arrays,
+and `*_vs_x` contributions (see `sfincs_jax.transport_matrix.v3_transport_output_fields_vm_only`).
 
 Compare two `sfincsOutput.h5` files dataset-by-dataset:
 
@@ -116,6 +117,13 @@ SFINCS Fortran v3 ships a set of plotting scripts under `utils/`. This repo vend
 
 ```bash
 sfincs_jax postprocess-upstream --case-dir /path/to/case --util sfincsScanPlot_1 -- pdf
+```
+
+For transport-matrix scans, you can also generate a scan directory compatible with upstream plotting:
+
+```bash
+sfincs_jax scan-er --input /path/to/input.namelist --out-dir /path/to/scan_dir --min -0.1 --max 0.1 --n 5 --compute-transport-matrix
+sfincs_jax postprocess-upstream --case-dir /path/to/scan_dir --util sfincsScanPlot_2 -- pdf
 ```
 
 ## Benchmarking against the Fortran v3 executable
@@ -144,6 +152,7 @@ Start here:
 ```bash
 python examples/1_simple/01_build_grids_and_geometry.py
 python examples/2_intermediate/11_autodiff_er_xidot_term.py  # requires ".[viz]"
+python examples/2_intermediate/18_transport_matrix_er_scan_upstream_scanplot2.py  # requires ".[viz]"
 ```
 
 Optimization + publication-ready figures (optional extras):

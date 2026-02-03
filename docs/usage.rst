@@ -146,6 +146,24 @@ For transport-matrix runs (``RHSMode=2`` or ``RHSMode=3``), you can also request
        compute_transport_matrix=True,
    )
 
+Running an ``Er`` scan (transport-matrix mode)
+----------------------------------------------
+
+To generate a scan directory compatible with upstream plotting scripts like ``sfincsScanPlot_2``,
+you can use the ``scan-er`` subcommand:
+
+.. code-block:: bash
+
+   sfincs_jax scan-er \
+     --input /path/to/input.namelist \
+     --out-dir /path/to/scan_dir \
+     --min -0.1 --max 0.1 --n 5 \
+     --compute-transport-matrix
+
+This creates subdirectories like ``Er0.1/``, each containing ``input.namelist`` and ``sfincsOutput.h5``,
+plus a scan-style ``input.namelist`` in the scan directory with ``!ss`` directives so the upstream
+scan plotting scripts can infer the directory list.
+
 Running upstream postprocessing scripts (utils/)
 ------------------------------------------------
 
@@ -157,3 +175,9 @@ If you have a directory containing `sfincsOutput.h5`, you can run one of these s
 .. code-block:: bash
 
    sfincs_jax postprocess-upstream --case-dir /path/to/case --util sfincsScanPlot_1 -- pdf
+
+For example, after running ``scan-er`` you can generate a PDF using the upstream script:
+
+.. code-block:: bash
+
+   sfincs_jax postprocess-upstream --case-dir /path/to/scan_dir --util sfincsScanPlot_2 -- pdf
