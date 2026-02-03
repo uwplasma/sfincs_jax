@@ -1,0 +1,60 @@
+! Tiny RHSMode=2 (3x3) transport-matrix fixture for sfincs_jax parity testing (geometryScheme=11, Boozer .bc).
+!
+! This case is designed to be small but to exercise:
+! - geometryScheme=11 Boozer .bc reader (including NPeriods)
+! - RHSMode=2 whichRHS loop (1..3) in v3
+! - vm particle/heat flux + FSABFlow diagnostics used to assemble transportMatrix
+! - PETSc binary outputs used for frozen parity fixtures
+
+&general
+  RHSMode = 2
+  saveMatricesAndVectorsInBinary = .true.
+/
+
+&geometryParameters
+  geometryScheme = 11
+  equilibriumFile = "w7x_standardConfig.bc"
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1
+  nHats = 1.0d+0
+  THats = 1.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+
+  nu_n = 0.15d+0
+  Er = 0.0d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .true.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 9
+  Nzeta = 9
+  Nxi = 6
+  NL = 3
+  Nx = 3
+  solverTolerance = 1d-10
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/
+

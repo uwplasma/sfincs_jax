@@ -21,9 +21,16 @@ from sfincs_jax.v3_system import (
 )
 
 
-def test_transport_matrix_rhsmode2_matches_fortran_output() -> None:
+@pytest.mark.parametrize(
+    "base",
+    (
+        "transportMatrix_PAS_tiny_rhsMode2_scheme2",
+        "transportMatrix_PAS_tiny_rhsMode2_scheme11",
+        "transportMatrix_PAS_tiny_rhsMode2_scheme5_filtered",
+    ),
+)
+def test_transport_matrix_rhsmode2_matches_fortran_output(base: str) -> None:
     here = Path(__file__).parent
-    base = "transportMatrix_PAS_tiny_rhsMode2_scheme2"
     input_path = here / "ref" / f"{base}.input.namelist"
     out_path = here / "ref" / f"{base}.sfincsOutput.h5"
 
@@ -45,7 +52,9 @@ def test_transport_matrix_rhsmode2_matches_fortran_output() -> None:
     assert tm.shape == (3, 3)
     assert tm_ref.shape == (3, 3)
     # Fortran writes arrays in column-major order; as read by Python, the dataset appears transposed.
-    np.testing.assert_allclose(tm.T, tm_ref, rtol=0, atol=5e-10)
+    # geometryScheme=11/5 fixtures can differ slightly due to geometry-reader floating-point differences.
+    atol_tm = 5e-10 if base.endswith("scheme2") else 5e-8
+    np.testing.assert_allclose(tm.T, tm_ref, rtol=0, atol=float(atol_tm))
 
     pf_ref = np.asarray(out["particleFlux_vm_psiHat"], dtype=np.float64)
     hf_ref = np.asarray(out["heatFlux_vm_psiHat"], dtype=np.float64)
@@ -58,25 +67,26 @@ def test_transport_matrix_rhsmode2_matches_fortran_output() -> None:
     hf = np.stack([np.asarray(di.heat_flux_vm_psi_hat) for di in d], axis=1)
     fsab = np.stack([np.asarray(di.fsab_flow) for di in d], axis=1)
 
-    np.testing.assert_allclose(pf, pf_ref, rtol=0, atol=5e-10)
-    np.testing.assert_allclose(hf, hf_ref, rtol=0, atol=5e-10)
-    np.testing.assert_allclose(fsab, fsab_ref, rtol=0, atol=5e-10)
+    atol_diag = 5e-10 if base.endswith("scheme2") else 5e-8
+    np.testing.assert_allclose(pf, pf_ref, rtol=0, atol=float(atol_diag))
+    np.testing.assert_allclose(hf, hf_ref, rtol=0, atol=float(atol_diag))
+    np.testing.assert_allclose(fsab, fsab_ref, rtol=0, atol=float(atol_diag))
 
     # Validate additional output fields used by the upstream scan plotting scripts.
     fields = v3_transport_output_fields_vm_only(op0=op0, state_vectors_by_rhs=state_vecs)
 
-    np.testing.assert_allclose(np.asarray(fields["FSABjHat"]), np.asarray(out["FSABjHat"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(np.asarray(fields["FSABjHat"]), np.asarray(out["FSABjHat"]), rtol=0, atol=float(atol_diag))
     np.testing.assert_allclose(
         np.asarray(fields["FSABjHatOverRootFSAB2"]),
         np.asarray(out["FSABjHatOverRootFSAB2"]),
         rtol=0,
-        atol=5e-10,
+        atol=float(atol_diag),
     )
     np.testing.assert_allclose(
         np.asarray(fields["FSABVelocityUsingFSADensity"]),
         np.asarray(out["FSABVelocityUsingFSADensity"]),
         rtol=0,
-        atol=5e-10,
+        atol=float(atol_diag),
     )
 
     # Before-surface-integral and vs_x fields:
@@ -84,25 +94,25 @@ def test_transport_matrix_rhsmode2_matches_fortran_output() -> None:
         np.asarray(fields["particleFluxBeforeSurfaceIntegral_vm"]),
         np.asarray(out["particleFluxBeforeSurfaceIntegral_vm"]),
         rtol=0,
-        atol=5e-10,
+        atol=float(atol_diag),
     )
     np.testing.assert_allclose(
         np.asarray(fields["heatFluxBeforeSurfaceIntegral_vm"]),
         np.asarray(out["heatFluxBeforeSurfaceIntegral_vm"]),
         rtol=0,
-        atol=5e-10,
+        atol=float(atol_diag),
     )
     np.testing.assert_allclose(
         np.asarray(fields["particleFlux_vm_psiHat_vs_x"]),
         np.asarray(out["particleFlux_vm_psiHat_vs_x"]),
         rtol=0,
-        atol=5e-10,
+        atol=float(atol_diag),
     )
     np.testing.assert_allclose(
         np.asarray(fields["heatFlux_vm_psiHat_vs_x"]),
         np.asarray(out["heatFlux_vm_psiHat_vs_x"]),
         rtol=0,
-        atol=5e-10,
+        atol=float(atol_diag),
     )
 
     # Coordinate variants follow v3 radial-coordinate conversion factors:
@@ -115,12 +125,12 @@ def test_transport_matrix_rhsmode2_matches_fortran_output() -> None:
 
     pf = np.asarray(fields["particleFlux_vm_psiHat"], dtype=np.float64)
     hf = np.asarray(fields["heatFlux_vm_psiHat"], dtype=np.float64)
-    np.testing.assert_allclose(pf * ddpsiN2ddpsiHat, np.asarray(out["particleFlux_vm_psiN"]), rtol=0, atol=5e-10)
-    np.testing.assert_allclose(pf * ddrHat2ddpsiHat, np.asarray(out["particleFlux_vm_rHat"]), rtol=0, atol=5e-10)
-    np.testing.assert_allclose(pf * ddrN2ddpsiHat, np.asarray(out["particleFlux_vm_rN"]), rtol=0, atol=5e-10)
-    np.testing.assert_allclose(hf * ddpsiN2ddpsiHat, np.asarray(out["heatFlux_vm_psiN"]), rtol=0, atol=5e-10)
-    np.testing.assert_allclose(hf * ddrHat2ddpsiHat, np.asarray(out["heatFlux_vm_rHat"]), rtol=0, atol=5e-10)
-    np.testing.assert_allclose(hf * ddrN2ddpsiHat, np.asarray(out["heatFlux_vm_rN"]), rtol=0, atol=5e-10)
+    np.testing.assert_allclose(pf * ddpsiN2ddpsiHat, np.asarray(out["particleFlux_vm_psiN"]), rtol=0, atol=float(atol_diag))
+    np.testing.assert_allclose(pf * ddrHat2ddpsiHat, np.asarray(out["particleFlux_vm_rHat"]), rtol=0, atol=float(atol_diag))
+    np.testing.assert_allclose(pf * ddrN2ddpsiHat, np.asarray(out["particleFlux_vm_rN"]), rtol=0, atol=float(atol_diag))
+    np.testing.assert_allclose(hf * ddpsiN2ddpsiHat, np.asarray(out["heatFlux_vm_psiN"]), rtol=0, atol=float(atol_diag))
+    np.testing.assert_allclose(hf * ddrHat2ddpsiHat, np.asarray(out["heatFlux_vm_rHat"]), rtol=0, atol=float(atol_diag))
+    np.testing.assert_allclose(hf * ddrN2ddpsiHat, np.asarray(out["heatFlux_vm_rN"]), rtol=0, atol=float(atol_diag))
 
     # sources are the constraint-scheme-2 extra unknowns (per-x L=0 source), in (X,S,whichRHS) order.
     np.testing.assert_allclose(np.asarray(fields["sources"]), np.asarray(out["sources"]), rtol=0, atol=5e-10)

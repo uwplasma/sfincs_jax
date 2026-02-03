@@ -26,12 +26,39 @@ def _localize_equilibrium(input_path: Path) -> None:
     localize_equilibrium_file_in_place(input_namelist=input_path, overwrite=False)
 
 
-def _rename_sfincs_binary(src: Path, *, base: str, out_dir: Path) -> Path:
+def _parse_iteration_index(name: str) -> int | None:
+    # Matches v3 file names like: sfincsBinary_iteration_002_stateVector
+    # or: sfincsBinary_iteration_002_residual
+    parts = name.split("_")
+    if len(parts) < 3:
+        return None
+    if parts[0] != "sfincsBinary" or parts[1] != "iteration":
+        return None
+    try:
+        return int(parts[2])
+    except Exception:
+        return None
+
+
+def _rename_sfincs_binary(src: Path, *, base: str, out_dir: Path, rhs_mode: int) -> Path:
     name = src.name
     if "_whichMatrix_" in name:
         # e.g. sfincsBinary_iteration_000_whichMatrix_3
         which = name.split("_whichMatrix_")[-1]
         return out_dir / f"{base}.whichMatrix_{which}.petscbin"
+
+    # For RHSMode=2/3, upstream v3 loops over whichRHS and writes "iteration" files for each
+    # solve. For parity fixtures we want stable `whichRHS{k}` filenames.
+    it = _parse_iteration_index(name)
+    if it is not None and int(rhs_mode) in {2, 3}:
+        which_rhs = it + 1
+        if name.endswith("_stateVector"):
+            return out_dir / f"{base}.whichRHS{which_rhs}.stateVector.petscbin"
+        if name.endswith("_residual"):
+            return out_dir / f"{base}.whichRHS{which_rhs}.residual.petscbin"
+        if name.endswith("_rhs"):
+            return out_dir / f"{base}.whichRHS{which_rhs}.rhs.petscbin"
+
     if name.endswith("_stateVector"):
         return out_dir / f"{base}.stateVector.petscbin"
     if name.endswith("_residual"):
@@ -69,6 +96,19 @@ def main() -> int:
         _copy_file(input_src, w_input)
         _localize_equilibrium(w_input)
 
+        # Determine RHSMode from the localized input file (v3 naming conventions differ by mode).
+        # Avoid a full namelist parse; a simple anchored regex is robust and ignores `!` comments.
+        rhs_mode = 1
+        try:
+            import re  # noqa: PLC0415
+
+            txt = w_input.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"(?im)^[ \t]*RHSMode[ \t]*=[ \t]*([0-9]+)", txt)
+            if m is not None:
+                rhs_mode = int(m.group(1))
+        except Exception:
+            rhs_mode = 1
+
         cmd = [str(fortran_exe)]
         proc = subprocess.run(
             cmd,
@@ -91,7 +131,7 @@ def main() -> int:
         for p in sorted(workdir.glob("sfincsBinary_iteration_*")):
             if p.name.endswith(".info"):
                 continue
-            _copy_file(p, _rename_sfincs_binary(p, base=str(args.base), out_dir=out_dir))
+            _copy_file(p, _rename_sfincs_binary(p, base=str(args.base), out_dir=out_dir, rhs_mode=int(rhs_mode)))
 
         print(f"Wrote fixtures for {args.base} to {out_dir}")
         return 0

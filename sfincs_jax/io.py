@@ -1801,10 +1801,56 @@ def write_sfincs_jax_output_h5(
             fields["NTVBeforeSurfaceIntegral"] = ntv_before
             fields["NTV"] = ntv
 
-            # Classical fluxes are present-but-zero in the transport-matrix fixtures.
-            classical = np.zeros((s, n_rhs), dtype=np.float64)
-            fields["classicalParticleFlux_psiHat"] = classical
-            fields["classicalHeatFlux_psiHat"] = classical
+            # Classical fluxes (v3 `classicalTransport.F90`) depend on the imposed gradients
+            # and therefore must be computed separately for each whichRHS in RHSMode=2/3 runs.
+            from .classical_transport import classical_flux_v3  # noqa: PLC0415
+            from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
+
+            theta_w = jnp.asarray(op0.theta_weights, dtype=jnp.float64)
+            zeta_w = jnp.asarray(op0.zeta_weights, dtype=jnp.float64)
+            d_hat = jnp.asarray(op0.d_hat, dtype=jnp.float64)
+            gpsipsi = jnp.asarray(data["gpsiHatpsiHat"], dtype=jnp.float64)
+            b_hat = jnp.asarray(data["BHat"], dtype=jnp.float64)
+            vprime_hat2 = jnp.asarray(data["VPrimeHat"], dtype=jnp.float64)
+
+            # Use the already-parsed/written v3-style scalars stored in `data` to match
+            # Fortran output conventions (and to avoid coupling to operator internals).
+            alpha = jnp.asarray(data["alpha"], dtype=jnp.float64)
+            delta = jnp.asarray(data["Delta"], dtype=jnp.float64)
+            nu_n = jnp.asarray(data["nu_n"], dtype=jnp.float64)
+            z_s = jnp.asarray(data["Zs"], dtype=jnp.float64)
+            m_hat = jnp.asarray(data["mHats"], dtype=jnp.float64)
+            t_hat = jnp.asarray(data["THats"], dtype=jnp.float64)
+            n_hat = jnp.asarray(data["nHats"], dtype=jnp.float64)
+
+            classical_pf_list: list[np.ndarray] = []
+            classical_hf_list: list[np.ndarray] = []
+            for which_rhs in range(1, n_rhs + 1):
+                op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
+                pf_j, hf_j = classical_flux_v3(
+                    use_phi1=False,
+                    theta_weights=theta_w,
+                    zeta_weights=zeta_w,
+                    d_hat=d_hat,
+                    gpsipsi=gpsipsi,
+                    b_hat=b_hat,
+                    vprime_hat=vprime_hat2,
+                    alpha=alpha,
+                    phi1_hat=jnp.zeros_like(b_hat),
+                    delta=delta,
+                    nu_n=nu_n,
+                    z_s=z_s,
+                    m_hat=m_hat,
+                    t_hat=t_hat,
+                    n_hat=n_hat,
+                    dn_hat_dpsi_hat=jnp.asarray(op_rhs.dn_hat_dpsi_hat, dtype=jnp.float64),
+                    dt_hat_dpsi_hat=jnp.asarray(op_rhs.dt_hat_dpsi_hat, dtype=jnp.float64),
+                )
+                classical_pf_list.append(np.asarray(pf_j, dtype=np.float64))
+                classical_hf_list.append(np.asarray(hf_j, dtype=np.float64))
+
+            fields["classicalParticleFlux_psiHat"] = np.stack(classical_pf_list, axis=1)  # (S,N)
+            fields["classicalHeatFlux_psiHat"] = np.stack(classical_hf_list, axis=1)  # (S,N)
 
             # Add coordinate variants used by upstream scan plotting scripts.
             conv = _conversion_factors_to_from_dpsi_hat(

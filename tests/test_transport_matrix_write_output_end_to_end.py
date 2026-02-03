@@ -24,6 +24,8 @@ def _is_numeric_dataset(x) -> bool:
     "base",
     (
         "transportMatrix_PAS_tiny_rhsMode2_scheme2",
+        "transportMatrix_PAS_tiny_rhsMode2_scheme11",
+        "transportMatrix_PAS_tiny_rhsMode2_scheme5_filtered",
         "monoenergetic_PAS_tiny_scheme11",
         "monoenergetic_PAS_tiny_scheme12",
         "monoenergetic_PAS_tiny_scheme5_filtered",

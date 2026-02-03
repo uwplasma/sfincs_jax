@@ -19,9 +19,14 @@ class CompareResult:
 
 def _as_numpy(x: Any) -> np.ndarray | None:
     if isinstance(x, np.ndarray):
+        if x.dtype.kind in {"S", "U", "O"}:
+            return None
         return x
     if np.isscalar(x):
-        return np.asarray(x)
+        arr = np.asarray(x)
+        if arr.dtype.kind in {"S", "U", "O"}:
+            return None
+        return arr
     return None
 
 
@@ -66,4 +71,3 @@ def compare_sfincs_outputs(
         results.append(CompareResult(key=k, max_abs=max_abs, max_rel=max_rel, ok=ok))
 
     return results
-
