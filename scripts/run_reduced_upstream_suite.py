@@ -24,18 +24,60 @@ MIN_RES: dict[str, int] = {"NTHETA": 5, "NZETA": 1, "NX": 1, "NXI": 2}
 class CaseResult:
     case: str
     status: str
+    blocker_type: str
     message: str
     attempts: int
     reductions: int
     fortran_runtime_s: float | None
     jax_runtime_s: float | None
+    print_parity_signals: int
+    print_parity_total: int
+    print_missing_signals: list[str]
     n_common_keys: int
     n_mismatch_common: int
+    mismatch_keys_sample: list[str]
     max_abs_mismatch: float | None
     final_resolution: dict[str, int]
     input_path: str
+    promoted_input_path: str | None
     fortran_h5: str | None
     jax_h5: str | None
+
+
+PRINT_SIGNALS: dict[str, tuple[str, str]] = {
+    "input_namelist": (r"input\.namelist|Successfully read parameters", r"input\.namelist summary|input="),
+    "geometry_summary": (r"Geometry scheme|Geometry parameters", r"geometryScheme"),
+    "resolution_summary": (r"Ntheta|Nzeta|Nxi|Nx", r"numerical resolution|resolution:"),
+    "x_grid": (r"\bx:\s", r"x-grid="),
+    "residual": (r"Residual function norm|evaluateResidual called", r"residual"),
+    "jacobian": (r"evaluateJacobian called|populateMatrix", r"jacobian|whichMatrix"),
+    "diagnostics": (r"Computing diagnostics|Results for species", r"diagnostic"),
+    "output_write": (r"Saving diagnostics to h5 file|sfincsOutput\.h5", r"writing .*sfincsOutput|wrote sfincsOutput"),
+    "runtime": (r"Time to solve|seconds", r"elapsed_s="),
+}
+
+GEOMETRY_MISMATCH_HINTS = (
+    "bhat",
+    "dBHat",
+    "ghat",
+    "ihat",
+    "iota",
+    "sqrt_g",
+    "gpsihat",
+    "geometry",
+    "gradpar",
+)
+
+SOLVER_MISMATCH_HINTS = (
+    "niterations",
+    "residual",
+    "jacobian",
+    "whichmatrix",
+    "statevector",
+    "transportmatrix",
+    "flow",
+    "fsa",
+)
 
 
 def _iter_inputs(examples_root: Path) -> list[Path]:
@@ -157,11 +199,92 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
     return dt, out, int(proc.returncode)
 
 
-def _compare_outputs(fortran_h5: Path, jax_h5: Path, *, rtol: float, atol: float) -> tuple[int, int, float | None]:
+def _compare_outputs(fortran_h5: Path, jax_h5: Path, *, rtol: float, atol: float) -> tuple[int, int, float | None, list[str]]:
     results = compare_sfincs_outputs(a_path=jax_h5, b_path=fortran_h5, rtol=rtol, atol=atol)
     bad = [r for r in results if not r.ok]
     max_abs = max((r.max_abs for r in bad), default=None)
-    return len(results), len(bad), max_abs
+    bad_keys = sorted(r.key for r in bad)
+    return len(results), len(bad), max_abs, bad_keys[:12]
+
+
+def _compute_print_parity(*, fortran_log: Path, jax_log: Path) -> tuple[int, int, list[str]]:
+    fortran_text = fortran_log.read_text(encoding="utf-8", errors="replace").lower() if fortran_log.exists() else ""
+    jax_text = jax_log.read_text(encoding="utf-8", errors="replace").lower() if jax_log.exists() else ""
+
+    matched = 0
+    relevant = 0
+    missing: list[str] = []
+    for signal, (fortran_pat, jax_pat) in PRINT_SIGNALS.items():
+        seen_fortran = bool(re.search(fortran_pat.lower(), fortran_text, flags=re.IGNORECASE | re.MULTILINE))
+        seen_jax = bool(re.search(jax_pat.lower(), jax_text, flags=re.IGNORECASE | re.MULTILINE))
+        if seen_fortran:
+            relevant += 1
+            if seen_jax:
+                matched += 1
+            else:
+                missing.append(signal)
+    return matched, relevant, missing
+
+
+def _classify_blocker(*, status: str, note: str, mismatch_keys: list[str], jax_log: Path | None) -> str:
+    if status == "parity_ok":
+        return "none"
+
+    text_parts = [status, note]
+    if jax_log is not None and jax_log.exists():
+        text_parts.append(_tail(jax_log, n=80))
+    text = "\n".join(text_parts).lower()
+
+    if status in {"fortran_timeout", "jax_timeout", "max_attempts"}:
+        return "solver branch mismatch"
+    if status.startswith("fortran_"):
+        return "unsupported physics/path"
+    if status in {"parity_mismatch", "compare_error"}:
+        lowered_keys = [k.lower() for k in mismatch_keys]
+        if any(any(h in k for h in GEOMETRY_MISMATCH_HINTS) for k in lowered_keys):
+            return "geometry parsing mismatch"
+        if any(any(h in k for h in SOLVER_MISMATCH_HINTS) for k in lowered_keys):
+            return "solver branch mismatch"
+        return "output field mismatch"
+
+    if "notimplemented" in text or "unsupported" in text or "todo" in text:
+        return "unsupported physics/path"
+    if "equilibrium" in text or "geometryscheme" in text or ".bc" in text or ".nc" in text or "netcdf" in text:
+        return "geometry parsing mismatch"
+    if "whichmatrix" in text or "rhsmode" in text or "transportmatrix" in text or "residual" in text or "jacobian" in text:
+        return "solver branch mismatch"
+    return "unsupported physics/path"
+
+
+def _load_existing_results(report_json: Path) -> dict[str, CaseResult]:
+    if not report_json.exists():
+        return {}
+    raw = json.loads(report_json.read_text(encoding="utf-8"))
+    out: dict[str, CaseResult] = {}
+    for item in raw:
+        out[str(item["case"])] = CaseResult(
+            case=str(item["case"]),
+            status=str(item["status"]),
+            blocker_type=str(item.get("blocker_type", "unsupported physics/path")),
+            message=str(item.get("message", "")),
+            attempts=int(item.get("attempts", 0)),
+            reductions=int(item.get("reductions", 0)),
+            fortran_runtime_s=item.get("fortran_runtime_s"),
+            jax_runtime_s=item.get("jax_runtime_s"),
+            print_parity_signals=int(item.get("print_parity_signals", 0)),
+            print_parity_total=int(item.get("print_parity_total", 0)),
+            print_missing_signals=list(item.get("print_missing_signals", [])),
+            n_common_keys=int(item.get("n_common_keys", 0)),
+            n_mismatch_common=int(item.get("n_mismatch_common", 0)),
+            mismatch_keys_sample=list(item.get("mismatch_keys_sample", [])),
+            max_abs_mismatch=item.get("max_abs_mismatch"),
+            final_resolution={k: int(v) for k, v in dict(item.get("final_resolution", {})).items()},
+            input_path=str(item.get("input_path", "")),
+            promoted_input_path=item.get("promoted_input_path"),
+            fortran_h5=item.get("fortran_h5"),
+            jax_h5=item.get("jax_h5"),
+        )
+    return out
 
 
 def _write_rst(rows: list[CaseResult], out_path: Path) -> None:
@@ -180,29 +303,34 @@ def _write_rst(rows: list[CaseResult], out_path: Path) -> None:
     lines.append("- Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.\n\n")
     lines.append(".. list-table:: Reduced-resolution upstream suite parity status\n")
     lines.append("   :header-rows: 1\n")
-    lines.append("   :widths: 25 9 10 8 8 11 11 12 16\n\n")
+    lines.append("   :widths: 25 9 16 10 8 8 11 11 12 13 16\n\n")
     lines.append("   * - Case\n")
     lines.append("     - Status\n")
+    lines.append("     - Blocker\n")
     lines.append("     - Resolution\n")
     lines.append("     - Tries\n")
     lines.append("     - Reductions\n")
     lines.append("     - Fortran(s)\n")
     lines.append("     - JAX(s)\n")
     lines.append("     - Mismatches\n")
+    lines.append("     - Print parity\n")
     lines.append("     - Note\n")
     for row in rows:
         res = ",".join(f"{k}={v}" for k, v in sorted(row.final_resolution.items()))
         ft = "" if row.fortran_runtime_s is None else f"{row.fortran_runtime_s:.3f}"
         jt = "" if row.jax_runtime_s is None else f"{row.jax_runtime_s:.3f}"
         mm = f"{row.n_mismatch_common}/{row.n_common_keys}" if row.n_common_keys > 0 else "-"
+        pp = f"{row.print_parity_signals}/{row.print_parity_total}" if row.print_parity_total > 0 else "-"
         lines.append(f"   * - {row.case}\n")
         lines.append(f"     - {row.status}\n")
+        lines.append(f"     - {row.blocker_type}\n")
         lines.append(f"     - {res}\n")
         lines.append(f"     - {row.attempts}\n")
         lines.append(f"     - {row.reductions}\n")
         lines.append(f"     - {ft}\n")
         lines.append(f"     - {jt}\n")
         lines.append(f"     - {mm}\n")
+        lines.append(f"     - {pp}\n")
         lines.append(f"     - {row.message}\n")
     out_path.write_text("".join(lines), encoding="utf-8")
 
@@ -231,11 +359,18 @@ def _run_case(
     jax_runtime = None
     note = ""
     status = "error"
+    blocker_type = "unsupported physics/path"
     fortran_h5_path: Path | None = None
     jax_h5_path: Path | None = None
+    fortran_log_path: Path | None = None
+    jax_log_path: Path | None = None
+    print_signals = 0
+    print_total = 0
+    print_missing: list[str] = []
     n_common = 0
     n_bad = 0
     max_abs = None
+    mismatch_keys: list[str] = []
 
     while attempts < max_attempts:
         attempts += 1
@@ -247,6 +382,7 @@ def _run_case(
         shutil.copyfile(dst_input, fortran_dir / "input.namelist")
         localize_equilibrium_file_in_place(input_namelist=fortran_dir / "input.namelist", overwrite=False)
         fortran_log = fortran_dir / "sfincs.log"
+        fortran_log_path = fortran_log
 
         try:
             fortran_runtime, out_fortran, fortran_rc = _run_fortran_direct(
@@ -275,6 +411,7 @@ def _run_case(
 
         jax_h5 = case_out_dir / "sfincsOutput_jax.h5"
         jax_log = case_out_dir / "sfincs_jax.log"
+        jax_log_path = jax_log
         try:
             jax_runtime = _run_jax_cli(input_path=dst_input, output_path=jax_h5, timeout_s=timeout_s, log_path=jax_log)
             jax_h5_path = jax_h5
@@ -297,35 +434,47 @@ def _run_case(
             break
 
         try:
-            n_common, n_bad, max_abs = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol)
+            n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol)
             if n_bad == 0:
                 status = "parity_ok"
                 note = "All common numeric datasets matched tolerance."
             else:
                 status = "parity_mismatch"
-                note = "Common numeric dataset mismatches present."
+                note = f"Common numeric dataset mismatches present. sample={','.join(mismatch_keys[:4])}"
         except Exception as exc:  # noqa: BLE001
             status = "compare_error"
             note = f"Compare error: {type(exc).__name__}: {exc}"
+        if fortran_log_path is not None and jax_log_path is not None:
+            print_signals, print_total, print_missing = _compute_print_parity(fortran_log=fortran_log_path, jax_log=jax_log_path)
+            if print_total > 0 and print_signals < print_total:
+                note = f"{note} printParity={print_signals}/{print_total} missing={','.join(print_missing[:3])}"
         break
 
     else:
         status = "max_attempts"
         note = "Reached max attempts while reducing resolution."
 
+    blocker_type = _classify_blocker(status=status, note=note, mismatch_keys=mismatch_keys, jax_log=jax_log_path)
+
     return CaseResult(
         case=case,
         status=status,
+        blocker_type=blocker_type,
         message=note,
         attempts=attempts,
         reductions=reductions,
         fortran_runtime_s=fortran_runtime,
         jax_runtime_s=jax_runtime,
+        print_parity_signals=print_signals,
+        print_parity_total=print_total,
+        print_missing_signals=print_missing,
         n_common_keys=n_common,
         n_mismatch_common=n_bad,
+        mismatch_keys_sample=mismatch_keys,
         max_abs_mismatch=max_abs,
         final_resolution=final_res,
         input_path=str(dst_input),
+        promoted_input_path=None,
         fortran_h5=str(fortran_h5_path) if fortran_h5_path is not None else None,
         jax_h5=str(jax_h5_path) if jax_h5_path is not None else None,
     )
@@ -356,6 +505,11 @@ def main() -> int:
     parser.add_argument("--max-attempts", type=int, default=6, help="Maximum adaptive retries per case.")
     parser.add_argument("--rtol", type=float, default=1e-8)
     parser.add_argument("--atol", type=float, default=1e-8)
+    parser.add_argument(
+        "--reset-report",
+        action="store_true",
+        help="Do not merge with existing suite_report.json; overwrite report with this run only.",
+    )
     args = parser.parse_args()
 
     examples_root = Path(args.examples_root)
@@ -373,7 +527,9 @@ def main() -> int:
         inputs = [p for p in inputs if rx.search(str(p.parent))]
     if not inputs:
         raise SystemExit("No input.namelist files matched.")
-    results: list[CaseResult] = []
+    report_json = out_root / "suite_report.json"
+    merged_results: dict[str, CaseResult] = {} if args.reset_report else _load_existing_results(report_json)
+    current_run_results: list[CaseResult] = []
 
     for index, input_path in enumerate(inputs, start=1):
         case = input_path.parent.name
@@ -388,16 +544,24 @@ def main() -> int:
             atol=float(args.atol),
             max_attempts=int(args.max_attempts),
         )
-        results.append(result)
+        if result.status == "parity_ok":
+            reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
+            reduced_fixture.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(result.input_path), reduced_fixture)
+            result.promoted_input_path = str(reduced_fixture)
+            print(f"  promoted reduced input -> {reduced_fixture}")
+        current_run_results.append(result)
+        merged_results[result.case] = result
         print(
             f"  status={result.status} attempts={result.attempts} reductions={result.reductions} "
-            f"res={result.final_resolution} mismatch={result.n_mismatch_common}/{result.n_common_keys}"
+            f"res={result.final_resolution} mismatch={result.n_mismatch_common}/{result.n_common_keys} "
+            f"printParity={result.print_parity_signals}/{result.print_parity_total} blocker={result.blocker_type}"
         )
 
-    report_json = out_root / "suite_report.json"
-    report_json.write_text(json.dumps([asdict(r) for r in results], indent=2), encoding="utf-8")
+    ordered = [merged_results[k] for k in sorted(merged_results)]
+    report_json.write_text(json.dumps([asdict(r) for r in ordered], indent=2), encoding="utf-8")
     report_rst = REPO_ROOT / "docs" / "_generated" / "reduced_upstream_suite_status.rst"
-    _write_rst(results, report_rst)
+    _write_rst(ordered, report_rst)
     print(f"Wrote {report_json}")
     print(f"Wrote {report_rst}")
     return 0

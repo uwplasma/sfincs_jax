@@ -70,17 +70,29 @@ The latest generated table is:
 
 .. include:: _generated/reduced_upstream_suite_status.rst
 
-First completed reduced-resolution parity case
-----------------------------------------------
+Promoted reduced-input fixtures
+-------------------------------
 
-- Case: ``HSX_FPCollisions_DKESTrajectories``
-- Saved reduced input: ``tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.input.namelist``
-- Final reduced resolution used for parity: ``NTHETA=6, NZETA=15, NX=3, NXI=10``
-- Runtime with this reduced input (current local run): Fortran ``0.51 s``, ``sfincs_jax`` ``1.38 s``
-- HDF5 parity status: ``parity_ok`` at ``rtol=1e-8``, ``atol=1e-8`` over common numeric datasets.
+Whenever a case reaches ``parity_ok`` in the reduced runner, its adapted input is promoted to:
 
-Notes:
+``tests/reduced_inputs/<case>.input.namelist``
 
-- The adaptive runner enforces ``<30 s`` per run attempt and halves the largest grid axis when a run
-  times out or fails.
-- This case is now reusable as a fast parity step before moving to the next upstream example.
+Current promoted fixtures:
+
+- ``tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.input.namelist``
+- ``tests/reduced_inputs/transportMatrix_geometryScheme11.input.namelist``
+
+These are intended as fast, reusable parity gates for CI and local development.
+
+Blocker typing used for failing reduced cases
+---------------------------------------------
+
+The reduced runner classifies non-parity cases into:
+
+- ``unsupported physics/path``
+- ``geometry parsing mismatch``
+- ``solver branch mismatch``
+- ``output field mismatch``
+
+and also records a compact print-parity score (shared runtime-log signals between
+Fortran and ``sfincs_jax``) to track progress toward terminal-output parity.
