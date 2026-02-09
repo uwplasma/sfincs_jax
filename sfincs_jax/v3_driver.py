@@ -393,11 +393,14 @@ def solve_v3_transport_matrix_linear_gmres(
             emit(0, f"whichRHS={which_rhs}/{n}: assembling+solving (rhs_norm={float(jnp.linalg.norm(rhs)):.6e})")
 
         # In upstream v3, the transport RHS settings are applied globally before each solve.
-        # While the *intended* transport-matrix workflow keeps the operator independent of whichRHS,
-        # several parity fixtures (notably RHSMode=2) expect the matrix-free operator to see the
-        # same "current" settings as RHS construction, so we apply the matvec using `op_rhs`.
+        # For PAS parity fixtures, matching this behavior requires using `op_rhs` in the matvec.
+        # For full FP, using `op0` improves stability/parity by keeping the linear operator
+        # independent of the current RHS selector.
+        use_op_rhs_in_matvec = op0.fblock.pas is not None
+        op_matvec = op_rhs if use_op_rhs_in_matvec else op0
+
         def mv(x):
-            return apply_v3_full_system_operator(op_rhs, x)
+            return apply_v3_full_system_operator(op_matvec, x)
 
         res = gmres_solve(
             matvec=mv,
