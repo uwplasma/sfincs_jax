@@ -49,8 +49,8 @@
      - NTHETA=5,NX=2,NXI=9,NZETA=9
      - 1
      - 0
-     - 0.147
-     - 4.986
+     - 2.550
+     - 6.722
      - 36/193
      - 8/9
      - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 printParity=8/9 missing=jacobian
@@ -104,8 +104,8 @@
      - NTHETA=6,NX=4,NXI=8,NZETA=1
      - 3
      - 2
-     - 13.824
-     - 14.768
+     - 5.479
+     - 15.149
      - 126/263
      - 7/9
      - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 printParity=7/9 missing=residual,jacobian
@@ -126,8 +126,8 @@
      - NTHETA=8,NX=4,NXI=8,NZETA=7
      - 1
      - 0
-     - 6.395
-     - 8.863
+     - 0.205
+     - 8.554
      - 35/194
      - 7/9
      - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 printParity=7/9 missing=jacobian,diagnostics

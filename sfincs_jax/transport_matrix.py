@@ -514,7 +514,12 @@ def v3_transport_output_fields_vm_only(
 
     for which_rhs in range(1, n + 1):
         x_full = state_vectors_by_rhs[which_rhs]
-        diag = v3_transport_diagnostics_vm_only(op0, x_full=x_full)
+        # Match v3 transport-matrix workflow: diagnostics for each column use the
+        # current whichRHS transport settings.
+        from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
+
+        op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
+        diag = v3_transport_diagnostics_vm_only(op_rhs, x_full=x_full)
 
         pf_vm_psi_hat = pf_vm_psi_hat.at[:, which_rhs - 1].set(diag.particle_flux_vm_psi_hat)
         hf_vm_psi_hat = hf_vm_psi_hat.at[:, which_rhs - 1].set(diag.heat_flux_vm_psi_hat)
@@ -522,10 +527,10 @@ def v3_transport_output_fields_vm_only(
 
         # vm0 from "before surface integral" arrays:
         pf_vm0_psi_hat = pf_vm0_psi_hat.at[:, which_rhs - 1].set(
-            jnp.einsum("tz,stz->s", op0.theta_weights[:, None] * op0.zeta_weights[None, :], diag.particle_flux_before_surface_integral_vm0)
+            jnp.einsum("tz,stz->s", op_rhs.theta_weights[:, None] * op_rhs.zeta_weights[None, :], diag.particle_flux_before_surface_integral_vm0)
         )
         hf_vm0_psi_hat = hf_vm0_psi_hat.at[:, which_rhs - 1].set(
-            jnp.einsum("tz,stz->s", op0.theta_weights[:, None] * op0.zeta_weights[None, :], diag.heat_flux_before_surface_integral_vm0)
+            jnp.einsum("tz,stz->s", op_rhs.theta_weights[:, None] * op_rhs.zeta_weights[None, :], diag.heat_flux_before_surface_integral_vm0)
         )
 
         # Before-surface-integral arrays in Python-read order (Z,T,S,N):

@@ -1753,7 +1753,10 @@ def write_sfincs_jax_output_h5(
 
             for which_rhs, x_full in result.state_vectors_by_rhs.items():
                 j = int(which_rhs) - 1
-                d = v3_rhsmode1_output_fields_vm_only(op0, x_full=x_full)
+                from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
+
+                op_rhs = with_transport_rhs_settings(op0, which_rhs=int(which_rhs))
+                d = v3_rhsmode1_output_fields_vm_only(op_rhs, x_full=x_full)
 
                 dens = dens.at[:, :, :, j].set(jnp.transpose(d["densityPerturbation"], (2, 1, 0)))
                 pres = pres.at[:, :, :, j].set(jnp.transpose(d["pressurePerturbation"], (2, 1, 0)))
