@@ -80,6 +80,9 @@ Whenever a case reaches ``parity_ok`` in the reduced runner, its adapted input i
 Current promoted fixtures:
 
 - ``tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.input.namelist``
+- ``tests/reduced_inputs/inductiveE_noEr.input.namelist``
+- ``tests/reduced_inputs/monoenergetic_geometryScheme11.input.namelist``
+- ``tests/reduced_inputs/monoenergetic_geometryScheme5_netCDF.input.namelist``
 - ``tests/reduced_inputs/transportMatrix_geometryScheme11.input.namelist``
 
 These are intended as fast, reusable parity gates for CI and local development.

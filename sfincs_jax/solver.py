@@ -65,7 +65,13 @@ def gmres_solve(
         eye = jnp.eye(n, dtype=b.dtype)
         # Assemble columns A[:,j] = matvec(e_j).
         a = vmap(matvec, in_axes=1, out_axes=1)(eye)
-        x = jnp.linalg.solve(a, b)
+        x_direct = jnp.linalg.solve(a, b)
+        x_lstsq = jnp.linalg.lstsq(a, b, rcond=None)[0]
+        reg = jnp.asarray(1e-14, dtype=b.dtype)
+        x_reg = jnp.linalg.solve(a + reg * jnp.eye(n, dtype=b.dtype), b)
+        # Robust fallback for near-singular tiny systems that may return non-finite values.
+        x = jnp.where(jnp.all(jnp.isfinite(x_direct)), x_direct, x_lstsq)
+        x = jnp.where(jnp.all(jnp.isfinite(x)), x, x_reg)
         r = b - a @ x
         return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 

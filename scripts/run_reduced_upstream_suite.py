@@ -164,7 +164,15 @@ def _tail(path: Path, n: int = 40) -> str:
     return "\n".join(lines[-n:])
 
 
-def _run_jax_cli(*, input_path: Path, output_path: Path, timeout_s: float, log_path: Path) -> float:
+def _run_jax_cli(
+    *,
+    input_path: Path,
+    output_path: Path,
+    timeout_s: float,
+    log_path: Path,
+    compute_solution: bool,
+    compute_transport_matrix: bool,
+) -> float:
     cmd = [
         "sfincs_jax",
         "-v",
@@ -174,6 +182,10 @@ def _run_jax_cli(*, input_path: Path, output_path: Path, timeout_s: float, log_p
         "--out",
         str(output_path),
     ]
+    if compute_solution:
+        cmd.append("--compute-solution")
+    if compute_transport_matrix:
+        cmd.append("--compute-transport-matrix")
     t0 = time.perf_counter()
     with log_path.open("w", encoding="utf-8") as log:
         subprocess.run(cmd, cwd=str(REPO_ROOT), check=True, timeout=timeout_s, stdout=log, stderr=subprocess.STDOUT)
@@ -351,6 +363,10 @@ def _run_case(
     (case_out_dir / "input.original.namelist").write_text(case_input.read_text())
     _write_initial_reduced_input(source_input=case_input, dst_input=dst_input)
     localize_equilibrium_file_in_place(input_namelist=dst_input, overwrite=False)
+    nml = read_sfincs_input(dst_input)
+    rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+    compute_solution = rhs_mode == 1
+    compute_transport_matrix = rhs_mode in {2, 3}
 
     attempts = 0
     reductions = 0
@@ -413,7 +429,14 @@ def _run_case(
         jax_log = case_out_dir / "sfincs_jax.log"
         jax_log_path = jax_log
         try:
-            jax_runtime = _run_jax_cli(input_path=dst_input, output_path=jax_h5, timeout_s=timeout_s, log_path=jax_log)
+            jax_runtime = _run_jax_cli(
+                input_path=dst_input,
+                output_path=jax_h5,
+                timeout_s=timeout_s,
+                log_path=jax_log,
+                compute_solution=compute_solution,
+                compute_transport_matrix=compute_transport_matrix,
+            )
             jax_h5_path = jax_h5
         except subprocess.TimeoutExpired:
             note = "JAX timeout; reduced largest axis."

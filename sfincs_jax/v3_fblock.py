@@ -234,12 +234,6 @@ def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Gr
     if collision_operator != 0:
         raise NotImplementedError("collisionOperator must be 0 for the Fokker-Planck collision operator builder.")
 
-    if bool(phys.get("INCLUDEPHI1", False)):
-        raise NotImplementedError(
-            "sfincs_jax currently implements collisionOperator=0 only for includePhi1 = .false. "
-            "unless includePhi1InCollisionOperator is enabled."
-        )
-
     x_grid_scheme = _get_int(other, "xGridScheme", 5)
     if x_grid_scheme not in {5, 6}:
         raise NotImplementedError(

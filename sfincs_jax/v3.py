@@ -135,6 +135,12 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     xdot_derivative_scheme = _get_int(other, "xDotDerivativeScheme", 0)
     rhs_mode = _get_int(general, "RHSMode", 1)
 
+    # v3 validateInput() hard-overrides several settings for RHSMode=3.
+    # Keep grid construction/output metadata consistent with upstream behavior.
+    if rhs_mode == 3:
+        nx = 1
+        nxi_for_x_option = 0
+
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
     if geometry_scheme == 4:
         n_periods = 5

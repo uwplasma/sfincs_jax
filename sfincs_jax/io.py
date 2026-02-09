@@ -756,6 +756,8 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["Nxi_for_x"] = np.asarray(grids.n_xi_for_x, dtype=np.int32)
 
     # Numerical scheme settings (subset):
+    rhs_mode = int(_get_int(general, "RHSMode", 1))
+
     out["geometryScheme"] = np.asarray(geometry_scheme, dtype=np.int32)
     out["thetaDerivativeScheme"] = np.asarray(_get_int(other, "thetaDerivativeScheme", 2), dtype=np.int32)
     out["zetaDerivativeScheme"] = np.asarray(_get_int(other, "zetaDerivativeScheme", 2), dtype=np.int32)
@@ -763,7 +765,9 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["ExBDerivativeSchemeZeta"] = np.asarray(_get_int(other, "ExBDerivativeSchemeZeta", 0), dtype=np.int32)
     out["magneticDriftDerivativeScheme"] = np.asarray(_get_int(other, "magneticDriftDerivativeScheme", 3), dtype=np.int32)
     out["xGridScheme"] = np.asarray(_get_int(other, "xGridScheme", 5), dtype=np.int32)
-    out["Nxi_for_x_option"] = np.asarray(_get_int(other, "Nxi_for_x_option", 1), dtype=np.int32)
+    # v3 validateInput() enforces Nxi_for_x_option=0 for RHSMode=3.
+    effective_nxi_for_x_option = 0 if int(rhs_mode) == 3 else _get_int(other, "Nxi_for_x_option", 1)
+    out["Nxi_for_x_option"] = np.asarray(int(effective_nxi_for_x_option), dtype=np.int32)
     out["solverTolerance"] = np.asarray(_get_float(resolution, "solverTolerance", 1e-8), dtype=np.float64)
 
     # geometryScheme=1 (tokamak/helical model) scalars used by upstream outputs:
@@ -803,7 +807,6 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["inputRadialCoordinateForGradients"] = np.asarray(int(input_radial_grad), dtype=np.int32)
 
     conv = _conversion_factors_to_from_dpsi_hat(psi_a_hat=psi_a_hat, a_hat=a_hat, r_n=r_n)
-    rhs_mode = int(_get_int(general, "RHSMode", 1))
     dphi_dpsihat_in = _get_float(phys, "dPhiHatdpsiHat", 0.0)
     dphi_dpsin_in = _get_float(phys, "dPhiHatdpsiN", 0.0)
     dphi_drhat_in = _get_float(phys, "dPhiHatdrHat", 0.0)
@@ -903,11 +906,10 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["force0RadialCurrentInEquilibrium"] = _fortran_logical(True)
     out["includePhi1"] = _fortran_logical(bool(phys.get("INCLUDEPHI1", False)))
     out["includePhi1InCollisionOperator"] = _fortran_logical(bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False)))
-    # v3 has additional internal logic for these flags. In the parity fixture suite:
-    # - when includePhi1=.true., this output flag matches the input
-    # - when includePhi1=.false., v3 still reports includePhi1InKineticEquation=.true.
-    include_phi1_in_kinetic = bool(phys.get("INCLUDEPHI1INKINETICEQUATION", False))
-    out["includePhi1InKineticEquation"] = _fortran_logical(include_phi1_in_kinetic if bool(out["includePhi1"] == 1) else True)
+    # v3 default in globalVariables.F90 is includePhi1InKineticEquation=.true.
+    # Keep the explicit user setting when provided, independent of includePhi1.
+    include_phi1_in_kinetic = bool(phys.get("INCLUDEPHI1INKINETICEQUATION", True))
+    out["includePhi1InKineticEquation"] = _fortran_logical(include_phi1_in_kinetic)
     out["includeTemperatureEquilibrationTerm"] = _fortran_logical(bool(phys.get("INCLUDETEMPERATUREEQUILIBRATIONTERM", False)))
     out["include_fDivVE_Term"] = _fortran_logical(bool(phys.get("INCLUDE_FDIVVE_TERM", False)))
     with_adiabatic = bool(species.get("WITHADIABATIC", False))
@@ -1016,8 +1018,9 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
         out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
         out["GHat"] = np.asarray(g_hat, dtype=np.float64)
         out["IHat"] = np.asarray(i_hat, dtype=np.float64)
-        # v3 does not compute uHat for VMEC-based geometryScheme=5; it is written as zeros in sfincsOutput.h5.
-        compute_u_hat = False
+        # For geometryScheme=5, v3 writes nonzero uHat in monoenergetic (RHSMode=3) workflows,
+        # while many RHSMode=1 fixtures keep uHat at 0.
+        compute_u_hat = int(rhs_mode) == 3
     else:
         out["B0OverBBar"] = np.asarray(float(geom.b0_over_bbar), dtype=np.float64)
         out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
@@ -1094,7 +1097,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     elif geometry_scheme == 5:
         if w_vmec is None:
             raise RuntimeError("Internal error: missing VMEC wout handle for geometryScheme=5.")
-        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 0))
+        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         interp = vmec_interpolation(w=w_vmec, psi_n_wish=float(psi_n_wish), vmec_radial_option=int(vmec_radial_option))
         j0, j1 = interp.index_half
         dpsi_n = float(interp.psi_n_half[j1 - 1] - interp.psi_n_half[j0 - 1])
