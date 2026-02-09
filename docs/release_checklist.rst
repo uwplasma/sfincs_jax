@@ -6,8 +6,8 @@ This page is intended for maintainers preparing a tagged release (PyPI + Read th
 What this project can and cannot claim
 --------------------------------------
 
-`sfincs_jax` is **not yet** a full end-to-end replacement for SFINCS Fortran v3 across the
-entire upstream example suite. The project is intentionally **parity-first**:
+`sfincs_jax` is not yet a full end-to-end replacement for SFINCS Fortran v3 across the
+entire upstream example suite:
 
 - We only claim parity for features explicitly covered by tests/fixtures (see `Parity status`).
 - The upstream example audit (`Fortran v3 example suite (audit)`) summarizes which example inputs
@@ -30,11 +30,11 @@ Smoke-run the examples that do not require optional dependencies:
 
 .. code-block:: bash
 
-   python examples/getting_started/01_build_grids_and_geometry.py
-   python examples/getting_started/02_apply_collisionless_operator.py
-   python examples/getting_started/03_write_sfincs_output_python.py
-   python examples/getting_started/04_write_sfincs_output_cli.py
-   python examples/autodiff/10_matrix_free_residual_and_jvp.py
+   python examples/getting_started/build_grids_and_geometry.py
+   python examples/getting_started/apply_collisionless_operator.py
+   python examples/getting_started/write_sfincs_output_python.py
+   python examples/getting_started/write_sfincs_output_cli.py
+   python examples/autodiff/matrix_free_residual_and_jvp.py
 
 Regenerate the upstream example audit table if upstream inputs or support levels change:
 

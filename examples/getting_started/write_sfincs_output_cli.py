@@ -5,7 +5,7 @@ This example demonstrates:
   - loading the resulting HDF5 output
 
 Run:
-  python examples/getting_started/04_write_sfincs_output_cli.py
+  python examples/getting_started/write_sfincs_output_cli.py
 """
 
 from __future__ import annotations

@@ -69,7 +69,7 @@ def _run_case(base: str, *, out_dir: Path) -> None:
 
 
 def main() -> None:
-    out_dir = _REPO_ROOT / "examples" / "transport" / "output" / "19_transport_matrix_rhsmode2"
+    out_dir = _REPO_ROOT / "examples" / "transport" / "output" / "transport_matrix_rhsmode2_scheme11_and_scheme5"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for base in (

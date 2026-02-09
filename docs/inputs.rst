@@ -19,7 +19,7 @@ upstream technical documentation linked from ``docs/upstream_docs.rst`` (PDFs an
 Current `sfincs_jax` support (high level)
 -----------------------------------------
 
-`sfincs_jax` is parity-first and incremental. At a high level:
+At a high level:
 
 - **Geometry**: `geometryScheme` in `{1,2,4,5,11,12}` is supported for grid/geometry construction and for
   writing `sfincsOutput.h5` parity fixtures.

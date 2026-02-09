@@ -37,18 +37,18 @@ jobs:
           pip install -e ".[dev]"
       - name: Smoke-run examples (no optional deps)
         run: |
-          python examples/getting_started/01_build_grids_and_geometry.py
-          python examples/getting_started/02_apply_collisionless_operator.py
-          python examples/getting_started/03_write_sfincs_output_python.py
-          python examples/getting_started/04_write_sfincs_output_cli.py
-          python examples/parity/05_write_output_upstream_quick2species_python.py
-          python examples/parity/06_write_output_upstream_quick2species_cli.py
-          python examples/parity/01_geometry_scheme4_parity.py
-          python examples/parity/02_collisionless_operator_matvec_parity.py
-          python examples/autodiff/03_differentiable_geometry_gradients.py
-          python examples/parity/04_solve_fortran_matrix_with_gmres.py
-          python examples/parity/08_output_parity_cli_driver.py
-          python examples/parity/09_output_key_coverage_report.py
-          python examples/autodiff/10_matrix_free_residual_and_jvp.py
-          python examples/parity/13_solve_scheme5_tiny_parity.py
-          python examples/autodiff/14_autodiff_sensitivity_nu_n_scheme5.py
+          python examples/getting_started/build_grids_and_geometry.py
+          python examples/getting_started/apply_collisionless_operator.py
+          python examples/getting_started/write_sfincs_output_python.py
+          python examples/getting_started/write_sfincs_output_cli.py
+          python examples/parity/write_output_upstream_quick2species_python.py
+          python examples/parity/write_output_upstream_quick2species_cli.py
+          python examples/parity/geometry_scheme4_parity.py
+          python examples/parity/collisionless_operator_matvec_parity.py
+          python examples/autodiff/differentiable_geometry_gradients.py
+          python examples/parity/solve_fortran_matrix_with_gmres.py
+          python examples/parity/output_parity_cli_driver.py
+          python examples/parity/output_key_coverage_report.py
+          python examples/autodiff/matrix_free_residual_and_jvp.py
+          python examples/parity/solve_scheme5_tiny_parity.py
+          python examples/autodiff/autodiff_sensitivity_nu_n_scheme5.py

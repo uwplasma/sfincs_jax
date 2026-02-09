@@ -6,7 +6,7 @@ These examples showcase what you get from a JAX port:
 - differentiating through linear solves (where supported)
 
 Examples:
-- `10_matrix_free_residual_and_jvp.py` — matrix-free residual + JVP.
-- `14_autodiff_sensitivity_nu_n_scheme5.py` — sensitivity of a residual norm w.r.t. collisionality.
-- `06_implicit_diff_through_gmres_solve_scheme5.py` — implicit differentiation through a GMRES solve.
+- `matrix_free_residual_and_jvp.py` — matrix-free residual + JVP.
+- `autodiff_sensitivity_nu_n_scheme5.py` — sensitivity of a residual norm w.r.t. collisionality.
+- `implicit_diff_through_gmres_solve_scheme5.py` — implicit differentiation through a GMRES solve.
 

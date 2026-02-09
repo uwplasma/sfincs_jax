@@ -55,6 +55,12 @@ def main() -> int:
     ap.add_argument("--pattern", default=None, help="Regex filter on case path")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--fortran-exe", type=Path, default=None, help="Path to Fortran v3 `sfincs` executable (optional)")
+    ap.add_argument(
+        "--fortran-timeout-s",
+        type=float,
+        default=180.0,
+        help="Timeout in seconds for each Fortran run when --fortran-exe is set (default: 180).",
+    )
     ap.add_argument("--rtol", type=float, default=1e-10)
     ap.add_argument("--atol", type=float, default=1e-10)
     ap.add_argument("--compute-transport-matrix", action="store_true", help="Enable for RHSMode=2/3 cases (slow)")
@@ -123,7 +129,12 @@ def main() -> int:
 
         if ok_write and args.fortran_exe is not None:
             try:
-                out_fortran = run_sfincs_fortran(input_namelist=w_input, exe=args.fortran_exe, workdir=workdir)
+                out_fortran = run_sfincs_fortran(
+                    input_namelist=w_input,
+                    exe=args.fortran_exe,
+                    workdir=workdir,
+                    timeout_s=float(args.fortran_timeout_s),
+                )
                 fortran_path = workdir / "sfincsOutput_fortran.h5"
                 if fortran_path.exists():
                     fortran_path.unlink()

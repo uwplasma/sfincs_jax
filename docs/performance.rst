@@ -22,10 +22,10 @@ The Fortran v3 inputs (namelist files, `.bc`, `wout_*.nc`) are *not* differentia
 However, once a `V3FullSystemOperator` is constructed, you can treat its fields as parameters and
 differentiate objectives with respect to them. For example:
 
-- Differentiate a residual norm w.r.t. ``nu_n`` (see ``examples/autodiff/14_autodiff_sensitivity_nu_n_scheme5.py``).
+- Differentiate a residual norm w.r.t. ``nu_n`` (see ``examples/autodiff/autodiff_sensitivity_nu_n_scheme5.py``).
 - Differentiate a diagnostics functional w.r.t. a differentiable geometry parameter in ``geometryScheme=4`` optimization demos.
 - Differentiate **through a linear solve** via implicit differentiation (see
-  ``examples/autodiff/06_implicit_diff_through_gmres_solve_scheme5.py``).
+  ``examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py``).
 
 
 JAX-native performance patterns used in `sfincs_jax`
@@ -59,6 +59,20 @@ workflows, the JAX ecosystem can be integrated cleanly once the residual is expr
 - `equinox`: structured parameter handling and module-style organization for larger refactors.
 
 
+Reference benchmark figure (README/index)
+-----------------------------------------
+
+The repository includes a reproducible script that generates the top-level parity/runtime
+comparison figure used in ``README.md`` and the docs index:
+
+.. code-block:: bash
+
+   python examples/performance/benchmark_transport_l11_vs_fortran.py --repeats 4
+
+By default this uses frozen Fortran fixtures from ``tests/ref`` (no local Fortran runtime required).
+If a local Fortran executable is available, pass ``--fortran-exe /path/to/sfincs`` for live runs.
+
+
 Connection to MONKES / adjoint methods
 --------------------------------------
 
@@ -72,5 +86,5 @@ In `sfincs_jax`, the same goals (fast derivatives for optimization) are achieved
 operator/residual in JAX so that:
 
 - Jacobian actions can be obtained via **automatic differentiation** (JVP/VJP),
-- and (in future milestones) gradients through a solve can be obtained via **implicit differentiation**
+- and gradients through a solve can be obtained via **implicit differentiation**
   without forming matrices.

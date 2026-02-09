@@ -126,10 +126,12 @@ def _cmd_run_fortran(args: argparse.Namespace) -> int:
 
 def _cmd_write_output(args: argparse.Namespace) -> int:
     t0 = _now()
+    nml = read_sfincs_input(Path(args.input))
     _emit("################################################################", level=0, args=args)
     _emit(" sfincs_jax write-output", level=0, args=args)
     _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
     _emit(f" out={Path(args.out).resolve()}", level=0, args=args)
+    _emit_namelist_summary(nml=nml, args=args)
     _emit_runtime_info(args=args)
     if bool(args.compute_transport_matrix):
         _emit(" compute_transport_matrix=true (will run whichRHS solves for RHSMode=2/3)", level=0, args=args)

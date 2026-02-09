@@ -4,7 +4,7 @@ This example uses the vendored upstream input:
   examples/upstream/fortran_v3/quick_2species_FPCollisions_noEr/input.namelist
 
 Run:
-  python examples/parity/05_write_output_upstream_quick2species_python.py
+  python examples/parity/write_output_upstream_quick2species_python.py
 """
 
 from __future__ import annotations

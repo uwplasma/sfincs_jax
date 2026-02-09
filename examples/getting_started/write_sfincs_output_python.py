@@ -6,7 +6,7 @@ This example demonstrates:
   - loading the resulting HDF5 file and inspecting a few datasets
 
 Run:
-  python examples/getting_started/03_write_sfincs_output_python.py
+  python examples/getting_started/write_sfincs_output_python.py
 """
 
 from __future__ import annotations

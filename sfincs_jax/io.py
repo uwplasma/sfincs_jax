@@ -763,7 +763,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["ExBDerivativeSchemeZeta"] = np.asarray(_get_int(other, "ExBDerivativeSchemeZeta", 0), dtype=np.int32)
     out["magneticDriftDerivativeScheme"] = np.asarray(_get_int(other, "magneticDriftDerivativeScheme", 3), dtype=np.int32)
     out["xGridScheme"] = np.asarray(_get_int(other, "xGridScheme", 5), dtype=np.int32)
-    out["Nxi_for_x_option"] = np.asarray(_get_int(other, "Nxi_for_x_option", 0), dtype=np.int32)
+    out["Nxi_for_x_option"] = np.asarray(_get_int(other, "Nxi_for_x_option", 1), dtype=np.int32)
     out["solverTolerance"] = np.asarray(_get_float(resolution, "solverTolerance", 1e-8), dtype=np.float64)
 
     # geometryScheme=1 (tokamak/helical model) scalars used by upstream outputs:
@@ -1165,6 +1165,15 @@ def write_sfincs_jax_output_h5(
         emit(0, "write_sfincs_jax_output_h5: reading namelist + building grids/geometry")
     nml = read_sfincs_input(input_namelist)
     grids = grids_from_namelist(nml)
+    if emit is not None:
+        emit(
+            0,
+            "write_sfincs_jax_output_h5: numerical resolution "
+            f"Ntheta={int(grids.theta.shape[0])} Nzeta={int(grids.zeta.shape[0])} "
+            f"Nx={int(grids.x.shape[0])} Nxi={int(grids.n_xi)}",
+        )
+        emit(1, f"write_sfincs_jax_output_h5: x-grid={np.asarray(grids.x, dtype=np.float64)}")
+        emit(1, f"write_sfincs_jax_output_h5: Nxi_for_x={np.asarray(grids.n_xi_for_x, dtype=np.int32)}")
     data = sfincs_jax_output_dict(nml=nml, grids=grids)
 
     rhs_mode = int(nml.group("general").get("RHSMODE", 1))

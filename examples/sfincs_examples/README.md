@@ -12,7 +12,7 @@ Goals:
 
 ## What works today
 
-`sfincs_jax` is still parity-first and incremental: many examples here will not run end-to-end yet.
+`sfincs_jax` does not yet match every upstream solve mode end-to-end in this folder.
 
 In general, you should expect:
 

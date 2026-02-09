@@ -26,7 +26,7 @@ from sfincs_jax.verbose import make_emit
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    out_dir = Path(__file__).resolve().parent / "output" / "18_transport_matrix_er_scan"
+    out_dir = Path(__file__).resolve().parent / "output" / "transport_matrix_er_scan"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Small RHSMode=2 template used by the parity fixtures.

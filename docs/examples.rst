@@ -16,21 +16,21 @@ Run from the repo root:
 .. code-block:: bash
 
    cd sfincs_jax
-   python examples/getting_started/01_build_grids_and_geometry.py
+   python examples/getting_started/build_grids_and_geometry.py
 
 Writing `sfincsOutput.h5` (Python + CLI):
 
 .. code-block:: bash
 
-   python examples/getting_started/03_write_sfincs_output_python.py
-   python examples/getting_started/04_write_sfincs_output_cli.py
+   python examples/getting_started/write_sfincs_output_python.py
+   python examples/getting_started/write_sfincs_output_cli.py
 
 Matrix-free linear solve demo (using frozen Fortran PETSc binaries):
 
 .. code-block:: bash
 
-   python examples/parity/04_solve_fortran_matrix_with_gmres.py
-   python examples/autodiff/18_autodiff_gradient_nu_n_residual.py
+   python examples/parity/solve_fortran_matrix_with_gmres.py
+   python examples/autodiff/autodiff_gradient_nu_n_residual.py
 
 Transport matrices (RHSMode=2/3)
 --------------------------------
@@ -42,7 +42,7 @@ right-hand sides (``whichRHS``) and assembling a matrix from diagnostic moments 
 
 .. code-block:: bash
 
-   python examples/transport/16_transport_matrix_rhsmode2_and_rhsmode3.py
+   python examples/transport/transport_matrix_rhsmode2_and_rhsmode3.py
    sfincs_jax transport-matrix-v3 --input input.namelist --out-matrix transportMatrix.npy
 
 Upstream postprocessing (utils/)
@@ -60,7 +60,7 @@ There is also a small end-to-end demo that generates PDF figures for a tiny tran
 .. code-block:: bash
 
    pip install -e ".[viz]"
-   python examples/transport/17_postprocess_upstream_scanplot_1_transport_matrix.py
+   python examples/transport/postprocess_upstream_scanplot_1_transport_matrix.py
 
 Some advanced examples require optional dependencies:
 
@@ -83,19 +83,19 @@ is available):
 .. code-block:: bash
 
    pip install -e ".[opt,viz]"
-   python examples/optimization/04_optimize_scheme4_harmonics_publication_figures.py
-   python examples/optimization/05_calibrate_nu_n_to_fortran_residual_fixture.py
+   python examples/optimization/optimize_scheme4_harmonics_publication_figures.py
+   python examples/optimization/calibrate_nu_n_to_fortran_residual_fixture.py
 
 Implicit differentiation through solves
 ---------------------------------------
 
-An important differentiability milestone is **implicit differentiation** through a linear solve
+An important differentiability capability is **implicit differentiation** through a linear solve
 (``A x = b``) without backpropagating through Krylov iterations. `sfincs_jax` provides a small helper
 based on `jax.lax.custom_linear_solve` and demonstrates it here:
 
 .. code-block:: bash
 
-   python examples/autodiff/06_implicit_diff_through_gmres_solve_scheme5.py
+   python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py
 
 Upstream SFINCS example inputs
 --------------------------------

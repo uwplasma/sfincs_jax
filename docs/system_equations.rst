@@ -56,5 +56,4 @@ but does not yet include the full set of Phi1-coupling terms inside the kinetic 
 operator.
 
 This is sufficient to represent v3 configurations in which Phi1 is present as an auxiliary solve but
-does not enter the kinetic operator (and to support parity-first block-by-block testing).
-
+does not enter the kinetic operator (and to support block-wise fixture validation).

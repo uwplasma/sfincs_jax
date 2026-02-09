@@ -4,7 +4,7 @@ from __future__ import annotations
 Autodiff demo: gradient of a parity objective w.r.t. the collision frequency `nu_n`.
 
 This example is a lightweight version of the optax-based calibration example in
-`examples/optimization/05_calibrate_nu_n_to_fortran_residual_fixture.py`:
+`examples/optimization/calibrate_nu_n_to_fortran_residual_fixture.py`:
 
 - no optimization loop
 - no optional dependencies

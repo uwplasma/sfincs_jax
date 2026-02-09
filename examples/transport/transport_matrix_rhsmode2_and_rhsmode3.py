@@ -54,7 +54,7 @@ def _try_plot_matrix(matrix: np.ndarray, *, out_png: Path, title: str) -> None:
 
 def main() -> None:
     root = Path(__file__).resolve().parents[2]
-    out_dir = root / "examples" / "transport" / "output" / "16_transport_matrix"
+    out_dir = root / "examples" / "transport" / "output" / "transport_matrix_rhsmode2_and_rhsmode3"
 
     # RHSMode=2 (3x3) energy-integrated transport matrix in the simplified LHD model.
     input_rhsmode2 = _write_text(
@@ -156,7 +156,7 @@ def main() -> None:
         tm = np.asarray(result.transport_matrix)
         print(f"\n{label} transportMatrix (mathematical row/col order):\n{tm}\n")
 
-        fig_path = root / "examples" / "transport" / "figures" / f"16_transport_matrix_{label.replace('=', '').replace(' ', '_')}.png"
+        fig_path = root / "examples" / "transport" / "figures" / f"transport_matrix_rhsmode2_and_rhsmode3_{label.replace('=', '').replace(' ', '_')}.png"
         _try_plot_matrix(tm, out_png=fig_path, title=f"{label} transportMatrix")
 
 

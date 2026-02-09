@@ -19,6 +19,7 @@ def run_sfincs_fortran(
     workdir: Path | None = None,
     env: dict[str, str] | None = None,
     localize_equilibrium: bool = True,
+    timeout_s: float | None = None,
 ) -> Path:
     """Run the compiled Fortran SFINCS v3 executable.
 
@@ -69,6 +70,7 @@ def run_sfincs_fortran(
             stderr=subprocess.STDOUT,
             env=merged_env,
             check=True,
+            timeout=timeout_s,
         )
 
     output_path = workdir / "sfincsOutput.h5"

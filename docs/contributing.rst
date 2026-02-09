@@ -1,22 +1,21 @@
 Contributing
 ============
 
-This project is intentionally incremental: correctness is enforced via parity tests against
-SFINCS Fortran v3.
+Correctness is enforced via parity tests against SFINCS Fortran v3 fixtures.
 
 Repository layout
 -----------------
 
 - `sfincs_jax/`: Python package code
 - `tests/`: unit tests and frozen reference fixtures (including some PETSc binaries)
-- `examples/`: pedagogic scripts organized by difficulty
+- `examples/`: pedagogic scripts organized by workflow category
 - `docs/`: Sphinx docs (Read the Docs compatible)
 
 Development workflow
 --------------------
 
-1. Add/extend a small feature (grid, geometry piece, operator term).
-2. Add a test that compares against a stable fixture.
+1. Implement or refactor one coherent capability.
+2. Add or update tests with stable fixtures.
 3. Keep PRs focused and keep tests fast.
 
 Reference fixtures
@@ -30,4 +29,3 @@ To regenerate fixtures locally, you must have a working SFINCS v3 build and set:
    export SFINCS_FORTRAN_EXE=/path/to/sfincs/fortran/version3/sfincs
 
 Then run an example input with `saveMatricesAndVectorsInBinary = .true.` enabled.
-

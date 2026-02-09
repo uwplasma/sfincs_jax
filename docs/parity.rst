@@ -92,8 +92,8 @@ Implemented (parity-tested)
   (``collisionOperator=0``, ``includePhi1InCollisionOperator=true``) parity-tested as full-system matvec + residual for:
   ``fp_1species_FPCollisions_noEr_tiny_withPhi1_inCollision``.
 
-Not yet implemented
--------------------
+Current scope limits
+--------------------
 
 - Full kinetic solve driver across the upstream example suite (run loop, solves, and HDF5 outputs)
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions)
