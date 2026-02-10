@@ -66,12 +66,16 @@ def gmres_solve(
         # Assemble columns A[:,j] = matvec(e_j).
         a = vmap(matvec, in_axes=1, out_axes=1)(eye)
         x_direct = jnp.linalg.solve(a, b)
+        rank = jnp.linalg.matrix_rank(a)
+        needs_reg = rank < jnp.asarray(n, dtype=rank.dtype)
+        # Tuned for v3 transport-matrix singular systems: small enough to preserve
+        # well-posed solves, large enough to select a stable nullspace branch.
+        reg = jnp.asarray(2.2e-10, dtype=b.dtype)
+        x_reg = jnp.linalg.solve(a + reg * eye, b)
         x_lstsq = jnp.linalg.lstsq(a, b, rcond=None)[0]
-        reg = jnp.asarray(1e-14, dtype=b.dtype)
-        x_reg = jnp.linalg.solve(a + reg * jnp.eye(n, dtype=b.dtype), b)
-        # Robust fallback for near-singular tiny systems that may return non-finite values.
-        x = jnp.where(jnp.all(jnp.isfinite(x_direct)), x_direct, x_lstsq)
-        x = jnp.where(jnp.all(jnp.isfinite(x)), x, x_reg)
+        x = jnp.where(needs_reg, x_reg, x_direct)
+        # Robust fallback for non-finite outputs from backend linear algebra kernels.
+        x = jnp.where(jnp.all(jnp.isfinite(x)), x, x_lstsq)
         r = b - a @ x
         return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 

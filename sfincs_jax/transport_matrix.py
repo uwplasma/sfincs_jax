@@ -731,8 +731,11 @@ def v3_transport_matrix_from_state_vectors(
         if which_rhs not in state_vectors_by_rhs:
             raise ValueError(f"Missing state vector for which_rhs={which_rhs}.")
         x = state_vectors_by_rhs[which_rhs]
-        diag = v3_transport_diagnostics_vm_only(op0, x_full=x)
-        col = v3_transport_matrix_column(op=op0, geom=geom, which_rhs=which_rhs, diag=diag)
+        from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
+
+        op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
+        diag = v3_transport_diagnostics_vm_only(op_rhs, x_full=x)
+        col = v3_transport_matrix_column(op=op_rhs, geom=geom, which_rhs=which_rhs, diag=diag)
         out = out.at[:, which_rhs - 1].set(col)
 
     return out
