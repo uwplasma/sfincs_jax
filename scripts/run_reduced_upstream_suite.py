@@ -394,12 +394,16 @@ def _run_case(
     rtol: float,
     atol: float,
     max_attempts: int,
+    use_seed_resolution: bool = False,
 ) -> CaseResult:
     case = case_input.parent.name
     case_out_dir.mkdir(parents=True, exist_ok=True)
     dst_input = case_out_dir / "input.namelist"
     (case_out_dir / "input.original.namelist").write_text(case_input.read_text())
-    _write_initial_reduced_input(source_input=case_input, dst_input=dst_input)
+    if use_seed_resolution:
+        dst_input.write_text(case_input.read_text())
+    else:
+        _write_initial_reduced_input(source_input=case_input, dst_input=dst_input)
     localize_equilibrium_file_in_place(input_namelist=dst_input, overwrite=False)
     nml = read_sfincs_input(dst_input)
     rhs_mode = int(nml.group("general").get("RHSMODE", 1))
@@ -608,6 +612,7 @@ def main() -> int:
         print(f"[{index}/{len(inputs)}] {case}")
         reduced_seed = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
         case_input = reduced_seed if reduced_seed.exists() else input_path
+        use_seed_resolution = case_input == reduced_seed
         if case_input == reduced_seed:
             print(f"  using reduced seed -> {reduced_seed}")
         case_out = out_root / case
@@ -619,6 +624,7 @@ def main() -> int:
             rtol=float(args.rtol),
             atol=float(args.atol),
             max_attempts=int(args.max_attempts),
+            use_seed_resolution=use_seed_resolution,
         )
         if result.status in {"parity_ok", "parity_mismatch"} and result.n_common_keys > 0:
             reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"

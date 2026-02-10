@@ -379,7 +379,6 @@ def solve_v3_transport_matrix_linear_gmres(
 
     state_vectors: dict[int, jnp.ndarray] = {}
     residual_norms: dict[int, jnp.ndarray] = {}
-    x_guess = x0
     diag_fsab_flow: list[jnp.ndarray] = []
     diag_pf: list[jnp.ndarray] = []
     diag_hf: list[jnp.ndarray] = []
@@ -405,14 +404,15 @@ def solve_v3_transport_matrix_linear_gmres(
         res = gmres_solve(
             matvec=mv,
             b=rhs,
-            x0=x_guess,
+            # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
+            # before each whichRHS solve (no warm-start from previous RHS).
+            x0=x0,
             tol=tol,
             atol=atol,
             restart=restart,
             maxiter=maxiter,
             solve_method=solve_method_use,
         )
-        x_guess = res.x
         state_vectors[which_rhs] = res.x
         residual_norms[which_rhs] = res.residual_norm
         if emit is not None:
