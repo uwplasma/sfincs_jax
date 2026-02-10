@@ -201,11 +201,16 @@ def _cmd_dump_h5(args: argparse.Namespace) -> int:
 
 
 def _cmd_compare_h5(args: argparse.Namespace) -> int:
+    tolerances = None
+    if args.tolerances_json:
+        with open(args.tolerances_json, "r", encoding="utf-8") as f:
+            tolerances = json.load(f)
     results = compare_sfincs_outputs(
         a_path=Path(args.a),
         b_path=Path(args.b),
         rtol=float(args.rtol),
         atol=float(args.atol),
+        tolerances=tolerances,
     )
     bad = [r for r in results if not r.ok]
     if args.show_all:
@@ -383,6 +388,7 @@ def main(argv: list[str] | None = None) -> int:
     p_cmp.add_argument("--b", required=True, help="Second sfincsOutput.h5")
     p_cmp.add_argument("--rtol", default="1e-12")
     p_cmp.add_argument("--atol", default="1e-12")
+    p_cmp.add_argument("--tolerances-json", default=None, help="Optional JSON file of per-key tolerances")
     p_cmp.add_argument("--show-all", action="store_true", help="Print all keys (not just failures)")
     p_cmp.set_defaults(func=_cmd_compare_h5)
 

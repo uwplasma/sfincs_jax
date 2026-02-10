@@ -219,9 +219,10 @@ def u_hat_np(*, grids: V3Grids, geom: BoozerGeometry) -> np.ndarray:
 
             h_amp = 0.0
             for itheta in range(ntheta):
+                row_sum = 0.0
                 for izeta in range(nzeta):
-                    h_amp += float(cos_angle[itheta, izeta] * h_hat[itheta, izeta])
-            h_amp = weight * h_amp
+                    row_sum += float(cos_angle[itheta, izeta] * h_hat[itheta, izeta])
+                h_amp += weight * row_sum
 
             denom = float(n * geom.n_periods) - float(geom.iota) * float(m)
             numer = float(geom.iota) * (float(geom.g_hat) * float(m) + float(geom.i_hat) * float(n * geom.n_periods))

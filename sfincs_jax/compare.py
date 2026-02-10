@@ -38,6 +38,7 @@ def compare_sfincs_outputs(
     ignore_keys: Iterable[str] = ("elapsed time (s)",),
     rtol: float = 1e-12,
     atol: float = 1e-12,
+    tolerances: Dict[str, Dict[str, float]] | None = None,
 ) -> List[CompareResult]:
     """Compare two `sfincsOutput.h5` files dataset-by-dataset."""
     a = read_sfincs_h5(a_path)
@@ -63,11 +64,15 @@ def compare_sfincs_outputs(
             results.append(CompareResult(key=k, max_abs=float("inf"), max_rel=float("inf"), ok=False))
             continue
 
+        tol = tolerances.get(k, {}) if tolerances else {}
+        rtol_k = float(tol.get("rtol", rtol))
+        atol_k = float(tol.get("atol", atol))
+
         diff = np.abs(an - bn)
         max_abs = float(diff.max()) if diff.size else float(abs(float(an) - float(bn)))
-        denom = np.maximum(np.abs(bn), np.asarray(atol))
-        max_rel = float((diff / denom).max()) if diff.size else float(abs(float(an) - float(bn)) / max(abs(float(bn)), atol))
-        ok = bool(np.allclose(an, bn, rtol=rtol, atol=atol))
+        denom = np.maximum(np.abs(bn), np.asarray(atol_k))
+        max_rel = float((diff / denom).max()) if diff.size else float(abs(float(an) - float(bn)) / max(abs(float(bn)), atol_k))
+        ok = bool(np.allclose(an, bn, rtol=rtol_k, atol=atol_k))
         results.append(CompareResult(key=k, max_abs=max_abs, max_rel=max_rel, ok=ok))
 
     return results

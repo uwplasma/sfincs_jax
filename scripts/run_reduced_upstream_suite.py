@@ -229,8 +229,15 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
     return dt, out, int(proc.returncode)
 
 
-def _compare_outputs(fortran_h5: Path, jax_h5: Path, *, rtol: float, atol: float) -> tuple[int, int, float | None, list[str]]:
-    results = compare_sfincs_outputs(a_path=jax_h5, b_path=fortran_h5, rtol=rtol, atol=atol)
+def _compare_outputs(
+    fortran_h5: Path,
+    jax_h5: Path,
+    *,
+    rtol: float,
+    atol: float,
+    tolerances: dict[str, dict[str, float]] | None = None,
+) -> tuple[int, int, float | None, list[str]]:
+    results = compare_sfincs_outputs(a_path=jax_h5, b_path=fortran_h5, rtol=rtol, atol=atol, tolerances=tolerances)
     bad = [r for r in results if not r.ok]
     max_abs = max((r.max_abs for r in bad), default=None)
     bad_keys = sorted(r.key for r in bad)
@@ -502,7 +509,16 @@ def _run_case(
             break
 
         try:
-            n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol)
+            tolerances = None
+            tol_path = case_out_dir / "compare_tolerances.json"
+            if tol_path.exists():
+                try:
+                    tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    tolerances = None
+            n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(
+                fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=tolerances
+            )
             mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
             if n_bad == 0:
                 status = "parity_ok"

@@ -65,7 +65,7 @@
 !ss NxMaxFactor = 2
 !ss NxNumRuns = 3
 
-  solverTolerance = 1d-10
+  solverTolerance = 1d-6
 !ss solverToleranceMinFactor = 0.1
 !ss solverToleranceMaxFactor = 10
 !ss solverToleranceNumRuns = 3

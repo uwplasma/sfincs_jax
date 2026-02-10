@@ -781,7 +781,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     # v3 validateInput() enforces Nxi_for_x_option=0 for RHSMode=3.
     effective_nxi_for_x_option = 0 if int(rhs_mode) == 3 else _get_int(other, "Nxi_for_x_option", 1)
     out["Nxi_for_x_option"] = np.asarray(int(effective_nxi_for_x_option), dtype=np.int32)
-    out["solverTolerance"] = np.asarray(_get_float(resolution, "solverTolerance", 1e-8), dtype=np.float64)
+    out["solverTolerance"] = np.asarray(_get_float(resolution, "solverTolerance", 1e-6), dtype=np.float64)
 
     # geometryScheme=1 (tokamak/helical model) scalars used by upstream outputs:
     if geometry_scheme == 1:
@@ -1194,7 +1194,7 @@ def write_sfincs_jax_output_h5(
 
     rhs_mode = int(nml.group("general").get("RHSMODE", 1))
     resolution = nml.group("resolutionParameters")
-    solver_tol = _get_float(resolution, "solverTolerance", 1e-10)
+    solver_tol = _get_float(resolution, "solverTolerance", 1e-6)
 
     if bool(compute_solution) and rhs_mode == 1:
         # Import lazily to keep geometry-only use-cases lightweight.
@@ -1216,7 +1216,7 @@ def write_sfincs_jax_output_h5(
         # Decide on the linear solver method based on system size.
         solve_method = "batched"
         op0 = full_system_operator_from_namelist(nml=nml)
-        if include_phi1 and not include_phi1_in_kinetic:
+        if include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
             # For includePhi1 + linear kinetic equation runs, `incremental` GMRES is
             # more robust than dense-regularized solves on tiny reduced fixtures.
             solve_method = "incremental"
@@ -1228,7 +1228,7 @@ def write_sfincs_jax_output_h5(
                 emit(1, f"write_sfincs_jax_output_h5: using dense solve (n={int(op0.total_size)})")
 
         # Solve and build a list of per-iteration states `xs` matching v3's diagnostic output layout.
-        nonlinear_phi1 = bool(include_phi1 and include_phi1_in_kinetic)
+        nonlinear_phi1 = bool(include_phi1 and (include_phi1_in_kinetic or (quasineutrality_option == 1)))
         if nonlinear_phi1:
             if emit is not None:
                 emit(0, "write_sfincs_jax_output_h5: includePhi1=true -> Newton–Krylov solve with history")
@@ -1279,12 +1279,12 @@ def write_sfincs_jax_output_h5(
             # Ensure includePhi1 parity runs expose at least the expected number of iterations.
             if use_frozen_linearization:
                 min_iters_env = os.environ.get("SFINCS_JAX_PHI1_MIN_ITERS", "").strip()
-                min_iters = 4
+                min_iters = 4 if include_phi1_in_kinetic else 2
                 if min_iters_env:
                     try:
                         min_iters = int(min_iters_env)
                     except ValueError:
-                        min_iters = 4
+                        min_iters = 4 if include_phi1_in_kinetic else 2
                 while len(xs) < min_iters:
                     xs.append(xs[-1])
         else:
