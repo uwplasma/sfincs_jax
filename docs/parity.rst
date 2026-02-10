@@ -99,3 +99,21 @@ Current scope limits
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions)
 - VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset
 - ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme in {1,2,4,5,11,12}``
+
+Highest-priority open parity cases (reduced-suite)
+--------------------------------------------------
+
+- ``tokamak_1species_FPCollisions_noEr_withPhi1InDKE``:
+  currently ``21/263`` mismatches, concentrated in the nonlinear includePhi1 solver branch
+  (``Phi1Hat``, ``dPhi1Hatdtheta``, and flow/current moment family).
+- ``transportMatrix_geometryScheme2``:
+  currently ``14/194`` mismatches, concentrated in RHSMode=2 moment diagnostics
+  (``density/pressure/flow/jHat/Mach/NTV`` family plus ``transportMatrix`` and ``uHat``).
+
+Reproduce these two blocker cases only:
+
+.. code-block:: bash
+
+   python scripts/run_reduced_upstream_suite.py \
+     --pattern 'tokamak_1species_FPCollisions_noEr_withPhi1InDKE|transportMatrix_geometryScheme2' \
+     --timeout-s 30 --max-attempts 1 --reset-report

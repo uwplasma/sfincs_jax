@@ -430,7 +430,9 @@ def solve_v3_transport_matrix_linear_gmres(
     # which prevents end-to-end transport-matrix parity. For small systems, fall back to a dense
     # JAX solve (still differentiable) by assembling the matrix from matvecs.
     solve_method_use = solve_method
-    if int(op0.total_size) <= 5000 and str(solve_method).lower() in {"batched", "incremental"}:
+    force_krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_FORCE_KRYLOV", "").strip().lower()
+    force_krylov = force_krylov_env in {"1", "true", "yes", "on"}
+    if (not force_krylov) and int(op0.total_size) <= 5000 and str(solve_method).lower() in {"batched", "incremental"}:
         # On some JAX versions/platforms, `jax.scipy.sparse.linalg.gmres` can return NaNs for
         # small ill-conditioned problems (observed in CI for RHSMode=3 scheme12 fixtures).
         # Dense assembly is cheap at these sizes and improves robustness.
@@ -490,9 +492,13 @@ def solve_v3_transport_matrix_linear_gmres(
 
         # In upstream v3, the transport RHS settings are applied globally before each solve.
         # For PAS parity fixtures, matching this behavior requires using `op_rhs` in the matvec.
-        # For full FP, using `op0` improves stability/parity by keeping the linear operator
-        # independent of the current RHS selector.
+        # For full FP, default to `op0` for robustness, with an env override for parity tuning.
         use_op_rhs_in_matvec = op0.fblock.pas is not None
+        env_transport_matvec = os.environ.get("SFINCS_JAX_TRANSPORT_MATVEC_MODE", "").strip().lower()
+        if env_transport_matvec == "rhs":
+            use_op_rhs_in_matvec = True
+        elif env_transport_matvec == "base":
+            use_op_rhs_in_matvec = False
         op_matvec = op_rhs if use_op_rhs_in_matvec else op0
 
         if use_active_dof_mode:
@@ -568,7 +574,15 @@ def solve_v3_transport_matrix_linear_gmres(
 
         if emit is not None:
             emit(1, f"whichRHS={which_rhs}/{n}: Computing diagnostics")
-        diag = v3_transport_diagnostics_vm_only(op0, x_full=x_full)
+        # v3 diagnostics are evaluated in the same global state used for each whichRHS solve.
+        # Keep `op0` as default for current parity baselines, with an opt-in override.
+        diag_op = op0
+        env_diag_op = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_OP", "").strip().lower()
+        if env_diag_op == "rhs":
+            diag_op = op_rhs
+        elif env_diag_op == "base":
+            diag_op = op0
+        diag = v3_transport_diagnostics_vm_only(diag_op, x_full=x_full)
         diag_fsab_flow.append(diag.fsab_flow)
         diag_pf.append(diag.particle_flux_vm_psi_hat)
         diag_hf.append(diag.heat_flux_vm_psi_hat)

@@ -59,6 +59,30 @@ workflows, the JAX ecosystem can be integrated cleanly once the residual is expr
 - `equinox`: structured parameter handling and module-style organization for larger refactors.
 
 
+Parity tuning environment variables (developer)
+-----------------------------------------------
+
+For targeted parity debugging on difficult reduced fixtures, the solver exposes
+opt-in environment variables:
+
+- ``SFINCS_JAX_PHI1_NONLINEAR_RTOL``:
+  override nonlinear relative stop for the includePhi1 frozen-linearization path.
+- ``SFINCS_JAX_PHI1_NK_SOLVE_METHOD``:
+  force Newton linear subsolve method (``dense``, ``incremental``, or ``batched``).
+- ``SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION``:
+  force includePhi1 nonlinear branch to frozen/non-frozen Jacobian mode.
+- ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``:
+  force transport-matrix matvec operator branch (``base`` or ``rhs``).
+- ``SFINCS_JAX_TRANSPORT_DIAG_OP``:
+  force diagnostics operator branch in transport-matrix runs (``base`` or ``rhs``).
+- ``SFINCS_JAX_TRANSPORT_FORCE_KRYLOV``:
+  disable the small-system dense fallback in RHSMode=2/3 and keep Krylov solves.
+- ``SFINCS_JAX_DENSE_REG``:
+  override dense solve regularization strength for singular/near-singular systems.
+- ``SFINCS_JAX_DENSE_SINGULAR_MODE``:
+  choose singular branch handling in dense solves (default regularized mode; ``lstsq`` for minimum-norm).
+
+
 Reference benchmark figure (README/index)
 -----------------------------------------
 

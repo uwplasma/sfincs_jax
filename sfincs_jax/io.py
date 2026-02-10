@@ -1239,6 +1239,11 @@ def write_sfincs_jax_output_h5(
             # Parity mode for includePhi1 + full quasi-neutrality runs (quasineutralityOption=1):
             # use a frozen linearization and relative nonlinear stopping similar to v3's SNES path.
             use_frozen_linearization = bool(quasineutrality_option == 1)
+            env_frozen = os.environ.get("SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION", "").strip().lower()
+            if env_frozen in {"1", "true", "yes", "on"}:
+                use_frozen_linearization = True
+            elif env_frozen in {"0", "false", "no", "off"}:
+                use_frozen_linearization = False
             # Use a slightly looser relative threshold than PETSc defaults so the
             # reduced qn=1 fixtures terminate at the same saved-iteration count as v3.
             nonlinear_rtol = 3e-8 if use_frozen_linearization else 0.0

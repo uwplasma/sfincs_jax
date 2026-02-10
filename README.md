@@ -149,6 +149,23 @@ Regenerate that table:
 python scripts/generate_fortran_example_output_status.py
 ```
 
+For fast parity iteration on reduced-resolution copies of the full upstream suite:
+
+```bash
+python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 1
+```
+
+Current highest-impact remaining blockers from the reduced suite are:
+
+- `tokamak_1species_FPCollisions_noEr_withPhi1InDKE`: `21/263` dataset mismatches (solver-branch family)
+- `transportMatrix_geometryScheme2`: `14/194` dataset mismatches (moment-family / solver-branch diagnostics)
+
+Re-run just those cases:
+
+```bash
+python scripts/run_reduced_upstream_suite.py --pattern 'tokamak_1species_FPCollisions_noEr_withPhi1InDKE|transportMatrix_geometryScheme2' --timeout-s 30 --max-attempts 1 --reset-report
+```
+
 ## Documentation
 
 Build locally:

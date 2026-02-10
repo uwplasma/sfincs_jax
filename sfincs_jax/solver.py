@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 
 from jax import config as _jax_config
 
@@ -70,10 +71,18 @@ def gmres_solve(
         needs_reg = rank < jnp.asarray(n, dtype=rank.dtype)
         # Tuned for v3 transport-matrix singular systems: small enough to preserve
         # well-posed solves, large enough to select a stable nullspace branch.
-        reg = jnp.asarray(2.2e-10, dtype=b.dtype)
+        reg_val = 2.2e-10
+        env_reg = os.environ.get("SFINCS_JAX_DENSE_REG", "").strip()
+        if env_reg:
+            reg_val = float(env_reg)
+        reg = jnp.asarray(reg_val, dtype=b.dtype)
         x_reg = jnp.linalg.solve(a + reg * eye, b)
         x_lstsq = jnp.linalg.lstsq(a, b, rcond=None)[0]
-        x = jnp.where(needs_reg, x_reg, x_direct)
+        singular_mode = os.environ.get("SFINCS_JAX_DENSE_SINGULAR_MODE", "").strip().lower()
+        if singular_mode == "lstsq":
+            x = jnp.where(needs_reg, x_lstsq, x_direct)
+        else:
+            x = jnp.where(needs_reg, x_reg, x_direct)
         # Robust fallback for non-finite outputs from backend linear algebra kernels.
         x = jnp.where(jnp.all(jnp.isfinite(x)), x, x_lstsq)
         r = b - a @ x
