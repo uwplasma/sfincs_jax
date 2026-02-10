@@ -315,7 +315,7 @@ def solve_v3_full_system_newton_krylov_history(
         if use_frozen_linearization:
             jac_mode = os.environ.get("SFINCS_JAX_PHI1_FROZEN_JAC_MODE", "").strip().lower()
             if jac_mode not in {"frozen", "frozen_rhs", "frozen_op"}:
-                jac_mode = "frozen_rhs"
+                jac_mode = "frozen" if bool(op.include_phi1) else "frozen_rhs"
             frozen_jac_mode = jac_mode
 
             if jac_mode == "frozen_rhs":

@@ -341,20 +341,17 @@ def apply_v3_full_system_operator(
             qn_from_f = jnp.einsum("s,x,sxtz->tz", species_factor, x2w, f[:, :, 0, :, :])
 
         if int(op.quasineutrality_option) == 1:
-            # Nonlinear quasineutrality: sum_s (-Z_s n_s exp(-Z_s alpha Phi1/T_s)) plus adiabatic if present.
-            exp_phi = jnp.exp(-(op.z_s[:, None, None] * op.alpha / op.t_hat[:, None, None]) * op.phi1_hat_base[None, :, :])
-            qn_nonlin = -jnp.sum((op.z_s * op.n_hat)[:, None, None] * exp_phi, axis=0)
-            if op.with_adiabatic:
-                qn_nonlin = qn_nonlin - op.adiabatic_z * op.adiabatic_nhat * jnp.exp(
-                    -(op.adiabatic_z * op.alpha / op.adiabatic_that) * op.phi1_hat_base
-                )
-
+            # Nonlinear QN RHS terms live in evaluateResidual.F90 (not in the matrix).
+            # Therefore: residual uses qn_from_f + lam, while Jacobian uses qn_from_f + diag*phi1 + lam.
             if include_jacobian_terms:
-                diag = jnp.sum(
+                exp_phi = jnp.exp(
+                    -(op.z_s[:, None, None] * op.alpha / op.t_hat[:, None, None]) * op.phi1_hat_base[None, :, :]
+                )
+                diag = -jnp.sum(
                     (op.z_s * op.z_s * op.alpha * op.n_hat / op.t_hat)[:, None, None] * exp_phi, axis=0
                 )
                 if op.with_adiabatic:
-                    diag = diag + (
+                    diag = diag - (
                         (op.adiabatic_z * op.adiabatic_z * op.alpha * op.adiabatic_nhat / op.adiabatic_that)
                         * jnp.exp(-(op.adiabatic_z * op.alpha / op.adiabatic_that) * op.phi1_hat_base)
                     )
@@ -366,7 +363,7 @@ def apply_v3_full_system_operator(
                         pass
                 qn = qn_from_f + diag * phi1 + lam
             else:
-                qn = qn_from_f + qn_nonlin + lam
+                qn = qn_from_f + lam
         else:
             phi1_diag = 0.0
             if int(op.quasineutrality_option) == 2 and op.with_adiabatic and op.n_species > 0:
@@ -771,6 +768,18 @@ def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
 
     rhs_f_flat = f_rhs.reshape((-1,))
     rhs_phi1 = jnp.zeros((op.phi1_size,), dtype=jnp.float64)
+    if bool(op.include_phi1) and int(op.quasineutrality_option) == 1:
+        exp_phi = jnp.exp(
+            -(op.z_s[:, None, None] * op.alpha / op.t_hat[:, None, None]) * op.phi1_hat_base[None, :, :]
+        )
+        qn_nonlin = -jnp.sum((op.z_s * op.n_hat)[:, None, None] * exp_phi, axis=0)
+        if op.with_adiabatic:
+            qn_nonlin = qn_nonlin - op.adiabatic_z * op.adiabatic_nhat * jnp.exp(
+                -(op.adiabatic_z * op.alpha / op.adiabatic_that) * op.phi1_hat_base
+            )
+        qn_flat = qn_nonlin.reshape((-1,))
+        # Append a zero for the lambda constraint row.
+        rhs_phi1 = jnp.concatenate([qn_flat, jnp.asarray([0.0], dtype=jnp.float64)], axis=0)
     rhs_extra = jnp.zeros((op.extra_size,), dtype=jnp.float64)
     return jnp.concatenate([rhs_f_flat, rhs_phi1, rhs_extra], axis=0)
 

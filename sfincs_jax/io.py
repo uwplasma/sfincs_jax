@@ -1334,8 +1334,11 @@ def write_sfincs_jax_output_h5(
         dphi1_dtheta_list: list[np.ndarray] = []
         dphi1_dzeta_list: list[np.ndarray] = []
         lambda_list: list[float] = []
+        qn_from_f_list: list[np.ndarray] = []
+        qn_nonlin_list: list[np.ndarray] = []
+        qn_diag_list: list[np.ndarray] = []
 
-        for x_full in xs:
+        for iter_idx, x_full in enumerate(xs, start=1):
             x_full = jnp.asarray(x_full, dtype=jnp.float64)
             op_use = result.op
             if bool(op_use.include_phi1):
@@ -1353,6 +1356,55 @@ def write_sfincs_jax_output_h5(
                 dphi1_dtheta_list.append(np.asarray(dphi1_dtheta, dtype=np.float64))
                 dphi1_dzeta_list.append(np.asarray(dphi1_dzeta, dtype=np.float64))
                 lambda_list.append(lam)
+                # Quasineutrality diagnostics (term-by-term).
+                x2w = (op_use.x * op_use.x) * op_use.x_weights  # (X,)
+                species_factor = (
+                    4.0
+                    * jnp.pi
+                    * op_use.z_s
+                    * op_use.t_hat
+                    / op_use.m_hat
+                    * jnp.sqrt(op_use.t_hat / op_use.m_hat)
+                )  # (S,)
+                f_delta = x_full[: op_use.f_size].reshape(op_use.fblock.f_shape)
+                if int(op_use.quasineutrality_option) == 2:
+                    qn_from_f = species_factor[0] * jnp.einsum("x,xtz->tz", x2w, f_delta[0, :, 0, :, :])
+                else:
+                    qn_from_f = jnp.einsum("s,x,sxtz->tz", species_factor, x2w, f_delta[:, :, 0, :, :])
+
+                exp_phi = jnp.exp(
+                    -(op_use.z_s[:, None, None] * op_use.alpha / op_use.t_hat[:, None, None]) * phi1[None, :, :]
+                )
+                qn_nonlin = -jnp.sum((op_use.z_s * op_use.n_hat)[:, None, None] * exp_phi, axis=0)
+                if op_use.with_adiabatic:
+                    qn_nonlin = qn_nonlin - op_use.adiabatic_z * op_use.adiabatic_nhat * jnp.exp(
+                        -(op_use.adiabatic_z * op_use.alpha / op_use.adiabatic_that) * phi1
+                    )
+
+                qn_diag = jnp.sum(
+                    (op_use.z_s * op_use.z_s * op_use.alpha * op_use.n_hat / op_use.t_hat)[:, None, None] * exp_phi,
+                    axis=0,
+                )
+                if op_use.with_adiabatic:
+                    qn_diag = qn_diag + (
+                        (op_use.adiabatic_z * op_use.adiabatic_z * op_use.alpha * op_use.adiabatic_nhat / op_use.adiabatic_that)
+                        * jnp.exp(-(op_use.adiabatic_z * op_use.alpha / op_use.adiabatic_that) * phi1)
+                    )
+
+                qn_from_f_arr = np.asarray(qn_from_f, dtype=np.float64)
+                qn_nonlin_arr = np.asarray(qn_nonlin, dtype=np.float64)
+                qn_diag_arr = np.asarray(qn_diag, dtype=np.float64)
+                qn_from_f_list.append(qn_from_f_arr)
+                qn_nonlin_list.append(np.asarray(qn_nonlin, dtype=np.float64))
+                qn_diag_list.append(np.asarray(qn_diag, dtype=np.float64))
+                if emit is not None:
+                    emit(
+                        1,
+                        "qn_terms iter="
+                        f"{iter_idx} max_abs_from_f={float(np.max(np.abs(qn_from_f_arr))):.6e} "
+                        f"max_abs_nonlin={float(np.max(np.abs(qn_nonlin_arr))):.6e} "
+                        f"max_abs_diag={float(np.max(np.abs(qn_diag_arr))):.6e}",
+                    )
             diags.append(v3_rhsmode1_output_fields_vm_only(op_use, x_full=np.asarray(x_full)))
 
         # Write core grid moments:
@@ -1546,6 +1598,9 @@ def write_sfincs_jax_output_h5(
             data["Phi1Hat"] = _fortran_h5_layout(_tz_to_ztN(phi1_list))
             data["dPhi1Hatdtheta"] = _fortran_h5_layout(_tz_to_ztN(dphi1_dtheta_list))
             data["dPhi1Hatdzeta"] = _fortran_h5_layout(_tz_to_ztN(dphi1_dzeta_list))
+            data["QN_from_f"] = _fortran_h5_layout(_tz_to_ztN(qn_from_f_list))
+            data["QN_nonlin"] = _fortran_h5_layout(_tz_to_ztN(qn_nonlin_list))
+            data["QN_diag"] = _fortran_h5_layout(_tz_to_ztN(qn_diag_list))
             data["lambda"] = _fortran_h5_layout(np.asarray(lambda_list, dtype=np.float64))
 
             # Shared arrays:
