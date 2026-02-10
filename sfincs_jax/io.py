@@ -1232,7 +1232,7 @@ def write_sfincs_jax_output_h5(
         if nonlinear_phi1:
             if emit is not None:
                 emit(0, "write_sfincs_jax_output_h5: includePhi1=true -> Newton–Krylov solve with history")
-            nk_solve_method = "dense" if int(op0.total_size) <= 5000 else "batched"
+            nk_solve_method = "incremental" if int(op0.total_size) <= 5000 else "batched"
             env_nk_method = os.environ.get("SFINCS_JAX_PHI1_NK_SOLVE_METHOD", "").strip().lower()
             if env_nk_method in {"dense", "incremental", "batched"}:
                 nk_solve_method = env_nk_method
@@ -1255,14 +1255,21 @@ def write_sfincs_jax_output_h5(
                 emit(1, f"write_sfincs_jax_output_h5: includePhi1 linearized solve_method={nk_solve_method}")
                 if use_frozen_linearization:
                     emit(1, "write_sfincs_jax_output_h5: includePhi1 parity mode -> frozen Jacobian + relative nonlinear stop")
+            gmres_maxiter = 2000
+            env_gmres_maxiter = os.environ.get("SFINCS_JAX_PHI1_GMRES_MAXITER", "").strip()
+            if env_gmres_maxiter:
+                try:
+                    gmres_maxiter = int(env_gmres_maxiter)
+                except ValueError:
+                    gmres_maxiter = 2000
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
                 x0=None,
                 tol=1e-12,
                 max_newton=12,
                 gmres_tol=1e-12,
-                gmres_restart=120,
-                gmres_maxiter=1000,
+                gmres_restart=2000,
+                gmres_maxiter=gmres_maxiter,
                 solve_method=nk_solve_method,
                 nonlinear_rtol=nonlinear_rtol,
                 use_frozen_linearization=use_frozen_linearization,

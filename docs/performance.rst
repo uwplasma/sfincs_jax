@@ -72,15 +72,25 @@ opt-in environment variables:
 - ``SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION``:
   force includePhi1 nonlinear branch to frozen/non-frozen Jacobian mode.
 - ``SFINCS_JAX_PHI1_FROZEN_JAC_MODE``:
-  select frozen-Jacobian variant for includePhi1 (``frozen`` or ``frozen_rhs``; default ``frozen_rhs``).
+  select frozen-Jacobian variant for includePhi1 (``frozen``, ``frozen_rhs``, or ``frozen_op``; default ``frozen_rhs``).
 - ``SFINCS_JAX_PHI1_GMRES_TOL``:
   override GMRES tolerance inside the includePhi1 nonlinear Newton–Krylov solves.
+- ``SFINCS_JAX_PHI1_GMRES_MAXITER``:
+  override GMRES max iterations inside includePhi1 Newton–Krylov solves.
 - ``SFINCS_JAX_PHI1_LINESEARCH_FACTOR``:
   override the relative residual decrease required to accept a Newton step (legacy mode).
 - ``SFINCS_JAX_PHI1_LINESEARCH_C1``:
   Armijo coefficient for the PETSc-style backtracking rule (default 1e-4).
+- ``SFINCS_JAX_PHI1_LINESEARCH_MODE``:
+  ``petsc`` (default for includePhi1 parity) uses the first step that satisfies the Armijo condition,
+  ``best`` picks the step with the smallest residual among backtracking candidates,
+  ``basic``/``full`` accept the full Newton step (no backtracking).
+- ``SFINCS_JAX_PHI1_LINESEARCH_MAXITER``:
+  override the maximum number of backtracking reductions (default 40 in ``petsc`` mode).
 - ``SFINCS_JAX_PHI1_STEP_SCALE``:
   scale the Newton update step size (default 1.0); lower values damp iteration history.
+- ``SFINCS_JAX_PHI1_QN_DIAG_SCALE``:
+  scale the quasineutrality Phi1 diagonal stabilization (default 1.0).
 - ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``:
   force transport-matrix matvec operator branch (``base`` or ``rhs``).
 - ``SFINCS_JAX_TRANSPORT_DIAG_OP``:

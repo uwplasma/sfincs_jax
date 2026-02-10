@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import os
 from pathlib import Path
 
 from jax import config as _jax_config
@@ -301,7 +302,9 @@ def _source_basis_constraint_scheme_1(x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.
     return s1, s2
 
 
-def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray) -> jnp.ndarray:
+def apply_v3_full_system_operator(
+    op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = False
+) -> jnp.ndarray:
     """Apply the matrix-free full-system operator."""
     x_full = jnp.asarray(x_full)
     if x_full.shape != (op.total_size,):
@@ -337,23 +340,41 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
         else:
             qn_from_f = jnp.einsum("s,x,sxtz->tz", species_factor, x2w, f[:, :, 0, :, :])
 
-        phi1_diag = 0.0
-        if int(op.quasineutrality_option) == 2 and op.with_adiabatic and op.n_species > 0:
-            phi1_diag = -op.alpha * (
-                (op.z_s[0] * op.z_s[0]) * op.n_hat[0] / op.t_hat[0]
-                + (op.adiabatic_z * op.adiabatic_z) * op.adiabatic_nhat / op.adiabatic_that
-            )
-        elif int(op.quasineutrality_option) == 1:
-            # Parity-first stabilization for the includePhi1 + quasineutralityOption=1 branch:
-            # include the leading-order Boltzmann-response diagonal from all kinetic species and
-            # the adiabatic species when present. Without this term, tiny reduced fixtures can
-            # pick an unphysical large-Phi1 nullspace branch.
-            phi1_diag = -op.alpha * jnp.sum((op.z_s * op.z_s) * op.n_hat / op.t_hat)
+        if int(op.quasineutrality_option) == 1:
+            # Nonlinear quasineutrality: sum_s (-Z_s n_s exp(-Z_s alpha Phi1/T_s)) plus adiabatic if present.
+            exp_phi = jnp.exp(-(op.z_s[:, None, None] * op.alpha / op.t_hat[:, None, None]) * op.phi1_hat_base[None, :, :])
+            qn_nonlin = -jnp.sum((op.z_s * op.n_hat)[:, None, None] * exp_phi, axis=0)
             if op.with_adiabatic:
-                phi1_diag = phi1_diag - op.alpha * (
-                    (op.adiabatic_z * op.adiabatic_z) * op.adiabatic_nhat / op.adiabatic_that
+                qn_nonlin = qn_nonlin - op.adiabatic_z * op.adiabatic_nhat * jnp.exp(
+                    -(op.adiabatic_z * op.alpha / op.adiabatic_that) * op.phi1_hat_base
                 )
-        qn = qn_from_f + phi1_diag * phi1 + lam
+
+            if include_jacobian_terms:
+                diag = jnp.sum(
+                    (op.z_s * op.z_s * op.alpha * op.n_hat / op.t_hat)[:, None, None] * exp_phi, axis=0
+                )
+                if op.with_adiabatic:
+                    diag = diag + (
+                        (op.adiabatic_z * op.adiabatic_z * op.alpha * op.adiabatic_nhat / op.adiabatic_that)
+                        * jnp.exp(-(op.adiabatic_z * op.alpha / op.adiabatic_that) * op.phi1_hat_base)
+                    )
+                diag_scale_env = os.environ.get("SFINCS_JAX_PHI1_QN_DIAG_SCALE", "").strip()
+                if diag_scale_env:
+                    try:
+                        diag = diag * float(diag_scale_env)
+                    except ValueError:
+                        pass
+                qn = qn_from_f + diag * phi1 + lam
+            else:
+                qn = qn_from_f + qn_nonlin + lam
+        else:
+            phi1_diag = 0.0
+            if int(op.quasineutrality_option) == 2 and op.with_adiabatic and op.n_species > 0:
+                phi1_diag = -op.alpha * (
+                    (op.z_s[0] * op.z_s[0]) * op.n_hat[0] / op.t_hat[0]
+                    + (op.adiabatic_z * op.adiabatic_z) * op.adiabatic_nhat / op.adiabatic_that
+                )
+            qn = qn_from_f + phi1_diag * phi1 + lam
 
         # <Phi1> = 0 constraint row ("lambda row"):
         y_lam = jnp.sum(factor * phi1)
@@ -379,12 +400,15 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
         ddzeta = op.fblock.collisionless.ddzeta
         dphi1_dtheta = ddtheta @ phi1  # (T,Z)
         dphi1_dzeta = phi1 @ ddzeta.T  # (T,Z)
+        dphi1_base_dtheta = ddtheta @ op.phi1_hat_base
+        dphi1_base_dzeta = op.phi1_hat_base @ ddzeta.T
 
         # Nonlinear term in the v3 residual that is linear in f but proportional to grad(Phi1Hat).
-        # This contributes to the F-block (d(kinetic eqn)/df) in whichMatrix=3.
-        dphi1_hat_base_dtheta = ddtheta @ op.phi1_hat_base
-        dphi1_hat_base_dzeta = op.phi1_hat_base @ ddzeta.T
-        e_term = op.b_hat_sup_theta * dphi1_hat_base_dtheta + op.b_hat_sup_zeta * dphi1_hat_base_dzeta  # (T,Z)
+        # For Jacobian matvecs, use the base Phi1 gradients; for residual evaluation, use the current Phi1.
+        if include_jacobian_terms:
+            e_term = op.b_hat_sup_theta * dphi1_base_dtheta + op.b_hat_sup_zeta * dphi1_base_dzeta  # (T,Z)
+        else:
+            e_term = op.b_hat_sup_theta * dphi1_dtheta + op.b_hat_sup_zeta * dphi1_dzeta  # (T,Z)
         nonlinear_factor = (
             -(op.alpha * op.z_s)[:, None, None]
             / (2.0 * op.b_hat[None, :, :] * jnp.sqrt(op.t_hat)[:, None, None] * jnp.sqrt(op.m_hat)[:, None, None])
@@ -422,10 +446,12 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
             term = coef[None, None, :, None, None] * ddx_src + diag_xl[None, :, :, None, None] * src
             out_nl = out_nl.at[:, :, 1:, :, :].add(term)
 
+        ix0 = _ix_min(bool(op.point_at_x0))
+        mask_x = (jnp.arange(op.n_x) >= ix0).astype(jnp.float64)  # (X,)
         mask = (
             jnp.arange(n_xi, dtype=jnp.int32)[None, :] < op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)[:, None]
         ).astype(jnp.float64)  # (X,L)
-        y_f = y_f + out_nl * nonlinear_factor[:, None, None, :, :] * mask[None, :, :, None, None]
+        y_f = y_f + out_nl * nonlinear_factor[:, None, None, :, :] * mask[None, :, :, None, None] * mask_x[None, :, None, None, None]
 
         x2 = op.x * op.x  # (X,)
         expx2 = jnp.exp(-x2)  # (X,)
@@ -433,7 +459,7 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
         sqrt_pi = jnp.sqrt(jnp.pi)
         norm = jnp.pi * sqrt_pi
 
-        # Evaluate exp(-Z*alpha*Phi1Hat/THat) using the base-state Phi1Hat used to assemble the v3 matrix.
+        # Evaluate exp(-Z*alpha*Phi1Hat/THat) using the base-state Phi1Hat.
         exp_phi = jnp.exp(
             -(op.z_s[:, None, None] * op.alpha / op.t_hat[:, None, None]) * op.phi1_hat_base[None, :, :]
         )  # (S,T,Z)
@@ -481,6 +507,116 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
 
         y_f = y_f.at[:, :, 0, :, :].add((coeff1_theta + coeff2_theta) * dphi1_dtheta[None, None, :, :])
         y_f = y_f.at[:, :, 0, :, :].add((coeff1_zeta + coeff2_zeta) * dphi1_dzeta[None, None, :, :])
+
+        if include_jacobian_terms:
+            # Additional Jacobian-only Phi1 terms from populateMatrix.F90 (factorJ1..factorJ5).
+            sqrt_pi = jnp.sqrt(jnp.pi)
+            two_pi = jnp.asarray(2.0 * jnp.pi, dtype=jnp.float64)
+            z = op.z_s  # (S,)
+            m_hat = op.m_hat
+            t_hat = op.t_hat
+            n_hat = op.n_hat
+            dn = op.dn_hat_dpsi_hat
+            dt = op.dt_hat_dpsi_hat
+
+            x = op.x
+            x2 = x * x
+            expx2 = jnp.exp(-x2)
+
+            dphi_hat_dpsi_hat_to_use = jnp.where(
+                (op.rhs_mode == 1) | (op.rhs_mode > 3),
+                op.dphi_hat_dpsi_hat,
+                jnp.asarray(0.0, dtype=jnp.float64),
+            )
+
+            geom_b = (
+                -op.b_hat_sub_zeta * op.db_hat_dtheta + op.b_hat_sub_theta * op.db_hat_dzeta
+            ) * op.d_hat  # (T,Z)
+
+            sqrt_t = jnp.sqrt(t_hat)
+            sqrt_m = jnp.sqrt(m_hat)
+
+            bracket = (dn / n_hat)[:, None] + (x2[None, :] - 1.5) * (dt / t_hat)[:, None]  # (S,X)
+            exp_phi1 = jnp.exp(
+                -(z[:, None, None] * op.alpha / t_hat[:, None, None]) * op.phi1_hat_base[None, :, :]
+            )  # (S,T,Z)
+
+            factorJ1 = (
+                exp_phi1[:, None, :, :]
+                * op.alpha
+                * op.delta
+                * (op.d_hat / (2.0 * (op.b_hat * op.b_hat)))[None, None, :, :]
+                * (-op.b_hat_sub_zeta * dphi1_base_dtheta + op.b_hat_sub_theta * dphi1_base_dzeta)[None, None, :, :]
+                * (n_hat * m_hat * sqrt_m / (t_hat * sqrt_t * jnp.pi * sqrt_pi))[:, None, None, None]
+                * expx2[None, :, None, None]
+                * bracket[:, :, None, None]
+            )  # (S,X,T,Z)
+
+            factorJ2 = (
+                (op.alpha * op.alpha)
+                * op.delta
+                * (op.d_hat / (two_pi * sqrt_pi * (op.b_hat * op.b_hat)))[None, None, :, :]
+                * (z * n_hat * m_hat * sqrt_m / (t_hat * t_hat * sqrt_t))[:, None, None, None]
+                * exp_phi1[:, None, :, :]
+                * expx2[None, :, None, None]
+                * (-op.b_hat_sub_zeta * dphi1_base_dtheta + op.b_hat_sub_theta * dphi1_base_dzeta)[None, None, :, :]
+                * phi_term[:, None, :, :]
+            )
+
+            x_part_rhs = x2[None, :] * expx2[None, :] * (
+                (dn / n_hat)[:, None]
+                + (op.alpha * z / t_hat)[:, None] * dphi_hat_dpsi_hat_to_use
+                + (x2[None, :] - 1.5) * (dt / t_hat)[:, None]
+            )  # (S,X)
+            x_part_rhs2 = x2[None, :] * expx2[None, :] * (dt / (t_hat * t_hat))[:, None]  # (S,X)
+            x_part_total = x_part_rhs[:, :, None, None] + (
+                x_part_rhs2[:, :, None, None]
+                * (z * op.alpha)[:, None, None, None]
+                * op.phi1_hat_base[None, None, :, :]
+            )
+
+            geom_b_full = geom_b[None, None, :, :]
+            prefJ3 = (
+                op.delta
+                * (n_hat * m_hat * sqrt_m / (two_pi * sqrt_pi * z * sqrt_t))[:, None, None, None]
+                / (op.b_hat * op.b_hat * op.b_hat)[None, None, :, :]
+            )
+            factorJ3 = prefJ3 * geom_b_full * x_part_total * exp_phi1[:, None, :, :]
+
+            prefJ5 = (
+                op.delta
+                * (n_hat * m_hat * sqrt_m / (two_pi * sqrt_pi * sqrt_t))[:, None, None, None]
+                / (op.b_hat * op.b_hat * op.b_hat)[None, None, :, :]
+            )
+            factorJ5 = prefJ5 * geom_b_full * (x_part_rhs2[:, :, None, None] * op.alpha) * exp_phi1[:, None, :, :]
+
+            factorJ4 = (
+                (op.alpha * op.alpha)
+                * op.delta
+                * (op.d_hat / (two_pi * sqrt_pi * (op.b_hat * op.b_hat)))[None, None, :, :]
+                * (z * n_hat * m_hat * sqrt_m / (t_hat * t_hat * sqrt_t))[:, None, None, None]
+                * exp_phi1[:, None, :, :]
+                * expx2[None, :, None, None]
+                * (-op.b_hat_sub_zeta * dphi1_base_dtheta + op.b_hat_sub_theta * dphi1_base_dzeta)[None, None, :, :]
+                * (dt / t_hat)[:, None, None, None]
+            )
+
+            coef_l0 = (
+                -(z * op.alpha / t_hat)[:, None, None, None] * (factorJ1 + factorJ2)
+                - (z * op.alpha / t_hat)[:, None, None, None] * (4.0 / 3.0) * factorJ3
+                + factorJ4
+                + (4.0 / 3.0) * factorJ5
+            )
+            coef_l2 = (
+                -(z * op.alpha / t_hat)[:, None, None, None] * (2.0 / 3.0) * factorJ3
+                + (2.0 / 3.0) * factorJ5
+            )
+
+            mask_l0 = (op.fblock.collisionless.n_xi_for_x > 0).astype(jnp.float64) * mask_x
+            y_f = y_f.at[:, :, 0, :, :].add(coef_l0 * phi1[None, None, :, :] * mask_l0[None, :, None, None])
+            if op.n_xi > 2:
+                mask_l2 = (op.fblock.collisionless.n_xi_for_x > 2).astype(jnp.float64) * mask_x
+                y_f = y_f.at[:, :, 2, :, :].add(coef_l2 * phi1[None, None, :, :] * mask_l2[None, :, None, None])
 
     if int(op.constraint_scheme) == 0:
         y_extra = jnp.zeros((0,), dtype=jnp.float64)

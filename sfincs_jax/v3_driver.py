@@ -314,7 +314,7 @@ def solve_v3_full_system_newton_krylov_history(
         frozen_jac_mode = None
         if use_frozen_linearization:
             jac_mode = os.environ.get("SFINCS_JAX_PHI1_FROZEN_JAC_MODE", "").strip().lower()
-            if jac_mode not in {"frozen", "frozen_rhs"}:
+            if jac_mode not in {"frozen", "frozen_rhs", "frozen_op"}:
                 jac_mode = "frozen_rhs"
             frozen_jac_mode = jac_mode
 
@@ -329,14 +329,31 @@ def solve_v3_full_system_newton_krylov_history(
                         op_rhs_x = replace(op, phi1_hat_base=phi1_x)
                     else:
                         op_rhs_x = op
-                    return apply_v3_full_system_operator(op_use, xx) - rhs_v3_full_system(op_rhs_x)
+                    return apply_v3_full_system_operator(op_use, xx, include_jacobian_terms=True) - rhs_v3_full_system(op_rhs_x)
 
                 _r_lin, jvp = jax.linearize(residual_for_jac, x)
                 matvec = jvp
                 if emit is not None:
                     emit(1, f"newton_iter={k}: evaluateJacobian called (frozen operator + dynamic RHS)")
+            elif jac_mode == "frozen_op":
+                # Keep RHS frozen at the current iterate, but let the operator
+                # carry the Phi1 dependence. This emulates partial Jacobian updates
+                # in upstream SNES paths.
+                def residual_for_jac(xx: jnp.ndarray) -> jnp.ndarray:
+                    if bool(op.include_phi1):
+                        phi1_flat_x = xx[op.f_size : op.f_size + op.n_theta * op.n_zeta]
+                        phi1_x = phi1_flat_x.reshape((op.n_theta, op.n_zeta))
+                        op_mat_x = replace(op, phi1_hat_base=phi1_x)
+                    else:
+                        op_mat_x = op
+                    return apply_v3_full_system_operator(op_mat_x, xx, include_jacobian_terms=True) - rhs_v3_full_system(op_use)
+
+                _r_lin, jvp = jax.linearize(residual_for_jac, x)
+                matvec = jvp
+                if emit is not None:
+                    emit(1, f"newton_iter={k}: evaluateJacobian called (dynamic operator + frozen RHS)")
             else:
-                matvec = lambda dx: apply_v3_full_system_operator(op_use, dx)
+                matvec = lambda dx: apply_v3_full_system_operator(op_use, dx, include_jacobian_terms=True)
                 if emit is not None:
                     emit(1, f"newton_iter={k}: evaluateJacobian called (fully frozen linearization)")
         else:
@@ -376,32 +393,54 @@ def solve_v3_full_system_newton_krylov_history(
             ls_c1 = float(ls_c1_env) if ls_c1_env else 1.0e-4
         except ValueError:
             ls_c1 = 1.0e-4
-        for _ in range(12):
-            x_try = x + (step * step_scale) * s
-            if use_frozen_linearization and frozen_jac_mode == "frozen_rhs":
-                if bool(op.include_phi1):
-                    phi1_flat_x = x_try[op.f_size : op.f_size + op.n_theta * op.n_zeta]
-                    phi1_x = phi1_flat_x.reshape((op.n_theta, op.n_zeta))
-                    op_rhs_x = replace(op, phi1_hat_base=phi1_x)
-                else:
-                    op_rhs_x = op
-                r_try = apply_v3_full_system_operator(op_use, x_try) - rhs_v3_full_system(op_rhs_x)
-            elif use_frozen_linearization and frozen_jac_mode == "frozen":
-                r_try = apply_v3_full_system_operator(op_use, x_try) - rhs_v3_full_system(op_use)
-            else:
-                r_try = residual_v3_full_system(op, x_try)
-            rnorm_try = float(jnp.linalg.norm(r_try))
-            if ls_factor is not None:
-                accept = rnorm_try <= ls_factor * rnorm0
-            else:
-                accept = rnorm_try <= (1.0 - ls_c1 * step) * rnorm0
-            if accept:
-                x = x_try
-                accepted.append(x)
-                break
-            step *= 0.5
+        ls_mode_env = os.environ.get("SFINCS_JAX_PHI1_LINESEARCH_MODE", "").strip().lower()
+        if ls_mode_env:
+            ls_mode = ls_mode_env
         else:
-            x = x + (1.0 / 64.0) * s
+            ls_mode = "petsc" if (use_frozen_linearization and bool(op.include_phi1)) else "best"
+        best_x = None
+        best_rnorm = float("inf")
+        if ls_mode == "best":
+            step_candidates = [1.0, 1.5, 2.0, 0.5, 0.25, 0.125, 0.0625, 0.03125]
+        max_ls_env = os.environ.get("SFINCS_JAX_PHI1_LINESEARCH_MAXITER", "").strip()
+        try:
+            max_ls = int(max_ls_env) if max_ls_env else (40 if ls_mode == "petsc" else 12)
+        except ValueError:
+            max_ls = 40 if ls_mode == "petsc" else 12
+        if ls_mode in {"basic", "full"}:
+            x = x + (step * step_scale) * s
+            accepted.append(x)
+            continue
+        for _ in range(max_ls):
+            if ls_mode == "best":
+                try_step = step_candidates.pop(0) if step_candidates else step
+            else:
+                try_step = step
+            x_try = x + (try_step * step_scale) * s
+            # Always evaluate the true nonlinear residual for line-search acceptance,
+            # even when using a frozen linearization for the Jacobian. This matches PETSc's
+            # SNES line-search behavior and improves includePhi1 iteration parity.
+            r_try = residual_v3_full_system(op, x_try)
+            rnorm_try = float(jnp.linalg.norm(r_try))
+            if rnorm_try < best_rnorm:
+                best_rnorm = rnorm_try
+                best_x = x_try
+            if ls_mode != "best":
+                if ls_factor is not None:
+                    accept = rnorm_try <= ls_factor * rnorm0
+                else:
+                    accept = rnorm_try <= (1.0 - ls_c1 * step) * rnorm0
+                if accept:
+                    x = x_try
+                    accepted.append(x)
+                    break
+            if ls_mode != "best":
+                step *= 0.5
+        else:
+            if ls_mode == "best" and best_x is not None and best_rnorm < rnorm0:
+                x = best_x
+            else:
+                x = x + (1.0 / 64.0) * s
             accepted.append(x)
 
     r = residual_v3_full_system(op, x)
