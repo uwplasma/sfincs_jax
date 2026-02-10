@@ -664,13 +664,23 @@ def solve_v3_transport_matrix_linear_gmres(
                 basis.append(_basis(s, 0, xpart1))
                 basis.append(_basis(s, 1, xpart2))
 
+            # 1) Enforce the constraint rows (extra block) by correcting the residual.
             r = apply_v3_full_system_operator(op_matvec, x_vec) - rhs
             r_extra = r[-op0.extra_size :]
             cols = [apply_v3_full_system_operator(op_matvec, v)[-op0.extra_size :] for v in basis]
             m = jnp.stack(cols, axis=1)  # (extra_size, extra_size)
-            c, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
-            x_corr = sum(v * c[i] for i, v in enumerate(basis))
-            return x_vec + x_corr
+            c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
+            x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
+            x_vec = x_vec + x_corr
+
+            # 2) Project onto the orthogonal complement of the nullspace basis.
+            # PETSc nullspace handling keeps the solution orthogonal to these basis vectors.
+            b_mat = jnp.stack(basis, axis=1)  # (total_size, nbasis)
+            gram = b_mat.T @ b_mat
+            proj_rhs = b_mat.T @ x_vec
+            c_proj = jnp.linalg.solve(gram, proj_rhs)
+            x_vec = x_vec - b_mat @ c_proj
+            return x_vec
 
         if use_active_dof_mode:
             assert active_idx_jnp is not None

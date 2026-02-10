@@ -157,13 +157,13 @@ python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 1
 
 Current highest-impact remaining blockers from the reduced suite are:
 
-- `tokamak_1species_FPCollisions_noEr_withPhi1InDKE`: `21/263` dataset mismatches (solver-branch family)
-- `transportMatrix_geometryScheme2`: `14/194` dataset mismatches (moment-family / solver-branch diagnostics)
+- `tokamak_1species_FPCollisions_noEr_withPhi1InDKE`: `126/263` dataset mismatches (solver-branch family)
+- `geometryScheme5_3species_loRes`: `33/193` dataset mismatches (solver-branch family, VMEC geometryScheme=5)
 
 Re-run just those cases:
 
 ```bash
-python scripts/run_reduced_upstream_suite.py --pattern 'tokamak_1species_FPCollisions_noEr_withPhi1InDKE|transportMatrix_geometryScheme2' --timeout-s 30 --max-attempts 1 --reset-report
+python scripts/run_reduced_upstream_suite.py --pattern 'tokamak_1species_FPCollisions_noEr_withPhi1InDKE|geometryScheme5_3species_loRes' --timeout-s 30 --max-attempts 1 --reset-report
 ```
 
 ## Documentation
