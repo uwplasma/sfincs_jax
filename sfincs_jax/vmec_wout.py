@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 from scipy.io import netcdf_file
 
+from .paths import resolve_existing_path
+
 
 @dataclass(frozen=True)
 class VmecWout:
@@ -67,15 +69,27 @@ def read_vmec_wout(path: str | Path) -> VmecWout:
     if not p.exists():
         raise FileNotFoundError(str(p))
     if p.suffix.lower() in {".txt", ".dat"}:
-        # Many upstream distributions provide both an ASCII and a netCDF wout file. Prefer netCDF if present.
+        # Many upstream distributions provide both an ASCII and a netCDF wout file. Prefer netCDF.
         p_nc = p.with_suffix(".nc")
         if p_nc.exists():
             p = p_nc
         else:
-            raise NotImplementedError(
-                "VMEC ASCII `wout_*.txt` files are not supported in sfincs_jax yet, "
-                "and no `.nc` sibling was found."
+            # Reduced upstream examples may localize only `wout_*.txt`. If so, try to
+            # resolve a matching `.nc` by basename using the same equilibrium search roots
+            # used elsewhere in sfincs_jax.
+            repo_root = Path(__file__).resolve().parents[1]
+            extra = (
+                repo_root / "tests" / "ref",
+                repo_root / "sfincs_jax" / "data" / "equilibria",
+                repo_root.parent / "sfincs" / "equilibria",
             )
+            try:
+                p = resolve_existing_path(p_nc.name, base_dir=p.parent, extra_search_dirs=extra).path
+            except FileNotFoundError as exc:
+                raise NotImplementedError(
+                    "VMEC ASCII `wout_*.txt` files are not supported in sfincs_jax yet, "
+                    "and no `.nc` sibling or fallback `.nc` path was found."
+                ) from exc
 
     with netcdf_file(p, "r", mmap=False) as f:
         nfp = int(_read_var(f, "nfp"))
