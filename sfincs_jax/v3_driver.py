@@ -17,6 +17,7 @@ from jax import tree_util as jtu
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
 from .transport_matrix import transport_matrix_size_from_rhs_mode, v3_transport_matrix_from_state_vectors
+from .v3_system import _source_basis_constraint_scheme_1
 from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
@@ -208,9 +209,14 @@ def solve_v3_full_system_newton_krylov(
 
         # Backtracking line search on ||r|| (very simple Armijo-style criterion).
         step = 1.0
+        step_scale_env = os.environ.get("SFINCS_JAX_PHI1_STEP_SCALE", "").strip()
+        try:
+            step_scale = float(step_scale_env) if step_scale_env else 1.0
+        except ValueError:
+            step_scale = 1.0
         rnorm0 = float(rnorm)
         for _ in range(12):
-            x_try = x + step * s
+            x_try = x + (step * step_scale) * s
             r_try = residual_v3_full_system(op, x_try)
             rnorm_try = float(jnp.linalg.norm(r_try))
             if rnorm_try <= 0.9 * rnorm0:
@@ -305,10 +311,12 @@ def solve_v3_full_system_newton_krylov_history(
                 accepted,
             )
 
+        frozen_jac_mode = None
         if use_frozen_linearization:
             jac_mode = os.environ.get("SFINCS_JAX_PHI1_FROZEN_JAC_MODE", "").strip().lower()
             if jac_mode not in {"frozen", "frozen_rhs"}:
                 jac_mode = "frozen_rhs"
+            frozen_jac_mode = jac_mode
 
             if jac_mode == "frozen_rhs":
                 # Keep the kinetic/collision operator frozen at the current iterate (op_use),
@@ -352,6 +360,11 @@ def solve_v3_full_system_newton_krylov_history(
         last_linear_resid = lin.residual_norm
 
         step = 1.0
+        step_scale_env = os.environ.get("SFINCS_JAX_PHI1_STEP_SCALE", "").strip()
+        try:
+            step_scale = float(step_scale_env) if step_scale_env else 1.0
+        except ValueError:
+            step_scale = 1.0
         rnorm0 = float(rnorm)
         ls_factor_env = os.environ.get("SFINCS_JAX_PHI1_LINESEARCH_FACTOR", "").strip()
         try:
@@ -359,8 +372,19 @@ def solve_v3_full_system_newton_krylov_history(
         except ValueError:
             ls_factor = 0.9
         for _ in range(12):
-            x_try = x + step * s
-            r_try = residual_v3_full_system(op, x_try)
+            x_try = x + (step * step_scale) * s
+            if use_frozen_linearization and frozen_jac_mode == "frozen_rhs":
+                if bool(op.include_phi1):
+                    phi1_flat_x = x_try[op.f_size : op.f_size + op.n_theta * op.n_zeta]
+                    phi1_x = phi1_flat_x.reshape((op.n_theta, op.n_zeta))
+                    op_rhs_x = replace(op, phi1_hat_base=phi1_x)
+                else:
+                    op_rhs_x = op
+                r_try = apply_v3_full_system_operator(op_use, x_try) - rhs_v3_full_system(op_rhs_x)
+            elif use_frozen_linearization and frozen_jac_mode == "frozen":
+                r_try = apply_v3_full_system_operator(op_use, x_try) - rhs_v3_full_system(op_use)
+            else:
+                r_try = residual_v3_full_system(op, x_try)
             rnorm_try = float(jnp.linalg.norm(r_try))
             if rnorm_try <= ls_factor * rnorm0:
                 x = x_try
@@ -536,17 +560,65 @@ def solve_v3_transport_matrix_linear_gmres(
         # tolerance, leaving small constraint residuals that appear in the moment-family
         # diagnostics. Mimic that behavior by using a Krylov solve with a looser tol.
         loose_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_LOOSE", "").strip().lower()
+        krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_KRYLOV", "").strip().lower()
         use_loose_epar_krylov = (
             loose_env in {"1", "true", "yes", "on"}
             and int(rhs_mode) == 2
             and which_rhs == 3
             and int(op0.constraint_scheme) == 1
         )
+        force_epar_krylov = (
+            krylov_env in {"1", "true", "yes", "on"}
+            and int(rhs_mode) == 2
+            and which_rhs == 3
+            and int(op0.constraint_scheme) == 1
+        )
         solve_method_rhs = solve_method_use
         tol_rhs = tol
-        if use_loose_epar_krylov:
+        if force_epar_krylov or use_loose_epar_krylov:
             solve_method_rhs = "incremental"
-            tol_rhs = max(float(tol), 1e-8)
+            if use_loose_epar_krylov:
+                epar_tol_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_TOL", "").strip()
+                try:
+                    epar_tol = float(epar_tol_env) if epar_tol_env else 1e-8
+                except ValueError:
+                    epar_tol = 1e-8
+                tol_rhs = max(float(tol), float(epar_tol))
+
+        def _maybe_project_constraint_nullspace(x_vec: jnp.ndarray) -> jnp.ndarray:
+            if int(rhs_mode) != 2 or which_rhs != 3:
+                return x_vec
+            if int(op0.constraint_scheme) != 1:
+                return x_vec
+            if int(op0.phi1_size) != 0:
+                return x_vec
+            project_env = os.environ.get("SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE", "").strip().lower()
+            if project_env in {"0", "false", "no", "off"}:
+                return x_vec
+
+            # Build basis vectors from constraintScheme=1 source basis functions.
+            xpart1, xpart2 = _source_basis_constraint_scheme_1(op0.x)
+            ix0 = 1 if bool(op0.point_at_x0) else 0
+            f_shape = op0.fblock.f_shape
+            n_s, n_x, n_l, n_t, n_z = f_shape
+
+            def _basis(src_index: int, xpart: jnp.ndarray) -> jnp.ndarray:
+                f = jnp.zeros(f_shape, dtype=jnp.float64)
+                f = f.at[:, ix0:, 0, :, :].set(xpart[ix0:][None, :, None, None])
+                extra = jnp.zeros((n_s, 2), dtype=jnp.float64)
+                extra = extra.at[:, src_index].set(-1.0)
+                flat = jnp.concatenate([f.reshape((-1,)), extra.reshape((-1,))], axis=0)
+                return flat
+
+            v1 = _basis(0, xpart1)
+            v2 = _basis(1, xpart2)
+
+            r = apply_v3_full_system_operator(op_matvec, x_vec) - rhs
+            m1 = apply_v3_full_system_operator(op_matvec, v1)
+            m2 = apply_v3_full_system_operator(op_matvec, v2)
+            m = jnp.stack([m1, m2], axis=1)  # (N,2)
+            c, *_ = jnp.linalg.lstsq(m, -r, rcond=None)
+            return x_vec + v1 * c[0] + v2 * c[1]
 
         if use_active_dof_mode:
             assert active_idx_jnp is not None
@@ -588,6 +660,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 solve_method=solve_method_rhs,
             )
             x_full = expand_reduced(res_reduced.x)
+            x_full = _maybe_project_constraint_nullspace(x_full)
             res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator(op_matvec, x_full) - rhs)
             state_vectors[which_rhs] = x_full
             residual_norms[which_rhs] = res_norm_full
@@ -608,6 +681,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 solve_method=solve_method_rhs,
             )
             x_full = res.x
+            x_full = _maybe_project_constraint_nullspace(x_full)
             state_vectors[which_rhs] = x_full
             residual_norms[which_rhs] = res.residual_norm
         if emit is not None:

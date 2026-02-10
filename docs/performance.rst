@@ -77,6 +77,8 @@ opt-in environment variables:
   override GMRES tolerance inside the includePhi1 nonlinear Newton–Krylov solves.
 - ``SFINCS_JAX_PHI1_LINESEARCH_FACTOR``:
   override the relative residual decrease required to accept a Newton step (default 0.9).
+- ``SFINCS_JAX_PHI1_STEP_SCALE``:
+  scale the Newton update step size (default 1.0); lower values damp iteration history.
 - ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``:
   force transport-matrix matvec operator branch (``base`` or ``rhs``).
 - ``SFINCS_JAX_TRANSPORT_DIAG_OP``:
@@ -85,6 +87,12 @@ opt-in environment variables:
   disable the small-system dense fallback in RHSMode=2/3 and keep Krylov solves.
 - ``SFINCS_JAX_TRANSPORT_EPAR_LOOSE``:
   opt-in looser GMRES tolerance for RHSMode=2 whichRHS=3 (E_parallel column), for parity experiments.
+- ``SFINCS_JAX_TRANSPORT_EPAR_TOL``:
+  override the tolerance used when ``SFINCS_JAX_TRANSPORT_EPAR_LOOSE`` is enabled (default 1e-8).
+- ``SFINCS_JAX_TRANSPORT_EPAR_KRYLOV``:
+  force Krylov (incremental GMRES) for RHSMode=2 whichRHS=3 regardless of dense fallback.
+- ``SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE``:
+  apply a constraint-space nullspace projection for RHSMode=2 whichRHS=3 (default on; set to 0 to disable).
 - ``SFINCS_JAX_DENSE_REG``:
   override dense solve regularization strength for singular/near-singular systems.
 - ``SFINCS_JAX_DENSE_SINGULAR_MODE``:
