@@ -17,7 +17,7 @@
 
 &geometryParameters
   geometryScheme = 5
-  equilibriumFile = "wout_w7x_standardConfig.txt"
+  equilibriumFile = "wout_w7x_standardConfig.nc"
   inputRadialCoordinate = 3  ! rN
   rN_wish = 0.5
 

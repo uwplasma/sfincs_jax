@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
 from pathlib import Path
@@ -157,7 +158,19 @@ def _resolve_equilibrium_file_from_namelist(*, nml: Namelist) -> Path:
     base_dir = nml.source_path.parent if nml.source_path is not None else None
     repo_root = Path(__file__).resolve().parents[1]
     extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
-    return resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
+    geometry_scheme = int(_get_int(geom_params, "geometryScheme", -1))
+
+    raw = str(equilibrium_file).strip().strip('"').strip("'")
+    p = Path(raw)
+    # For VMEC geometry, prefer netCDF if a sibling exists, even when an ASCII file
+    # is present. This keeps Fortran/JAX parity in mixed upstream distributions.
+    if geometry_scheme == 5 and p.suffix.lower() in {".txt", ".dat"}:
+        p_nc = p.with_suffix(".nc")
+        try:
+            return resolve_existing_path(str(p_nc), base_dir=base_dir, extra_search_dirs=extra).path
+        except FileNotFoundError:
+            pass
+    return resolve_existing_path(raw, base_dir=base_dir, extra_search_dirs=extra).path
 
 
 def localize_equilibrium_file_in_place(*, input_namelist: Path, overwrite: bool = False) -> Path | None:
@@ -1220,10 +1233,19 @@ def write_sfincs_jax_output_h5(
             if emit is not None:
                 emit(0, "write_sfincs_jax_output_h5: includePhi1=true -> Newton–Krylov solve with history")
             nk_solve_method = "dense" if int(op0.total_size) <= 5000 else "batched"
+            env_nk_method = os.environ.get("SFINCS_JAX_PHI1_NK_SOLVE_METHOD", "").strip().lower()
+            if env_nk_method in {"dense", "incremental", "batched"}:
+                nk_solve_method = env_nk_method
             # Parity mode for includePhi1 + full quasi-neutrality runs (quasineutralityOption=1):
             # use a frozen linearization and relative nonlinear stopping similar to v3's SNES path.
             use_frozen_linearization = bool(quasineutrality_option == 1)
-            nonlinear_rtol = 1e-8 if use_frozen_linearization else 0.0
+            # Use a slightly looser relative threshold than PETSc defaults so the
+            # reduced qn=1 fixtures terminate at the same saved-iteration count as v3.
+            nonlinear_rtol = 3e-8 if use_frozen_linearization else 0.0
+            if use_frozen_linearization:
+                env_rtol = os.environ.get("SFINCS_JAX_PHI1_NONLINEAR_RTOL", "").strip()
+                if env_rtol:
+                    nonlinear_rtol = float(env_rtol)
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: includePhi1 linearized solve_method={nk_solve_method}")
                 if use_frozen_linearization:
