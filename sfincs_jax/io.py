@@ -1219,6 +1219,7 @@ def write_sfincs_jax_output_h5(
                 gmres_restart=120,
                 gmres_maxiter=1000,
                 solve_method="batched",
+                emit=emit,
             )
             xs = x_hist if x_hist else [result.x]
         else:

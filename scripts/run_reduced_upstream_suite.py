@@ -387,6 +387,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path) -> None:
 
 def _run_case(
     *,
+    case_name: str,
     case_input: Path,
     case_out_dir: Path,
     fortran_exe: Path,
@@ -396,7 +397,7 @@ def _run_case(
     max_attempts: int,
     use_seed_resolution: bool = False,
 ) -> CaseResult:
-    case = case_input.parent.name
+    case = str(case_name)
     case_out_dir.mkdir(parents=True, exist_ok=True)
     dst_input = case_out_dir / "input.namelist"
     (case_out_dir / "input.original.namelist").write_text(case_input.read_text())
@@ -617,6 +618,7 @@ def main() -> int:
             print(f"  using reduced seed -> {reduced_seed}")
         case_out = out_root / case
         result = _run_case(
+            case_name=case,
             case_input=case_input,
             case_out_dir=case_out,
             fortran_exe=fortran_exe,

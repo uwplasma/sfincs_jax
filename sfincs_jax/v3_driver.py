@@ -7,6 +7,8 @@ from jax import config as _jax_config
 _jax_config.update("jax_enable_x64", True)
 
 from collections.abc import Callable
+import os
+import numpy as np
 
 import jax
 import jax.numpy as jnp
@@ -105,6 +107,7 @@ def solve_v3_full_system_linear_gmres(
 
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
+        emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
     result = gmres_solve(
         matvec=mv,
         b=rhs,
@@ -239,6 +242,7 @@ def solve_v3_full_system_newton_krylov_history(
     gmres_maxiter: int | None = 400,
     solve_method: str = "batched",
     identity_shift: float = 0.0,
+    emit: Callable[[int, str], None] | None = None,
 ) -> tuple[V3NewtonKrylovResult, list[jnp.ndarray]]:
     """Newton–Krylov solve that also returns the per-iteration accepted states.
 
@@ -247,6 +251,8 @@ def solve_v3_full_system_newton_krylov_history(
     the initial guess `x0`.
     """
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift)
+    if emit is not None:
+        emit(1, f"solve_v3_full_system_newton_krylov_history: total_size={int(op.total_size)}")
     if x0 is None:
         x = jnp.zeros((op.total_size,), dtype=jnp.float64)
     else:
@@ -258,8 +264,12 @@ def solve_v3_full_system_newton_krylov_history(
     accepted: list[jnp.ndarray] = []
 
     for k in range(int(max_newton)):
+        if emit is not None:
+            emit(1, f"newton_iter={k}: evaluateResidual called")
         r, jvp = jax.linearize(lambda xx: residual_v3_full_system(op, xx), x)
         rnorm = jnp.linalg.norm(r)
+        if emit is not None:
+            emit(0, f"newton_iter={k}: residual_norm={float(rnorm):.6e}")
         if float(rnorm) < float(tol):
             return (
                 V3NewtonKrylovResult(
@@ -280,6 +290,8 @@ def solve_v3_full_system_newton_krylov_history(
             maxiter=gmres_maxiter,
             solve_method=str(solve_method),
         )
+        if emit is not None:
+            emit(1, f"newton_iter={k}: evaluateJacobian called (linearized matvec), gmres_residual={float(lin.residual_norm):.6e}")
         s = lin.x
         last_linear_resid = lin.residual_norm
 
@@ -325,6 +337,30 @@ class V3TransportMatrixSolveResult:
     particle_flux_vm_psi_hat: jnp.ndarray  # (S, N)
     heat_flux_vm_psi_hat: jnp.ndarray  # (S, N)
     elapsed_time_s: jnp.ndarray  # (N,)
+
+
+def _transport_active_dof_indices(op: V3FullSystemOperator) -> np.ndarray:
+    """Return full-vector indices for active transport solve DOFs.
+
+    For v3 RHSMode=2/3 transport solves, Fortran only includes active Legendre
+    modes for each x (as set by `Nxi_for_x`) in the linear system unknown vector.
+    This helper builds that reduced active set so matrix-free solves can mirror
+    Fortran's non-singular system size.
+    """
+    s = int(op.n_species)
+    x = int(op.n_x)
+    l = int(op.n_xi)
+    t = int(op.n_theta)
+    z = int(op.n_zeta)
+
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)  # (X,)
+    l_idx = np.arange(l, dtype=np.int32)[None, :]  # (1,L)
+    xl_mask = l_idx < nxi_for_x[:, None]  # (X,L)
+    f_mask = np.broadcast_to(xl_mask[None, :, :, None, None], (s, x, l, t, z))
+    f_active = np.flatnonzero(f_mask.reshape((-1,)))  # within f block
+
+    tail_active = np.arange(int(op.f_size), int(op.total_size), dtype=np.int32)
+    return np.concatenate([f_active.astype(np.int32), tail_active], axis=0)
 
 
 def solve_v3_transport_matrix_linear_gmres(
@@ -373,6 +409,36 @@ def solve_v3_transport_matrix_linear_gmres(
             if emit is not None:
                 emit(0, f"solve_v3_transport_matrix_linear_gmres: using dense solve for RHSMode={rhs_mode} (n={int(op0.total_size)})")
 
+    active_dof_env = os.environ.get("SFINCS_JAX_TRANSPORT_ACTIVE_DOF", "").strip().lower()
+    use_active_dof_mode = int(rhs_mode) in {2, 3} and active_dof_env in {"1", "true", "yes", "on"}
+    # For reduced active-DOF parity mode, prefer Krylov iterations over dense direct
+    # solves to stay closer to upstream PETSc/KSP behavior for singular transport systems.
+    if use_active_dof_mode and str(solve_method_use).lower() == "dense":
+        solve_method_use = str(solve_method)
+    elif int(rhs_mode) in {2, 3} and emit is not None:
+        emit(
+            1,
+            "solve_v3_transport_matrix_linear_gmres: active-DOF mode disabled "
+            "(set SFINCS_JAX_TRANSPORT_ACTIVE_DOF=1 to enable experimental reduced solve)",
+        )
+    active_idx_np: np.ndarray | None = None
+    active_idx_jnp: jnp.ndarray | None = None
+    full_to_active_jnp: jnp.ndarray | None = None
+    active_size = int(op0.total_size)
+    if use_active_dof_mode:
+        active_idx_np = _transport_active_dof_indices(op0)
+        active_idx_jnp = jnp.asarray(active_idx_np, dtype=jnp.int32)
+        full_to_active_np = np.zeros((int(op0.total_size),), dtype=np.int32)
+        full_to_active_np[np.asarray(active_idx_np, dtype=np.int32)] = np.arange(1, int(active_idx_np.shape[0]) + 1, dtype=np.int32)
+        full_to_active_jnp = jnp.asarray(full_to_active_np, dtype=jnp.int32)
+        active_size = int(active_idx_np.shape[0])
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: active-DOF mode enabled "
+                f"(size={active_size}/{int(op0.total_size)})",
+            )
+
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
@@ -390,6 +456,7 @@ def solve_v3_transport_matrix_linear_gmres(
         rhs = rhs_v3_full_system(op_rhs)
         if emit is not None:
             emit(0, f"whichRHS={which_rhs}/{n}: assembling+solving (rhs_norm={float(jnp.linalg.norm(rhs)):.6e})")
+            emit(1, f"whichRHS={which_rhs}/{n}: evaluateJacobian called (matrix-free)")
 
         # In upstream v3, the transport RHS settings are applied globally before each solve.
         # For PAS parity fixtures, matching this behavior requires using `op_rhs` in the matvec.
@@ -398,29 +465,80 @@ def solve_v3_transport_matrix_linear_gmres(
         use_op_rhs_in_matvec = op0.fblock.pas is not None
         op_matvec = op_rhs if use_op_rhs_in_matvec else op0
 
-        def mv(x):
-            return apply_v3_full_system_operator(op_matvec, x)
+        if use_active_dof_mode:
+            assert active_idx_jnp is not None
+            assert full_to_active_jnp is not None
 
-        res = gmres_solve(
-            matvec=mv,
-            b=rhs,
-            # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
-            # before each whichRHS solve (no warm-start from previous RHS).
-            x0=x0,
-            tol=tol,
-            atol=atol,
-            restart=restart,
-            maxiter=maxiter,
-            solve_method=solve_method_use,
-        )
-        state_vectors[which_rhs] = res.x
-        residual_norms[which_rhs] = res.residual_norm
+            def reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
+                return v_full[active_idx_jnp]
+
+            def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+                # Gather-based expansion (instead of scatter) keeps the reduced
+                # matvec compatible with JAX's transpose rules used by GMRES.
+                z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
+                padded = jnp.concatenate([z0, v_reduced], axis=0)
+                return padded[full_to_active_jnp]
+
+            def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
+                y_full = apply_v3_full_system_operator(op_matvec, expand_reduced(x_reduced))
+                return reduce_full(y_full)
+
+            rhs_reduced = reduce_full(rhs)
+            x0_reduced = None
+            if x0 is not None:
+                x0_arr = jnp.asarray(x0)
+                if x0_arr.shape == (active_size,):
+                    x0_reduced = x0_arr
+                elif x0_arr.shape == (op0.total_size,):
+                    x0_reduced = reduce_full(x0_arr)
+
+            res_reduced = gmres_solve(
+                matvec=mv_reduced,
+                b=rhs_reduced,
+                # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
+                # before each whichRHS solve (no warm-start from previous RHS).
+                x0=x0_reduced,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method=solve_method_use,
+            )
+            x_full = expand_reduced(res_reduced.x)
+            res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator(op_matvec, x_full) - rhs)
+            state_vectors[which_rhs] = x_full
+            residual_norms[which_rhs] = res_norm_full
+        else:
+            def mv(x):
+                return apply_v3_full_system_operator(op_matvec, x)
+
+            res = gmres_solve(
+                matvec=mv,
+                b=rhs,
+                # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
+                # before each whichRHS solve (no warm-start from previous RHS).
+                x0=x0,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method=solve_method_use,
+            )
+            x_full = res.x
+            state_vectors[which_rhs] = x_full
+            residual_norms[which_rhs] = res.residual_norm
         if emit is not None:
-            emit(0, f"whichRHS={which_rhs}: residual_norm={float(res.residual_norm):.6e} elapsed_s={t_rhs.elapsed_s():.3f}")
+            emit(
+                0,
+                f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
+                f"elapsed_s={t_rhs.elapsed_s():.3f}",
+            )
         # Collect diagnostics for parity with v3 `sfincsOutput.h5` and postprocessing scripts.
         from .transport_matrix import v3_transport_diagnostics_vm_only
 
-        diag = v3_transport_diagnostics_vm_only(op0, x_full=res.x)
+        if emit is not None:
+            emit(1, f"whichRHS={which_rhs}/{n}: Computing diagnostics")
+        diag = v3_transport_diagnostics_vm_only(op0, x_full=x_full)
         diag_fsab_flow.append(diag.fsab_flow)
         diag_pf.append(diag.particle_flux_vm_psi_hat)
         diag_hf.append(diag.heat_flux_vm_psi_hat)
