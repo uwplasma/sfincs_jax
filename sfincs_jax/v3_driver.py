@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from jax import config as _jax_config
 
@@ -242,6 +242,8 @@ def solve_v3_full_system_newton_krylov_history(
     gmres_maxiter: int | None = 400,
     solve_method: str = "batched",
     identity_shift: float = 0.0,
+    nonlinear_rtol: float = 0.0,
+    use_frozen_linearization: bool = False,
     emit: Callable[[int, str], None] | None = None,
 ) -> tuple[V3NewtonKrylovResult, list[jnp.ndarray]]:
     """Newton–Krylov solve that also returns the per-iteration accepted states.
@@ -249,6 +251,10 @@ def solve_v3_full_system_newton_krylov_history(
     The returned history matches v3's convention of saving diagnostics for iteration numbers
     starting at 1, i.e. it includes the sequence of *accepted* Newton iterates and excludes
     the initial guess `x0`.
+
+    Optionally, this routine can use a v3-parity-oriented solve path with a frozen
+    (`whichMatrix=1`-like) linearization and relative residual stopping
+    (`||F|| <= nonlinear_rtol * ||F_0||`) in addition to absolute `tol`.
     """
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift)
     if emit is not None:
@@ -262,15 +268,28 @@ def solve_v3_full_system_newton_krylov_history(
 
     last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
     accepted: list[jnp.ndarray] = []
+    rnorm_initial: float | None = None
 
     for k in range(int(max_newton)):
         if emit is not None:
             emit(1, f"newton_iter={k}: evaluateResidual called")
-        r, jvp = jax.linearize(lambda xx: residual_v3_full_system(op, xx), x)
+        op_use = op
+        if bool(op.include_phi1):
+            phi1_flat = x[op.f_size : op.f_size + op.n_theta * op.n_zeta]
+            phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
+            op_use = replace(op, phi1_hat_base=phi1)
+
+        r = apply_v3_full_system_operator(op_use, x) - rhs_v3_full_system(op_use)
         rnorm = jnp.linalg.norm(r)
+        rnorm_f = float(rnorm)
+        if rnorm_initial is None:
+            rnorm_initial = max(rnorm_f, 1e-300)
         if emit is not None:
-            emit(0, f"newton_iter={k}: residual_norm={float(rnorm):.6e}")
-        if float(rnorm) < float(tol):
+            emit(0, f"newton_iter={k}: residual_norm={rnorm_f:.6e}")
+
+        converged_abs = rnorm_f < float(tol)
+        converged_rel = rnorm_f <= float(nonlinear_rtol) * float(rnorm_initial)
+        if converged_abs or converged_rel:
             return (
                 V3NewtonKrylovResult(
                     op=op,
@@ -282,8 +301,19 @@ def solve_v3_full_system_newton_krylov_history(
                 accepted,
             )
 
+        if use_frozen_linearization:
+            matvec = lambda dx: apply_v3_full_system_operator(op_use, dx)
+            if emit is not None:
+                emit(1, f"newton_iter={k}: evaluateJacobian called (frozen linearization)")
+        else:
+            # Optional exact mode for debugging/experimentation.
+            _r_lin, jvp = jax.linearize(lambda xx: residual_v3_full_system(op, xx), x)
+            matvec = jvp
+            if emit is not None:
+                emit(1, f"newton_iter={k}: evaluateJacobian called (autodiff linearization)")
+
         lin = gmres_solve(
-            matvec=jvp,
+            matvec=matvec,
             b=-r,
             tol=float(gmres_tol),
             restart=int(gmres_restart),
@@ -291,7 +321,7 @@ def solve_v3_full_system_newton_krylov_history(
             solve_method=str(solve_method),
         )
         if emit is not None:
-            emit(1, f"newton_iter={k}: evaluateJacobian called (linearized matvec), gmres_residual={float(lin.residual_norm):.6e}")
+            emit(1, f"newton_iter={k}: gmres_residual={float(lin.residual_norm):.6e}")
         s = lin.x
         last_linear_resid = lin.residual_norm
 

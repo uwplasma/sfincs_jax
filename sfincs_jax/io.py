@@ -1220,8 +1220,14 @@ def write_sfincs_jax_output_h5(
             if emit is not None:
                 emit(0, "write_sfincs_jax_output_h5: includePhi1=true -> Newton–Krylov solve with history")
             nk_solve_method = "dense" if int(op0.total_size) <= 5000 else "batched"
+            # Parity mode for includePhi1 + full quasi-neutrality runs (quasineutralityOption=1):
+            # use a frozen linearization and relative nonlinear stopping similar to v3's SNES path.
+            use_frozen_linearization = bool(quasineutrality_option == 1)
+            nonlinear_rtol = 1e-8 if use_frozen_linearization else 0.0
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: includePhi1 linearized solve_method={nk_solve_method}")
+                if use_frozen_linearization:
+                    emit(1, "write_sfincs_jax_output_h5: includePhi1 parity mode -> frozen Jacobian + relative nonlinear stop")
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
                 x0=None,
@@ -1231,6 +1237,8 @@ def write_sfincs_jax_output_h5(
                 gmres_restart=120,
                 gmres_maxiter=1000,
                 solve_method=nk_solve_method,
+                nonlinear_rtol=nonlinear_rtol,
+                use_frozen_linearization=use_frozen_linearization,
                 emit=emit,
             )
             xs = x_hist if x_hist else [result.x]
@@ -1356,8 +1364,10 @@ def write_sfincs_jax_output_h5(
         data["jHat"] = _fortran_h5_layout(_tz_to_ztN([d["jHat"] for d in diags]))
 
         # vs-x arrays and constraint sources:
-        for k in ("particleFlux_vm_psiHat_vs_x", "heatFlux_vm_psiHat_vs_x", "FSABFlow_vs_x", "sources"):
+        for k in ("particleFlux_vm_psiHat_vs_x", "heatFlux_vm_psiHat_vs_x", "FSABFlow_vs_x"):
             data[k] = _fortran_h5_layout(_xS_to_xSN([d[k] for d in diags]))
+        if all(("sources" in d) for d in diags):
+            data["sources"] = _fortran_h5_layout(_xS_to_xSN([d["sources"] for d in diags]))
 
         # FSABjHat diagnostics are summed over species and stored per-iteration:
         for k in ("FSABjHat", "FSABjHatOverB0", "FSABjHatOverRootFSAB2"):
