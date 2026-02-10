@@ -97,15 +97,15 @@
    * - reduced_inputs
      - parity_mismatch
      - solver branch mismatch
-     - NTHETA=5,NX=2,NXI=4,NZETA=1
+     - NTHETA=8,NX=4,NXI=8,NZETA=7
      - 1
      - 0
-     - 0.178
-     - 12.315
-     - 126/263
-     - S:12 P:0
+     - 0.792
+     - 10.058
+     - 14/194
+     - S:11 P:1
      - 7/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 printParity=7/9 missing=residual,jacobian
+     - Common numeric dataset mismatches present. sample=MachUsingFSAThermalSpeed,NTV,NTVBeforeSurfaceIntegral,densityPerturbation buckets=solver:11 physics:1 printParity=7/9 missing=jacobian,diagnostics
    * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
      - fortran_timeout
      - solver branch mismatch
