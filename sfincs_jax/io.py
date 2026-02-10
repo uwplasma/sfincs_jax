@@ -1197,19 +1197,31 @@ def write_sfincs_jax_output_h5(
             emit(0, "write_sfincs_jax_output_h5: computing RHSMode=1 solution + diagnostics")
 
         include_phi1 = bool(nml.group("physicsParameters").get("INCLUDEPHI1", False))
+        include_phi1_in_kinetic = bool(nml.group("physicsParameters").get("INCLUDEPHI1INKINETICEQUATION", False))
+        quasineutrality_option = int(nml.group("physicsParameters").get("QUASINEUTRALITYOPTION", 1))
 
         # Decide on the linear solver method based on system size.
         solve_method = "batched"
         op0 = full_system_operator_from_namelist(nml=nml)
-        if int(op0.total_size) <= 5000:
+        if include_phi1 and not include_phi1_in_kinetic:
+            # For includePhi1 + linear kinetic equation runs, `incremental` GMRES is
+            # more robust than dense-regularized solves on tiny reduced fixtures.
+            solve_method = "incremental"
+            if emit is not None:
+                emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
+        elif int(op0.total_size) <= 5000:
             solve_method = "dense"
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: using dense solve (n={int(op0.total_size)})")
 
         # Solve and build a list of per-iteration states `xs` matching v3's diagnostic output layout.
-        if include_phi1:
+        nonlinear_phi1 = bool(include_phi1 and include_phi1_in_kinetic)
+        if nonlinear_phi1:
             if emit is not None:
                 emit(0, "write_sfincs_jax_output_h5: includePhi1=true -> Newton–Krylov solve with history")
+            nk_solve_method = "dense" if int(op0.total_size) <= 5000 else "batched"
+            if emit is not None:
+                emit(1, f"write_sfincs_jax_output_h5: includePhi1 linearized solve_method={nk_solve_method}")
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
                 x0=None,
@@ -1218,7 +1230,7 @@ def write_sfincs_jax_output_h5(
                 gmres_tol=1e-12,
                 gmres_restart=120,
                 gmres_maxiter=1000,
-                solve_method="batched",
+                solve_method=nk_solve_method,
                 emit=emit,
             )
             xs = x_hist if x_hist else [result.x]
@@ -1230,6 +1242,11 @@ def write_sfincs_jax_output_h5(
                 emit=emit,
             )
             xs = [result.x]
+            if include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option == 1):
+                # v3 includePhi1 workflows run SNES and write at least 2 diagnostic iterations.
+                # For the current linearized parity subset, duplicate the converged state so the
+                # iteration-dependent output arrays match upstream dimensionality.
+                xs = [result.x, result.x]
 
         n_iter = int(len(xs))
         data["NIterations"] = np.asarray(n_iter, dtype=np.int32)

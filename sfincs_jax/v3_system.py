@@ -343,6 +343,16 @@ def apply_v3_full_system_operator(op: V3FullSystemOperator, x_full: jnp.ndarray)
                 (op.z_s[0] * op.z_s[0]) * op.n_hat[0] / op.t_hat[0]
                 + (op.adiabatic_z * op.adiabatic_z) * op.adiabatic_nhat / op.adiabatic_that
             )
+        elif int(op.quasineutrality_option) == 1:
+            # Parity-first stabilization for the includePhi1 + quasineutralityOption=1 branch:
+            # include the leading-order Boltzmann-response diagonal from all kinetic species and
+            # the adiabatic species when present. Without this term, tiny reduced fixtures can
+            # pick an unphysical large-Phi1 nullspace branch.
+            phi1_diag = -op.alpha * jnp.sum((op.z_s * op.z_s) * op.n_hat / op.t_hat)
+            if op.with_adiabatic:
+                phi1_diag = phi1_diag - op.alpha * (
+                    (op.adiabatic_z * op.adiabatic_z) * op.adiabatic_nhat / op.adiabatic_that
+                )
         qn = qn_from_f + phi1_diag * phi1 + lam
 
         # <Phi1> = 0 constraint row ("lambda row"):
