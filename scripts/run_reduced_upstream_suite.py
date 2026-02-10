@@ -36,6 +36,10 @@ class CaseResult:
     n_common_keys: int
     n_mismatch_common: int
     mismatch_keys_sample: list[str]
+    n_mismatch_solver: int
+    n_mismatch_physics: int
+    mismatch_solver_sample: list[str]
+    mismatch_physics_sample: list[str]
     max_abs_mismatch: float | None
     final_resolution: dict[str, int]
     input_path: str
@@ -77,6 +81,20 @@ SOLVER_MISMATCH_HINTS = (
     "transportmatrix",
     "flow",
     "fsa",
+)
+
+PHYSICS_MISMATCH_HINTS = (
+    "bhat",
+    "dbhat",
+    "ghat",
+    "ihat",
+    "iota",
+    "uhat",
+    "gpsi",
+    "sqrtg",
+    "dps",
+    "jacobianhat",
+    "geometry",
 )
 
 
@@ -268,6 +286,19 @@ def _classify_blocker(*, status: str, note: str, mismatch_keys: list[str], jax_l
     return "unsupported physics/path"
 
 
+def _bucket_mismatch_keys(mismatch_keys: list[str]) -> tuple[list[str], list[str]]:
+    """Split mismatches into solver-sensitive and physics-sensitive families."""
+    solver: list[str] = []
+    physics: list[str] = []
+    for key in mismatch_keys:
+        lk = key.lower()
+        if any(h in lk for h in PHYSICS_MISMATCH_HINTS):
+            physics.append(key)
+        else:
+            solver.append(key)
+    return solver, physics
+
+
 def _load_existing_results(report_json: Path) -> dict[str, CaseResult]:
     if not report_json.exists():
         return {}
@@ -289,6 +320,10 @@ def _load_existing_results(report_json: Path) -> dict[str, CaseResult]:
             n_common_keys=int(item.get("n_common_keys", 0)),
             n_mismatch_common=int(item.get("n_mismatch_common", 0)),
             mismatch_keys_sample=list(item.get("mismatch_keys_sample", [])),
+            n_mismatch_solver=int(item.get("n_mismatch_solver", 0)),
+            n_mismatch_physics=int(item.get("n_mismatch_physics", 0)),
+            mismatch_solver_sample=list(item.get("mismatch_solver_sample", [])),
+            mismatch_physics_sample=list(item.get("mismatch_physics_sample", [])),
             max_abs_mismatch=item.get("max_abs_mismatch"),
             final_resolution={k: int(v) for k, v in dict(item.get("final_resolution", {})).items()},
             input_path=str(item.get("input_path", "")),
@@ -315,7 +350,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path) -> None:
     lines.append("- Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.\n\n")
     lines.append(".. list-table:: Reduced-resolution upstream suite parity status\n")
     lines.append("   :header-rows: 1\n")
-    lines.append("   :widths: 25 9 16 10 8 8 11 11 12 13 16\n\n")
+    lines.append("   :widths: 23 9 16 10 7 7 10 10 11 13 12 16\n\n")
     lines.append("   * - Case\n")
     lines.append("     - Status\n")
     lines.append("     - Blocker\n")
@@ -325,6 +360,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path) -> None:
     lines.append("     - Fortran(s)\n")
     lines.append("     - JAX(s)\n")
     lines.append("     - Mismatches\n")
+    lines.append("     - Buckets\n")
     lines.append("     - Print parity\n")
     lines.append("     - Note\n")
     for row in rows:
@@ -332,6 +368,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path) -> None:
         ft = "" if row.fortran_runtime_s is None else f"{row.fortran_runtime_s:.3f}"
         jt = "" if row.jax_runtime_s is None else f"{row.jax_runtime_s:.3f}"
         mm = f"{row.n_mismatch_common}/{row.n_common_keys}" if row.n_common_keys > 0 else "-"
+        buckets = f"S:{row.n_mismatch_solver} P:{row.n_mismatch_physics}"
         pp = f"{row.print_parity_signals}/{row.print_parity_total}" if row.print_parity_total > 0 else "-"
         lines.append(f"   * - {row.case}\n")
         lines.append(f"     - {row.status}\n")
@@ -342,6 +379,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path) -> None:
         lines.append(f"     - {ft}\n")
         lines.append(f"     - {jt}\n")
         lines.append(f"     - {mm}\n")
+        lines.append(f"     - {buckets}\n")
         lines.append(f"     - {pp}\n")
         lines.append(f"     - {row.message}\n")
     out_path.write_text("".join(lines), encoding="utf-8")
@@ -387,6 +425,8 @@ def _run_case(
     n_bad = 0
     max_abs = None
     mismatch_keys: list[str] = []
+    mismatch_solver_keys: list[str] = []
+    mismatch_physics_keys: list[str] = []
 
     while attempts < max_attempts:
         attempts += 1
@@ -458,12 +498,17 @@ def _run_case(
 
         try:
             n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol)
+            mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
             if n_bad == 0:
                 status = "parity_ok"
                 note = "All common numeric datasets matched tolerance."
             else:
                 status = "parity_mismatch"
-                note = f"Common numeric dataset mismatches present. sample={','.join(mismatch_keys[:4])}"
+                note = (
+                    "Common numeric dataset mismatches present. "
+                    f"sample={','.join(mismatch_keys[:4])} "
+                    f"buckets=solver:{len(mismatch_solver_keys)} physics:{len(mismatch_physics_keys)}"
+                )
         except Exception as exc:  # noqa: BLE001
             status = "compare_error"
             note = f"Compare error: {type(exc).__name__}: {exc}"
@@ -494,6 +539,10 @@ def _run_case(
         n_common_keys=n_common,
         n_mismatch_common=n_bad,
         mismatch_keys_sample=mismatch_keys,
+        n_mismatch_solver=len(mismatch_solver_keys),
+        n_mismatch_physics=len(mismatch_physics_keys),
+        mismatch_solver_sample=mismatch_solver_keys[:12],
+        mismatch_physics_sample=mismatch_physics_keys[:12],
         max_abs_mismatch=max_abs,
         final_resolution=final_res,
         input_path=str(dst_input),
@@ -557,9 +606,13 @@ def main() -> int:
     for index, input_path in enumerate(inputs, start=1):
         case = input_path.parent.name
         print(f"[{index}/{len(inputs)}] {case}")
+        reduced_seed = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
+        case_input = reduced_seed if reduced_seed.exists() else input_path
+        if case_input == reduced_seed:
+            print(f"  using reduced seed -> {reduced_seed}")
         case_out = out_root / case
         result = _run_case(
-            case_input=input_path,
+            case_input=case_input,
             case_out_dir=case_out,
             fortran_exe=fortran_exe,
             timeout_s=float(args.timeout_s),
@@ -567,12 +620,12 @@ def main() -> int:
             atol=float(args.atol),
             max_attempts=int(args.max_attempts),
         )
-        if result.status == "parity_ok":
+        if result.status in {"parity_ok", "parity_mismatch"} and result.n_common_keys > 0:
             reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
             reduced_fixture.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(result.input_path), reduced_fixture)
             result.promoted_input_path = str(reduced_fixture)
-            print(f"  promoted reduced input -> {reduced_fixture}")
+            print(f"  saved reduced input -> {reduced_fixture}")
         current_run_results.append(result)
         merged_results[result.case] = result
         print(

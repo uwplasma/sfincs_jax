@@ -1431,7 +1431,8 @@ def write_sfincs_jax_output_h5(
             dbt = jnp.asarray(data["dBHatdtheta"], dtype=jnp.float64)
             dbz = jnp.asarray(data["dBHatdzeta"], dtype=jnp.float64)
             uhat = jnp.asarray(data["uHat"], dtype=jnp.float64)
-            inv_fsa_b2 = jnp.mean(1.0 / (bh * bh))
+            # v3 geometry defines invFSA_BHat2 as 1 / FSABHat2 (not <1/BHat^2>).
+            inv_fsa_b2 = 1.0 / jnp.asarray(float(data["FSABHat2"]), dtype=jnp.float64)
             ghat = jnp.asarray(float(data["GHat"]), dtype=jnp.float64)
             ihat = jnp.asarray(float(data["IHat"]), dtype=jnp.float64)
             iota = jnp.asarray(float(data["iota"]), dtype=jnp.float64)
@@ -1516,7 +1517,8 @@ def write_sfincs_jax_output_h5(
             geometry_scheme = int(np.asarray(data["geometryScheme"]))
             compute_ntv = geometry_scheme != 5
             if compute_ntv:
-                inv_fsa_b2 = jnp.mean(1.0 / (bh * bh))
+                # v3 geometry defines invFSA_BHat2 as 1 / FSABHat2 (not <1/BHat^2>).
+                inv_fsa_b2 = 1.0 / jnp.asarray(float(data["FSABHat2"]), dtype=jnp.float64)
                 ghat = jnp.asarray(float(data["GHat"]), dtype=jnp.float64)
                 ihat = jnp.asarray(float(data["IHat"]), dtype=jnp.float64)
                 iota = jnp.asarray(float(data["iota"]), dtype=jnp.float64)
@@ -1728,7 +1730,8 @@ def write_sfincs_jax_output_h5(
                 dbt = jnp.asarray(data["dBHatdtheta"], dtype=jnp.float64)
                 dbz = jnp.asarray(data["dBHatdzeta"], dtype=jnp.float64)
                 uhat = jnp.asarray(data["uHat"], dtype=jnp.float64)
-                inv_fsa_b2 = jnp.mean(1.0 / (bh * bh))
+                # v3 geometry defines invFSA_BHat2 as 1 / FSABHat2 (not <1/BHat^2>).
+                inv_fsa_b2 = 1.0 / jnp.asarray(float(data["FSABHat2"]), dtype=jnp.float64)
                 ghat = jnp.asarray(float(data["GHat"]), dtype=jnp.float64)
                 ihat = jnp.asarray(float(data["IHat"]), dtype=jnp.float64)
                 iota = jnp.asarray(float(data["iota"]), dtype=jnp.float64)
