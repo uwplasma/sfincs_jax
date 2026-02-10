@@ -302,6 +302,84 @@ def _source_basis_constraint_scheme_1(x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.
     return s1, s2
 
 
+def _nonlinear_temp_vector(
+    op: V3FullSystemOperator, f: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Compute tempVector2-like L-coupling (out_nl) and masks for nonlinear Phi1 terms."""
+    n_xi = int(op.n_xi)
+    inv_x = 1.0 / op.x  # (X,)
+    ddx_to_use = jnp.where(jnp.abs(op.ddx) > _THRESHOLD_FOR_INCLUSION, op.ddx, 0.0)
+    ddx_f = jnp.einsum("ij,sltzj->sltzi", ddx_to_use, jnp.transpose(f, (0, 2, 3, 4, 1)))  # (S,L,T,Z,X)
+    ddx_f = jnp.transpose(ddx_f, (0, 4, 1, 2, 3))  # (S,X,L,T,Z)
+
+    out_nl = jnp.zeros_like(f, dtype=jnp.float64)
+    l = jnp.arange(n_xi, dtype=jnp.float64)
+
+    if n_xi > 1:
+        lp1 = l[:-1]
+        coef = (lp1 + 1.0) / (2.0 * lp1 + 3.0)
+        diag_xl = (((lp1 + 1.0) * (lp1 + 2.0) / (2.0 * lp1 + 3.0))[:, None] * inv_x[None, :]).T
+        src = f[:, :, 1:, :, :]
+        ddx_src = ddx_f[:, :, 1:, :, :]
+        term = coef[None, None, :, None, None] * ddx_src + diag_xl[None, :, :, None, None] * src
+        out_nl = out_nl.at[:, :, :-1, :, :].add(term)
+
+        lm1 = l[1:]
+        coef = lm1 / (2.0 * lm1 - 1.0)
+        diag_xl = ((-(lm1 - 1.0) * lm1 / (2.0 * lm1 - 1.0))[:, None] * inv_x[None, :]).T
+        src = f[:, :, :-1, :, :]
+        ddx_src = ddx_f[:, :, :-1, :, :]
+        term = coef[None, None, :, None, None] * ddx_src + diag_xl[None, :, :, None, None] * src
+        out_nl = out_nl.at[:, :, 1:, :, :].add(term)
+
+    ix0 = _ix_min(bool(op.point_at_x0))
+    mask_x = (jnp.arange(op.n_x) >= ix0).astype(jnp.float64)  # (X,)
+    mask_l = (
+        jnp.arange(n_xi, dtype=jnp.int32)[None, :] < op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)[:, None]
+    ).astype(jnp.float64)  # (X,L)
+    return out_nl, mask_l, mask_x
+
+
+def _nonlinear_temp_vector_phi1(
+    op: V3FullSystemOperator, f: jnp.ndarray
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Compute tempVector2 for d(kinetic)/dPhi1 terms (matches populateMatrix.F90 logic)."""
+    n_xi = int(op.n_xi)
+    inv_x = 1.0 / op.x  # (X,)
+    ddx_to_use = jnp.where(jnp.abs(op.ddx) > _THRESHOLD_FOR_INCLUSION, op.ddx, 0.0)
+    ddx_f = jnp.einsum("ij,sltzj->sltzi", ddx_to_use, jnp.transpose(f, (0, 2, 3, 4, 1)))  # (S,L,T,Z,X)
+    ddx_f = jnp.transpose(ddx_f, (0, 4, 1, 2, 3))  # (S,X,L,T,Z)
+
+    out_phi1 = jnp.zeros_like(f, dtype=jnp.float64)
+    l = jnp.arange(n_xi, dtype=jnp.float64)
+
+    if n_xi > 1:
+        # For L < Nxi-1, populateMatrix.F90 overwrites tempVector2 with the L+1 contribution.
+        lp1 = l[:-1]
+        coef = (lp1 + 1.0) / (2.0 * lp1 + 3.0)
+        diag_xl = (((lp1 + 1.0) * (lp1 + 2.0) / (2.0 * lp1 + 3.0))[:, None] * inv_x[None, :]).T
+        src = f[:, :, 1:, :, :]
+        ddx_src = ddx_f[:, :, 1:, :, :]
+        term = coef[None, None, :, None, None] * ddx_src + diag_xl[None, :, :, None, None] * src
+        out_phi1 = out_phi1.at[:, :, :-1, :, :].add(term)
+
+        # For L = Nxi-1, populateMatrix.F90 uses only the L-1 contribution.
+        l_last = int(n_xi - 1)
+        coef_last = l_last / (2.0 * l_last - 1.0)
+        diag_last = (-(l_last - 1.0) * l_last / (2.0 * l_last - 1.0)) * inv_x
+        src_last = f[:, :, l_last - 1, :, :]
+        ddx_last = ddx_f[:, :, l_last - 1, :, :]
+        term_last = coef_last * ddx_last + diag_last[None, :, None, None] * src_last
+        out_phi1 = out_phi1.at[:, :, l_last, :, :].add(term_last)
+
+    ix0 = _ix_min(bool(op.point_at_x0))
+    mask_x = (jnp.arange(op.n_x) >= ix0).astype(jnp.float64)  # (X,)
+    mask_l = (
+        jnp.arange(n_xi, dtype=jnp.int32)[None, :] < op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)[:, None]
+    ).astype(jnp.float64)  # (X,L)
+    return out_phi1, mask_l, mask_x
+
+
 def apply_v3_full_system_operator(
     op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = False
 ) -> jnp.ndarray:
@@ -390,8 +468,8 @@ def apply_v3_full_system_operator(
         # and related linear Phi1-gradient terms in populateMatrix.F90.
         #
         # Notes:
-        # - For now we treat exp(-Ze alpha Phi1 / T) as 1.0 (linearization about Phi1 ~ 0),
-        #   matching the parity fixtures which use tiny Phi1 amplitudes.
+        # - For residual evaluations we use the current Phi1; for Jacobian matvecs we use
+        #   the frozen base-state Phi1 to match v3's linearization behavior.
         assert phi1 is not None
         ddtheta = op.fblock.collisionless.ddtheta
         ddzeta = op.fblock.collisionless.ddzeta
@@ -412,43 +490,11 @@ def apply_v3_full_system_operator(
             * e_term[None, :, :]
         )  # (S,T,Z)
 
-        n_xi = int(op.n_xi)
-        inv_x = 1.0 / op.x  # (X,)
-
-        # ddx applied along x for all L at once:
-        ddx_to_use = jnp.where(jnp.abs(op.ddx) > _THRESHOLD_FOR_INCLUSION, op.ddx, 0.0)
-        ddx_f = jnp.einsum("ij,sltzj->sltzi", ddx_to_use, jnp.transpose(f, (0, 2, 3, 4, 1)))  # (S,L,T,Z,X)
-        ddx_f = jnp.transpose(ddx_f, (0, 4, 1, 2, 3))  # (S,X,L,T,Z)
-
-        out_nl = jnp.zeros_like(f, dtype=jnp.float64)
-        l = jnp.arange(n_xi, dtype=jnp.float64)
-
-        # Super-diagonal (output L receives from source L+1):
-        if n_xi > 1:
-            lp1 = l[:-1]  # output L indices (0..Nxi-2)
-            coef = (lp1 + 1.0) / (2.0 * lp1 + 3.0)  # (Nxi-1,)
-            diag_xl = (((lp1 + 1.0) * (lp1 + 2.0) / (2.0 * lp1 + 3.0))[:, None] * inv_x[None, :]).T  # (X,Nxi-1)
-            src = f[:, :, 1:, :, :]  # (S,X,Nxi-1,T,Z)
-            ddx_src = ddx_f[:, :, 1:, :, :]
-            term = coef[None, None, :, None, None] * ddx_src + diag_xl[None, :, :, None, None] * src
-            out_nl = out_nl.at[:, :, :-1, :, :].add(term)
-
-        # Sub-diagonal (output L receives from source L-1):
-        if n_xi > 1:
-            lm1 = l[1:]  # output L indices (1..Nxi-1)
-            coef = lm1 / (2.0 * lm1 - 1.0)  # (Nxi-1,)
-            diag_xl = ((-(lm1 - 1.0) * lm1 / (2.0 * lm1 - 1.0))[:, None] * inv_x[None, :]).T  # (X,Nxi-1)
-            src = f[:, :, :-1, :, :]  # (S,X,Nxi-1,T,Z)
-            ddx_src = ddx_f[:, :, :-1, :, :]
-            term = coef[None, None, :, None, None] * ddx_src + diag_xl[None, :, :, None, None] * src
-            out_nl = out_nl.at[:, :, 1:, :, :].add(term)
-
-        ix0 = _ix_min(bool(op.point_at_x0))
-        mask_x = (jnp.arange(op.n_x) >= ix0).astype(jnp.float64)  # (X,)
-        mask = (
-            jnp.arange(n_xi, dtype=jnp.int32)[None, :] < op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)[:, None]
-        ).astype(jnp.float64)  # (X,L)
+        out_nl, mask, mask_x = _nonlinear_temp_vector(op, f)
         y_f = y_f + out_nl * nonlinear_factor[:, None, None, :, :] * mask[None, :, :, None, None] * mask_x[None, :, None, None, None]
+
+        # Jacobian d(kinetic)/dPhi1 term associated with the nonlinear operator is handled
+        # in apply_v3_full_system_jacobian so it can use the base-state f.
 
         x2 = op.x * op.x  # (X,)
         expx2 = jnp.exp(-x2)  # (X,)
@@ -456,9 +502,9 @@ def apply_v3_full_system_operator(
         sqrt_pi = jnp.sqrt(jnp.pi)
         norm = jnp.pi * sqrt_pi
 
-        # Evaluate exp(-Z*alpha*Phi1Hat/THat) using the base-state Phi1Hat.
+        phi1_use = op.phi1_hat_base if include_jacobian_terms else phi1
         exp_phi = jnp.exp(
-            -(op.z_s[:, None, None] * op.alpha / op.t_hat[:, None, None]) * op.phi1_hat_base[None, :, :]
+            -(op.z_s[:, None, None] * op.alpha / op.t_hat[:, None, None]) * phi1_use[None, :, :]
         )  # (S,T,Z)
 
         # Species-dependent Maxwellian normalization (v3):
@@ -478,7 +524,7 @@ def apply_v3_full_system_operator(
 
         # factor2 term from populateMatrix.F90 (adds an extra piece proportional to dPhiHatdpsiHat + Phi1Hat*dTHatdpsiHat/THat)
         sp_pref2 = op.z_s * op.n_hat * (op.m_hat * jnp.sqrt(op.m_hat)) / (op.t_hat * op.t_hat * jnp.sqrt(op.t_hat))  # (S,)
-        phi_term = op.dphi_hat_dpsi_hat + op.phi1_hat_base[None, :, :] * (op.dt_hat_dpsi_hat / op.t_hat)[:, None, None]  # (S,T,Z)
+        phi_term = op.dphi_hat_dpsi_hat + phi1_use[None, :, :] * (op.dt_hat_dpsi_hat / op.t_hat)[:, None, None]  # (S,T,Z)
 
         geom2_theta = -(op.alpha * op.alpha) * op.delta * op.d_hat * op.b_hat_sub_zeta / (
             2.0 * norm * (op.b_hat * op.b_hat)
@@ -663,6 +709,45 @@ def apply_v3_full_system_operator(
         raise NotImplementedError(f"constraintScheme={int(op.constraint_scheme)} is not supported.")
 
     return jnp.concatenate([y_f.reshape((-1,)), y_phi1, y_extra], axis=0)
+
+
+def apply_v3_full_system_jacobian(
+    op: V3FullSystemOperator, x_state: jnp.ndarray, dx: jnp.ndarray
+) -> jnp.ndarray:
+    """Apply the Jacobian at x_state to dx, using matrix-free parity terms."""
+    dx = jnp.asarray(dx)
+    x_state = jnp.asarray(x_state)
+    if dx.shape != (op.total_size,) or x_state.shape != (op.total_size,):
+        raise ValueError("x_state and dx must have shape (total_size,)")
+
+    # Start from the linearized operator with Jacobian terms (this includes factorJ1..5).
+    y = apply_v3_full_system_operator(op, dx, include_jacobian_terms=True)
+
+    if op.include_phi1 and op.include_phi1_in_kinetic:
+        # Replace the d(kinetic)/dPhi1 nonlinear-term contribution so it uses the base f_state.
+        f_state = x_state[: op.f_size].reshape(op.fblock.f_shape)
+
+        phi1_flat = dx[op.f_size : op.f_size + op.n_theta * op.n_zeta]
+        phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
+        ddtheta = op.fblock.collisionless.ddtheta
+        ddzeta = op.fblock.collisionless.ddzeta
+        dphi1_dtheta = ddtheta @ phi1
+        dphi1_dzeta = phi1 @ ddzeta.T
+        phi1_grad = op.b_hat_sup_theta * dphi1_dtheta + op.b_hat_sup_zeta * dphi1_dzeta  # (T,Z)
+
+        factor_j = (
+            -(op.alpha * op.z_s)[:, None, None]
+            / (2.0 * op.b_hat[None, :, :] * jnp.sqrt(op.t_hat)[:, None, None] * jnp.sqrt(op.m_hat)[:, None, None])
+        )  # (S,T,Z)
+
+        out_state, mask_l_state, mask_x_state = _nonlinear_temp_vector_phi1(op, f_state)
+        term_state = out_state * factor_j[:, None, None, :, :] * phi1_grad[None, None, None, :, :] * mask_l_state[None, :, :, None, None] * mask_x_state[None, :, None, None, None]
+
+        y_f = y[: op.f_size].reshape(op.fblock.f_shape)
+        y_f = y_f + term_state
+        y = jnp.concatenate([y_f.reshape((-1,)), y[op.f_size :]], axis=0)
+
+    return y
 
 
 apply_v3_full_system_operator_jit = jax.jit(apply_v3_full_system_operator, static_argnums=())

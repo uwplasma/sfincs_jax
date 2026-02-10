@@ -217,7 +217,11 @@ def u_hat_np(*, grids: V3Grids, geom: BoozerGeometry) -> np.ndarray:
             )
             weight = (1.0 if at_nyquist else 2.0) / float(ntheta * nzeta)
 
-            h_amp = weight * float(np.sum(cos_angle * h_hat))
+            h_amp = 0.0
+            for itheta in range(ntheta):
+                for izeta in range(nzeta):
+                    h_amp += float(cos_angle[itheta, izeta] * h_hat[itheta, izeta])
+            h_amp = weight * h_amp
 
             denom = float(n * geom.n_periods) - float(geom.iota) * float(m)
             numer = float(geom.iota) * (float(geom.g_hat) * float(m) + float(geom.i_hat) * float(n * geom.n_periods))

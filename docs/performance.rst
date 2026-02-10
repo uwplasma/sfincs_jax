@@ -91,6 +91,8 @@ opt-in environment variables:
   scale the Newton update step size (default 1.0); lower values damp iteration history.
 - ``SFINCS_JAX_PHI1_QN_DIAG_SCALE``:
   scale the quasineutrality Phi1 diagonal stabilization (default 1.0).
+- ``SFINCS_JAX_PHI1_MIN_ITERS``:
+  minimum includePhi1 nonlinear iterations to record (default 4 in parity mode).
 - ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``:
   force transport-matrix matvec operator branch (``base`` or ``rhs``).
 - ``SFINCS_JAX_TRANSPORT_DIAG_OP``:

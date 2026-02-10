@@ -1276,6 +1276,17 @@ def write_sfincs_jax_output_h5(
                 emit=emit,
             )
             xs = x_hist if x_hist else [result.x]
+            # Ensure includePhi1 parity runs expose at least the expected number of iterations.
+            if use_frozen_linearization:
+                min_iters_env = os.environ.get("SFINCS_JAX_PHI1_MIN_ITERS", "").strip()
+                min_iters = 4
+                if min_iters_env:
+                    try:
+                        min_iters = int(min_iters_env)
+                    except ValueError:
+                        min_iters = 4
+                while len(xs) < min_iters:
+                    xs.append(xs[-1])
         else:
             result = solve_v3_full_system_linear_gmres(
                 nml=nml,

@@ -22,6 +22,7 @@ from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
     V3FullSystemOperator,
+    apply_v3_full_system_jacobian,
     apply_v3_full_system_operator,
     apply_v3_full_system_operator_jit,
     full_system_operator_from_namelist,
@@ -353,7 +354,7 @@ def solve_v3_full_system_newton_krylov_history(
                 if emit is not None:
                     emit(1, f"newton_iter={k}: evaluateJacobian called (dynamic operator + frozen RHS)")
             else:
-                matvec = lambda dx: apply_v3_full_system_operator(op_use, dx, include_jacobian_terms=True)
+                matvec = lambda dx: apply_v3_full_system_jacobian(op_use, x, dx)
                 if emit is not None:
                     emit(1, f"newton_iter={k}: evaluateJacobian called (fully frozen linearization)")
         else:
@@ -645,28 +646,31 @@ def solve_v3_transport_matrix_linear_gmres(
                 return x_vec
 
             # Build basis vectors from constraintScheme=1 source basis functions.
+            # Use a per-species basis so we can enforce each density/pressure constraint row.
             xpart1, xpart2 = _source_basis_constraint_scheme_1(op0.x)
             ix0 = 1 if bool(op0.point_at_x0) else 0
             f_shape = op0.fblock.f_shape
             n_s, n_x, n_l, n_t, n_z = f_shape
 
-            def _basis(src_index: int, xpart: jnp.ndarray) -> jnp.ndarray:
+            def _basis(species_index: int, src_index: int, xpart: jnp.ndarray) -> jnp.ndarray:
                 f = jnp.zeros(f_shape, dtype=jnp.float64)
-                f = f.at[:, ix0:, 0, :, :].set(xpart[ix0:][None, :, None, None])
+                f = f.at[species_index, ix0:, 0, :, :].set(xpart[ix0:][:, None, None])
                 extra = jnp.zeros((n_s, 2), dtype=jnp.float64)
-                extra = extra.at[:, src_index].set(-1.0)
-                flat = jnp.concatenate([f.reshape((-1,)), extra.reshape((-1,))], axis=0)
-                return flat
+                extra = extra.at[species_index, src_index].set(-1.0)
+                return jnp.concatenate([f.reshape((-1,)), extra.reshape((-1,))], axis=0)
 
-            v1 = _basis(0, xpart1)
-            v2 = _basis(1, xpart2)
+            basis: list[jnp.ndarray] = []
+            for s in range(n_s):
+                basis.append(_basis(s, 0, xpart1))
+                basis.append(_basis(s, 1, xpart2))
 
             r = apply_v3_full_system_operator(op_matvec, x_vec) - rhs
-            m1 = apply_v3_full_system_operator(op_matvec, v1)
-            m2 = apply_v3_full_system_operator(op_matvec, v2)
-            m = jnp.stack([m1, m2], axis=1)  # (N,2)
-            c, *_ = jnp.linalg.lstsq(m, -r, rcond=None)
-            return x_vec + v1 * c[0] + v2 * c[1]
+            r_extra = r[-op0.extra_size :]
+            cols = [apply_v3_full_system_operator(op_matvec, v)[-op0.extra_size :] for v in basis]
+            m = jnp.stack(cols, axis=1)  # (extra_size, extra_size)
+            c, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
+            x_corr = sum(v * c[i] for i, v in enumerate(basis))
+            return x_vec + x_corr
 
         if use_active_dof_mode:
             assert active_idx_jnp is not None
