@@ -259,6 +259,10 @@ def solve_v3_full_system_newton_krylov_history(
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift)
     if emit is not None:
         emit(1, f"solve_v3_full_system_newton_krylov_history: total_size={int(op.total_size)}")
+    env_gmres_tol = os.environ.get("SFINCS_JAX_PHI1_GMRES_TOL", "").strip()
+    if env_gmres_tol:
+        gmres_tol = float(env_gmres_tol)
+
     if x0 is None:
         x = jnp.zeros((op.total_size,), dtype=jnp.float64)
     else:
@@ -349,11 +353,16 @@ def solve_v3_full_system_newton_krylov_history(
 
         step = 1.0
         rnorm0 = float(rnorm)
+        ls_factor_env = os.environ.get("SFINCS_JAX_PHI1_LINESEARCH_FACTOR", "").strip()
+        try:
+            ls_factor = float(ls_factor_env) if ls_factor_env else 0.9
+        except ValueError:
+            ls_factor = 0.9
         for _ in range(12):
             x_try = x + step * s
             r_try = residual_v3_full_system(op, x_try)
             rnorm_try = float(jnp.linalg.norm(r_try))
-            if rnorm_try <= 0.9 * rnorm0:
+            if rnorm_try <= ls_factor * rnorm0:
                 x = x_try
                 accepted.append(x)
                 break
@@ -523,6 +532,22 @@ def solve_v3_transport_matrix_linear_gmres(
             use_op_rhs_in_matvec = False
         op_matvec = op_rhs if use_op_rhs_in_matvec else op0
 
+        # For RHSMode=2 whichRHS=3 (E_parallel drive), PETSc tends to stop at a looser
+        # tolerance, leaving small constraint residuals that appear in the moment-family
+        # diagnostics. Mimic that behavior by using a Krylov solve with a looser tol.
+        loose_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_LOOSE", "").strip().lower()
+        use_loose_epar_krylov = (
+            loose_env in {"1", "true", "yes", "on"}
+            and int(rhs_mode) == 2
+            and which_rhs == 3
+            and int(op0.constraint_scheme) == 1
+        )
+        solve_method_rhs = solve_method_use
+        tol_rhs = tol
+        if use_loose_epar_krylov:
+            solve_method_rhs = "incremental"
+            tol_rhs = max(float(tol), 1e-8)
+
         if use_active_dof_mode:
             assert active_idx_jnp is not None
             assert full_to_active_jnp is not None
@@ -556,11 +581,11 @@ def solve_v3_transport_matrix_linear_gmres(
                 # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
                 # before each whichRHS solve (no warm-start from previous RHS).
                 x0=x0_reduced,
-                tol=tol,
+                tol=tol_rhs,
                 atol=atol,
                 restart=restart,
                 maxiter=maxiter,
-                solve_method=solve_method_use,
+                solve_method=solve_method_rhs,
             )
             x_full = expand_reduced(res_reduced.x)
             res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator(op_matvec, x_full) - rhs)
@@ -576,11 +601,11 @@ def solve_v3_transport_matrix_linear_gmres(
                 # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
                 # before each whichRHS solve (no warm-start from previous RHS).
                 x0=x0,
-                tol=tol,
+                tol=tol_rhs,
                 atol=atol,
                 restart=restart,
                 maxiter=maxiter,
-                solve_method=solve_method_use,
+                solve_method=solve_method_rhs,
             )
             x_full = res.x
             state_vectors[which_rhs] = x_full

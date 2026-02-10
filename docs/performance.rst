@@ -73,12 +73,18 @@ opt-in environment variables:
   force includePhi1 nonlinear branch to frozen/non-frozen Jacobian mode.
 - ``SFINCS_JAX_PHI1_FROZEN_JAC_MODE``:
   select frozen-Jacobian variant for includePhi1 (``frozen`` or ``frozen_rhs``; default ``frozen_rhs``).
+- ``SFINCS_JAX_PHI1_GMRES_TOL``:
+  override GMRES tolerance inside the includePhi1 nonlinear Newton–Krylov solves.
+- ``SFINCS_JAX_PHI1_LINESEARCH_FACTOR``:
+  override the relative residual decrease required to accept a Newton step (default 0.9).
 - ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``:
   force transport-matrix matvec operator branch (``base`` or ``rhs``).
 - ``SFINCS_JAX_TRANSPORT_DIAG_OP``:
   force diagnostics operator branch in transport-matrix runs (``base`` or ``rhs``).
 - ``SFINCS_JAX_TRANSPORT_FORCE_KRYLOV``:
   disable the small-system dense fallback in RHSMode=2/3 and keep Krylov solves.
+- ``SFINCS_JAX_TRANSPORT_EPAR_LOOSE``:
+  opt-in looser GMRES tolerance for RHSMode=2 whichRHS=3 (E_parallel column), for parity experiments.
 - ``SFINCS_JAX_DENSE_REG``:
   override dense solve regularization strength for singular/near-singular systems.
 - ``SFINCS_JAX_DENSE_SINGULAR_MODE``:
