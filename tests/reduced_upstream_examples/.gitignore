@@ -1,0 +1,9 @@
+*
+!*/
+!.gitignore
+!**/input.namelist
+!**/input.original.namelist
+!**/*.bc
+!**/*.nc
+!**/*.txt
+!**/*.json

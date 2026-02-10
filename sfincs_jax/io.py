@@ -1246,7 +1246,7 @@ def write_sfincs_jax_output_h5(
                 use_frozen_linearization = False
             # Use a slightly looser relative threshold than PETSc defaults so the
             # reduced qn=1 fixtures terminate at the same saved-iteration count as v3.
-            nonlinear_rtol = 3e-8 if use_frozen_linearization else 0.0
+            nonlinear_rtol = 5e-8 if use_frozen_linearization else 0.0
             if use_frozen_linearization:
                 env_rtol = os.environ.get("SFINCS_JAX_PHI1_NONLINEAR_RTOL", "").strip()
                 if env_rtol:

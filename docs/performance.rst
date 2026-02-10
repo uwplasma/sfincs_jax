@@ -76,7 +76,9 @@ opt-in environment variables:
 - ``SFINCS_JAX_PHI1_GMRES_TOL``:
   override GMRES tolerance inside the includePhi1 nonlinear Newton–Krylov solves.
 - ``SFINCS_JAX_PHI1_LINESEARCH_FACTOR``:
-  override the relative residual decrease required to accept a Newton step (default 0.9).
+  override the relative residual decrease required to accept a Newton step (legacy mode).
+- ``SFINCS_JAX_PHI1_LINESEARCH_C1``:
+  Armijo coefficient for the PETSc-style backtracking rule (default 1e-4).
 - ``SFINCS_JAX_PHI1_STEP_SCALE``:
   scale the Newton update step size (default 1.0); lower values damp iteration history.
 - ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``:

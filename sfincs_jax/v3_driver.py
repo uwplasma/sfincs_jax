@@ -367,10 +367,15 @@ def solve_v3_full_system_newton_krylov_history(
             step_scale = 1.0
         rnorm0 = float(rnorm)
         ls_factor_env = os.environ.get("SFINCS_JAX_PHI1_LINESEARCH_FACTOR", "").strip()
+        ls_c1_env = os.environ.get("SFINCS_JAX_PHI1_LINESEARCH_C1", "").strip()
         try:
-            ls_factor = float(ls_factor_env) if ls_factor_env else 0.9
+            ls_factor = float(ls_factor_env) if ls_factor_env else None
         except ValueError:
-            ls_factor = 0.9
+            ls_factor = None
+        try:
+            ls_c1 = float(ls_c1_env) if ls_c1_env else 1.0e-4
+        except ValueError:
+            ls_c1 = 1.0e-4
         for _ in range(12):
             x_try = x + (step * step_scale) * s
             if use_frozen_linearization and frozen_jac_mode == "frozen_rhs":
@@ -386,7 +391,11 @@ def solve_v3_full_system_newton_krylov_history(
             else:
                 r_try = residual_v3_full_system(op, x_try)
             rnorm_try = float(jnp.linalg.norm(r_try))
-            if rnorm_try <= ls_factor * rnorm0:
+            if ls_factor is not None:
+                accept = rnorm_try <= ls_factor * rnorm0
+            else:
+                accept = rnorm_try <= (1.0 - ls_c1 * step) * rnorm0
+            if accept:
                 x = x_try
                 accepted.append(x)
                 break
