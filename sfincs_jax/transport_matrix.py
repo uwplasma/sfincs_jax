@@ -7,6 +7,7 @@ from jax import config as _jax_config
 _jax_config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
+from jax import lax
 
 from .geometry import BoozerGeometry
 from .v3_system import V3FullSystemOperator
@@ -33,9 +34,68 @@ class V3TransportDiagnostics:
     fsab_flow_vs_x: jnp.ndarray  # (X,S) contributions that sum to fsab_flow
 
 
+def _weighted_sum_x_fortran(w_x: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.ndarray:
+    """Compute Σ_x w_x[x] * values[:,x,:,:] using a deterministic x-loop order."""
+    w_x = jnp.asarray(w_x, dtype=jnp.float64).reshape((-1,))
+    values_sxtz = jnp.asarray(values_sxtz, dtype=jnp.float64)
+    n_x = int(values_sxtz.shape[1])
+    if w_x.shape[0] != n_x:
+        raise ValueError(f"w_x has length {w_x.shape[0]}, expected {n_x}.")
+    acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[2], values_sxtz.shape[3]), dtype=jnp.float64)
+
+    def body(ix: int, acc: jnp.ndarray) -> jnp.ndarray:
+        return acc + w_x[ix] * values_sxtz[:, ix, :, :]
+
+    return lax.fori_loop(0, n_x, body, acc0)
+
+
+def _weighted_sum_tz_fortran(w_t: jnp.ndarray, w_z: jnp.ndarray, values_stz: jnp.ndarray) -> jnp.ndarray:
+    """Compute Σ_t Σ_z w_t[t] w_z[z] values[:,t,z] in explicit Fortran-like order."""
+    w_t = jnp.asarray(w_t, dtype=jnp.float64).reshape((-1,))
+    w_z = jnp.asarray(w_z, dtype=jnp.float64).reshape((-1,))
+    values_stz = jnp.asarray(values_stz, dtype=jnp.float64)
+    n_t = int(values_stz.shape[1])
+    n_z = int(values_stz.shape[2])
+    if w_t.shape[0] != n_t or w_z.shape[0] != n_z:
+        raise ValueError(f"Weight shapes {(w_t.shape[0], w_z.shape[0])} do not match values {values_stz.shape}.")
+    acc0 = jnp.zeros((values_stz.shape[0],), dtype=jnp.float64)
+
+    def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
+        def body_z(iz: int, acc_z: jnp.ndarray) -> jnp.ndarray:
+            return acc_z + (w_t[it] * w_z[iz]) * values_stz[:, it, iz]
+
+        return lax.fori_loop(0, n_z, body_z, acc_t)
+
+    return lax.fori_loop(0, n_t, body_t, acc0)
+
+
+def _weighted_sum_tz_fortran_sx(w_t: jnp.ndarray, w_z: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.ndarray:
+    """Compute Σ_t Σ_z w_t[t] w_z[z] values[:,x,t,z] in explicit order -> (S,X)."""
+    w_t = jnp.asarray(w_t, dtype=jnp.float64).reshape((-1,))
+    w_z = jnp.asarray(w_z, dtype=jnp.float64).reshape((-1,))
+    values_sxtz = jnp.asarray(values_sxtz, dtype=jnp.float64)
+    n_t = int(values_sxtz.shape[2])
+    n_z = int(values_sxtz.shape[3])
+    if w_t.shape[0] != n_t or w_z.shape[0] != n_z:
+        raise ValueError(f"Weight shapes {(w_t.shape[0], w_z.shape[0])} do not match values {values_sxtz.shape}.")
+    acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[1]), dtype=jnp.float64)
+
+    def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
+        def body_z(iz: int, acc_z: jnp.ndarray) -> jnp.ndarray:
+            return acc_z + (w_t[it] * w_z[iz]) * values_sxtz[:, :, it, iz]
+
+        return lax.fori_loop(0, n_z, body_z, acc_t)
+
+    return lax.fori_loop(0, n_t, body_t, acc0)
+
+
 def _vprime_hat_from_op(op: V3FullSystemOperator) -> jnp.ndarray:
-    w2d = op.theta_weights[:, None] * op.zeta_weights[None, :]
-    return jnp.sum(w2d / op.d_hat)
+    inv_d = jnp.asarray(1.0 / op.d_hat, dtype=jnp.float64)
+    return _weighted_sum_tz_fortran(
+        jnp.asarray(op.theta_weights, dtype=jnp.float64),
+        jnp.asarray(op.zeta_weights, dtype=jnp.float64),
+        inv_d[None, :, :],
+    )[0]
 
 
 def _flux_functions_from_op(op: V3FullSystemOperator) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -111,7 +171,9 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
 
     vprime_hat = _vprime_hat_from_op(op)  # scalar
 
-    w2d = op.theta_weights[:, None] * op.zeta_weights[None, :]  # (T,Z)
+    theta_w = jnp.asarray(op.theta_weights, dtype=jnp.float64)
+    zeta_w = jnp.asarray(op.zeta_weights, dtype=jnp.float64)
+    w2d = theta_w[:, None] * zeta_w[None, :]  # (T,Z)
     factor_vm = (op.b_hat_sub_theta * op.db_hat_dzeta - op.b_hat_sub_zeta * op.db_hat_dtheta) / (op.b_hat * op.b_hat * op.b_hat)
 
     # x integral weights (diagnostics.F90):
@@ -151,22 +213,22 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
     # Particle flux (vm):
     wpf0 = (w_pf * mask_l0).astype(jnp.float64)  # (X,)
     wpf2 = (w_pf * mask_l2).astype(jnp.float64)
-    sum_pf_l0 = jnp.einsum("x,sxtz->stz", wpf0, f_l0)
-    sum_pf_l2 = jnp.einsum("x,sxtz->stz", wpf2, f_l2)
+    sum_pf_l0 = _weighted_sum_x_fortran(wpf0, f_l0)
+    sum_pf_l2 = _weighted_sum_x_fortran(wpf2, f_l2)
     pf_before = particle_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_pf_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_pf_l2
     )  # (S,T,Z)
-    particle_flux_vm_psi_hat = jnp.einsum("tz,stz->s", w2d, pf_before)
+    particle_flux_vm_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, pf_before)
 
     # Heat flux (vm):
     whf0 = (w_hf * mask_l0).astype(jnp.float64)
     whf2 = (w_hf * mask_l2).astype(jnp.float64)
-    sum_hf_l0 = jnp.einsum("x,sxtz->stz", whf0, f_l0)
-    sum_hf_l2 = jnp.einsum("x,sxtz->stz", whf2, f_l2)
+    sum_hf_l0 = _weighted_sum_x_fortran(whf0, f_l0)
+    sum_hf_l2 = _weighted_sum_x_fortran(whf2, f_l2)
     hf_before = heat_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_hf_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_hf_l2
     )  # (S,T,Z)
-    heat_flux_vm_psi_hat = jnp.einsum("tz,stz->s", w2d, hf_before)
+    heat_flux_vm_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, hf_before)
 
     # FSABFlow:
     if op.n_xi > 1:
@@ -175,21 +237,21 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
         f_l1 = jnp.zeros_like(f_l0)
 
     wf1 = (w_flow * mask_l1).astype(jnp.float64)
-    sum_flow = jnp.einsum("x,sxtz->stz", wf1, f_l1)
+    sum_flow = _weighted_sum_x_fortran(wf1, f_l1)
     flow = flow_factor[:, None, None] * sum_flow
-    fsab_flow = jnp.einsum("tz,stz->s", w2d, flow * op.b_hat[None, :, :] / op.d_hat[None, :, :]) / vprime_hat
+    fsab_flow = _weighted_sum_tz_fortran(theta_w, zeta_w, flow * op.b_hat[None, :, :] / op.d_hat[None, :, :]) / vprime_hat
 
     # vm0 contributions (use f0 only):
     f0_l0 = f0[:, :, 0, :, :]
     f0_l2 = f0[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f0_l0)
-    sum_pf0_l0 = jnp.einsum("x,sxtz->stz", wpf0, f0_l0)
-    sum_pf0_l2 = jnp.einsum("x,sxtz->stz", wpf2, f0_l2)
+    sum_pf0_l0 = _weighted_sum_x_fortran(wpf0, f0_l0)
+    sum_pf0_l2 = _weighted_sum_x_fortran(wpf2, f0_l2)
     pf_before_vm0 = particle_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_pf0_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_pf0_l2
     )
 
-    sum_hf0_l0 = jnp.einsum("x,sxtz->stz", whf0, f0_l0)
-    sum_hf0_l2 = jnp.einsum("x,sxtz->stz", whf2, f0_l2)
+    sum_hf0_l0 = _weighted_sum_x_fortran(whf0, f0_l0)
+    sum_hf0_l2 = _weighted_sum_x_fortran(whf2, f0_l2)
     hf_before_vm0 = heat_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_hf0_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_hf0_l2
     )
@@ -201,7 +263,7 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
     pf_before_x = particle_flux_factor_vm[:, None, None, None] * (
         (8.0 / 3.0) * factor_vm[None, None, :, :] * pf_x_l0 + (4.0 / 15.0) * factor_vm[None, None, :, :] * pf_x_l2
     )  # (S,X,T,Z)
-    pf_vs_x = jnp.einsum("tz,sxtz->sx", w2d, pf_before_x)  # (S,X)
+    pf_vs_x = _weighted_sum_tz_fortran_sx(theta_w, zeta_w, pf_before_x)  # (S,X)
 
     # Heat flux:
     hf_x_l0 = f_l0 * whf0[None, :, None, None]
@@ -209,11 +271,14 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
     hf_before_x = heat_flux_factor_vm[:, None, None, None] * (
         (8.0 / 3.0) * factor_vm[None, None, :, :] * hf_x_l0 + (4.0 / 15.0) * factor_vm[None, None, :, :] * hf_x_l2
     )  # (S,X,T,Z)
-    hf_vs_x = jnp.einsum("tz,sxtz->sx", w2d, hf_before_x)  # (S,X)
+    hf_vs_x = _weighted_sum_tz_fortran_sx(theta_w, zeta_w, hf_before_x)  # (S,X)
 
     # Flow:
     flow_x = flow_factor[:, None, None, None] * (f_l1 * wf1[None, :, None, None])  # (S,X,T,Z)
-    fsab_flow_vs_x = jnp.einsum("tz,sxtz->sx", w2d, flow_x * op.b_hat[None, None, :, :] / op.d_hat[None, None, :, :]) / vprime_hat
+    fsab_flow_vs_x = (
+        _weighted_sum_tz_fortran_sx(theta_w, zeta_w, flow_x * op.b_hat[None, None, :, :] / op.d_hat[None, None, :, :])
+        / vprime_hat
+    )
 
     return V3TransportDiagnostics(
         vprime_hat=vprime_hat,
@@ -249,7 +314,9 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     f_full = f_delta + f0
 
     vprime_hat = _vprime_hat_from_op(op)  # scalar
-    w2d = op.theta_weights[:, None] * op.zeta_weights[None, :]  # (T,Z)
+    theta_w = jnp.asarray(op.theta_weights, dtype=jnp.float64)
+    zeta_w = jnp.asarray(op.zeta_weights, dtype=jnp.float64)
+    w2d = theta_w[:, None] * zeta_w[None, :]  # (T,Z)
 
     # Geometry factors:
     factor_vm = (op.b_hat_sub_theta * op.db_hat_dzeta - op.b_hat_sub_zeta * op.db_hat_dtheta) / (
@@ -292,76 +359,74 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     momentum_flux_factor_vm = jnp.pi * op.delta * (t_hat * t_hat * t_hat) / (z * vprime_hat * m_hat)
 
     # Moments from delta-f:
-    dens = density_factor[:, None, None] * jnp.einsum("x,sxtz->stz", w_x2 * mask_l0, f_delta[:, :, 0, :, :])
-    pres = pressure_factor[:, None, None] * jnp.einsum("x,sxtz->stz", w_x4 * mask_l0, f_delta[:, :, 0, :, :])
+    dens = density_factor[:, None, None] * _weighted_sum_x_fortran(w_x2 * mask_l0, f_delta[:, :, 0, :, :])
+    pres = pressure_factor[:, None, None] * _weighted_sum_x_fortran(w_x4 * mask_l0, f_delta[:, :, 0, :, :])
 
     if op.n_xi > 1:
-        flow = flow_factor[:, None, None] * jnp.einsum("x,sxtz->stz", w_x3 * mask_l1, f_delta[:, :, 1, :, :])
+        flow = flow_factor[:, None, None] * _weighted_sum_x_fortran(w_x3 * mask_l1, f_delta[:, :, 1, :, :])
     else:
         flow = jnp.zeros_like(dens)
 
     if op.n_xi > 2:
-        pres_aniso = pressure_factor[:, None, None] * (-3.0 / 5.0) * jnp.einsum(
-            "x,sxtz->stz", w_x4 * mask_l2, f_delta[:, :, 2, :, :]
-        )
+        pres_aniso = pressure_factor[:, None, None] * (-3.0 / 5.0) * _weighted_sum_x_fortran(w_x4 * mask_l2, f_delta[:, :, 2, :, :])
     else:
         pres_aniso = jnp.zeros_like(dens)
 
     # Flux-surface averages (divide by VPrimeHat):
-    fsadens = jnp.einsum("tz,stz->s", w2d, dens / op.d_hat[None, :, :]) / vprime_hat
-    fsapres = jnp.einsum("tz,stz->s", w2d, pres / op.d_hat[None, :, :]) / vprime_hat
-    fsabflow = jnp.einsum("tz,stz->s", w2d, flow * op.b_hat[None, :, :] / op.d_hat[None, :, :]) / vprime_hat
+    fsadens = _weighted_sum_tz_fortran(theta_w, zeta_w, dens / op.d_hat[None, :, :]) / vprime_hat
+    fsapres = _weighted_sum_tz_fortran(theta_w, zeta_w, pres / op.d_hat[None, :, :]) / vprime_hat
+    fsabflow = _weighted_sum_tz_fortran(theta_w, zeta_w, flow * op.b_hat[None, :, :] / op.d_hat[None, :, :]) / vprime_hat
 
     # Particle / heat flux (vm): L=0 and L=2 using full-f.
     f_full_l0 = f_full[:, :, 0, :, :]
     f_full_l2 = f_full[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f_full_l0)
 
-    sum_pf_l0 = jnp.einsum("x,sxtz->stz", w_x4 * mask_l0, f_full_l0)
-    sum_pf_l2 = jnp.einsum("x,sxtz->stz", w_x4 * mask_l2, f_full_l2)
+    sum_pf_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f_full_l0)
+    sum_pf_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f_full_l2)
     pf_before_vm = particle_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_pf_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_pf_l2
     )
-    pf_vm_psi_hat = jnp.einsum("tz,stz->s", w2d, pf_before_vm)
+    pf_vm_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, pf_before_vm)
 
-    sum_hf_l0 = jnp.einsum("x,sxtz->stz", w_x6 * mask_l0, f_full_l0)
-    sum_hf_l2 = jnp.einsum("x,sxtz->stz", w_x6 * mask_l2, f_full_l2)
+    sum_hf_l0 = _weighted_sum_x_fortran(w_x6 * mask_l0, f_full_l0)
+    sum_hf_l2 = _weighted_sum_x_fortran(w_x6 * mask_l2, f_full_l2)
     hf_before_vm = heat_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_hf_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_hf_l2
     )
-    hf_vm_psi_hat = jnp.einsum("tz,stz->s", w2d, hf_before_vm)
+    hf_vm_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, hf_before_vm)
 
     # vm0 contributions (f0 only):
     f0_l0 = f0[:, :, 0, :, :]
     f0_l2 = f0[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f0_l0)
 
-    sum_pf0_l0 = jnp.einsum("x,sxtz->stz", w_x4 * mask_l0, f0_l0)
-    sum_pf0_l2 = jnp.einsum("x,sxtz->stz", w_x4 * mask_l2, f0_l2)
+    sum_pf0_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f0_l0)
+    sum_pf0_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f0_l2)
     pf_before_vm0 = particle_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_pf0_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_pf0_l2
     )
-    pf_vm0_psi_hat = jnp.einsum("tz,stz->s", w2d, pf_before_vm0)
+    pf_vm0_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, pf_before_vm0)
 
-    sum_hf0_l0 = jnp.einsum("x,sxtz->stz", w_x6 * mask_l0, f0_l0)
-    sum_hf0_l2 = jnp.einsum("x,sxtz->stz", w_x6 * mask_l2, f0_l2)
+    sum_hf0_l0 = _weighted_sum_x_fortran(w_x6 * mask_l0, f0_l0)
+    sum_hf0_l2 = _weighted_sum_x_fortran(w_x6 * mask_l2, f0_l2)
     hf_before_vm0 = heat_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_hf0_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_hf0_l2
     )
-    hf_vm0_psi_hat = jnp.einsum("tz,stz->s", w2d, hf_before_vm0)
+    hf_vm0_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, hf_before_vm0)
 
     # Momentum flux (vm): L=1 and L=3 using full-f.
     if op.n_xi > 1:
-        sum_mf_l1 = jnp.einsum("x,sxtz->stz", w_x5 * mask_l1, f_full[:, :, 1, :, :])
+        sum_mf_l1 = _weighted_sum_x_fortran(w_x5 * mask_l1, f_full[:, :, 1, :, :])
     else:
         sum_mf_l1 = jnp.zeros_like(dens)
     if op.n_xi > 3:
-        sum_mf_l3 = jnp.einsum("x,sxtz->stz", w_x5 * mask_l3, f_full[:, :, 3, :, :])
+        sum_mf_l3 = _weighted_sum_x_fortran(w_x5 * mask_l3, f_full[:, :, 3, :, :])
     else:
         sum_mf_l3 = jnp.zeros_like(dens)
 
     mf_before_vm = momentum_flux_factor_vm[:, None, None] * op.b_hat[None, :, :] * (
         (16.0 / 15.0) * factor_vm[None, :, :] * sum_mf_l1 + (4.0 / 35.0) * factor_vm[None, :, :] * sum_mf_l3
     )
-    mf_vm_psi_hat = jnp.einsum("tz,stz->s", w2d, mf_before_vm)
+    mf_vm_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, mf_before_vm)
 
     # Momentum vm0 is identically 0 for the current f0 definition (L>0=0), but keep it explicit.
     mf_before_vm0 = jnp.zeros_like(mf_before_vm)
@@ -373,20 +438,22 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     pf_before_x = particle_flux_factor_vm[:, None, None, None] * (
         (8.0 / 3.0) * factor_vm[None, None, :, :] * pf_x_l0 + (4.0 / 15.0) * factor_vm[None, None, :, :] * pf_x_l2
     )  # (S,X,T,Z)
-    pf_vs_x = jnp.einsum("tz,sxtz->sx", w2d, pf_before_x)  # (S,X)
+    pf_vs_x = _weighted_sum_tz_fortran_sx(theta_w, zeta_w, pf_before_x)  # (S,X)
 
     hf_x_l0 = f_full_l0 * (w_x6 * mask_l0)[None, :, None, None]
     hf_x_l2 = f_full_l2 * (w_x6 * mask_l2)[None, :, None, None]
     hf_before_x = heat_flux_factor_vm[:, None, None, None] * (
         (8.0 / 3.0) * factor_vm[None, None, :, :] * hf_x_l0 + (4.0 / 15.0) * factor_vm[None, None, :, :] * hf_x_l2
     )
-    hf_vs_x = jnp.einsum("tz,sxtz->sx", w2d, hf_before_x)  # (S,X)
+    hf_vs_x = _weighted_sum_tz_fortran_sx(theta_w, zeta_w, hf_before_x)  # (S,X)
 
     if op.n_xi > 1:
         flow_x = flow_factor[:, None, None, None] * (f_delta[:, :, 1, :, :] * (w_x3 * mask_l1)[None, :, None, None])
-        flow_vs_x = (
-            jnp.einsum("tz,sxtz->sx", w2d, flow_x * op.b_hat[None, None, :, :] / op.d_hat[None, None, :, :]) / vprime_hat
-        )
+        flow_vs_x = _weighted_sum_tz_fortran_sx(
+            theta_w,
+            zeta_w,
+            flow_x * op.b_hat[None, None, :, :] / op.d_hat[None, None, :, :],
+        ) / vprime_hat
     else:
         flow_vs_x = jnp.zeros((op.n_species, op.n_x), dtype=jnp.float64)
 

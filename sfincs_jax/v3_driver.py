@@ -302,9 +302,31 @@ def solve_v3_full_system_newton_krylov_history(
             )
 
         if use_frozen_linearization:
-            matvec = lambda dx: apply_v3_full_system_operator(op_use, dx)
-            if emit is not None:
-                emit(1, f"newton_iter={k}: evaluateJacobian called (frozen linearization)")
+            jac_mode = os.environ.get("SFINCS_JAX_PHI1_FROZEN_JAC_MODE", "").strip().lower()
+            if jac_mode not in {"frozen", "frozen_rhs"}:
+                jac_mode = "frozen_rhs"
+
+            if jac_mode == "frozen_rhs":
+                # Keep the kinetic/collision operator frozen at the current iterate (op_use),
+                # but let the RHS keep its explicit Phi1 dependence. This is closer to v3's
+                # nonlinear Jacobian path for includePhi1 while retaining robust parity behavior.
+                def residual_for_jac(xx: jnp.ndarray) -> jnp.ndarray:
+                    if bool(op.include_phi1):
+                        phi1_flat_x = xx[op.f_size : op.f_size + op.n_theta * op.n_zeta]
+                        phi1_x = phi1_flat_x.reshape((op.n_theta, op.n_zeta))
+                        op_rhs_x = replace(op, phi1_hat_base=phi1_x)
+                    else:
+                        op_rhs_x = op
+                    return apply_v3_full_system_operator(op_use, xx) - rhs_v3_full_system(op_rhs_x)
+
+                _r_lin, jvp = jax.linearize(residual_for_jac, x)
+                matvec = jvp
+                if emit is not None:
+                    emit(1, f"newton_iter={k}: evaluateJacobian called (frozen operator + dynamic RHS)")
+            else:
+                matvec = lambda dx: apply_v3_full_system_operator(op_use, dx)
+                if emit is not None:
+                    emit(1, f"newton_iter={k}: evaluateJacobian called (fully frozen linearization)")
         else:
             # Optional exact mode for debugging/experimentation.
             _r_lin, jvp = jax.linearize(lambda xx: residual_v3_full_system(op, xx), x)

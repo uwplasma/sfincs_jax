@@ -71,6 +71,8 @@ opt-in environment variables:
   force Newton linear subsolve method (``dense``, ``incremental``, or ``batched``).
 - ``SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION``:
   force includePhi1 nonlinear branch to frozen/non-frozen Jacobian mode.
+- ``SFINCS_JAX_PHI1_FROZEN_JAC_MODE``:
+  select frozen-Jacobian variant for includePhi1 (``frozen`` or ``frozen_rhs``; default ``frozen_rhs``).
 - ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``:
   force transport-matrix matvec operator branch (``base`` or ``rhs``).
 - ``SFINCS_JAX_TRANSPORT_DIAG_OP``:
