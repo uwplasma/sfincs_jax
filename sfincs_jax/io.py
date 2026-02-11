@@ -10,8 +10,7 @@ from typing import Any, Dict
 import h5py
 import numpy as np
 
-from .boozer_bc import read_boozer_bc_bracketing_surfaces
-from .boozer_bc import read_boozer_bc_header
+from .boozer_bc import read_boozer_bc_bracketing_surfaces, read_boozer_bc_header, selected_r_n_from_bc
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .diagnostics import u_hat_np
 from .diagnostics import vprime_hat as vprime_hat_jax
@@ -732,20 +731,16 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
         psi_n = float(interp.psi_n)
         r_n = float(math.sqrt(float(psi_n)))
     else:
-        # For geometryScheme=11/12, v3 may snap to the nearest available surface when VMECRadialOption=1.
         r_n = float(r_n_wish)
         if geometry_scheme in {11, 12}:
-            from .boozer_bc import read_boozer_bc_bracketing_surfaces  # noqa: PLC0415
-
             vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
-            if int(vmecradial_option) == 1:
-                bc_path = _resolve_equilibrium_file_from_namelist(nml=nml)
-                _header, s0, s1 = read_boozer_bc_bracketing_surfaces(
-                    path=bc_path, geometry_scheme=int(geometry_scheme), r_n_wish=float(r_n_wish)
-                )
-                r0 = float(s0.r_n)
-                r1 = float(s1.r_n)
-                r_n = r0 if abs(r0 - float(r_n_wish)) < abs(r1 - float(r_n_wish)) else r1
+            bc_path = _resolve_equilibrium_file_from_namelist(nml=nml)
+            r_n = selected_r_n_from_bc(
+                path=bc_path,
+                geometry_scheme=int(geometry_scheme),
+                r_n_wish=float(r_n_wish),
+                vmecradial_option=int(vmecradial_option),
+            )
         psi_n = float(r_n) * float(r_n)
     psi_hat = float(psi_a_hat) * float(psi_n)
     r_hat = float(a_hat) * float(r_n)

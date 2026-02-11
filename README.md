@@ -205,6 +205,17 @@ python scripts/compare_fortran_matrix_to_jax_operator.py \
   --out-json matrix_compare.json
 ```
 
+For RHSMode=1 diagnostics isolation on a frozen state vector (to separate solver-branch
+differences from postprocessing/diagnostic formulas):
+
+```bash
+python scripts/compare_rhsmode1_diagnostics_from_state.py \
+  --input /path/to/input.namelist \
+  --state /path/to/sfincsBinary_iteration_000_stateVector \
+  --fortran-h5 /path/to/sfincsOutput.h5 \
+  --out-json diagnostics_from_frozen_state.json
+```
+
 ## Documentation
 
 Build locally:

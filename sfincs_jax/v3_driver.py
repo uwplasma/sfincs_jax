@@ -176,6 +176,33 @@ def solve_v3_full_system_linear_gmres(
             maxiter=maxiter,
             solve_method=solve_method,
         )
+        target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
+        if float(res_reduced.residual_norm) > target_reduced:
+            # Active-DOF fallback is opt-in to avoid long retries in reduced-suite CI runs.
+            fallback_env = os.environ.get("SFINCS_JAX_LINEAR_GMRES_FALLBACK_ACTIVE", "").strip().lower()
+            if fallback_env in {"1", "true", "yes", "on"}:
+                fallback_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_MAXITER", "2000"))
+                fallback_restart = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_RESTART", "200"))
+                fallback_method = os.environ.get("SFINCS_JAX_LINEAR_GMRES_METHOD", "incremental").strip().lower()
+                if fallback_method not in {"batched", "incremental", "dense"}:
+                    fallback_method = "incremental"
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: retrying reduced GMRES "
+                        f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e}) "
+                        f"with maxiter={fallback_maxiter} restart={fallback_restart} method={fallback_method}",
+                    )
+                res_reduced = gmres_solve(
+                    matvec=mv_reduced,
+                    b=rhs_reduced,
+                    x0=x0_reduced,
+                    tol=tol,
+                    atol=atol,
+                    restart=fallback_restart,
+                    maxiter=fallback_maxiter,
+                    solve_method=fallback_method,
+                )
         x_full = expand_reduced(res_reduced.x)
         residual_norm_full = jnp.linalg.norm(mv(x_full) - rhs)
         result = GMRESSolveResult(x=x_full, residual_norm=residual_norm_full)
@@ -218,6 +245,24 @@ def solve_v3_full_system_linear_gmres(
                     maxiter=fallback_maxiter,
                     solve_method=fallback_method,
                 )
+    if int(op.rhs_mode) == 1:
+        project_rhs1 = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if project_rhs1:
+            x_projected = _project_constraint_scheme1_nullspace_solution(
+                op=op,
+                x_vec=result.x,
+                rhs_vec=rhs,
+                matvec_op=op,
+                enabled_env_var="SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE",
+            )
+            if not bool(jnp.allclose(x_projected, result.x)):
+                residual_norm_projected = jnp.linalg.norm(mv(x_projected) - rhs)
+                result = GMRESSolveResult(x=x_projected, residual_norm=residual_norm_projected)
     if emit is not None:
         emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
         emit(1, f"solve_v3_full_system_linear_gmres: elapsed_s={t.elapsed_s():.3f}")
@@ -597,6 +642,58 @@ def _transport_active_dof_indices(op: V3FullSystemOperator) -> np.ndarray:
     return np.concatenate([f_active.astype(np.int32), tail_active], axis=0)
 
 
+def _project_constraint_scheme1_nullspace_solution(
+    *,
+    op: V3FullSystemOperator,
+    x_vec: jnp.ndarray,
+    rhs_vec: jnp.ndarray,
+    matvec_op: V3FullSystemOperator,
+    enabled_env_var: str,
+) -> jnp.ndarray:
+    """Project solution to constraintScheme=1 nullspace complement and enforce source rows."""
+    if int(op.constraint_scheme) != 1:
+        return x_vec
+    if int(op.phi1_size) != 0:
+        return x_vec
+    if int(op.extra_size) == 0:
+        return x_vec
+
+    project_env = os.environ.get(enabled_env_var, "").strip().lower()
+    if project_env in {"0", "false", "no", "off"}:
+        return x_vec
+
+    xpart1, xpart2 = _source_basis_constraint_scheme_1(op.x)
+    ix0 = 1 if bool(op.point_at_x0) else 0
+    f_shape = op.fblock.f_shape
+    n_s, _, _, _, _ = f_shape
+
+    def _basis(species_index: int, src_index: int, xpart: jnp.ndarray) -> jnp.ndarray:
+        f = jnp.zeros(f_shape, dtype=jnp.float64)
+        f = f.at[species_index, ix0:, 0, :, :].set(xpart[ix0:][:, None, None])
+        extra = jnp.zeros((n_s, 2), dtype=jnp.float64)
+        extra = extra.at[species_index, src_index].set(-1.0)
+        return jnp.concatenate([f.reshape((-1,)), extra.reshape((-1,))], axis=0)
+
+    basis: list[jnp.ndarray] = []
+    for s in range(n_s):
+        basis.append(_basis(s, 0, xpart1))
+        basis.append(_basis(s, 1, xpart2))
+
+    r = apply_v3_full_system_operator_jit(matvec_op, x_vec) - rhs_vec
+    r_extra = r[-op.extra_size :]
+    cols = [apply_v3_full_system_operator_jit(matvec_op, v)[-op.extra_size :] for v in basis]
+    m = jnp.stack(cols, axis=1)
+    c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
+    x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
+    x_vec = x_vec + x_corr
+
+    b_mat = jnp.stack(basis, axis=1)
+    gram = b_mat.T @ b_mat
+    proj_rhs = b_mat.T @ x_vec
+    c_proj = jnp.linalg.solve(gram, proj_rhs)
+    return x_vec - b_mat @ c_proj
+
+
 def solve_v3_transport_matrix_linear_gmres(
     *,
     nml: Namelist,
@@ -731,44 +828,13 @@ def solve_v3_transport_matrix_linear_gmres(
     ) -> jnp.ndarray:
         if int(rhs_mode) != 2 or int(which_rhs) != 3:
             return x_vec
-        if int(op0.constraint_scheme) != 1:
-            return x_vec
-        if int(op0.phi1_size) != 0:
-            return x_vec
-        project_env = os.environ.get("SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE", "").strip().lower()
-        if project_env in {"0", "false", "no", "off"}:
-            return x_vec
-
-        xpart1, xpart2 = _source_basis_constraint_scheme_1(op0.x)
-        ix0 = 1 if bool(op0.point_at_x0) else 0
-        f_shape = op0.fblock.f_shape
-        n_s, _, _, _, _ = f_shape
-
-        def _basis(species_index: int, src_index: int, xpart: jnp.ndarray) -> jnp.ndarray:
-            f = jnp.zeros(f_shape, dtype=jnp.float64)
-            f = f.at[species_index, ix0:, 0, :, :].set(xpart[ix0:][:, None, None])
-            extra = jnp.zeros((n_s, 2), dtype=jnp.float64)
-            extra = extra.at[species_index, src_index].set(-1.0)
-            return jnp.concatenate([f.reshape((-1,)), extra.reshape((-1,))], axis=0)
-
-        basis: list[jnp.ndarray] = []
-        for s in range(n_s):
-            basis.append(_basis(s, 0, xpart1))
-            basis.append(_basis(s, 1, xpart2))
-
-        r = apply_v3_full_system_operator_jit(op_matvec, x_vec) - rhs_vec
-        r_extra = r[-op0.extra_size :]
-        cols = [apply_v3_full_system_operator_jit(op_matvec, v)[-op0.extra_size :] for v in basis]
-        m = jnp.stack(cols, axis=1)
-        c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
-        x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
-        x_vec = x_vec + x_corr
-
-        b_mat = jnp.stack(basis, axis=1)
-        gram = b_mat.T @ b_mat
-        proj_rhs = b_mat.T @ x_vec
-        c_proj = jnp.linalg.solve(gram, proj_rhs)
-        return x_vec - b_mat @ c_proj
+        return _project_constraint_scheme1_nullspace_solution(
+            op=op0,
+            x_vec=x_vec,
+            rhs_vec=rhs_vec,
+            matvec_op=op_matvec,
+            enabled_env_var="SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE",
+        )
 
     dense_batch_done = False
     if str(solve_method_use).lower() == "dense" and not use_active_dof_mode:

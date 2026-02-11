@@ -100,20 +100,46 @@ Current scope limits
 - VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset
 - ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme in {1,2,4,5,11,12}``
 
-Highest-priority open parity cases (reduced-suite)
---------------------------------------------------
+Reduced-suite parity status (source of truth)
+---------------------------------------------
 
-- ``tokamak_1species_FPCollisions_noEr_withPhi1InDKE``:
-  currently ``126/263`` mismatches, concentrated in the nonlinear includePhi1 solver branch
-  (``Phi1Hat``, ``dPhi1Hatdtheta``, and flow/current moment family).
-- ``geometryScheme5_3species_loRes``:
-  currently ``33/193`` mismatches, concentrated in RHSMode=1 solver branch diagnostics
-  (``FSAB`` moment family, flows, and density/pressure perturbations).
+The reduced upstream parity inventory is auto-generated and should be treated as the
+authoritative status:
 
-Reproduce these two blocker cases only:
+- ``docs/_generated/reduced_upstream_suite_status.rst``
+- ``tests/reduced_upstream_examples/suite_report.json``
+
+Regenerate these files:
+
+.. code-block:: bash
+
+   python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 1
+
+Target a single case family:
 
 .. code-block:: bash
 
    python scripts/run_reduced_upstream_suite.py \
-     --pattern 'tokamak_1species_FPCollisions_noEr_withPhi1InDKE|geometryScheme5_3species_loRes' \
-     --timeout-s 30 --max-attempts 1 --reset-report
+     --pattern 'HSX_FPCollisions|filteredW7XNetCDF_2species_magneticDrifts|geometryScheme4_2species' \
+     --timeout-s 30 --max-attempts 1
+
+Matrix/operator parity diagnosis (Fortran PETSc matrix vs JAX matvec):
+
+.. code-block:: bash
+
+   python scripts/compare_fortran_matrix_to_jax_operator.py \
+     --input /path/to/input.namelist \
+     --fortran-matrix /path/to/sfincsBinary_iteration_000_whichMatrix_3 \
+     --fortran-state /path/to/sfincsBinary_iteration_000_stateVector \
+     --project-active-dofs \
+     --out-json matrix_compare.json
+
+Frozen-state diagnostics isolation (solver-vs-diagnostics for RHSMode=1 moment families):
+
+.. code-block:: bash
+
+   python scripts/compare_rhsmode1_diagnostics_from_state.py \
+     --input /path/to/input.namelist \
+     --state /path/to/sfincsBinary_iteration_000_stateVector \
+     --fortran-h5 /path/to/sfincsOutput.h5 \
+     --out-json diagnostics_from_frozen_state.json

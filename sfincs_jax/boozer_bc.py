@@ -298,3 +298,40 @@ def read_boozer_bc_bracketing_surfaces(
         raise ValueError(f"Failed to locate surfaces bracketing rN_wish={r_n_wish} in {str(p)!r}")
 
     return header, old, new
+
+
+def selected_r_n_from_bc(
+    *,
+    path: str | Path,
+    geometry_scheme: int,
+    r_n_wish: float,
+    vmecradial_option: int = 1,
+) -> float:
+    """Return the effective radial location used by v3 for geometryScheme 11/12.
+
+    Notes
+    -----
+    - For ``vmecradial_option=1`` (nearest surface), this returns whichever bracketing
+      surface is closest to ``r_n_wish`` (matching v3 tie-breaking).
+    - For interpolation options, v3 interpolates linearly in ``s = rN^2``. This function
+      returns the corresponding effective ``rN``.
+    """
+    _header, surf_old, surf_new = read_boozer_bc_bracketing_surfaces(
+        path=path,
+        geometry_scheme=geometry_scheme,
+        r_n_wish=float(r_n_wish),
+    )
+    r_old = float(surf_old.r_n)
+    r_new = float(surf_new.r_n)
+    if r_new == r_old:
+        return r_old
+
+    if int(vmecradial_option) == 1:
+        return r_old if abs(r_old - float(r_n_wish)) < abs(r_new - float(r_n_wish)) else r_new
+
+    s_old = r_old * r_old
+    s_new = r_new * r_new
+    s_wish = float(r_n_wish) * float(r_n_wish)
+    radial_weight = (s_new - s_wish) / (s_new - s_old)
+    s_eff = radial_weight * s_old + (1.0 - radial_weight) * s_new
+    return float(math.sqrt(max(s_eff, 0.0)))

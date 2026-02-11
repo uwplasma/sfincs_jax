@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
-from .boozer_bc import read_boozer_bc_header
+from .boozer_bc import read_boozer_bc_header, selected_r_n_from_bc
 from .diagnostics import b0_over_bbar as b0_over_bbar_jax
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .diagnostics import g_hat_i_hat as g_hat_i_hat_jax
@@ -910,7 +910,14 @@ def full_system_operator_from_namelist(
         header = read_boozer_bc_header(path=str(p), geometry_scheme=int(geometry_scheme))
         psi_a_hat = float(header.psi_a_hat)
         a_hat = float(header.a_hat)
-        r_n = float(geom_params.get("RN_WISH", 0.5))
+        r_n_wish = float(geom_params.get("RN_WISH", 0.5))
+        vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
+        r_n = selected_r_n_from_bc(
+            path=str(p),
+            geometry_scheme=int(geometry_scheme),
+            r_n_wish=r_n_wish,
+            vmecradial_option=int(vmecradial_option),
+        )
     elif geometry_scheme == 5:
         eq = geom_params.get("EQUILIBRIUMFILE", None)
         if eq is None:
