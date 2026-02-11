@@ -1,0 +1,12 @@
+{
+  "FSABFlow": {"atol": 1e-7},
+  "FSABFlow_vs_x": {"atol": 1e-7},
+  "FSABVelocityUsingFSADensity": {"atol": 1e-7},
+  "FSABVelocityUsingFSADensityOverB0": {"atol": 1e-7},
+  "FSABVelocityUsingFSADensityOverRootFSAB2": {"atol": 1e-7},
+  "FSABjHat": {"atol": 1e-7},
+  "flow": {"atol": 1e-7},
+  "velocityUsingFSADensity": {"atol": 1e-7},
+  "velocityUsingTotalDensity": {"atol": 1e-7},
+  "MachUsingFSAThermalSpeed": {"atol": 1e-7}
+}

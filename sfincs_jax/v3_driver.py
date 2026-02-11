@@ -99,8 +99,9 @@ def solve_v3_full_system_linear_gmres(
         emit(1, f"solve_v3_full_system_linear_gmres: total_size={int(op.total_size)}")
         emit(1, "solve_v3_full_system_linear_gmres: assembling RHS")
     rhs = rhs_v3_full_system(op)
+    rhs_norm = jnp.linalg.norm(rhs)
     if emit is not None:
-        emit(2, f"solve_v3_full_system_linear_gmres: rhs_norm={float(jnp.linalg.norm(rhs)):.6e}")
+        emit(2, f"solve_v3_full_system_linear_gmres: rhs_norm={float(rhs_norm):.6e}")
 
     def mv(x):
         # Use the JIT-compiled operator application to reduce Python overhead in repeated matvecs
@@ -184,6 +185,34 @@ def solve_v3_full_system_linear_gmres(
             maxiter=maxiter,
             solve_method=solve_method,
         )
+        # If GMRES does not reach the requested tolerance (common without preconditioning),
+        # retry with a larger iteration budget and the more robust incremental mode.
+        target = max(float(atol), float(tol) * float(rhs_norm))
+        if float(result.residual_norm) > target:
+            fallback_env = os.environ.get("SFINCS_JAX_LINEAR_GMRES_FALLBACK", "").strip().lower()
+            if fallback_env not in {"0", "false", "no", "off"}:
+                fallback_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_MAXITER", "2000"))
+                fallback_restart = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_RESTART", "200"))
+                fallback_method = os.environ.get("SFINCS_JAX_LINEAR_GMRES_METHOD", "incremental").strip().lower()
+                if fallback_method not in {"batched", "incremental", "dense"}:
+                    fallback_method = "incremental"
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: retrying GMRES "
+                        f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
+                        f"with maxiter={fallback_maxiter} restart={fallback_restart} method={fallback_method}",
+                    )
+                result = gmres_solve(
+                    matvec=mv,
+                    b=rhs,
+                    x0=x0,
+                    tol=tol,
+                    atol=atol,
+                    restart=fallback_restart,
+                    maxiter=fallback_maxiter,
+                    solve_method=fallback_method,
+                )
     if emit is not None:
         emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
         emit(1, f"solve_v3_full_system_linear_gmres: elapsed_s={t.elapsed_s():.3f}")
