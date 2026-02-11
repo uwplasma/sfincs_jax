@@ -1,17 +1,17 @@
 [
   {
-    "case": "tokamak_1species_FPCollisions_noEr_withPhi1InDKE",
-    "status": "parity_ok",
-    "blocker_type": "none",
-    "message": "All common numeric datasets matched tolerance.",
+    "case": "geometryScheme4_2species_noEr_withQN",
+    "status": "fortran_diverged",
+    "blocker_type": "unsupported physics/path",
+    "message": "Fortran diverged in SNES; skipping JAX comparison.",
     "attempts": 1,
     "reductions": 0,
-    "fortran_runtime_s": 19.05233162501827,
-    "jax_runtime_s": 24.31016679201275,
-    "print_parity_signals": 9,
-    "print_parity_total": 9,
+    "fortran_runtime_s": 0.2524741670349613,
+    "jax_runtime_s": null,
+    "print_parity_signals": 0,
+    "print_parity_total": 0,
     "print_missing_signals": [],
-    "n_common_keys": 263,
+    "n_common_keys": 0,
     "n_mismatch_common": 0,
     "mismatch_keys_sample": [],
     "n_mismatch_solver": 0,
@@ -20,14 +20,14 @@
     "mismatch_physics_sample": [],
     "max_abs_mismatch": null,
     "final_resolution": {
-      "NTHETA": 6,
+      "NTHETA": 5,
       "NZETA": 1,
-      "NX": 4,
-      "NXI": 8
+      "NX": 2,
+      "NXI": 2
     },
-    "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withPhi1InDKE/input.namelist",
-    "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_FPCollisions_noEr_withPhi1InDKE.input.namelist",
-    "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withPhi1InDKE/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withPhi1InDKE/sfincsOutput_jax.h5"
+    "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withQN/input.namelist",
+    "promoted_input_path": null,
+    "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withQN/fortran_run/sfincsOutput.h5",
+    "jax_h5": null
   }
 ]

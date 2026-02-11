@@ -74,6 +74,10 @@ docs/_build/
 # Example outputs (generated)
 examples/**/output/
 examples/**/figures/
+tests/reduced_upstream_examples/**/fortran_run/
+tests/reduced_upstream_examples/**/sfincsOutput*.h5
+tests/reduced_upstream_examples/**/sfincs_jax.log
+tests/reduced_upstream_examples/**/fortran.log
 
 # PyBuilder
 .pybuilder/

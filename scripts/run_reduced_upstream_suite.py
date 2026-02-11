@@ -460,6 +460,11 @@ def _run_case(
                 log_path=fortran_log,
             )
             fortran_h5_path = out_fortran
+            fortran_text = _tail(fortran_log, n=200).lower()
+            if "snes_diverged" in fortran_text or "did not converge" in fortran_text:
+                note = "Fortran diverged in SNES; skipping JAX comparison."
+                status = "fortran_diverged"
+                break
         except subprocess.TimeoutExpired:
             note = "Fortran timeout; reduced largest axis."
             new_res = _reduce_max_axis_in_place(dst_input)
