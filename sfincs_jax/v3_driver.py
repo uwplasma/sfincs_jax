@@ -383,7 +383,7 @@ def solve_v3_full_system_newton_krylov_history(
             phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
             op_use = replace(op, phi1_hat_base=phi1)
 
-        r = apply_v3_full_system_operator(op_use, x) - rhs_v3_full_system(op_use)
+        r = apply_v3_full_system_operator(op_use, x, include_jacobian_terms=False) - rhs_v3_full_system(op_use)
         rnorm = jnp.linalg.norm(r)
         rnorm_f = float(rnorm)
         if rnorm_initial is None:

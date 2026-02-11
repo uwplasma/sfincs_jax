@@ -46,6 +46,12 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Batch transport RHS solves when possible**: for ``RHSMode=2/3`` dense branches, `sfincs_jax`
   now assembles the dense operator once and solves all ``whichRHS`` right-hand sides in one
   batched linear solve, reducing repeated operator assembly and retracing overhead.
+- **Vectorized RHSMode=1 diagnostics**: vm-only moment/flux accumulation and output shaping are
+  stacked/batched in JAX for non-``Phi1`` runs, reducing Python-loop overhead during
+  ``write_sfincs_jax_output_h5(..., compute_solution=True)``.
+- **Remove dead Jacobian work in hot matvec paths**: direct-Phi1 ``factorJ`` kinetic-row terms
+  that are absent in v3 ``whichMatrix=3`` are not assembled, improving parity and avoiding
+  unnecessary FLOPs in includePhi1-in-kinetic matrix applications.
 - **Use implicit differentiation for solve gradients**: for objectives that depend on the solution `x(p)` of
   a linear system `A(p) x = b(p)`, prefer `jax.lax.custom_linear_solve` (adjoint solve) over
   differentiating through Krylov iterations.

@@ -381,9 +381,14 @@ def _nonlinear_temp_vector_phi1(
 
 
 def apply_v3_full_system_operator(
-    op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = False
+    op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True
 ) -> jnp.ndarray:
-    """Apply the matrix-free full-system operator."""
+    """Apply the matrix-free full-system operator.
+
+    By default this routine applies the linearized (`whichMatrix=3`-style) operator
+    for includePhi1-in-kinetic runs, i.e. coefficients are frozen at ``phi1_hat_base``.
+    Use ``include_jacobian_terms=False`` for nonlinear residual evaluations.
+    """
     x_full = jnp.asarray(x_full)
     if x_full.shape != (op.total_size,):
         raise ValueError(f"x_full must have shape {(op.total_size,)}, got {x_full.shape}")
@@ -550,116 +555,6 @@ def apply_v3_full_system_operator(
 
         y_f = y_f.at[:, :, 0, :, :].add((coeff1_theta + coeff2_theta) * dphi1_dtheta[None, None, :, :])
         y_f = y_f.at[:, :, 0, :, :].add((coeff1_zeta + coeff2_zeta) * dphi1_dzeta[None, None, :, :])
-
-        if include_jacobian_terms:
-            # Additional Jacobian-only Phi1 terms from populateMatrix.F90 (factorJ1..factorJ5).
-            sqrt_pi = jnp.sqrt(jnp.pi)
-            two_pi = jnp.asarray(2.0 * jnp.pi, dtype=jnp.float64)
-            z = op.z_s  # (S,)
-            m_hat = op.m_hat
-            t_hat = op.t_hat
-            n_hat = op.n_hat
-            dn = op.dn_hat_dpsi_hat
-            dt = op.dt_hat_dpsi_hat
-
-            x = op.x
-            x2 = x * x
-            expx2 = jnp.exp(-x2)
-
-            dphi_hat_dpsi_hat_to_use = jnp.where(
-                (op.rhs_mode == 1) | (op.rhs_mode > 3),
-                op.dphi_hat_dpsi_hat,
-                jnp.asarray(0.0, dtype=jnp.float64),
-            )
-
-            geom_b = (
-                -op.b_hat_sub_zeta * op.db_hat_dtheta + op.b_hat_sub_theta * op.db_hat_dzeta
-            ) * op.d_hat  # (T,Z)
-
-            sqrt_t = jnp.sqrt(t_hat)
-            sqrt_m = jnp.sqrt(m_hat)
-
-            bracket = (dn / n_hat)[:, None] + (x2[None, :] - 1.5) * (dt / t_hat)[:, None]  # (S,X)
-            exp_phi1 = jnp.exp(
-                -(z[:, None, None] * op.alpha / t_hat[:, None, None]) * op.phi1_hat_base[None, :, :]
-            )  # (S,T,Z)
-
-            factorJ1 = (
-                exp_phi1[:, None, :, :]
-                * op.alpha
-                * op.delta
-                * (op.d_hat / (2.0 * (op.b_hat * op.b_hat)))[None, None, :, :]
-                * (-op.b_hat_sub_zeta * dphi1_base_dtheta + op.b_hat_sub_theta * dphi1_base_dzeta)[None, None, :, :]
-                * (n_hat * m_hat * sqrt_m / (t_hat * sqrt_t * jnp.pi * sqrt_pi))[:, None, None, None]
-                * expx2[None, :, None, None]
-                * bracket[:, :, None, None]
-            )  # (S,X,T,Z)
-
-            factorJ2 = (
-                (op.alpha * op.alpha)
-                * op.delta
-                * (op.d_hat / (two_pi * sqrt_pi * (op.b_hat * op.b_hat)))[None, None, :, :]
-                * (z * n_hat * m_hat * sqrt_m / (t_hat * t_hat * sqrt_t))[:, None, None, None]
-                * exp_phi1[:, None, :, :]
-                * expx2[None, :, None, None]
-                * (-op.b_hat_sub_zeta * dphi1_base_dtheta + op.b_hat_sub_theta * dphi1_base_dzeta)[None, None, :, :]
-                * phi_term[:, None, :, :]
-            )
-
-            x_part_rhs = x2[None, :] * expx2[None, :] * (
-                (dn / n_hat)[:, None]
-                + (op.alpha * z / t_hat)[:, None] * dphi_hat_dpsi_hat_to_use
-                + (x2[None, :] - 1.5) * (dt / t_hat)[:, None]
-            )  # (S,X)
-            x_part_rhs2 = x2[None, :] * expx2[None, :] * (dt / (t_hat * t_hat))[:, None]  # (S,X)
-            x_part_total = x_part_rhs[:, :, None, None] + (
-                x_part_rhs2[:, :, None, None]
-                * (z * op.alpha)[:, None, None, None]
-                * op.phi1_hat_base[None, None, :, :]
-            )
-
-            geom_b_full = geom_b[None, None, :, :]
-            prefJ3 = (
-                op.delta
-                * (n_hat * m_hat * sqrt_m / (two_pi * sqrt_pi * z * sqrt_t))[:, None, None, None]
-                / (op.b_hat * op.b_hat * op.b_hat)[None, None, :, :]
-            )
-            factorJ3 = prefJ3 * geom_b_full * x_part_total * exp_phi1[:, None, :, :]
-
-            prefJ5 = (
-                op.delta
-                * (n_hat * m_hat * sqrt_m / (two_pi * sqrt_pi * sqrt_t))[:, None, None, None]
-                / (op.b_hat * op.b_hat * op.b_hat)[None, None, :, :]
-            )
-            factorJ5 = prefJ5 * geom_b_full * (x_part_rhs2[:, :, None, None] * op.alpha) * exp_phi1[:, None, :, :]
-
-            factorJ4 = (
-                (op.alpha * op.alpha)
-                * op.delta
-                * (op.d_hat / (two_pi * sqrt_pi * (op.b_hat * op.b_hat)))[None, None, :, :]
-                * (z * n_hat * m_hat * sqrt_m / (t_hat * t_hat * sqrt_t))[:, None, None, None]
-                * exp_phi1[:, None, :, :]
-                * expx2[None, :, None, None]
-                * (-op.b_hat_sub_zeta * dphi1_base_dtheta + op.b_hat_sub_theta * dphi1_base_dzeta)[None, None, :, :]
-                * (dt / t_hat)[:, None, None, None]
-            )
-
-            coef_l0 = (
-                -(z * op.alpha / t_hat)[:, None, None, None] * (factorJ1 + factorJ2)
-                - (z * op.alpha / t_hat)[:, None, None, None] * (4.0 / 3.0) * factorJ3
-                + factorJ4
-                + (4.0 / 3.0) * factorJ5
-            )
-            coef_l2 = (
-                -(z * op.alpha / t_hat)[:, None, None, None] * (2.0 / 3.0) * factorJ3
-                + (2.0 / 3.0) * factorJ5
-            )
-
-            mask_l0 = (op.fblock.collisionless.n_xi_for_x > 0).astype(jnp.float64) * mask_x
-            y_f = y_f.at[:, :, 0, :, :].add(coef_l0 * phi1[None, None, :, :] * mask_l0[None, :, None, None])
-            if op.n_xi > 2:
-                mask_l2 = (op.fblock.collisionless.n_xi_for_x > 2).astype(jnp.float64) * mask_x
-                y_f = y_f.at[:, :, 2, :, :].add(coef_l2 * phi1[None, None, :, :] * mask_l2[None, :, None, None])
 
     if int(op.constraint_scheme) == 0:
         y_extra = jnp.zeros((0,), dtype=jnp.float64)
@@ -925,7 +820,7 @@ def residual_v3_full_system(op: V3FullSystemOperator, x_full: jnp.ndarray) -> jn
         phi1_flat = x_full[op.f_size : op.f_size + op.n_theta * op.n_zeta]
         phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
         op_use = replace(op, phi1_hat_base=phi1)
-    return apply_v3_full_system_operator(op_use, x_full) - rhs_v3_full_system(op_use)
+    return apply_v3_full_system_operator(op_use, x_full, include_jacobian_terms=False) - rhs_v3_full_system(op_use)
 
 
 def full_system_operator_from_namelist(
