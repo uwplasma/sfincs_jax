@@ -43,6 +43,9 @@ JAX-native performance patterns used in `sfincs_jax`
 
 - **Exploit linearity**: for linear runs, the operator is constant; store and reuse the assembled RHS and
   re-run only GMRES when parameters change.
+- **Batch transport RHS solves when possible**: for ``RHSMode=2/3`` dense branches, `sfincs_jax`
+  now assembles the dense operator once and solves all ``whichRHS`` right-hand sides in one
+  batched linear solve, reducing repeated operator assembly and retracing overhead.
 - **Use implicit differentiation for solve gradients**: for objectives that depend on the solution `x(p)` of
   a linear system `A(p) x = b(p)`, prefer `jax.lax.custom_linear_solve` (adjoint solve) over
   differentiating through Krylov iterations.

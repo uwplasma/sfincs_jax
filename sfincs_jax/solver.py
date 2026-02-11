@@ -32,6 +32,63 @@ class GMRESSolveResult:
         return cls(x=x, residual_norm=residual_norm)
 
 
+def assemble_dense_matrix_from_matvec(*, matvec, n: int, dtype: jnp.dtype) -> jnp.ndarray:
+    """Assemble a dense matrix from a matrix-free `matvec`."""
+    eye = jnp.eye(int(n), dtype=dtype)
+    return vmap(matvec, in_axes=1, out_axes=1)(eye)
+
+
+def dense_solve_from_matrix(*, a: jnp.ndarray, b: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Solve `A X = B` with v3-compatible singular handling.
+
+    Parameters
+    ----------
+    a:
+        Dense square matrix, shape `(N,N)`.
+    b:
+        Right-hand side, shape `(N,)` or `(N,K)`.
+    """
+    a = jnp.asarray(a)
+    b = jnp.asarray(b)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError(f"dense_solve_from_matrix expects a square matrix, got shape {a.shape}")
+    if b.ndim not in (1, 2):
+        raise ValueError(f"dense_solve_from_matrix expects b.ndim in {{1,2}}, got {b.ndim}")
+    if b.shape[0] != a.shape[0]:
+        raise ValueError(f"dense_solve_from_matrix shape mismatch: a={a.shape}, b={b.shape}")
+
+    n = int(a.shape[0])
+    b2 = b[:, None] if b.ndim == 1 else b
+    eye = jnp.eye(n, dtype=a.dtype)
+
+    x_direct = jnp.linalg.solve(a, b2)
+    rank = jnp.linalg.matrix_rank(a)
+    needs_reg = rank < jnp.asarray(n, dtype=rank.dtype)
+
+    reg_val = 2.2e-10
+    env_reg = os.environ.get("SFINCS_JAX_DENSE_REG", "").strip()
+    if env_reg:
+        reg_val = float(env_reg)
+    reg = jnp.asarray(reg_val, dtype=a.dtype)
+
+    x_reg = jnp.linalg.solve(a + reg * eye, b2)
+    x_lstsq = jnp.linalg.lstsq(a, b2, rcond=None)[0]
+
+    singular_mode = os.environ.get("SFINCS_JAX_DENSE_SINGULAR_MODE", "").strip().lower()
+    if singular_mode == "lstsq":
+        x2 = jnp.where(needs_reg, x_lstsq, x_direct)
+    else:
+        x2 = jnp.where(needs_reg, x_reg, x_direct)
+
+    x2 = jnp.where(jnp.all(jnp.isfinite(x2)), x2, x_lstsq)
+    r2 = b2 - a @ x2
+    rn = jnp.linalg.norm(r2, axis=0)
+
+    if b.ndim == 1:
+        return x2[:, 0], rn[0]
+    return x2, rn
+
+
 def gmres_solve(
     *,
     matvec,
@@ -63,30 +120,9 @@ def gmres_solve(
         if n > 5000:
             raise ValueError(f"dense solve is disabled for n={n} (too large). Use GMRES.")
 
-        eye = jnp.eye(n, dtype=b.dtype)
-        # Assemble columns A[:,j] = matvec(e_j).
-        a = vmap(matvec, in_axes=1, out_axes=1)(eye)
-        x_direct = jnp.linalg.solve(a, b)
-        rank = jnp.linalg.matrix_rank(a)
-        needs_reg = rank < jnp.asarray(n, dtype=rank.dtype)
-        # Tuned for v3 transport-matrix singular systems: small enough to preserve
-        # well-posed solves, large enough to select a stable nullspace branch.
-        reg_val = 2.2e-10
-        env_reg = os.environ.get("SFINCS_JAX_DENSE_REG", "").strip()
-        if env_reg:
-            reg_val = float(env_reg)
-        reg = jnp.asarray(reg_val, dtype=b.dtype)
-        x_reg = jnp.linalg.solve(a + reg * eye, b)
-        x_lstsq = jnp.linalg.lstsq(a, b, rcond=None)[0]
-        singular_mode = os.environ.get("SFINCS_JAX_DENSE_SINGULAR_MODE", "").strip().lower()
-        if singular_mode == "lstsq":
-            x = jnp.where(needs_reg, x_lstsq, x_direct)
-        else:
-            x = jnp.where(needs_reg, x_reg, x_direct)
-        # Robust fallback for non-finite outputs from backend linear algebra kernels.
-        x = jnp.where(jnp.all(jnp.isfinite(x)), x, x_lstsq)
-        r = b - a @ x
-        return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
+        a = assemble_dense_matrix_from_matvec(matvec=matvec, n=n, dtype=b.dtype)
+        x, residual_norm = dense_solve_from_matrix(a=a, b=b)
+        return GMRESSolveResult(x=x, residual_norm=residual_norm)
 
     x, _info = gmres(
         matvec,

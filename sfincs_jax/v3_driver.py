@@ -15,7 +15,7 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from .namelist import Namelist
-from .solver import GMRESSolveResult, gmres_solve
+from .solver import GMRESSolveResult, assemble_dense_matrix_from_matvec, dense_solve_from_matrix, gmres_solve
 from .transport_matrix import transport_matrix_size_from_rhs_mode, v3_transport_matrix_from_state_vectors
 from .v3_system import _source_basis_constraint_scheme_1
 from .verbose import Timer
@@ -680,191 +680,244 @@ def solve_v3_transport_matrix_linear_gmres(
     diag_pf: list[jnp.ndarray] = []
     diag_hf: list[jnp.ndarray] = []
     elapsed_s: list[jnp.ndarray] = []
+    which_rhs_values = list(range(1, n + 1))
+    op_rhs_by_index = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in which_rhs_values]
+    rhs_by_index = [rhs_v3_full_system(op_rhs) for op_rhs in op_rhs_by_index]
 
-    for which_rhs in range(1, n + 1):
-        t_rhs = Timer()
-        op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
-        rhs = rhs_v3_full_system(op_rhs)
-        if emit is not None:
-            emit(0, f"whichRHS={which_rhs}/{n}: assembling+solving (rhs_norm={float(jnp.linalg.norm(rhs)):.6e})")
-            emit(1, f"whichRHS={which_rhs}/{n}: evaluateJacobian called (matrix-free)")
+    use_op_rhs_in_matvec = op0.fblock.pas is not None
+    env_transport_matvec = os.environ.get("SFINCS_JAX_TRANSPORT_MATVEC_MODE", "").strip().lower()
+    if env_transport_matvec == "rhs":
+        use_op_rhs_in_matvec = True
+    elif env_transport_matvec == "base":
+        use_op_rhs_in_matvec = False
+    op_matvec_by_index = [op_rhs if use_op_rhs_in_matvec else op0 for op_rhs in op_rhs_by_index]
 
-        # In upstream v3, the transport RHS settings are applied globally before each solve.
-        # For PAS parity fixtures, matching this behavior requires using `op_rhs` in the matvec.
-        # For full FP, default to `op0` for robustness, with an env override for parity tuning.
-        use_op_rhs_in_matvec = op0.fblock.pas is not None
-        env_transport_matvec = os.environ.get("SFINCS_JAX_TRANSPORT_MATVEC_MODE", "").strip().lower()
-        if env_transport_matvec == "rhs":
-            use_op_rhs_in_matvec = True
-        elif env_transport_matvec == "base":
-            use_op_rhs_in_matvec = False
-        op_matvec = op_rhs if use_op_rhs_in_matvec else op0
+    env_diag_op = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_OP", "").strip().lower()
+    if env_diag_op == "rhs":
+        diag_op_by_index = op_rhs_by_index
+    else:
+        diag_op_by_index = [op0 for _ in which_rhs_values]
 
-        # For RHSMode=2 whichRHS=3 (E_parallel drive), PETSc tends to stop at a looser
-        # tolerance, leaving small constraint residuals that appear in the moment-family
-        # diagnostics. Mimic that behavior by using a Krylov solve with a looser tol.
-        loose_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_LOOSE", "").strip().lower()
-        krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_KRYLOV", "").strip().lower()
-        use_loose_epar_krylov = (
+    loose_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_LOOSE", "").strip().lower()
+    krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_KRYLOV", "").strip().lower()
+
+    def _rhs3_krylov_flags(which_rhs: int) -> tuple[bool, bool]:
+        use_loose = (
             loose_env in {"1", "true", "yes", "on"}
             and int(rhs_mode) == 2
-            and which_rhs == 3
+            and int(which_rhs) == 3
             and int(op0.constraint_scheme) == 1
         )
-        force_epar_krylov = (
+        force_k = (
             krylov_env in {"1", "true", "yes", "on"}
             and int(rhs_mode) == 2
-            and which_rhs == 3
+            and int(which_rhs) == 3
             and int(op0.constraint_scheme) == 1
         )
-        solve_method_rhs = solve_method_use
-        tol_rhs = tol
-        if force_epar_krylov or use_loose_epar_krylov:
-            solve_method_rhs = "incremental"
-            if use_loose_epar_krylov:
-                epar_tol_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_TOL", "").strip()
-                try:
-                    epar_tol = float(epar_tol_env) if epar_tol_env else 1e-8
-                except ValueError:
-                    epar_tol = 1e-8
-                tol_rhs = max(float(tol), float(epar_tol))
+        return use_loose, force_k
 
-        def _maybe_project_constraint_nullspace(x_vec: jnp.ndarray) -> jnp.ndarray:
-            if int(rhs_mode) != 2 or which_rhs != 3:
-                return x_vec
-            if int(op0.constraint_scheme) != 1:
-                return x_vec
-            if int(op0.phi1_size) != 0:
-                return x_vec
-            project_env = os.environ.get("SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE", "").strip().lower()
-            if project_env in {"0", "false", "no", "off"}:
-                return x_vec
-
-            # Build basis vectors from constraintScheme=1 source basis functions.
-            # Use a per-species basis so we can enforce each density/pressure constraint row.
-            xpart1, xpart2 = _source_basis_constraint_scheme_1(op0.x)
-            ix0 = 1 if bool(op0.point_at_x0) else 0
-            f_shape = op0.fblock.f_shape
-            n_s, n_x, n_l, n_t, n_z = f_shape
-
-            def _basis(species_index: int, src_index: int, xpart: jnp.ndarray) -> jnp.ndarray:
-                f = jnp.zeros(f_shape, dtype=jnp.float64)
-                f = f.at[species_index, ix0:, 0, :, :].set(xpart[ix0:][:, None, None])
-                extra = jnp.zeros((n_s, 2), dtype=jnp.float64)
-                extra = extra.at[species_index, src_index].set(-1.0)
-                return jnp.concatenate([f.reshape((-1,)), extra.reshape((-1,))], axis=0)
-
-            basis: list[jnp.ndarray] = []
-            for s in range(n_s):
-                basis.append(_basis(s, 0, xpart1))
-                basis.append(_basis(s, 1, xpart2))
-
-            # 1) Enforce the constraint rows (extra block) by correcting the residual.
-            r = apply_v3_full_system_operator(op_matvec, x_vec) - rhs
-            r_extra = r[-op0.extra_size :]
-            cols = [apply_v3_full_system_operator(op_matvec, v)[-op0.extra_size :] for v in basis]
-            m = jnp.stack(cols, axis=1)  # (extra_size, extra_size)
-            c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
-            x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
-            x_vec = x_vec + x_corr
-
-            # 2) Project onto the orthogonal complement of the nullspace basis.
-            # PETSc nullspace handling keeps the solution orthogonal to these basis vectors.
-            b_mat = jnp.stack(basis, axis=1)  # (total_size, nbasis)
-            gram = b_mat.T @ b_mat
-            proj_rhs = b_mat.T @ x_vec
-            c_proj = jnp.linalg.solve(gram, proj_rhs)
-            x_vec = x_vec - b_mat @ c_proj
+    def _maybe_project_constraint_nullspace(
+        x_vec: jnp.ndarray,
+        *,
+        which_rhs: int,
+        op_matvec: V3FullSystemOperator,
+        rhs_vec: jnp.ndarray,
+    ) -> jnp.ndarray:
+        if int(rhs_mode) != 2 or int(which_rhs) != 3:
+            return x_vec
+        if int(op0.constraint_scheme) != 1:
+            return x_vec
+        if int(op0.phi1_size) != 0:
+            return x_vec
+        project_env = os.environ.get("SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE", "").strip().lower()
+        if project_env in {"0", "false", "no", "off"}:
             return x_vec
 
-        if use_active_dof_mode:
-            assert active_idx_jnp is not None
-            assert full_to_active_jnp is not None
+        xpart1, xpart2 = _source_basis_constraint_scheme_1(op0.x)
+        ix0 = 1 if bool(op0.point_at_x0) else 0
+        f_shape = op0.fblock.f_shape
+        n_s, _, _, _, _ = f_shape
 
-            def reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
-                return v_full[active_idx_jnp]
+        def _basis(species_index: int, src_index: int, xpart: jnp.ndarray) -> jnp.ndarray:
+            f = jnp.zeros(f_shape, dtype=jnp.float64)
+            f = f.at[species_index, ix0:, 0, :, :].set(xpart[ix0:][:, None, None])
+            extra = jnp.zeros((n_s, 2), dtype=jnp.float64)
+            extra = extra.at[species_index, src_index].set(-1.0)
+            return jnp.concatenate([f.reshape((-1,)), extra.reshape((-1,))], axis=0)
 
-            def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
-                # Gather-based expansion (instead of scatter) keeps the reduced
-                # matvec compatible with JAX's transpose rules used by GMRES.
-                z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
-                padded = jnp.concatenate([z0, v_reduced], axis=0)
-                return padded[full_to_active_jnp]
+        basis: list[jnp.ndarray] = []
+        for s in range(n_s):
+            basis.append(_basis(s, 0, xpart1))
+            basis.append(_basis(s, 1, xpart2))
 
-            def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
-                y_full = apply_v3_full_system_operator(op_matvec, expand_reduced(x_reduced))
-                return reduce_full(y_full)
+        r = apply_v3_full_system_operator_jit(op_matvec, x_vec) - rhs_vec
+        r_extra = r[-op0.extra_size :]
+        cols = [apply_v3_full_system_operator_jit(op_matvec, v)[-op0.extra_size :] for v in basis]
+        m = jnp.stack(cols, axis=1)
+        c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
+        x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
+        x_vec = x_vec + x_corr
 
-            rhs_reduced = reduce_full(rhs)
-            x0_reduced = None
-            if x0 is not None:
-                x0_arr = jnp.asarray(x0)
-                if x0_arr.shape == (active_size,):
-                    x0_reduced = x0_arr
-                elif x0_arr.shape == (op0.total_size,):
-                    x0_reduced = reduce_full(x0_arr)
+        b_mat = jnp.stack(basis, axis=1)
+        gram = b_mat.T @ b_mat
+        proj_rhs = b_mat.T @ x_vec
+        c_proj = jnp.linalg.solve(gram, proj_rhs)
+        return x_vec - b_mat @ c_proj
 
-            res_reduced = gmres_solve(
-                matvec=mv_reduced,
-                b=rhs_reduced,
-                # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
-                # before each whichRHS solve (no warm-start from previous RHS).
-                x0=x0_reduced,
-                tol=tol_rhs,
-                atol=atol,
-                restart=restart,
-                maxiter=maxiter,
-                solve_method=solve_method_rhs,
-            )
-            x_full = expand_reduced(res_reduced.x)
-            x_full = _maybe_project_constraint_nullspace(x_full)
-            res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator(op_matvec, x_full) - rhs)
-            state_vectors[which_rhs] = x_full
-            residual_norms[which_rhs] = res_norm_full
-        else:
-            def mv(x):
-                return apply_v3_full_system_operator(op_matvec, x)
+    dense_batch_done = False
+    if str(solve_method_use).lower() == "dense" and not use_active_dof_mode:
+        requested_epar_krylov = any((_rhs3_krylov_flags(which_rhs)[0] or _rhs3_krylov_flags(which_rhs)[1]) for which_rhs in which_rhs_values)
+        if not requested_epar_krylov:
+            op_probe_ref = op_matvec_by_index[0]
+            probe0 = jnp.zeros((int(op0.total_size),), dtype=jnp.float64).at[0].set(1.0)
+            probe1 = jnp.zeros((int(op0.total_size),), dtype=jnp.float64).at[-1].set(1.0)
+            same_operator = True
+            y_ref0 = apply_v3_full_system_operator_jit(op_probe_ref, probe0)
+            y_ref1 = apply_v3_full_system_operator_jit(op_probe_ref, probe1)
+            for op_probe in op_matvec_by_index[1:]:
+                d0 = float(jnp.linalg.norm(apply_v3_full_system_operator_jit(op_probe, probe0) - y_ref0))
+                d1 = float(jnp.linalg.norm(apply_v3_full_system_operator_jit(op_probe, probe1) - y_ref1))
+                if max(d0, d1) > 1e-13:
+                    same_operator = False
+                    break
 
-            res = gmres_solve(
-                matvec=mv,
-                b=rhs,
-                # Match v3 solver.F90 RHSMode=2/3 loop: solutionVec is reset to 0
-                # before each whichRHS solve (no warm-start from previous RHS).
-                x0=x0,
-                tol=tol_rhs,
-                atol=atol,
-                restart=restart,
-                maxiter=maxiter,
-                solve_method=solve_method_rhs,
-            )
-            x_full = res.x
-            x_full = _maybe_project_constraint_nullspace(x_full)
-            state_vectors[which_rhs] = x_full
-            residual_norms[which_rhs] = res.residual_norm
-        if emit is not None:
-            emit(
-                0,
-                f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
-                f"elapsed_s={t_rhs.elapsed_s():.3f}",
-            )
-        # Collect diagnostics for parity with v3 `sfincsOutput.h5` and postprocessing scripts.
-        from .transport_matrix import v3_transport_diagnostics_vm_only
+            if same_operator:
+                if emit is not None:
+                    emit(1, "solve_v3_transport_matrix_linear_gmres: dense batched solve across all whichRHS")
+                t_dense = Timer()
 
+                def _mv_dense(x: jnp.ndarray) -> jnp.ndarray:
+                    return apply_v3_full_system_operator_jit(op_probe_ref, x)
+
+                a_dense = assemble_dense_matrix_from_matvec(
+                    matvec=_mv_dense, n=int(op0.total_size), dtype=jnp.float64
+                )
+                rhs_mat = jnp.stack(rhs_by_index, axis=1)
+                x_mat, _ = dense_solve_from_matrix(a=a_dense, b=rhs_mat)
+
+                for idx, which_rhs in enumerate(which_rhs_values):
+                    x_col = x_mat[:, idx]
+                    rhs_vec = rhs_by_index[idx]
+                    x_col = _maybe_project_constraint_nullspace(
+                        x_col, which_rhs=int(which_rhs), op_matvec=op_probe_ref, rhs_vec=rhs_vec
+                    )
+                    state_vectors[which_rhs] = x_col
+                    residual_norms[which_rhs] = jnp.linalg.norm(
+                        apply_v3_full_system_operator_jit(op_probe_ref, x_col) - rhs_vec
+                    )
+                    elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
+                    if emit is not None:
+                        emit(
+                            0,
+                            f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
+                            f"elapsed_s={float(elapsed_s[-1]):.3f}",
+                        )
+                dense_batch_done = True
+
+    if not dense_batch_done:
+        for idx, which_rhs in enumerate(which_rhs_values):
+            t_rhs = Timer()
+            op_rhs = op_rhs_by_index[idx]
+            rhs = rhs_by_index[idx]
+            op_matvec = op_matvec_by_index[idx]
+            if emit is not None:
+                emit(0, f"whichRHS={which_rhs}/{n}: assembling+solving (rhs_norm={float(jnp.linalg.norm(rhs)):.6e})")
+                emit(1, f"whichRHS={which_rhs}/{n}: evaluateJacobian called (matrix-free)")
+
+            use_loose_epar_krylov, force_epar_krylov = _rhs3_krylov_flags(which_rhs)
+            solve_method_rhs = solve_method_use
+            tol_rhs = tol
+            if force_epar_krylov or use_loose_epar_krylov:
+                solve_method_rhs = "incremental"
+                if use_loose_epar_krylov:
+                    epar_tol_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_TOL", "").strip()
+                    try:
+                        epar_tol = float(epar_tol_env) if epar_tol_env else 1e-8
+                    except ValueError:
+                        epar_tol = 1e-8
+                    tol_rhs = max(float(tol), float(epar_tol))
+
+            if use_active_dof_mode:
+                assert active_idx_jnp is not None
+                assert full_to_active_jnp is not None
+
+                def reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
+                    return v_full[active_idx_jnp]
+
+                def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+                    z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
+                    padded = jnp.concatenate([z0, v_reduced], axis=0)
+                    return padded[full_to_active_jnp]
+
+                def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
+                    y_full = apply_v3_full_system_operator_jit(op_matvec, expand_reduced(x_reduced))
+                    return reduce_full(y_full)
+
+                rhs_reduced = reduce_full(rhs)
+                x0_reduced = None
+                if x0 is not None:
+                    x0_arr = jnp.asarray(x0)
+                    if x0_arr.shape == (active_size,):
+                        x0_reduced = x0_arr
+                    elif x0_arr.shape == (op0.total_size,):
+                        x0_reduced = reduce_full(x0_arr)
+
+                res_reduced = gmres_solve(
+                    matvec=mv_reduced,
+                    b=rhs_reduced,
+                    x0=x0_reduced,
+                    tol=tol_rhs,
+                    atol=atol,
+                    restart=restart,
+                    maxiter=maxiter,
+                    solve_method=solve_method_rhs,
+                )
+                x_full = expand_reduced(res_reduced.x)
+                x_full = _maybe_project_constraint_nullspace(
+                    x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
+                )
+                res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator_jit(op_matvec, x_full) - rhs)
+                state_vectors[which_rhs] = x_full
+                residual_norms[which_rhs] = res_norm_full
+            else:
+                def mv(x: jnp.ndarray) -> jnp.ndarray:
+                    return apply_v3_full_system_operator_jit(op_matvec, x)
+
+                res = gmres_solve(
+                    matvec=mv,
+                    b=rhs,
+                    x0=x0,
+                    tol=tol_rhs,
+                    atol=atol,
+                    restart=restart,
+                    maxiter=maxiter,
+                    solve_method=solve_method_rhs,
+                )
+                x_full = res.x
+                x_full = _maybe_project_constraint_nullspace(
+                    x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
+                )
+                state_vectors[which_rhs] = x_full
+                residual_norms[which_rhs] = jnp.linalg.norm(apply_v3_full_system_operator_jit(op_matvec, x_full) - rhs)
+            if emit is not None:
+                emit(
+                    0,
+                    f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
+                    f"elapsed_s={t_rhs.elapsed_s():.3f}",
+                )
+            elapsed_s.append(jnp.asarray(t_rhs.elapsed_s(), dtype=jnp.float64))
+
+    from .transport_matrix import v3_transport_diagnostics_vm_only
+
+    for idx, which_rhs in enumerate(which_rhs_values):
+        diag_op = diag_op_by_index[idx]
         if emit is not None:
             emit(1, f"whichRHS={which_rhs}/{n}: Computing diagnostics")
-        # v3 diagnostics are evaluated in the same global state used for each whichRHS solve.
-        # Keep `op0` as default for current parity baselines, with an opt-in override.
-        diag_op = op0
-        env_diag_op = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_OP", "").strip().lower()
-        if env_diag_op == "rhs":
-            diag_op = op_rhs
-        elif env_diag_op == "base":
-            diag_op = op0
+        x_full = state_vectors[which_rhs]
         diag = v3_transport_diagnostics_vm_only(diag_op, x_full=x_full)
         diag_fsab_flow.append(diag.fsab_flow)
         diag_pf.append(diag.particle_flux_vm_psi_hat)
         diag_hf.append(diag.heat_flux_vm_psi_hat)
-        elapsed_s.append(jnp.asarray(t_rhs.elapsed_s(), dtype=jnp.float64))
 
     tm = v3_transport_matrix_from_state_vectors(op0=op0, geom=geom, state_vectors_by_rhs=state_vectors)
     if emit is not None:
