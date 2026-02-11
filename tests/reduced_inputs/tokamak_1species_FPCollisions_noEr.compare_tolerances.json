@@ -1,0 +1,29 @@
+{
+  "densityPerturbation": {
+    "center_fsa": true
+  },
+  "pressurePerturbation": {
+    "center_fsa": true
+  },
+  "totalDensity": {
+    "center_fsa": true
+  },
+  "totalPressure": {
+    "center_fsa": true
+  },
+  "FSADensityPerturbation": {
+    "ignore": true
+  },
+  "FSAPressurePerturbation": {
+    "ignore": true
+  },
+  "velocityUsingTotalDensity": {
+    "atol": 1e-2
+  },
+  "particleFluxBeforeSurfaceIntegral_vm": {
+    "atol": 2e-5
+  },
+  "heatFluxBeforeSurfaceIntegral_vm": {
+    "atol": 2e-5
+  }
+}

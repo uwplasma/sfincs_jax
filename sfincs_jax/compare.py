@@ -30,6 +30,22 @@ def _as_numpy(x: Any) -> np.ndarray | None:
     return None
 
 
+def _center_fsa(an: np.ndarray) -> np.ndarray:
+    """Remove flux-surface-average offsets along theta/zeta axes when present."""
+    if an.ndim == 4:
+        # (Niter, Ntheta, Nzeta, Nspecies)
+        mean = an.mean(axis=(1, 2), keepdims=True)
+        return an - mean
+    if an.ndim == 3:
+        # (Ntheta, Nzeta, Nspecies) or (Niter, Ntheta, Nzeta)
+        if an.shape[1] > 1:
+            mean = an.mean(axis=(0, 1), keepdims=True)
+            return an - mean
+        mean = an.mean(axis=1, keepdims=True)
+        return an - mean
+    return an
+
+
 def compare_sfincs_outputs(
     *,
     a_path: Path,
@@ -65,8 +81,14 @@ def compare_sfincs_outputs(
             continue
 
         tol = tolerances.get(k, {}) if tolerances else {}
+        if bool(tol.get("ignore", False)):
+            continue
         rtol_k = float(tol.get("rtol", rtol))
         atol_k = float(tol.get("atol", atol))
+
+        if bool(tol.get("center_fsa", False)):
+            an = _center_fsa(an)
+            bn = _center_fsa(bn)
 
         diff = np.abs(an - bn)
         max_abs = float(diff.max()) if diff.size else float(abs(float(an) - float(bn)))

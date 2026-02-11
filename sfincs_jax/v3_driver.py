@@ -116,7 +116,10 @@ def solve_v3_full_system_linear_gmres(
     elif active_env in {"0", "false", "no", "off"}:
         use_active_dof_mode = False
     else:
-        use_active_dof_mode = int(op.rhs_mode) == 1 and has_reduced_modes
+        # For RHSMode=1, keep the full system by default. The active-DOF reduction
+        # can change the nullspace branch selected by dense solves, which affects
+        # density/pressure mean values in parity fixtures.
+        use_active_dof_mode = int(op.rhs_mode) in {2, 3} and has_reduced_modes
 
     active_idx_jnp: jnp.ndarray | None = None
     full_to_active_jnp: jnp.ndarray | None = None
