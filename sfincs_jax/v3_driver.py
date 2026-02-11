@@ -362,7 +362,7 @@ def solve_v3_full_system_newton_krylov_history(
         converged_abs = rnorm_f < float(tol)
         converged_rel = rnorm_f <= float(nonlinear_rtol) * float(rnorm_initial)
         if converged_abs or converged_rel:
-            if len(accepted) <= k:
+            if not accepted:
                 accepted.append(x)
             return (
                 V3NewtonKrylovResult(

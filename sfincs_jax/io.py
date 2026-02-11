@@ -1244,9 +1244,12 @@ def write_sfincs_jax_output_h5(
                 use_frozen_linearization = True
             elif env_frozen in {"0", "false", "no", "off"}:
                 use_frozen_linearization = False
-            # Use a slightly looser relative threshold than PETSc defaults so the
-            # reduced qn=1 fixtures terminate at the same saved-iteration count as v3.
-            nonlinear_rtol = 5e-8 if use_frozen_linearization else 0.0
+            # Use a slightly looser relative threshold than PETSc defaults for
+            # QN-only runs, but keep PETSc-like rtol when Phi1 enters the kinetic equation.
+            if use_frozen_linearization:
+                nonlinear_rtol = 1e-8 if include_phi1_in_kinetic else 5e-8
+            else:
+                nonlinear_rtol = 0.0
             if use_frozen_linearization:
                 env_rtol = os.environ.get("SFINCS_JAX_PHI1_NONLINEAR_RTOL", "").strip()
                 if env_rtol:

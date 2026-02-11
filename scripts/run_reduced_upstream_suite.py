@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -216,12 +217,41 @@ def _run_jax_cli(
 def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_path: Path) -> tuple[float, Path, int]:
     cmd = [str(exe.resolve())]
     t0 = time.perf_counter()
+    env = dict(os.environ)
     with log_path.open("w", encoding="utf-8") as log:
-        proc = subprocess.run(cmd, cwd=str(input_path.parent), check=False, timeout=timeout_s, stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(input_path.parent),
+            check=False,
+            timeout=timeout_s,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
     dt = time.perf_counter() - t0
     out = input_path.parent / "sfincsOutput.h5"
     if proc.returncode != 0:
-        tail = _tail(log_path, n=40)
+        tail = _tail(log_path, n=80)
+        # Some MPI-enabled builds error out on libfabric defaults. Retry once with a TCP provider.
+        mpi_hint = any(s in tail.lower() for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
+        if mpi_hint:
+            env_retry = dict(env)
+            env_retry.setdefault("FI_PROVIDER", "tcp")
+            env_retry.setdefault("FI_MR_CACHE_MAX_COUNT", "0")
+            with log_path.open("w", encoding="utf-8") as log:
+                proc = subprocess.run(
+                    cmd,
+                    cwd=str(input_path.parent),
+                    check=False,
+                    timeout=timeout_s,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=env_retry,
+                )
+            dt = time.perf_counter() - t0
+            if proc.returncode == 0 and out.exists():
+                return dt, out, int(proc.returncode)
+            tail = _tail(log_path, n=80)
         raise RuntimeError(f"Fortran failed rc={proc.returncode}.\n{tail}")
     if not out.exists():
         tail = _tail(log_path, n=40)
@@ -474,6 +504,12 @@ def _run_case(
             reductions += 1
             continue
         except Exception as exc:  # noqa: BLE001
+            exc_text = str(exc)
+            lower = exc_text.lower()
+            if any(s in lower for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi")):
+                note = f"Fortran MPI init error: {exc_text}"
+                status = "fortran_error"
+                break
             note = f"Fortran error: {type(exc).__name__}: {exc}"
             new_res = _reduce_max_axis_in_place(dst_input)
             if new_res == final_res:
@@ -516,6 +552,10 @@ def _run_case(
         try:
             tolerances = None
             tol_path = case_out_dir / "compare_tolerances.json"
+            if not tol_path.exists():
+                reduced_tol = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.compare_tolerances.json"
+                if reduced_tol.exists():
+                    tol_path = reduced_tol
             if tol_path.exists():
                 try:
                     tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
