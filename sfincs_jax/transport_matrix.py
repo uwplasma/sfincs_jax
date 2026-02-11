@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from jax import lax
 
 from .geometry import BoozerGeometry
-from .v3_system import V3FullSystemOperator
+from .v3_system import V3FullSystemOperator, with_transport_rhs_settings
 
 
 @dataclass(frozen=True)
@@ -547,21 +547,37 @@ def v3_transport_output_fields_vm_only(
     t = int(op0.n_theta)
     z = int(op0.n_zeta)
 
-    # Outputs in Python-read order:
-    pf_vm_psi_hat = jnp.zeros((s, n), dtype=jnp.float64)
-    hf_vm_psi_hat = jnp.zeros((s, n), dtype=jnp.float64)
-    flow = jnp.zeros((s, n), dtype=jnp.float64)
+    rhs_values = list(range(1, n + 1))
+    for which_rhs in rhs_values:
+        if which_rhs not in state_vectors_by_rhs:
+            raise ValueError(f"Missing state vector for which_rhs={which_rhs}.")
 
-    pf_vm0_psi_hat = jnp.zeros((s, n), dtype=jnp.float64)
-    hf_vm0_psi_hat = jnp.zeros((s, n), dtype=jnp.float64)
+    x_stack = jnp.stack([jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values], axis=0)  # (N,total)
+    op_rhs_list = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in rhs_values]
+    diag_list = [v3_transport_diagnostics_vm_only(op_rhs, x_full=x_stack[i]) for i, op_rhs in enumerate(op_rhs_list)]
 
-    # Note: In Fortran v3, these arrays are indexed as (itheta, izeta, ispecies, whichRHS),
-    # but when written from Fortran (column-major) and read back in Python (row-major),
-    # the first two axes appear swapped. Therefore the Python-read order is (izeta, itheta, ispecies, whichRHS).
-    pf_before_vm = jnp.zeros((z, t, s, n), dtype=jnp.float64)
-    hf_before_vm = jnp.zeros((z, t, s, n), dtype=jnp.float64)
-    pf_before_vm0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
-    hf_before_vm0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
+    pf_vm_psi_hat = jnp.stack([d.particle_flux_vm_psi_hat for d in diag_list], axis=1)  # (S,N)
+    hf_vm_psi_hat = jnp.stack([d.heat_flux_vm_psi_hat for d in diag_list], axis=1)  # (S,N)
+    flow = jnp.stack([d.fsab_flow for d in diag_list], axis=1)  # (S,N)
+
+    pf_before_vm_stzn = jnp.stack([d.particle_flux_before_surface_integral_vm for d in diag_list], axis=0)  # (N,S,T,Z)
+    hf_before_vm_stzn = jnp.stack([d.heat_flux_before_surface_integral_vm for d in diag_list], axis=0)  # (N,S,T,Z)
+    pf_before_vm0_stzn = jnp.stack([d.particle_flux_before_surface_integral_vm0 for d in diag_list], axis=0)  # (N,S,T,Z)
+    hf_before_vm0_stzn = jnp.stack([d.heat_flux_before_surface_integral_vm0 for d in diag_list], axis=0)  # (N,S,T,Z)
+
+    # Convert to Python-read order (Z,T,S,N):
+    pf_before_vm = jnp.transpose(pf_before_vm_stzn, (3, 2, 1, 0))
+    hf_before_vm = jnp.transpose(hf_before_vm_stzn, (3, 2, 1, 0))
+    pf_before_vm0 = jnp.transpose(pf_before_vm0_stzn, (3, 2, 1, 0))
+    hf_before_vm0 = jnp.transpose(hf_before_vm0_stzn, (3, 2, 1, 0))
+
+    w2d_stack = jnp.stack([op_rhs.theta_weights[:, None] * op_rhs.zeta_weights[None, :] for op_rhs in op_rhs_list], axis=0)  # (N,T,Z)
+    pf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, pf_before_vm0_stzn)
+    hf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, hf_before_vm0_stzn)
+
+    pf_vs_x = jnp.stack([d.particle_flux_vm_psi_hat_vs_x for d in diag_list], axis=2)  # (X,S,N)
+    hf_vs_x = jnp.stack([d.heat_flux_vm_psi_hat_vs_x for d in diag_list], axis=2)  # (X,S,N)
+    flow_vs_x = jnp.stack([d.fsab_flow_vs_x for d in diag_list], axis=2)  # (X,S,N)
 
     # vE terms are 0 in the parity-tested RHSMode=2/3 fixtures without Phi1/Er.
     pf_before_ve = jnp.zeros((z, t, s, n), dtype=jnp.float64)
@@ -569,57 +585,14 @@ def v3_transport_output_fields_vm_only(
     pf_before_ve0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
     hf_before_ve0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
 
-    pf_vs_x = jnp.zeros((x, s, n), dtype=jnp.float64)
-    hf_vs_x = jnp.zeros((x, s, n), dtype=jnp.float64)
-    flow_vs_x = jnp.zeros((x, s, n), dtype=jnp.float64)
-
     sources = None
+    extra_stack = x_stack[:, op0.f_size + op0.phi1_size :]  # (N,extra)
     if int(op0.constraint_scheme) == 2:
-        sources = jnp.zeros((x, s, n), dtype=jnp.float64)
+        src = extra_stack.reshape((n, s, x))  # (N,S,X)
+        sources = jnp.transpose(src, (2, 1, 0))  # (X,S,N)
     elif int(op0.constraint_scheme) in {1, 3, 4}:
-        sources = jnp.zeros((2, s, n), dtype=jnp.float64)
-
-    for which_rhs in range(1, n + 1):
-        x_full = state_vectors_by_rhs[which_rhs]
-        # Match v3 transport-matrix workflow: diagnostics for each column use the
-        # current whichRHS transport settings.
-        from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
-
-        op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
-        diag = v3_transport_diagnostics_vm_only(op_rhs, x_full=x_full)
-
-        pf_vm_psi_hat = pf_vm_psi_hat.at[:, which_rhs - 1].set(diag.particle_flux_vm_psi_hat)
-        hf_vm_psi_hat = hf_vm_psi_hat.at[:, which_rhs - 1].set(diag.heat_flux_vm_psi_hat)
-        flow = flow.at[:, which_rhs - 1].set(diag.fsab_flow)
-
-        # vm0 from "before surface integral" arrays:
-        pf_vm0_psi_hat = pf_vm0_psi_hat.at[:, which_rhs - 1].set(
-            jnp.einsum("tz,stz->s", op_rhs.theta_weights[:, None] * op_rhs.zeta_weights[None, :], diag.particle_flux_before_surface_integral_vm0)
-        )
-        hf_vm0_psi_hat = hf_vm0_psi_hat.at[:, which_rhs - 1].set(
-            jnp.einsum("tz,stz->s", op_rhs.theta_weights[:, None] * op_rhs.zeta_weights[None, :], diag.heat_flux_before_surface_integral_vm0)
-        )
-
-        # Before-surface-integral arrays in Python-read order (Z,T,S,N):
-        pf_before_vm = pf_before_vm.at[:, :, :, which_rhs - 1].set(jnp.transpose(diag.particle_flux_before_surface_integral_vm, (2, 1, 0)))
-        hf_before_vm = hf_before_vm.at[:, :, :, which_rhs - 1].set(jnp.transpose(diag.heat_flux_before_surface_integral_vm, (2, 1, 0)))
-        pf_before_vm0 = pf_before_vm0.at[:, :, :, which_rhs - 1].set(jnp.transpose(diag.particle_flux_before_surface_integral_vm0, (2, 1, 0)))
-        hf_before_vm0 = hf_before_vm0.at[:, :, :, which_rhs - 1].set(jnp.transpose(diag.heat_flux_before_surface_integral_vm0, (2, 1, 0)))
-
-        # vs_x arrays (X,S,N):
-        pf_vs_x = pf_vs_x.at[:, :, which_rhs - 1].set(diag.particle_flux_vm_psi_hat_vs_x)
-        hf_vs_x = hf_vs_x.at[:, :, which_rhs - 1].set(diag.heat_flux_vm_psi_hat_vs_x)
-        flow_vs_x = flow_vs_x.at[:, :, which_rhs - 1].set(diag.fsab_flow_vs_x)
-
-        if sources is not None:
-            # Extract the extra unknowns for the constraint scheme.
-            extra = x_full[op0.f_size + op0.phi1_size :].reshape((-1,))
-            if int(op0.constraint_scheme) == 2:
-                src = extra.reshape((op0.n_species, op0.n_x))  # (S,X)
-                sources = sources.at[:, :, which_rhs - 1].set(jnp.transpose(src, (1, 0)))  # (X,S)
-            elif int(op0.constraint_scheme) in {1, 3, 4}:
-                src = extra.reshape((op0.n_species, 2))  # (S,2)
-                sources = sources.at[:, :, which_rhs - 1].set(jnp.transpose(src, (1, 0)))  # (2,S)
+        src = extra_stack.reshape((n, s, 2))  # (N,S,2)
+        sources = jnp.transpose(src, (2, 1, 0))  # (2,S,N)
 
     fsab2 = jnp.asarray(op0.fsab_hat2, dtype=jnp.float64)
     b0, _g, _i = _flux_functions_from_op(op0)
@@ -792,17 +765,15 @@ def v3_transport_matrix_from_state_vectors(
     """Assemble the RHSMode=2/3 transport matrix from solved whichRHS state vectors."""
     rhs_mode = int(op0.rhs_mode)
     n = transport_matrix_size_from_rhs_mode(rhs_mode)
-    out = jnp.zeros((n, n), dtype=jnp.float64)
-
-    for which_rhs in range(1, n + 1):
+    rhs_values = list(range(1, n + 1))
+    for which_rhs in rhs_values:
         if which_rhs not in state_vectors_by_rhs:
             raise ValueError(f"Missing state vector for which_rhs={which_rhs}.")
-        x = state_vectors_by_rhs[which_rhs]
-        from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
-
-        op_rhs = with_transport_rhs_settings(op0, which_rhs=which_rhs)
-        diag = v3_transport_diagnostics_vm_only(op_rhs, x_full=x)
-        col = v3_transport_matrix_column(op=op_rhs, geom=geom, which_rhs=which_rhs, diag=diag)
-        out = out.at[:, which_rhs - 1].set(col)
-
-    return out
+    x_stack = jnp.stack([jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values], axis=0)  # (N,total)
+    op_rhs_list = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in rhs_values]
+    diag_list = [v3_transport_diagnostics_vm_only(op_rhs, x_full=x_stack[i]) for i, op_rhs in enumerate(op_rhs_list)]
+    cols = [
+        v3_transport_matrix_column(op=op_rhs_list[i], geom=geom, which_rhs=which_rhs, diag=diag_list[i])
+        for i, which_rhs in enumerate(rhs_values)
+    ]
+    return jnp.stack(cols, axis=1)

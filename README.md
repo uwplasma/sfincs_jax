@@ -15,6 +15,23 @@ Reproduce the figure and JSON summary:
 python examples/performance/benchmark_transport_l11_vs_fortran.py --repeats 4
 ```
 
+Run against a live local Fortran executable:
+
+```bash
+python examples/performance/benchmark_transport_l11_vs_fortran.py \
+  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --repeats 4
+```
+
+Current benchmark snapshot (live executable, 4 repeats, JAX runtime excludes compilation):
+
+| Case | Fortran mean (s/run) | sfincs_jax mean (s/run) | Max \|ΔL11\| |
+| --- | ---: | ---: | ---: |
+| scheme1 | 0.0871 | 3.4829 | 3.08e-13 |
+| scheme11 | 0.2517 | 4.9689 | 1.10e-15 |
+| scheme12 | 0.1188 | 4.4512 | 7.43e-08 |
+| scheme5_filtered | 0.1439 | 4.7816 | 5.20e-17 |
+
 Outputs are written to:
 
 - `examples/performance/output/transport_l11_vs_fortran/sfincs_vs_sfincs_jax_l11_runtime_2x2.png`

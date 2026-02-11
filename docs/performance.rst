@@ -174,6 +174,33 @@ comparison figure used in ``README.md`` and the docs index:
 By default this uses frozen Fortran fixtures from ``tests/ref`` (no local Fortran runtime required).
 If a local Fortran executable is available, pass ``--fortran-exe /path/to/sfincs`` for live runs.
 
+Latest live-run snapshot (4 repeats, compile excluded for JAX):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 24 16
+
+   * - Case
+     - Fortran mean (s/run)
+     - sfincs_jax mean (s/run)
+     - max abs(ΔL11)
+   * - ``scheme1``
+     - 0.0871
+     - 3.4829
+     - 3.08e-13
+   * - ``scheme11``
+     - 0.2517
+     - 4.9689
+     - 1.10e-15
+   * - ``scheme12``
+     - 0.1188
+     - 4.4512
+     - 7.43e-08
+   * - ``scheme5_filtered``
+     - 0.1439
+     - 4.7816
+     - 5.20e-17
+
 
 Connection to MONKES / adjoint methods
 --------------------------------------
