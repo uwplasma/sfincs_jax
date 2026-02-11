@@ -1,0 +1,20 @@
+{
+  "FSABVelocityUsingFSADensity": {"atol": 4e-7},
+  "FSABFlow": {"atol": 2e-7},
+  "velocityUsingTotalDensity": {"atol": 2e-7},
+  "velocityUsingFSADensity": {"atol": 2e-7},
+  "FSABFlow_vs_x": {"atol": 2e-7},
+  "pressureAnisotropy": {"atol": 2e-7},
+  "FSABVelocityUsingFSADensityOverRootFSAB2": {"atol": 2e-7},
+  "FSABVelocityUsingFSADensityOverB0": {"atol": 2e-7},
+  "pressurePerturbation": {"atol": 1e-7},
+  "totalPressure": {"atol": 1e-7},
+  "FSABjHat": {"atol": 8e-8},
+  "flow": {"atol": 8e-8},
+  "MachUsingFSAThermalSpeed": {"atol": 6e-8},
+  "jHat": {"atol": 4e-8},
+  "FSABjHatOverRootFSAB2": {"atol": 3e-8},
+  "FSABjHatOverB0": {"atol": 3e-8},
+  "densityPerturbation": {"atol": 2e-8},
+  "totalDensity": {"atol": 2e-8}
+}

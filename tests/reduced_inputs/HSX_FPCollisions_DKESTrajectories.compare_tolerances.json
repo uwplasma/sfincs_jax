@@ -1,0 +1,86 @@
+{
+  "FSABFlow": {
+    "atol": 1e-3
+  },
+  "FSABFlow_vs_x": {
+    "atol": 1e-3
+  },
+  "FSABVelocityUsingFSADensity": {
+    "atol": 2e-4
+  },
+  "FSABVelocityUsingFSADensityOverB0": {
+    "atol": 2e-4
+  },
+  "FSABVelocityUsingFSADensityOverRootFSAB2": {
+    "atol": 2e-4
+  },
+  "FSABjHat": {
+    "atol": 1e-3
+  },
+  "FSABjHatOverB0": {
+    "atol": 1e-3
+  },
+  "FSABjHatOverRootFSAB2": {
+    "atol": 1e-3
+  },
+  "MachUsingFSAThermalSpeed": {
+    "atol": 2e-6
+  },
+  "FSAPressurePerturbation": {
+    "atol": 3e-8
+  },
+  "NTV": {
+    "atol": 2e-6
+  },
+  "NTVBeforeSurfaceIntegral": {
+    "atol": 2e-6
+  },
+  "densityPerturbation": {
+    "atol": 1e-6
+  },
+  "totalDensity": {
+    "atol": 1e-6
+  },
+  "pressurePerturbation": {
+    "atol": 3e-4
+  },
+  "totalPressure": {
+    "atol": 3e-4
+  },
+  "pressureAnisotropy": {
+    "atol": 1e-3
+  },
+  "flow": {
+    "atol": 1e-3
+  },
+  "jHat": {
+    "atol": 1e-3
+  },
+  "velocityUsingFSADensity": {
+    "atol": 2e-4
+  },
+  "velocityUsingTotalDensity": {
+    "atol": 2e-4
+  },
+  "heatFluxBeforeSurfaceIntegral_vm": {
+    "atol": 1e-7
+  },
+  "heatFlux_vm_psiHat": {
+    "atol": 1e-7
+  },
+  "heatFlux_vm_psiHat_vs_x": {
+    "atol": 1e-7
+  },
+  "heatFlux_vm_psiN": {
+    "atol": 2e-5
+  },
+  "heatFlux_vm_rHat": {
+    "atol": 5e-6
+  },
+  "heatFlux_vm_rN": {
+    "atol": 3e-5
+  },
+  "particleFlux_vm_rN": {
+    "atol": 5e-8
+  }
+}

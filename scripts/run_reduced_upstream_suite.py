@@ -235,23 +235,29 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
         # Some MPI-enabled builds error out on libfabric defaults. Retry once with a TCP provider.
         mpi_hint = any(s in tail.lower() for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
         if mpi_hint:
-            env_retry = dict(env)
-            env_retry.setdefault("FI_PROVIDER", "tcp")
-            env_retry.setdefault("FI_MR_CACHE_MAX_COUNT", "0")
-            with log_path.open("w", encoding="utf-8") as log:
-                proc = subprocess.run(
-                    cmd,
-                    cwd=str(input_path.parent),
-                    check=False,
-                    timeout=timeout_s,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    env=env_retry,
-                )
-            dt = time.perf_counter() - t0
-            if proc.returncode == 0 and out.exists():
-                return dt, out, int(proc.returncode)
-            tail = _tail(log_path, n=80)
+            # In restricted/sandboxed environments, socket-based providers can fail
+            # even for single-process jobs. Prefer a shared-memory provider first.
+            for provider in ("shm", "tcp"):
+                env_retry = dict(env)
+                env_retry.setdefault("FI_PROVIDER", provider)
+                env_retry.setdefault("FI_MR_CACHE_MAX_COUNT", "0")
+                # Try to avoid touching non-loopback NICs on macOS runners.
+                env_retry.setdefault("MPICH_OFI_INTERFACE_NAME", "lo0")
+                env_retry.setdefault("FI_TCP_IFACE", "lo0")
+                with log_path.open("w", encoding="utf-8") as log:
+                    proc = subprocess.run(
+                        cmd,
+                        cwd=str(input_path.parent),
+                        check=False,
+                        timeout=timeout_s,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        env=env_retry,
+                    )
+                dt = time.perf_counter() - t0
+                if proc.returncode == 0 and out.exists():
+                    return dt, out, int(proc.returncode)
+                tail = _tail(log_path, n=80)
         raise RuntimeError(f"Fortran failed rc={proc.returncode}.\n{tail}")
     if not out.exists():
         tail = _tail(log_path, n=40)
@@ -433,6 +439,7 @@ def _run_case(
     atol: float,
     max_attempts: int,
     use_seed_resolution: bool = False,
+    reuse_fortran: bool = False,
 ) -> CaseResult:
     case = str(case_name)
     case_out_dir.mkdir(parents=True, exist_ok=True)
@@ -474,27 +481,34 @@ def _run_case(
         attempts += 1
         final_res = _resolution_from_namelist(dst_input)
         fortran_dir = case_out_dir / "fortran_run"
-        if fortran_dir.exists():
-            shutil.rmtree(fortran_dir)
-        fortran_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(dst_input, fortran_dir / "input.namelist")
-        localize_equilibrium_file_in_place(input_namelist=fortran_dir / "input.namelist", overwrite=False)
         fortran_log = fortran_dir / "sfincs.log"
-        fortran_log_path = fortran_log
+        fortran_h5_this_attempt: Path | None = None
+        out_fortran_existing = fortran_dir / "sfincsOutput.h5"
+        if bool(reuse_fortran) and out_fortran_existing.exists():
+            fortran_h5_this_attempt = out_fortran_existing
+            fortran_log_path = fortran_log if fortran_log.exists() else None
+        else:
+            if fortran_dir.exists():
+                shutil.rmtree(fortran_dir)
+            fortran_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(dst_input, fortran_dir / "input.namelist")
+            localize_equilibrium_file_in_place(input_namelist=fortran_dir / "input.namelist", overwrite=False)
+            fortran_log_path = fortran_log
 
         try:
-            fortran_runtime, out_fortran, fortran_rc = _run_fortran_direct(
-                input_path=fortran_dir / "input.namelist",
-                exe=fortran_exe,
-                timeout_s=timeout_s,
-                log_path=fortran_log,
-            )
-            fortran_h5_path = out_fortran
-            fortran_text = _tail(fortran_log, n=200).lower()
-            if "snes_diverged" in fortran_text or "did not converge" in fortran_text:
-                note = "Fortran diverged in SNES; skipping JAX comparison."
-                status = "fortran_diverged"
-                break
+            if fortran_h5_this_attempt is None:
+                fortran_runtime, out_fortran, fortran_rc = _run_fortran_direct(
+                    input_path=fortran_dir / "input.namelist",
+                    exe=fortran_exe,
+                    timeout_s=timeout_s,
+                    log_path=fortran_log,
+                )
+                fortran_h5_this_attempt = out_fortran
+                fortran_text = _tail(fortran_log, n=200).lower()
+                if "snes_diverged" in fortran_text or "did not converge" in fortran_text:
+                    note = "Fortran diverged in SNES; skipping JAX comparison."
+                    status = "fortran_diverged"
+                    break
         except subprocess.TimeoutExpired:
             note = "Fortran timeout; reduced largest axis."
             new_res = _reduce_max_axis_in_place(dst_input)
@@ -544,10 +558,11 @@ def _run_case(
             status = "jax_error"
             break
 
-        if fortran_h5_path is None or jax_h5_path is None:
+        if fortran_h5_this_attempt is None or jax_h5_path is None:
             note = "Missing output file after successful run."
             status = "missing_output"
             break
+        fortran_h5_path = fortran_h5_this_attempt
 
         try:
             tolerances = None
@@ -644,6 +659,11 @@ def main() -> int:
     parser.add_argument("--rtol", type=float, default=1e-8)
     parser.add_argument("--atol", type=float, default=1e-8)
     parser.add_argument(
+        "--reuse-fortran",
+        action="store_true",
+        help="Reuse an existing per-case fortran_run/sfincsOutput.h5 if present instead of rerunning Fortran.",
+    )
+    parser.add_argument(
         "--reset-report",
         action="store_true",
         help="Do not merge with existing suite_report.json; overwrite report with this run only.",
@@ -688,6 +708,7 @@ def main() -> int:
             atol=float(args.atol),
             max_attempts=int(args.max_attempts),
             use_seed_resolution=use_seed_resolution,
+            reuse_fortran=bool(args.reuse_fortran),
         )
         if result.status in {"parity_ok", "parity_mismatch"} and result.n_common_keys > 0:
             reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"

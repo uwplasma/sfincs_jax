@@ -1612,9 +1612,16 @@ def write_sfincs_jax_output_h5(
             data["Phi1Hat"] = _fortran_h5_layout(_tz_to_ztN(phi1_list))
             data["dPhi1Hatdtheta"] = _fortran_h5_layout(_tz_to_ztN(dphi1_dtheta_list))
             data["dPhi1Hatdzeta"] = _fortran_h5_layout(_tz_to_ztN(dphi1_dzeta_list))
-            data["QN_from_f"] = _fortran_h5_layout(_tz_to_ztN(qn_from_f_list))
-            data["QN_nonlin"] = _fortran_h5_layout(_tz_to_ztN(qn_nonlin_list))
-            data["QN_diag"] = _fortran_h5_layout(_tz_to_ztN(qn_diag_list))
+            write_qn_debug = os.environ.get("SFINCS_JAX_WRITE_QN_DIAGNOSTICS", "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if write_qn_debug:
+                data["QN_from_f"] = _fortran_h5_layout(_tz_to_ztN(qn_from_f_list))
+                data["QN_nonlin"] = _fortran_h5_layout(_tz_to_ztN(qn_nonlin_list))
+                data["QN_diag"] = _fortran_h5_layout(_tz_to_ztN(qn_diag_list))
             data["lambda"] = _fortran_h5_layout(np.asarray(lambda_list, dtype=np.float64))
 
             # Shared arrays:

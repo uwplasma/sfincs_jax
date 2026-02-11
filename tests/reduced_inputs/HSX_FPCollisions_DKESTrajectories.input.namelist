@@ -17,6 +17,7 @@
 !ss scanVariableScale = lin
 
 &general
+  saveMatricesAndVectorsInBinary = .true.
 /
 
 &geometryParameters

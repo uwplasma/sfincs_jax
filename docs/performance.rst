@@ -48,6 +48,51 @@ JAX-native performance patterns used in `sfincs_jax`
   differentiating through Krylov iterations.
 
 
+Next refactor plan (performance + differentiability)
+----------------------------------------------------
+
+The next pass targets parity-preserving speedups first, then deeper solver refactors:
+
+1. **Compilation/cache discipline**
+
+   - Enable JAX persistent compilation cache in parity/benchmark runs to remove repeat JIT cost.
+   - Keep shape signatures stable across case loops (avoid recompiling for each ``whichRHS`` call).
+   - Move optional debug branches behind static flags so production traces stay minimal.
+
+2. **Hot-path loop elimination**
+
+   - Replace Python-side ``for which_rhs in ...`` assembly loops in transport-matrix workflows with
+     ``jax.vmap``/``jax.lax.scan`` over a batched RHS vector.
+   - Fuse repeated diagnostics postprocessing into one jitted batched kernel to reduce host/device transfers.
+   - Keep operator branches (base vs rhs/transport) as static dispatch points to avoid XLA retraces.
+
+3. **Linear solve modernization**
+
+   - Keep matrix-free execution as default, and add a block preconditioner built from
+     species-local pitch-angle/Fokker-Planck diagonals.
+   - Add a ``custom_linear_solve`` path for end-to-end differentiable solves with implicit adjoints.
+   - Reuse frozen linearizations in nonlinear includePhi1 solves when parity permits, to cut Newton cost.
+
+4. **Profiling + acceptance gates**
+
+   - Profile with JAX tracing/profiling tools and make ``block_until_ready()`` mandatory in benchmarks.
+   - Track compile time, steady-state iteration time, and memory footprint separately in CI benchmarks.
+   - Require parity + performance guardrails before enabling each optimization by default.
+
+Primary references used to prioritize this plan:
+
+- JAX persistent compilation cache:
+  https://docs.jax.dev/en/latest/persistent_compilation_cache.html
+- JAX GPU/throughput tips:
+  https://docs.jax.dev/en/latest/gpu_performance_tips.html
+- JAX profiling guide:
+  https://docs.jax.dev/en/latest/profiling.html
+- JAX "Thinking in JAX" (jit/vmap/shape discipline):
+  https://docs.jax.dev/en/latest/notebooks/thinking_in_jax.html
+- JAXopt status/maintenance note:
+  https://jaxopt.github.io/stable/
+
+
 Links to the JAX ecosystem (optional)
 -------------------------------------
 

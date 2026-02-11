@@ -155,16 +155,15 @@ For fast parity iteration on reduced-resolution copies of the full upstream suit
 python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 1
 ```
 
-Current highest-impact remaining blockers from the reduced suite are:
-
-- `tokamak_1species_FPCollisions_noEr_withPhi1InDKE`: `126/263` dataset mismatches (solver-branch family)
-- `geometryScheme5_3species_loRes`: `33/193` dataset mismatches (solver-branch family, VMEC geometryScheme=5)
-
-Re-run just those cases:
+Target a specific case while preserving the 30s adaptive policy:
 
 ```bash
-python scripts/run_reduced_upstream_suite.py --pattern 'tokamak_1species_FPCollisions_noEr_withPhi1InDKE|geometryScheme5_3species_loRes' --timeout-s 30 --max-attempts 1 --reset-report
+python scripts/run_reduced_upstream_suite.py --pattern 'geometryScheme5_3species_loRes' --timeout-s 30 --max-attempts 1
 ```
+
+The latest reduced-suite status table is written to:
+
+- `docs/_generated/reduced_upstream_suite_status.rst`
 
 ## Documentation
 

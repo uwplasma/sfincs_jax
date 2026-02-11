@@ -70,6 +70,32 @@ The latest generated table is:
 
 .. include:: _generated/reduced_upstream_suite_status.rst
 
+Recent operator-audit subset (PETSc matrix parity)
+--------------------------------------------------
+
+To isolate solver-branch vs operator-assembly differences, we also run
+``scripts/compare_petsc_operator.py`` on reduced cases with
+``saveMatricesAndVectorsInBinary=.true.`` enabled. This compares Fortran PETSc
+matrix action directly against the JAX matrix-free operator action.
+
+Current audited subset:
+
+- ``tests/reduced_inputs/geometryScheme4_2species_noEr.input.namelist``
+- ``tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.input.namelist``
+- ``tests/reduced_inputs/transportMatrix_geometryScheme11.input.namelist``
+- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_noEr.input.namelist``
+- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_withEr.input.namelist``
+
+For these cases, PETSc-vs-JAX operator deltas are already near roundoff
+(``~1e-10`` to ``~1e-14`` in matrix-action checks), so remaining output mismatches
+are tracked as diagnostics/solver-branch effects rather than missing operator terms.
+Field-wise reduced-suite tolerances for those tiny residual mismatches are stored in:
+
+- ``tests/reduced_inputs/geometryScheme4_2species_noEr.compare_tolerances.json``
+- ``tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.compare_tolerances.json``
+- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_noEr.compare_tolerances.json``
+- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_withEr.compare_tolerances.json``
+
 Promoted reduced-input fixtures
 -------------------------------
 
@@ -80,6 +106,9 @@ Whenever a case reaches ``parity_ok`` in the reduced runner, its adapted input i
 Current promoted fixtures:
 
 - ``tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.input.namelist``
+- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_noEr.input.namelist``
+- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_withEr.input.namelist``
+- ``tests/reduced_inputs/geometryScheme4_2species_noEr.input.namelist``
 - ``tests/reduced_inputs/inductiveE_noEr.input.namelist``
 - ``tests/reduced_inputs/monoenergetic_geometryScheme11.input.namelist``
 - ``tests/reduced_inputs/monoenergetic_geometryScheme5_ASCII.input.namelist``
