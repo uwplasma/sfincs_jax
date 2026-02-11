@@ -26,11 +26,11 @@
      - parity_mismatch
      - solver branch mismatch
      - NTHETA=6,NX=3,NXI=10,NZETA=8
-     - 2
      - 1
-     - 0.251
-     - 16.444
-     - 39/193
+     - 0
+     - 0.198
+     - 6.537
+     - 38/193
      - S:12 P:0
      - 9/9
      - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0

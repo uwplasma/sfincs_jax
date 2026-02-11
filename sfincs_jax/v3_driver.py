@@ -117,10 +117,15 @@ def solve_v3_full_system_linear_gmres(
     elif active_env in {"0", "false", "no", "off"}:
         use_active_dof_mode = False
     else:
-        # For RHSMode=1, keep the full system by default. The active-DOF reduction
-        # can change the nullspace branch selected by dense solves, which affects
-        # density/pressure mean values in parity fixtures.
-        use_active_dof_mode = int(op.rhs_mode) in {2, 3} and has_reduced_modes
+        # Auto mode:
+        # - Always use active-DOF reduction for RHSMode=2/3 with truncated pitch grid.
+        # - Also use it for RHSMode=1 when includePhi1 is off and pitch truncation is
+        #   present. This reduces solve size and JIT cost in upstream-like reduced runs.
+        # - Keep includePhi1 RHSMode=1 on the full system to preserve sensitive parity
+        #   branches in tiny includePhi1 fixtures.
+        use_active_dof_mode = has_reduced_modes and (
+            int(op.rhs_mode) in {2, 3} or (int(op.rhs_mode) == 1 and (not bool(op.include_phi1)))
+        )
 
     active_idx_jnp: jnp.ndarray | None = None
     full_to_active_jnp: jnp.ndarray | None = None

@@ -49,6 +49,12 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Vectorized RHSMode=1 diagnostics**: vm-only moment/flux accumulation and output shaping are
   stacked/batched in JAX for non-``Phi1`` runs, reducing Python-loop overhead during
   ``write_sfincs_jax_output_h5(..., compute_solution=True)``.
+- **Auto active-DOF reduction for RHSMode=1 (no Phi1)**: when ``Nxi_for_x`` truncates
+  the pitch basis, the linear solve now reduces to active unknowns by default, cutting
+  both matrix-free solve cost and JIT work on upstream-style reduced cases.
+- **Persistent cache in reduced-suite automation**: ``scripts/run_reduced_upstream_suite.py``
+  now runs `sfincs_jax` subprocesses with a persistent JAX compilation cache, reducing
+  repeated-iteration benchmarking overhead.
 - **Remove dead Jacobian work in hot matvec paths**: direct-Phi1 ``factorJ`` kinetic-row terms
   that are absent in v3 ``whichMatrix=3`` are not assembled, improving parity and avoiding
   unnecessary FLOPs in includePhi1-in-kinetic matrix applications.
@@ -261,3 +267,22 @@ operator/residual in JAX so that:
 - Jacobian actions can be obtained via **automatic differentiation** (JVP/VJP),
 - and gradients through a solve can be obtained via **implicit differentiation**
   without forming matrices.
+
+
+Operator-level parity debugging utility
+---------------------------------------
+
+For difficult upstream mismatches, compare a Fortran PETSc matrix directly against the
+JAX operator assembly:
+
+.. code-block:: bash
+
+   python scripts/compare_fortran_matrix_to_jax_operator.py \
+     --input /path/to/input.namelist \
+     --fortran-matrix /path/to/sfincsBinary_iteration_000_whichMatrix_3 \
+     --fortran-state /path/to/sfincsBinary_iteration_000_stateVector \
+     --project-active-dofs \
+     --out-json matrix_compare.json
+
+The report includes block-wise statistics (``f``/``phi``/``extra``) and top-entry deltas
+to localize missing couplings quickly.

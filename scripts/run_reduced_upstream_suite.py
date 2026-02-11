@@ -191,6 +191,7 @@ def _run_jax_cli(
     log_path: Path,
     compute_solution: bool,
     compute_transport_matrix: bool,
+    cache_dir: Path | None = None,
 ) -> float:
     cmd = [
         "sfincs_jax",
@@ -206,8 +207,23 @@ def _run_jax_cli(
     if compute_transport_matrix:
         cmd.append("--compute-transport-matrix")
     t0 = time.perf_counter()
+    env = dict(os.environ)
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        env.setdefault("JAX_ENABLE_COMPILATION_CACHE", "1")
+        env.setdefault("JAX_COMPILATION_CACHE_DIR", str(cache_dir))
+        env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+        env.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
     with log_path.open("w", encoding="utf-8") as log:
-        subprocess.run(cmd, cwd=str(REPO_ROOT), check=True, timeout=timeout_s, stdout=log, stderr=subprocess.STDOUT)
+        subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            check=True,
+            timeout=timeout_s,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
     if not output_path.exists():
         tail = _tail(log_path, n=40)
         raise RuntimeError(f"JAX run returned success but did not create output: {output_path}\n{tail}")
@@ -440,6 +456,7 @@ def _run_case(
     max_attempts: int,
     use_seed_resolution: bool = False,
     reuse_fortran: bool = False,
+    jax_cache_dir: Path | None = None,
 ) -> CaseResult:
     case = str(case_name)
     case_out_dir.mkdir(parents=True, exist_ok=True)
@@ -543,6 +560,7 @@ def _run_case(
                 log_path=jax_log,
                 compute_solution=compute_solution,
                 compute_transport_matrix=compute_transport_matrix,
+                cache_dir=jax_cache_dir,
             )
             jax_h5_path = jax_h5
         except subprocess.TimeoutExpired:
@@ -668,6 +686,12 @@ def main() -> int:
         action="store_true",
         help="Do not merge with existing suite_report.json; overwrite report with this run only.",
     )
+    parser.add_argument(
+        "--jax-cache-dir",
+        type=Path,
+        default=Path("tests") / "reduced_upstream_examples" / ".jax_compilation_cache",
+        help="Persistent JAX compilation cache directory for sfincs_jax subprocess runs.",
+    )
     args = parser.parse_args()
 
     examples_root = Path(args.examples_root)
@@ -709,6 +733,7 @@ def main() -> int:
             max_attempts=int(args.max_attempts),
             use_seed_resolution=use_seed_resolution,
             reuse_fortran=bool(args.reuse_fortran),
+            jax_cache_dir=(REPO_ROOT / args.jax_cache_dir),
         )
         if result.status in {"parity_ok", "parity_mismatch"} and result.n_common_keys > 0:
             reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"

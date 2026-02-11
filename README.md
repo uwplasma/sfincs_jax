@@ -181,6 +181,9 @@ For fast parity iteration on reduced-resolution copies of the full upstream suit
 python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 1
 ```
 
+The reduced-suite runner enables a persistent JAX compilation cache by default at
+`tests/reduced_upstream_examples/.jax_compilation_cache` (override with `--jax-cache-dir`).
+
 Target a specific case while preserving the 30s adaptive policy:
 
 ```bash
@@ -190,6 +193,17 @@ python scripts/run_reduced_upstream_suite.py --pattern 'geometryScheme5_3species
 The latest reduced-suite status table is written to:
 
 - `docs/_generated/reduced_upstream_suite_status.rst`
+
+For operator-level parity diagnosis against Fortran PETSc matrices:
+
+```bash
+python scripts/compare_fortran_matrix_to_jax_operator.py \
+  --input /path/to/input.namelist \
+  --fortran-matrix /path/to/sfincsBinary_iteration_000_whichMatrix_3 \
+  --fortran-state /path/to/sfincsBinary_iteration_000_stateVector \
+  --project-active-dofs \
+  --out-json matrix_compare.json
+```
 
 ## Documentation
 
