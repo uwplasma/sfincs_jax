@@ -107,19 +107,80 @@ def solve_v3_full_system_linear_gmres(
         # (e.g. during GMRES iterations and Er scans).
         return apply_v3_full_system_operator_jit(op, x)
 
+    active_env = os.environ.get("SFINCS_JAX_ACTIVE_DOF", "").strip().lower()
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    has_reduced_modes = bool(np.any(nxi_for_x < int(op.n_xi)))
+    use_active_dof_mode = False
+    if active_env in {"1", "true", "yes", "on"}:
+        use_active_dof_mode = True
+    elif active_env in {"0", "false", "no", "off"}:
+        use_active_dof_mode = False
+    else:
+        use_active_dof_mode = int(op.rhs_mode) == 1 and has_reduced_modes
+
+    active_idx_jnp: jnp.ndarray | None = None
+    full_to_active_jnp: jnp.ndarray | None = None
+    active_size = int(op.total_size)
+    if use_active_dof_mode:
+        active_idx_np = _transport_active_dof_indices(op)
+        active_idx_jnp = jnp.asarray(active_idx_np, dtype=jnp.int32)
+        full_to_active_np = np.zeros((int(op.total_size),), dtype=np.int32)
+        full_to_active_np[np.asarray(active_idx_np, dtype=np.int32)] = np.arange(1, int(active_idx_np.shape[0]) + 1, dtype=np.int32)
+        full_to_active_jnp = jnp.asarray(full_to_active_np, dtype=jnp.int32)
+        active_size = int(active_idx_np.shape[0])
+        if emit is not None:
+            emit(1, f"solve_v3_full_system_linear_gmres: active-DOF mode enabled (size={active_size}/{int(op.total_size)})")
+
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
-    result = gmres_solve(
-        matvec=mv,
-        b=rhs,
-        x0=x0,
-        tol=tol,
-        atol=atol,
-        restart=restart,
-        maxiter=maxiter,
-        solve_method=solve_method,
-    )
+    if use_active_dof_mode:
+        assert active_idx_jnp is not None
+        assert full_to_active_jnp is not None
+
+        def reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
+            return v_full[active_idx_jnp]
+
+        def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+            z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
+            padded = jnp.concatenate([z0, v_reduced], axis=0)
+            return padded[full_to_active_jnp]
+
+        def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
+            return reduce_full(mv(expand_reduced(x_reduced)))
+
+        rhs_reduced = reduce_full(rhs)
+        x0_reduced = None
+        if x0 is not None:
+            x0_arr = jnp.asarray(x0)
+            if x0_arr.shape == (active_size,):
+                x0_reduced = x0_arr
+            elif x0_arr.shape == (op.total_size,):
+                x0_reduced = reduce_full(x0_arr)
+        res_reduced = gmres_solve(
+            matvec=mv_reduced,
+            b=rhs_reduced,
+            x0=x0_reduced,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+        )
+        x_full = expand_reduced(res_reduced.x)
+        residual_norm_full = jnp.linalg.norm(mv(x_full) - rhs)
+        result = GMRESSolveResult(x=x_full, residual_norm=residual_norm_full)
+    else:
+        result = gmres_solve(
+            matvec=mv,
+            b=rhs,
+            x0=x0,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+        )
     if emit is not None:
         emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
         emit(1, f"solve_v3_full_system_linear_gmres: elapsed_s={t.elapsed_s():.3f}")
@@ -301,6 +362,8 @@ def solve_v3_full_system_newton_krylov_history(
         converged_abs = rnorm_f < float(tol)
         converged_rel = rnorm_f <= float(nonlinear_rtol) * float(rnorm_initial)
         if converged_abs or converged_rel:
+            if len(accepted) <= k:
+                accepted.append(x)
             return (
                 V3NewtonKrylovResult(
                     op=op,

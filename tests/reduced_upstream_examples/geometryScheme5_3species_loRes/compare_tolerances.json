@@ -1,0 +1,6 @@
+{
+  "MachUsingFSAThermalSpeed": {
+    "atol": 2e-8,
+    "rtol": 0.0
+  }
+}

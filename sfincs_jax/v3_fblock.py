@@ -151,7 +151,7 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
 
         r_n_wish = float(geom_params.get("RN_WISH", 0.5))
         psi_n_wish = float(r_n_wish) * float(r_n_wish)
-        vmecradial_option = int(geom_params.get("VMECRADIALOPTION", 0))
+        vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         interp = vmec_interpolation(w=w, psi_n_wish=psi_n_wish, vmec_radial_option=vmecradial_option)
         r_n = float(interp.psi_n) ** 0.5
     else:
