@@ -185,21 +185,59 @@ Latest live-run snapshot (4 repeats, compile excluded for JAX):
      - sfincs_jax mean (s/run)
      - max abs(ΔL11)
    * - ``scheme1``
-     - 0.0871
-     - 3.4829
+     - 0.0856
+     - 3.4905
      - 3.08e-13
    * - ``scheme11``
-     - 0.2517
-     - 4.9689
+     - 0.2504
+     - 5.0020
      - 1.10e-15
    * - ``scheme12``
-     - 0.1188
-     - 4.4512
+     - 0.1154
+     - 4.4669
      - 7.43e-08
    * - ``scheme5_filtered``
-     - 0.1439
-     - 4.7816
+     - 0.1501
+     - 4.7881
      - 5.20e-17
+
+Persistent-cache compile/runtime split
+--------------------------------------
+
+To separate compile cost from steady solve time with the JAX persistent cache:
+
+.. code-block:: bash
+
+   python examples/performance/profile_transport_compile_runtime_cache.py --repeats 3
+
+.. figure:: _static/figures/transport_compile_runtime_cache_2x2.png
+   :alt: Compile/runtime split with persistent JAX cache across four reference cases.
+   :align: center
+   :width: 95%
+
+   For each case, compile estimate = cold first call - warm first call; steady solve is the warm repeated runtime.
+
+Latest snapshot (3 repeats):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 20
+
+   * - Case
+     - Compile estimate (s)
+     - Warm steady solve (s/run)
+   * - ``scheme1``
+     - 1.8789
+     - 0.3344
+   * - ``scheme11``
+     - 1.6594
+     - 0.8750
+   * - ``scheme12``
+     - 1.7134
+     - 0.3454
+   * - ``scheme5_filtered``
+     - 1.6797
+     - 0.3801
 
 
 Connection to MONKES / adjoint methods

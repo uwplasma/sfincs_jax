@@ -7,6 +7,7 @@ from jax import config as _jax_config
 _jax_config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
+from jax import vmap
 from jax import lax
 
 from .geometry import BoozerGeometry
@@ -528,6 +529,40 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     out["NTV"] = jnp.zeros((op.n_species,), dtype=jnp.float64)
 
     return out
+
+
+def v3_rhsmode1_output_fields_vm_only_batch(
+    op: V3FullSystemOperator,
+    *,
+    x_full_stack: jnp.ndarray,
+) -> dict[str, jnp.ndarray]:
+    """Vectorized RHSMode=1 diagnostics over an iteration/state axis.
+
+    Parameters
+    ----------
+    op:
+        Fixed operator used for all states.
+    x_full_stack:
+        Array with shape ``(N,total_size)`` (or ``(total_size,)``).
+
+    Returns
+    -------
+    dict[str, jnp.ndarray]
+        Same keys as :func:`v3_rhsmode1_output_fields_vm_only`, with an
+        added leading iteration axis ``N`` in each value.
+    """
+    x_full_stack = jnp.asarray(x_full_stack, dtype=jnp.float64)
+    if x_full_stack.ndim == 1:
+        x_full_stack = x_full_stack[None, :]
+    if x_full_stack.ndim != 2 or x_full_stack.shape[1] != int(op.total_size):
+        raise ValueError(
+            f"x_full_stack must have shape (N,{int(op.total_size)}) or ({int(op.total_size)},), got {x_full_stack.shape}"
+        )
+
+    def _one(x_state: jnp.ndarray) -> dict[str, jnp.ndarray]:
+        return v3_rhsmode1_output_fields_vm_only(op, x_full=x_state)
+
+    return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
 
 
 def v3_transport_output_fields_vm_only(

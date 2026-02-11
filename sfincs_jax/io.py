@@ -1202,7 +1202,11 @@ def write_sfincs_jax_output_h5(
 
         import jax.numpy as jnp
 
-        from .transport_matrix import f0_v3_from_operator, v3_rhsmode1_output_fields_vm_only
+        from .transport_matrix import (
+            f0_v3_from_operator,
+            v3_rhsmode1_output_fields_vm_only,
+            v3_rhsmode1_output_fields_vm_only_batch,
+        )
         from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_full_system_newton_krylov_history
         from .v3_system import full_system_operator_from_namelist
 
@@ -1335,15 +1339,18 @@ def write_sfincs_jax_output_h5(
             r_n=float(data["rN"]),
         )
 
-        def _store_flux_variants_N(base: str, v_list: list[np.ndarray]) -> None:
-            v = np.stack([np.asarray(a, dtype=np.float64).reshape((-1,)) for a in v_list], axis=-1)  # (S,N)
+        def _store_flux_variants_NS(base: str, v: np.ndarray) -> None:
+            v = np.asarray(v, dtype=np.float64)
+            if v.ndim != 2:
+                raise ValueError(f"{base} expected shape (S,N), got {v.shape}")
             data[base] = _fortran_h5_layout(v)
             data[base.replace("_psiHat", "_psiN")] = _fortran_h5_layout(v * float(conv["ddpsiN2ddpsiHat"]))
             data[base.replace("_psiHat", "_rHat")] = _fortran_h5_layout(v * float(conv["ddrHat2ddpsiHat"]))
             data[base.replace("_psiHat", "_rN")] = _fortran_h5_layout(v * float(conv["ddrN2ddpsiHat"]))
 
         # Compute vm-only diagnostics per iteration, with Phi1 used as Maxwellian base if present.
-        diags: list[dict[str, Any]] = []
+        x_stack = jnp.stack([jnp.asarray(x_full, dtype=jnp.float64) for x_full in xs], axis=0)
+        diag_arrays: dict[str, np.ndarray]
         phi1_list: list[np.ndarray] = []
         dphi1_dtheta_list: list[np.ndarray] = []
         dphi1_dzeta_list: list[np.ndarray] = []
@@ -1352,74 +1359,84 @@ def write_sfincs_jax_output_h5(
         qn_nonlin_list: list[np.ndarray] = []
         qn_diag_list: list[np.ndarray] = []
 
-        for iter_idx, x_full in enumerate(xs, start=1):
-            x_full = jnp.asarray(x_full, dtype=jnp.float64)
-            op_use = result.op
-            if bool(op_use.include_phi1):
-                n_t = int(op_use.n_theta)
-                n_z = int(op_use.n_zeta)
-                phi1_flat = x_full[op_use.f_size : op_use.f_size + n_t * n_z]
-                lam = float(np.asarray(x_full[op_use.f_size + n_t * n_z]))
-                phi1 = phi1_flat.reshape((n_t, n_z))
-                op_use = replace(op_use, phi1_hat_base=phi1)
-                ddtheta = op_use.fblock.collisionless.ddtheta
-                ddzeta = op_use.fblock.collisionless.ddzeta
-                dphi1_dtheta = ddtheta @ phi1
-                dphi1_dzeta = phi1 @ ddzeta.T
-                phi1_list.append(np.asarray(phi1, dtype=np.float64))
-                dphi1_dtheta_list.append(np.asarray(dphi1_dtheta, dtype=np.float64))
-                dphi1_dzeta_list.append(np.asarray(dphi1_dzeta, dtype=np.float64))
-                lambda_list.append(lam)
-                # Quasineutrality diagnostics (term-by-term).
-                x2w = (op_use.x * op_use.x) * op_use.x_weights  # (X,)
-                species_factor = (
-                    4.0
-                    * jnp.pi
-                    * op_use.z_s
-                    * op_use.t_hat
-                    / op_use.m_hat
-                    * jnp.sqrt(op_use.t_hat / op_use.m_hat)
-                )  # (S,)
-                f_delta = x_full[: op_use.f_size].reshape(op_use.fblock.f_shape)
-                if int(op_use.quasineutrality_option) == 2:
-                    qn_from_f = species_factor[0] * jnp.einsum("x,xtz->tz", x2w, f_delta[0, :, 0, :, :])
-                else:
-                    qn_from_f = jnp.einsum("s,x,sxtz->tz", species_factor, x2w, f_delta[:, :, 0, :, :])
+        if include_phi1:
+            diags: list[dict[str, Any]] = []
+            for iter_idx, x_full in enumerate(x_stack, start=1):
+                op_use = result.op
+                if bool(op_use.include_phi1):
+                    n_t = int(op_use.n_theta)
+                    n_z = int(op_use.n_zeta)
+                    phi1_flat = x_full[op_use.f_size : op_use.f_size + n_t * n_z]
+                    lam = float(np.asarray(x_full[op_use.f_size + n_t * n_z]))
+                    phi1 = phi1_flat.reshape((n_t, n_z))
+                    op_use = replace(op_use, phi1_hat_base=phi1)
+                    ddtheta = op_use.fblock.collisionless.ddtheta
+                    ddzeta = op_use.fblock.collisionless.ddzeta
+                    dphi1_dtheta = ddtheta @ phi1
+                    dphi1_dzeta = phi1 @ ddzeta.T
+                    phi1_list.append(np.asarray(phi1, dtype=np.float64))
+                    dphi1_dtheta_list.append(np.asarray(dphi1_dtheta, dtype=np.float64))
+                    dphi1_dzeta_list.append(np.asarray(dphi1_dzeta, dtype=np.float64))
+                    lambda_list.append(lam)
+                    # Quasineutrality diagnostics (term-by-term).
+                    x2w = (op_use.x * op_use.x) * op_use.x_weights  # (X,)
+                    species_factor = (
+                        4.0
+                        * jnp.pi
+                        * op_use.z_s
+                        * op_use.t_hat
+                        / op_use.m_hat
+                        * jnp.sqrt(op_use.t_hat / op_use.m_hat)
+                    )  # (S,)
+                    f_delta = x_full[: op_use.f_size].reshape(op_use.fblock.f_shape)
+                    if int(op_use.quasineutrality_option) == 2:
+                        qn_from_f = species_factor[0] * jnp.einsum("x,xtz->tz", x2w, f_delta[0, :, 0, :, :])
+                    else:
+                        qn_from_f = jnp.einsum("s,x,sxtz->tz", species_factor, x2w, f_delta[:, :, 0, :, :])
 
-                exp_phi = jnp.exp(
-                    -(op_use.z_s[:, None, None] * op_use.alpha / op_use.t_hat[:, None, None]) * phi1[None, :, :]
-                )
-                qn_nonlin = -jnp.sum((op_use.z_s * op_use.n_hat)[:, None, None] * exp_phi, axis=0)
-                if op_use.with_adiabatic:
-                    qn_nonlin = qn_nonlin - op_use.adiabatic_z * op_use.adiabatic_nhat * jnp.exp(
-                        -(op_use.adiabatic_z * op_use.alpha / op_use.adiabatic_that) * phi1
+                    exp_phi = jnp.exp(
+                        -(op_use.z_s[:, None, None] * op_use.alpha / op_use.t_hat[:, None, None]) * phi1[None, :, :]
                     )
+                    qn_nonlin = -jnp.sum((op_use.z_s * op_use.n_hat)[:, None, None] * exp_phi, axis=0)
+                    if op_use.with_adiabatic:
+                        qn_nonlin = qn_nonlin - op_use.adiabatic_z * op_use.adiabatic_nhat * jnp.exp(
+                            -(op_use.adiabatic_z * op_use.alpha / op_use.adiabatic_that) * phi1
+                        )
 
-                qn_diag = jnp.sum(
-                    (op_use.z_s * op_use.z_s * op_use.alpha * op_use.n_hat / op_use.t_hat)[:, None, None] * exp_phi,
-                    axis=0,
-                )
-                if op_use.with_adiabatic:
-                    qn_diag = qn_diag + (
-                        (op_use.adiabatic_z * op_use.adiabatic_z * op_use.alpha * op_use.adiabatic_nhat / op_use.adiabatic_that)
-                        * jnp.exp(-(op_use.adiabatic_z * op_use.alpha / op_use.adiabatic_that) * phi1)
+                    qn_diag = jnp.sum(
+                        (op_use.z_s * op_use.z_s * op_use.alpha * op_use.n_hat / op_use.t_hat)[:, None, None] * exp_phi,
+                        axis=0,
                     )
+                    if op_use.with_adiabatic:
+                        qn_diag = qn_diag + (
+                            (op_use.adiabatic_z * op_use.adiabatic_z * op_use.alpha * op_use.adiabatic_nhat / op_use.adiabatic_that)
+                            * jnp.exp(-(op_use.adiabatic_z * op_use.alpha / op_use.adiabatic_that) * phi1)
+                        )
 
-                qn_from_f_arr = np.asarray(qn_from_f, dtype=np.float64)
-                qn_nonlin_arr = np.asarray(qn_nonlin, dtype=np.float64)
-                qn_diag_arr = np.asarray(qn_diag, dtype=np.float64)
-                qn_from_f_list.append(qn_from_f_arr)
-                qn_nonlin_list.append(np.asarray(qn_nonlin, dtype=np.float64))
-                qn_diag_list.append(np.asarray(qn_diag, dtype=np.float64))
-                if emit is not None:
-                    emit(
-                        1,
-                        "qn_terms iter="
-                        f"{iter_idx} max_abs_from_f={float(np.max(np.abs(qn_from_f_arr))):.6e} "
-                        f"max_abs_nonlin={float(np.max(np.abs(qn_nonlin_arr))):.6e} "
-                        f"max_abs_diag={float(np.max(np.abs(qn_diag_arr))):.6e}",
-                    )
-            diags.append(v3_rhsmode1_output_fields_vm_only(op_use, x_full=np.asarray(x_full)))
+                    qn_from_f_arr = np.asarray(qn_from_f, dtype=np.float64)
+                    qn_nonlin_arr = np.asarray(qn_nonlin, dtype=np.float64)
+                    qn_diag_arr = np.asarray(qn_diag, dtype=np.float64)
+                    qn_from_f_list.append(qn_from_f_arr)
+                    qn_nonlin_list.append(np.asarray(qn_nonlin, dtype=np.float64))
+                    qn_diag_list.append(np.asarray(qn_diag, dtype=np.float64))
+                    if emit is not None:
+                        emit(
+                            1,
+                            "qn_terms iter="
+                            f"{iter_idx} max_abs_from_f={float(np.max(np.abs(qn_from_f_arr))):.6e} "
+                            f"max_abs_nonlin={float(np.max(np.abs(qn_nonlin_arr))):.6e} "
+                            f"max_abs_diag={float(np.max(np.abs(qn_diag_arr))):.6e}",
+                        )
+                diags.append(v3_rhsmode1_output_fields_vm_only(op_use, x_full=np.asarray(x_full)))
+            diag_arrays = {
+                key: np.stack([np.asarray(d[key], dtype=np.float64) for d in diags], axis=0)
+                for key in diags[0]
+            }
+        else:
+            diag_arrays = {
+                key: np.asarray(val, dtype=np.float64)
+                for key, val in v3_rhsmode1_output_fields_vm_only_batch(result.op, x_full_stack=x_stack).items()
+            }
 
         # Write core grid moments:
         for k in (
@@ -1446,7 +1463,7 @@ def write_sfincs_jax_output_h5(
             "momentumFluxBeforeSurfaceIntegral_vE0",
             "NTVBeforeSurfaceIntegral",
         ):
-            data[k] = _fortran_h5_layout(_stz_to_ztsN([d[k] for d in diags]))
+            data[k] = _fortran_h5_layout(np.transpose(diag_arrays[k], (3, 2, 1, 0)))
 
         # Flux-surface averages:
         for k in (
@@ -1458,20 +1475,20 @@ def write_sfincs_jax_output_h5(
             "FSABVelocityUsingFSADensityOverRootFSAB2",
             "NTV",
         ):
-            data[k] = _fortran_h5_layout(_s_to_sN([d[k] for d in diags]))
+            data[k] = _fortran_h5_layout(np.transpose(diag_arrays[k], (1, 0)))
 
         # jHat on the grid:
-        data["jHat"] = _fortran_h5_layout(_tz_to_ztN([d["jHat"] for d in diags]))
+        data["jHat"] = _fortran_h5_layout(np.transpose(diag_arrays["jHat"], (2, 1, 0)))
 
         # vs-x arrays and constraint sources:
         for k in ("particleFlux_vm_psiHat_vs_x", "heatFlux_vm_psiHat_vs_x", "FSABFlow_vs_x"):
-            data[k] = _fortran_h5_layout(_xS_to_xSN([d[k] for d in diags]))
-        if all(("sources" in d) for d in diags):
-            data["sources"] = _fortran_h5_layout(_xS_to_xSN([d["sources"] for d in diags]))
+            data[k] = _fortran_h5_layout(np.transpose(diag_arrays[k], (1, 2, 0)))
+        if "sources" in diag_arrays:
+            data["sources"] = _fortran_h5_layout(np.transpose(diag_arrays["sources"], (1, 2, 0)))
 
         # FSABjHat diagnostics are summed over species and stored per-iteration:
         for k in ("FSABjHat", "FSABjHatOverB0", "FSABjHatOverRootFSAB2"):
-            data[k] = _fortran_h5_layout(np.asarray([float(np.asarray(d[k])) for d in diags], dtype=np.float64))
+            data[k] = _fortran_h5_layout(np.asarray(diag_arrays[k], dtype=np.float64).reshape((-1,)))
 
         # Fluxes (vm/vm0) and coordinate variants:
         for base in (
@@ -1482,7 +1499,7 @@ def write_sfincs_jax_output_h5(
             "momentumFlux_vm_psiHat",
             "momentumFlux_vm0_psiHat",
         ):
-            _store_flux_variants_N(base, [d[base] for d in diags])
+            _store_flux_variants_NS(base, np.transpose(diag_arrays[base], (1, 0)))
 
         # Classical fluxes (v3 `classicalTransport.F90:calculateClassicalFlux`) written per-iteration.
         from .classical_transport import classical_flux_v3  # noqa: PLC0415
@@ -1504,17 +1521,9 @@ def write_sfincs_jax_output_h5(
         dn_hat_dpsi_hat = jnp.asarray(data["dnHatdpsiHat"], dtype=jnp.float64)
         dt_hat_dpsi_hat = jnp.asarray(data["dTHatdpsiHat"], dtype=jnp.float64)
 
-        classical_pf_list: list[np.ndarray] = []
-        classical_hf_list: list[np.ndarray] = []
-        for j in range(n_iter):
-            if phi1_list:
-                phi1 = jnp.asarray(phi1_list[j], dtype=jnp.float64)
-                use_phi1 = True
-            else:
-                phi1 = jnp.zeros_like(b_hat)
-                use_phi1 = False
+        if not phi1_list:
             pf_j, hf_j = classical_flux_v3(
-                use_phi1=use_phi1,
+                use_phi1=False,
                 theta_weights=theta_w,
                 zeta_weights=zeta_w,
                 d_hat=d_hat,
@@ -1522,7 +1531,7 @@ def write_sfincs_jax_output_h5(
                 b_hat=b_hat,
                 vprime_hat=vprime_hat,
                 alpha=alpha,
-                phi1_hat=phi1,
+                phi1_hat=jnp.zeros_like(b_hat),
                 delta=delta,
                 nu_n=nu_n,
                 z_s=z_s,
@@ -1532,11 +1541,37 @@ def write_sfincs_jax_output_h5(
                 dn_hat_dpsi_hat=dn_hat_dpsi_hat,
                 dt_hat_dpsi_hat=dt_hat_dpsi_hat,
             )
-            classical_pf_list.append(np.asarray(pf_j, dtype=np.float64))
-            classical_hf_list.append(np.asarray(hf_j, dtype=np.float64))
+            classical_pf = np.repeat(np.asarray(pf_j, dtype=np.float64)[:, None], n_iter, axis=1)
+            classical_hf = np.repeat(np.asarray(hf_j, dtype=np.float64)[:, None], n_iter, axis=1)
+        else:
+            from jax import vmap
 
-        classical_pf = np.stack(classical_pf_list, axis=-1)  # (S,N)
-        classical_hf = np.stack(classical_hf_list, axis=-1)  # (S,N)
+            phi1_stack = jnp.asarray(np.stack(phi1_list, axis=0), dtype=jnp.float64)
+
+            def _classical_with_phi1(phi1_hat: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+                return classical_flux_v3(
+                    use_phi1=True,
+                    theta_weights=theta_w,
+                    zeta_weights=zeta_w,
+                    d_hat=d_hat,
+                    gpsipsi=gpsipsi,
+                    b_hat=b_hat,
+                    vprime_hat=vprime_hat,
+                    alpha=alpha,
+                    phi1_hat=phi1_hat,
+                    delta=delta,
+                    nu_n=nu_n,
+                    z_s=z_s,
+                    m_hat=m_hat,
+                    t_hat=t_hat,
+                    n_hat=n_hat,
+                    dn_hat_dpsi_hat=dn_hat_dpsi_hat,
+                    dt_hat_dpsi_hat=dt_hat_dpsi_hat,
+                )
+
+            classical_pf_n_s, classical_hf_n_s = vmap(_classical_with_phi1, in_axes=0, out_axes=0)(phi1_stack)
+            classical_pf = np.asarray(classical_pf_n_s, dtype=np.float64).T
+            classical_hf = np.asarray(classical_hf_n_s, dtype=np.float64).T
         data["classicalParticleFlux_psiHat"] = _fortran_h5_layout(classical_pf)
         data["classicalHeatFlux_psiHat"] = _fortran_h5_layout(classical_hf)
         data["classicalParticleFlux_psiN"] = _fortran_h5_layout(classical_pf * float(conv["ddpsiN2ddpsiHat"]))
@@ -1755,12 +1790,12 @@ def write_sfincs_jax_output_h5(
             data["NTVBeforeSurfaceIntegral"] = _fortran_h5_layout(_stz_to_ztsN(ntv_before_list))
 
             # Integrated fluxes:
-            _store_flux_variants_N("particleFlux_vE0_psiHat", pf_vE0_list)
-            _store_flux_variants_N("particleFlux_vE_psiHat", pf_vE_list)
-            _store_flux_variants_N("heatFlux_vE0_psiHat", hf_vE0_list)
-            _store_flux_variants_N("heatFlux_vE_psiHat", hf_vE_list)
-            _store_flux_variants_N("momentumFlux_vE0_psiHat", mf_vE0_list)
-            _store_flux_variants_N("momentumFlux_vE_psiHat", mf_vE_list)
+            _store_flux_variants_NS("particleFlux_vE0_psiHat", np.stack(pf_vE0_list, axis=-1))
+            _store_flux_variants_NS("particleFlux_vE_psiHat", np.stack(pf_vE_list, axis=-1))
+            _store_flux_variants_NS("heatFlux_vE0_psiHat", np.stack(hf_vE0_list, axis=-1))
+            _store_flux_variants_NS("heatFlux_vE_psiHat", np.stack(hf_vE_list, axis=-1))
+            _store_flux_variants_NS("momentumFlux_vE0_psiHat", np.stack(mf_vE0_list, axis=-1))
+            _store_flux_variants_NS("momentumFlux_vE_psiHat", np.stack(mf_vE_list, axis=-1))
             data["NTV"] = _fortran_h5_layout(_s_to_sN(ntv_list))
 
             # Derived totals (vd, vd1, and heatFlux_withoutPhi1):

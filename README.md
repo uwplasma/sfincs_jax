@@ -27,15 +27,24 @@ Current benchmark snapshot (live executable, 4 repeats, JAX runtime excludes com
 
 | Case | Fortran mean (s/run) | sfincs_jax mean (s/run) | Max \|ΔL11\| |
 | --- | ---: | ---: | ---: |
-| scheme1 | 0.0871 | 3.4829 | 3.08e-13 |
-| scheme11 | 0.2517 | 4.9689 | 1.10e-15 |
-| scheme12 | 0.1188 | 4.4512 | 7.43e-08 |
-| scheme5_filtered | 0.1439 | 4.7816 | 5.20e-17 |
+| scheme1 | 0.0856 | 3.4905 | 3.08e-13 |
+| scheme11 | 0.2504 | 5.0020 | 1.10e-15 |
+| scheme12 | 0.1154 | 4.4669 | 7.43e-08 |
+| scheme5_filtered | 0.1501 | 4.7881 | 5.20e-17 |
 
 Outputs are written to:
 
 - `examples/performance/output/transport_l11_vs_fortran/sfincs_vs_sfincs_jax_l11_runtime_2x2.png`
 - `examples/performance/output/transport_l11_vs_fortran/sfincs_vs_sfincs_jax_l11_runtime_2x2.json`
+
+Persistent-cache compile/runtime split (same four cases):
+
+```bash
+python examples/performance/profile_transport_compile_runtime_cache.py --repeats 3
+```
+
+- Figure: `examples/performance/output/compile_runtime_cache/transport_compile_runtime_cache_2x2.png`
+- JSON: `examples/performance/output/compile_runtime_cache/transport_compile_runtime_cache_2x2.json`
 
 ## Installation
 
