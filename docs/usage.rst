@@ -114,6 +114,33 @@ Solving a supported v3 linear run (matrix-free)
    In particular, VMEC ``geometryScheme=5`` is now supported for the parity-tested tiny PAS case
    (see ``tests/ref/pas_1species_PAS_noEr_tiny_scheme5.input.namelist``).
 
+Solver controls (environment variables)
+---------------------------------------
+
+Some solver options are intentionally exposed as environment variables so you can tune
+performance without changing the input file:
+
+- ``SFINCS_JAX_ACTIVE_DOF``: controls active-DOF reduction when ``Nxi_for_x`` truncation is present.
+
+  - ``auto`` (default): enabled for RHSMode=2/3, and for RHSMode=1 when ``includePhi1=false``.
+  - ``1``/``true``: always enable.
+  - ``0``/``false``: always disable.
+
+- ``SFINCS_JAX_RHSMODE1_SOLVE_METHOD``: choose the RHSMode=1 linear solve backend:
+
+  - ``dense``: assemble the dense operator from matvecs and solve directly (fast for tiny fixtures,
+    but scales poorly).
+  - ``incremental`` or ``batched``: matrix-free GMRES.
+
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER`` (GMRES only): optional RHSMode=1 preconditioning.
+
+  - ``point`` (or ``1``): point-block Jacobi on local (x,L) unknowns at each :math:`(\theta,\zeta)`.
+  - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
+  - ``0``: disable.
+
+- ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
+  the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1).
+
 Writing `sfincsOutput.h5` with `sfincs_jax`
 --------------------------------------------------
 

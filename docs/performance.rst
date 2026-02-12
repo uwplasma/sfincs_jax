@@ -73,6 +73,32 @@ JAX-native performance patterns used in `sfincs_jax`
   a linear system `A(p) x = b(p)`, prefer `jax.lax.custom_linear_solve` (adjoint solve) over
   differentiating through Krylov iterations.
 
+RHSMode=1 GMRES preconditioning (experimental)
+----------------------------------------------
+
+For RHSMode=1 linear solves that use matrix-free GMRES (as opposed to the dense assemble-from-matvec
+path), you can enable an optional JAX-native preconditioner via an environment variable:
+
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=point`` (or ``1``): point-block Jacobi on local (x,L) unknowns
+  at each :math:`(\theta,\zeta)` (cheap, but can be too weak for stiff non-axisymmetric cases).
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_line``: theta-line block preconditioning that couples
+  all theta points (at fixed zeta) for all local (x,L) unknowns (stronger, higher setup cost).
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=0``: disable.
+
+The regularization used when inverting preconditioner blocks can be tuned with:
+
+- ``SFINCS_JAX_RHSMODE1_PRECOND_REG`` (default: ``1e-10``).
+
+These options are most useful when you also select a Krylov solve method for RHSMode=1 via:
+
+- ``SFINCS_JAX_RHSMODE1_SOLVE_METHOD=incremental`` (or ``batched``).
+
+.. note::
+
+   Preconditioners change the Krylov iteration path and can therefore affect strict line-by-line
+   parity with PETSc in near-singular branches. They are mainly intended to reduce runtime while
+   preserving practical output parity.
+
 
 Next refactor plan (performance + differentiability)
 ----------------------------------------------------
