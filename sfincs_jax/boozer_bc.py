@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import math
+from collections import OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -101,15 +103,30 @@ def _bc_cache_key(path: str | Path) -> tuple[str, int, int]:
     return str(p), int(st.st_mtime_ns), int(st.st_size)
 
 
-@lru_cache(maxsize=64)
-def _read_boozer_bc_all_surfaces_cached(
+_BOOZER_CONTENT_CACHE_MAX = 32
+_boozer_content_cache: "OrderedDict[tuple[str, int], tuple[BoozerBCHeader, tuple[BoozerBCSurface, ...]]]" = OrderedDict()
+
+
+@lru_cache(maxsize=256)
+def _bc_content_digest(path_resolved: str, mtime_ns: int, file_size: int) -> str:
+    """Stable content digest used to reuse parsed `.bc` data across copied files.
+
+    The hash is keyed by `(path, mtime_ns, size)` so unchanged paths are zero-copy cache hits.
+    Across copied files (different paths) with identical contents, the digest collides by design.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    with Path(path_resolved).open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    h.update(str(file_size).encode("ascii"))
+    return h.hexdigest()
+
+
+def _read_boozer_bc_all_surfaces_uncached(
+    *,
     path_resolved: str,
-    mtime_ns: int,
-    file_size: int,
     geometry_scheme: int,
 ) -> tuple[BoozerBCHeader, tuple[BoozerBCSurface, ...]]:
-    # mtime/file_size are part of the cache key to invalidate stale parses when files change.
-    del mtime_ns, file_size
     p = Path(path_resolved)
     header = _read_boozer_bc_header_uncached(path=p, geometry_scheme=geometry_scheme)
 
@@ -140,7 +157,23 @@ def _read_boozer_bc_all_surfaces_cached(
 
 def _read_boozer_bc_all_surfaces(*, path: str | Path, geometry_scheme: int) -> tuple[BoozerBCHeader, tuple[BoozerBCSurface, ...]]:
     path_resolved, mtime_ns, file_size = _bc_cache_key(path)
-    return _read_boozer_bc_all_surfaces_cached(path_resolved, mtime_ns, file_size, int(geometry_scheme))
+    geom_scheme = int(geometry_scheme)
+
+    # Cache on file content (not absolute path) so repeated temporary/localized copies
+    # of the same `.bc` file reuse the parsed surface table.
+    digest = _bc_content_digest(path_resolved, mtime_ns, file_size)
+    cache_key = (digest, geom_scheme)
+    hit = _boozer_content_cache.get(cache_key)
+    if hit is not None:
+        _boozer_content_cache.move_to_end(cache_key)
+        return hit
+
+    parsed = _read_boozer_bc_all_surfaces_uncached(path_resolved=path_resolved, geometry_scheme=geom_scheme)
+    _boozer_content_cache[cache_key] = parsed
+    _boozer_content_cache.move_to_end(cache_key)
+    if len(_boozer_content_cache) > _BOOZER_CONTENT_CACHE_MAX:
+        _boozer_content_cache.popitem(last=False)
+    return parsed
 
 
 def _try_parse_floats(tokens: List[str], n: int) -> List[float] | None:

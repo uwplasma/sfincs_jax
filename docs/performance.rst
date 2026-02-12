@@ -53,8 +53,8 @@ JAX-native performance patterns used in `sfincs_jax`
   fused ``einsum`` kernels by default (with an opt-in strict-order fallback), reducing
   diagnostic accumulation overhead in both RHSMode=1 and RHSMode=2/3 paths.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
-  surfaces keyed by file path + stat metadata, removing repeated header/surface parse work
-  within repeated runs and benchmark loops.
+  surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
+  the same equilibrium file reuse one parsed surface table.
 - **Vectorized NTV accumulation across nonlinear iterates**: RHSMode=1 output writing now
   computes NTV from stacked iterates in one batched JAX call instead of Python per-iterate loops.
 - **Auto active-DOF reduction for RHSMode=1 (no Phi1)**: when ``Nxi_for_x`` truncates
@@ -213,7 +213,7 @@ Latest frozen-fixture snapshot (4 repeats, compile excluded for JAX):
      - 3.11e-13
    * - ``scheme11``
      - 3.6393
-     - 0.8015
+     - 0.1259
      - 1.35e-15
    * - ``scheme12``
      - 0.0089
@@ -254,7 +254,7 @@ Latest snapshot (3 repeats):
      - 0.0612
    * - ``scheme11``
      - 1.5451
-     - 0.0676
+     - 0.0692
    * - ``scheme12``
      - 1.4497
      - 0.0718
