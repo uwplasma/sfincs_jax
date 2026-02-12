@@ -97,9 +97,10 @@ Current scope limits
 
 - Strict parity (``docs/_generated/reduced_upstream_suite_status_strict.rst``) still has a residual set dominated by
   solver-branch-sensitive diagnostics (HSX/full-trajectory families, transport-matrix moment families, and
-  ``monoenergetic_geometryScheme1``/``tokamak_1species_FPCollisions_noEr`` normalization-sensitive branches).
-- The unconstrained ``constraintScheme=0`` branch remains solver-choice-sensitive (rank-deficient systems can produce
-  different valid states while preserving practical output parity).
+  ``monoenergetic_geometryScheme1`` normalization-sensitive branches).
+- The unconstrained ``constraintScheme=0`` branch is rank-deficient, so different solvers can select different nullspace
+  components. For comparisons, sfincs_jax treats a small set of density/pressure-like outputs as gauge-dependent and
+  skips them when ``constraintScheme=0`` (see ``sfincs_jax/compare.py``).
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions) is still being expanded beyond the currently parity-tested subset.
 - VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset.
 

@@ -136,7 +136,16 @@ performance without changing the input file:
 
   - ``point`` (or ``1``): point-block Jacobi on local (x,L) unknowns at each :math:`(\theta,\zeta)`.
   - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
+  - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
+  - ``adi``: apply the theta-line and zeta-line preconditioners sequentially (strongest of the built-ins,
+    but also the most expensive).
   - ``0``: disable.
+
+- ``SFINCS_JAX_GMRES_PRECONDITION_SIDE``: side for applying the preconditioner in GMRES.
+
+  - ``left`` (default): solve :math:`P^{-1} A x = P^{-1} b`.
+  - ``right``: solve :math:`A P^{-1} y = b` and set :math:`x = P^{-1} y` (PETSc-like default for GMRES).
+  - ``none``: ignore any preconditioner (debugging).
 
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1).

@@ -32,7 +32,7 @@
      - 1
      - 0
      - 
-     - 6.357
+     - 4.638
      - 0/193
      - S:0 P:0
      - 9/9
@@ -332,11 +332,11 @@
      - 1
      - 0
      - 
-     - 1.471
-     - 0/197
+     - 1.392
+     - 0/190
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=9/199
+     - All common numeric datasets matched tolerance. strict=0/190
    * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
      - parity_ok
      - none

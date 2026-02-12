@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_mismatch=15, parity_ok=23
+- Status counts: parity_mismatch=14, parity_ok=24
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -32,7 +32,7 @@
      - 1
      - 0
      - 
-     - 6.357
+     - 4.638
      - 28/193
      - S:12 P:0
      - 9/9
@@ -326,17 +326,17 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/193
    * - tokamak_1species_FPCollisions_noEr
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
      - 
-     - 1.471
-     - 9/199
-     - S:9 P:0
+     - 1.392
+     - 0/190
+     - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=9/199
+     - All common numeric datasets matched tolerance. strict=0/190
    * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
      - parity_ok
      - none

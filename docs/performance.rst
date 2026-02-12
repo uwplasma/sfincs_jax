@@ -83,6 +83,10 @@ path), you can enable an optional JAX-native preconditioner via an environment v
   at each :math:`(\theta,\zeta)` (cheap, but can be too weak for stiff non-axisymmetric cases).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_line``: theta-line block preconditioning that couples
   all theta points (at fixed zeta) for all local (x,L) unknowns (stronger, higher setup cost).
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=zeta_line``: zeta-line block preconditioning that couples
+  all zeta points (at fixed theta) for all local (x,L) unknowns (stronger, higher setup cost).
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=adi``: apply theta-line then zeta-line preconditioning
+  sequentially (strongest of the built-ins, highest setup + apply cost).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=0``: disable.
 
 The regularization used when inverting preconditioner blocks can be tuned with:
@@ -92,6 +96,11 @@ The regularization used when inverting preconditioner blocks can be tuned with:
 These options are most useful when you also select a Krylov solve method for RHSMode=1 via:
 
 - ``SFINCS_JAX_RHSMODE1_SOLVE_METHOD=incremental`` (or ``batched``).
+
+You can also control which side the preconditioner is applied on:
+
+- ``SFINCS_JAX_GMRES_PRECONDITION_SIDE=left`` (default): left-preconditioned GMRES.
+- ``SFINCS_JAX_GMRES_PRECONDITION_SIDE=right``: right-preconditioned GMRES (PETSc-like default).
 
 .. note::
 

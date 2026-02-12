@@ -61,6 +61,43 @@ def compare_sfincs_outputs(
     b = read_sfincs_h5(b_path)
 
     ignore = set(ignore_keys)
+    # constraintScheme=0 leaves the density/pressure moments unconstrained and the linear
+    # system is rank-deficient. In this branch, PETSc direct/iterative solver details can
+    # select different nullspace components, leading to large (but physically gauge-like)
+    # offsets in density/pressure-related diagnostics. For strict comparisons, skip the
+    # gauge-dependent fields by default.
+    def _as_int(v: Any) -> int | None:
+        if v is None:
+            return None
+        if np.isscalar(v):
+            try:
+                return int(v)
+            except Exception:  # noqa: BLE001
+                return None
+        arr = np.asarray(v)
+        if arr.size != 1:
+            return None
+        try:
+            return int(arr.reshape(()))
+        except Exception:  # noqa: BLE001
+            return None
+
+    constraint_a = _as_int(a.get("constraintScheme"))
+    constraint_b = _as_int(b.get("constraintScheme"))
+    if constraint_a == 0 or constraint_b == 0:
+        ignore.update(
+            {
+                "FSADensityPerturbation",
+                "FSAPressurePerturbation",
+                "densityPerturbation",
+                "pressurePerturbation",
+                "totalDensity",
+                "totalPressure",
+                "velocityUsingTotalDensity",
+                "particleFluxBeforeSurfaceIntegral_vm",
+                "heatFluxBeforeSurfaceIntegral_vm",
+            }
+        )
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 

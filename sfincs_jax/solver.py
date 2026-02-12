@@ -100,6 +100,7 @@ def gmres_solve(
     restart: int = 50,
     maxiter: int | None = None,
     solve_method: str = "batched",
+    precondition_side: str = "left",
 ) -> GMRESSolveResult:
     """Solve `A x = b` using JAX's GMRES.
 
@@ -125,19 +126,48 @@ def gmres_solve(
         x, residual_norm = dense_solve_from_matrix(a=a, b=b)
         return GMRESSolveResult(x=x, residual_norm=residual_norm)
 
-    x, _info = gmres(
-        matvec,
-        b,
-        x0=x0,
-        tol=float(tol),
-        atol=float(atol),
-        restart=int(restart),
-        maxiter=maxiter,
-        M=preconditioner,
-        solve_method=solve_method,
-    )
+    side = str(precondition_side).strip().lower()
+    if side not in {"left", "right", "none"}:
+        side = "left"
+
+    if side == "right" and preconditioner is not None:
+        # PETSc's GMRES defaults to right preconditioning: solve A P^{-1} y = b, x = P^{-1} y.
+        # Here, `preconditioner` is expected to apply P^{-1}.
+        def matvec_right(y):
+            return matvec(preconditioner(y))
+
+        y, _info = gmres(
+            matvec_right,
+            b,
+            x0=None,
+            tol=float(tol),
+            atol=float(atol),
+            restart=int(restart),
+            maxiter=maxiter,
+            M=None,
+            solve_method=solve_method,
+        )
+        x = preconditioner(y)
+    else:
+        # Left preconditioning (SciPy-style): solve P^{-1} A x = P^{-1} b.
+        M = preconditioner if side == "left" else None
+        x, _info = gmres(
+            matvec,
+            b,
+            x0=x0,
+            tol=float(tol),
+            atol=float(atol),
+            restart=int(restart),
+            maxiter=maxiter,
+            M=M,
+            solve_method=solve_method,
+        )
+
     r = b - matvec(x)
     return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 
 
-gmres_solve_jit = jax.jit(gmres_solve, static_argnames=("matvec", "preconditioner", "restart", "maxiter", "solve_method"))
+gmres_solve_jit = jax.jit(
+    gmres_solve,
+    static_argnames=("matvec", "preconditioner", "restart", "maxiter", "solve_method", "precondition_side"),
+)

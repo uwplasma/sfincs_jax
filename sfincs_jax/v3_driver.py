@@ -157,6 +157,41 @@ def _build_rhsmode1_preconditioner_operator_theta_line(op: V3FullSystemOperator)
     return replace(op, fblock=fblock_pc)
 
 
+def _build_rhsmode1_preconditioner_operator_zeta_line(op: V3FullSystemOperator) -> V3FullSystemOperator:
+    """Return a simplified RHSMode=1 operator for zeta-line preconditioning.
+
+    Keep full zeta derivative couplings but drop theta derivative couplings. This is the
+    zeta-analog of `_build_rhsmode1_preconditioner_operator_theta_line`.
+    """
+    if int(op.rhs_mode) != 1:
+        return op
+
+    fblock = op.fblock
+    coll = replace(
+        fblock.collisionless,
+        ddtheta=_diag_only(fblock.collisionless.ddtheta),
+    )
+    exb_theta = replace(fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta))
+    exb_zeta = fblock.exb_zeta
+    mag_theta = None
+    if fblock.magdrift_theta is not None:
+        mag_theta = replace(
+            fblock.magdrift_theta,
+            ddtheta_plus=_diag_only(fblock.magdrift_theta.ddtheta_plus),
+            ddtheta_minus=_diag_only(fblock.magdrift_theta.ddtheta_minus),
+        )
+    mag_zeta = fblock.magdrift_zeta
+    fblock_pc = replace(
+        fblock,
+        collisionless=coll,
+        exb_theta=exb_theta,
+        exb_zeta=exb_zeta,
+        magdrift_theta=mag_theta,
+        magdrift_zeta=mag_zeta,
+    )
+    return replace(op, fblock=fblock_pc)
+
+
 def _build_rhsmode1_block_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -251,11 +286,11 @@ def _build_rhsmode1_block_preconditioner(
         r_loc = r_full[flat_idx_jnp].reshape((n_s, n_t, n_z, local_per_species))
         z_loc = jnp.einsum("sab,stzb->stza", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
-        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)))
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
         if extra_inv_jnp is not None:
             r_extra = r_full[extra_idx_jnp]
             z_extra = extra_inv_jnp @ r_extra
-            z_full = z_full.at[extra_idx_jnp].set(z_extra)
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
         return z_full
 
     if reduce_full is None or expand_reduced is None:
@@ -365,11 +400,125 @@ def _build_rhsmode1_theta_line_preconditioner(
         r_loc = r_full[flat_idx_jnp].reshape((n_species, n_zeta, line_size))
         z_loc = jnp.einsum("sab,szb->sza", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
-        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)))
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
         if extra_inv_jnp is not None:
             r_extra = r_full[extra_idx_jnp]
             z_extra = extra_inv_jnp @ r_extra
-            z_full = z_full.at[extra_idx_jnp].set(z_extra)
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return z_full
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_zeta_line_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a stronger RHSMode=1 preconditioner using zeta-line blocks.
+
+    For each species and each theta plane, solve a representative block that couples
+    all zeta points for all local (x,L) unknowns at that theta. This approximates the
+    dominant derivative couplings along zeta while ignoring theta derivatives.
+    """
+    op_pc = _build_rhsmode1_preconditioner_operator_zeta_line(op)
+    n_species = int(op.n_species)
+    n_x = int(op.n_x)
+    n_l = int(op.n_xi)
+    n_theta = int(op.n_theta)
+    n_zeta = int(op.n_zeta)
+    total_size = int(op.total_size)
+
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    local_per_species = int(np.sum(nxi_for_x))
+    line_size = int(n_zeta * local_per_species)
+
+    # Representative zeta-line blocks at theta=0, one per species.
+    rep_indices_by_species: list[np.ndarray] = []
+    for s in range(n_species):
+        idx: list[int] = []
+        for iz in range(n_zeta):
+            for ix in range(n_x):
+                max_l = int(nxi_for_x[ix])
+                for il in range(max_l):
+                    f_idx = ((((s * n_x + ix) * n_l + il) * n_theta + 0) * n_zeta + iz)
+                    idx.append(int(f_idx))
+        rep_indices_by_species.append(np.asarray(idx, dtype=np.int32))
+
+    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+    reg_val = float(reg_env) if reg_env else 1e-10
+    reg = np.float64(reg_val)
+
+    block_inv = np.zeros((n_species, line_size, line_size), dtype=np.float64)
+    for s in range(n_species):
+        rep_idx = rep_indices_by_species[s]
+        m = int(rep_idx.shape[0])
+        if m != line_size:
+            raise RuntimeError(f"Internal error: line_size={line_size} but rep_idx has size {m}")
+        a = np.zeros((m, m), dtype=np.float64)
+        for j, col in enumerate(rep_idx.tolist()):
+            e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
+            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
+            a[:, j] = y[rep_idx]
+        a = a + reg * np.eye(m, dtype=np.float64)
+        try:
+            inv = np.linalg.inv(a)
+        except np.linalg.LinAlgError:
+            inv = np.linalg.pinv(a, rcond=1e-12)
+        block_inv[s, :, :] = inv
+
+    # Build per-(species,theta) gather map for all zeta points and local (x,L) indices.
+    idx_map = np.zeros((n_species, n_theta, line_size), dtype=np.int32)
+    for s in range(n_species):
+        for it in range(n_theta):
+            k = 0
+            for iz in range(n_zeta):
+                for ix in range(n_x):
+                    max_l = int(nxi_for_x[ix])
+                    for il in range(max_l):
+                        idx_map[s, it, k] = int(((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz))
+                        k += 1
+
+    idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+    flat_idx_jnp = idx_map_jnp.reshape((-1,))
+    block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+
+    extra_start = int(op.f_size + op.phi1_size)
+    extra_size = int(op.extra_size)
+    extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+    extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+    extra_inv_jnp: jnp.ndarray | None = None
+    if extra_size > 0:
+        ee = np.zeros((extra_size, extra_size), dtype=np.float64)
+        for j, col in enumerate(extra_idx_np.tolist()):
+            e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
+            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
+            ee[:, j] = y[extra_idx_np]
+        ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+        try:
+            ee_inv = np.linalg.inv(ee)
+        except np.linalg.LinAlgError:
+            ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+        extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_loc = r_full[flat_idx_jnp].reshape((n_species, n_theta, line_size))
+        z_loc = jnp.einsum("sab,stb->sta", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
         return z_full
 
     if reduce_full is None or expand_reduced is None:
@@ -470,6 +619,10 @@ def solve_v3_full_system_linear_gmres(
         rhs1_precond_kind = None
     elif rhs1_precond_env in {"theta", "theta_line", "line_theta"}:
         rhs1_precond_kind = "theta_line"
+    elif rhs1_precond_env in {"zeta", "zeta_line", "line_zeta"}:
+        rhs1_precond_kind = "zeta_line"
+    elif rhs1_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
+        rhs1_precond_kind = "adi"
     elif rhs1_precond_env in {"1", "true", "yes", "on", "point", "point_block"}:
         rhs1_precond_kind = "point"
     else:
@@ -478,8 +631,11 @@ def solve_v3_full_system_linear_gmres(
         rhs1_precond_kind is not None
         and int(op.rhs_mode) == 1
         and (not bool(op.include_phi1))
-        and int(op.extra_size) > 0
     )
+    gmres_precond_side_env = os.environ.get("SFINCS_JAX_GMRES_PRECONDITION_SIDE", "").strip().lower()
+    if gmres_precond_side_env not in {"", "left", "right", "none"}:
+        gmres_precond_side_env = ""
+    gmres_precond_side = gmres_precond_side_env or "left"
     stage2_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2", "").strip().lower()
     if stage2_env in {"0", "false", "no", "off"}:
         stage2_enabled = False
@@ -523,6 +679,20 @@ def solve_v3_full_system_linear_gmres(
                 preconditioner_reduced = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+            elif rhs1_precond_kind == "zeta_line":
+                preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif rhs1_precond_kind == "adi":
+                pre_theta = _build_rhsmode1_theta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                pre_zeta = _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+
+                def preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
+                    return pre_zeta(pre_theta(v))
             else:
                 preconditioner_reduced = _build_rhsmode1_block_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
@@ -537,6 +707,7 @@ def solve_v3_full_system_linear_gmres(
             restart=restart,
             maxiter=maxiter,
             solve_method=solve_method,
+            precondition_side=gmres_precond_side,
         )
         if preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
             if emit is not None:
@@ -551,6 +722,7 @@ def solve_v3_full_system_linear_gmres(
                 restart=restart,
                 maxiter=maxiter,
                 solve_method=solve_method,
+                precondition_side=gmres_precond_side,
             )
         target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
         if float(res_reduced.residual_norm) > target_reduced and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
@@ -576,6 +748,7 @@ def solve_v3_full_system_linear_gmres(
                 restart=stage2_restart,
                 maxiter=stage2_maxiter,
                 solve_method=stage2_method,
+                precondition_side=gmres_precond_side,
             )
             if float(res2.residual_norm) < float(res_reduced.residual_norm):
                 res_reduced = res2
@@ -589,6 +762,14 @@ def solve_v3_full_system_linear_gmres(
                 emit(1, f"solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner={rhs1_precond_kind}")
             if rhs1_precond_kind == "theta_line":
                 preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
+            elif rhs1_precond_kind == "zeta_line":
+                preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
+            elif rhs1_precond_kind == "adi":
+                pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
+                pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
+
+                def preconditioner_full(v: jnp.ndarray) -> jnp.ndarray:
+                    return pre_zeta(pre_theta(v))
             else:
                 preconditioner_full = _build_rhsmode1_block_preconditioner(op=op)
         result = gmres_solve(
@@ -601,6 +782,7 @@ def solve_v3_full_system_linear_gmres(
             restart=restart,
             maxiter=maxiter,
             solve_method=solve_method,
+            precondition_side=gmres_precond_side,
         )
         if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
             if emit is not None:
@@ -615,6 +797,7 @@ def solve_v3_full_system_linear_gmres(
                 restart=restart,
                 maxiter=maxiter,
                 solve_method=solve_method,
+                precondition_side=gmres_precond_side,
             )
         # If GMRES does not reach the requested tolerance (common without preconditioning),
         # retry with a larger iteration budget and the more robust incremental mode.
@@ -642,6 +825,7 @@ def solve_v3_full_system_linear_gmres(
                 restart=stage2_restart,
                 maxiter=stage2_maxiter,
                 solve_method=stage2_method,
+                precondition_side=gmres_precond_side,
             )
             if float(res2.residual_norm) < float(result.residual_norm):
                 result = res2
