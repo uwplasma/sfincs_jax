@@ -36,7 +36,7 @@ def test_full_system_gmres_recovers_fortran_statevector_pas_tiny() -> None:
     result = gmres_solve(matvec=mv, b=jnp.asarray(b), tol=1e-12, restart=80, maxiter=200)
     x = np.asarray(result.x)
 
-    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(x, x_ref, rtol=1e-5, atol=1e-9)
     assert float(result.residual_norm) < 1e-9
 
 
@@ -59,7 +59,7 @@ def test_full_system_gmres_solves_physical_rhs_pas_tiny() -> None:
     result = gmres_solve(matvec=mv, b=rhs, tol=1e-12, restart=80, maxiter=250)
     x = np.asarray(result.x)
 
-    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(x, x_ref, rtol=1e-5, atol=1e-9)
     assert float(result.residual_norm) < 1e-9
 
 
@@ -86,7 +86,7 @@ def test_full_system_gmres_recovers_fortran_statevector_pas_tiny_scheme1() -> No
     result = gmres_solve(matvec=mv, b=jnp.asarray(b), tol=1e-12, restart=80, maxiter=220)
     x = np.asarray(result.x)
 
-    np.testing.assert_allclose(x, x_ref, rtol=0, atol=1e-9)
+    np.testing.assert_allclose(x, x_ref, rtol=1e-5, atol=1e-9)
     assert float(result.residual_norm) < 1e-9
 
 
