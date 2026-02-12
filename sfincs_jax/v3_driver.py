@@ -15,7 +15,13 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from .namelist import Namelist
-from .solver import GMRESSolveResult, assemble_dense_matrix_from_matvec, dense_solve_from_matrix, gmres_solve
+from .solver import (
+    GMRESSolveResult,
+    assemble_dense_matrix_from_matvec,
+    dense_solve_from_matrix,
+    gmres_solve,
+    gmres_solve_with_history_scipy,
+)
 from .transport_matrix import (
     transport_matrix_size_from_rhs_mode,
     v3_transport_diagnostics_vm_only_batch_jit,
@@ -643,6 +649,56 @@ def solve_v3_full_system_linear_gmres(
     # must be large enough to still trigger after any one-time preconditioner setup,
     # while remaining bounded for interactive use and CI.
     stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "30.0"))
+
+    fortran_stdout_env = os.environ.get("SFINCS_JAX_FORTRAN_STDOUT", "").strip().lower()
+    if fortran_stdout_env in {"0", "false", "no", "off"}:
+        fortran_stdout = False
+    elif fortran_stdout_env in {"1", "true", "yes", "on"}:
+        fortran_stdout = True
+    else:
+        fortran_stdout = emit is not None
+    ksp_matvec = None
+    ksp_b = None
+    ksp_precond = None
+    ksp_x0 = None
+    ksp_restart = restart
+    ksp_maxiter = maxiter
+    ksp_precond_side = gmres_precond_side
+
+    def _emit_ksp_history(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        precond_fn,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        precond_side: str,
+    ) -> None:
+        if emit is None or not fortran_stdout:
+            return
+        try:
+            _x_hist, _rn, history = gmres_solve_with_history_scipy(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=precond_fn,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+                precondition_side=precond_side,
+            )
+        except Exception as exc:  # noqa: BLE001
+            emit(1, f"fortran-stdout: KSP history unavailable ({type(exc).__name__}: {exc})")
+            return
+        for k, rn in enumerate(history):
+            emit(0, f\"{k:4d} KSP Residual norm {rn: .12e} \")
+        if history:
+            emit(0, \" Linear iteration (KSP) converged.  KSPConvergedReason =            2\")
+            emit(0, \"   KSP_CONVERGED_RTOL: Norm decreased by rtol.\")
     if use_active_dof_mode:
         assert active_idx_jnp is not None
         assert full_to_active_jnp is not None
@@ -778,6 +834,11 @@ def solve_v3_full_system_linear_gmres(
                 solve_method="incremental",
                 precondition_side="none",
             )
+            ksp_matvec = mv_pc
+            ksp_b = rhs_pc
+            ksp_precond = None
+            ksp_x0 = x0_reduced
+            ksp_precond_side = "none"
         else:
             res_reduced = gmres_solve(
                 matvec=mv_reduced,
@@ -791,6 +852,11 @@ def solve_v3_full_system_linear_gmres(
                 solve_method=solve_method,
                 precondition_side=gmres_precond_side,
             )
+            ksp_matvec = mv_reduced
+            ksp_b = rhs_reduced
+            ksp_precond = preconditioner_reduced
+            ksp_x0 = x0_reduced
+            ksp_precond_side = gmres_precond_side
         if preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
             if emit is not None:
                 emit(0, "solve_v3_full_system_linear_gmres: preconditioned reduced GMRES returned non-finite result; retrying without preconditioner")
@@ -806,6 +872,11 @@ def solve_v3_full_system_linear_gmres(
                 solve_method=solve_method,
                 precondition_side=gmres_precond_side,
             )
+            ksp_matvec = mv_reduced
+            ksp_b = rhs_reduced
+            ksp_precond = None
+            ksp_x0 = x0_reduced
+            ksp_precond_side = gmres_precond_side
         target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
         if float(res_reduced.residual_norm) > target_reduced and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
             stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
@@ -834,6 +905,13 @@ def solve_v3_full_system_linear_gmres(
             )
             if float(res2.residual_norm) < float(res_reduced.residual_norm):
                 res_reduced = res2
+                ksp_matvec = mv_reduced
+                ksp_b = rhs_reduced
+                ksp_precond = preconditioner_reduced
+                ksp_x0 = res_reduced.x
+                ksp_restart = stage2_restart
+                ksp_maxiter = stage2_maxiter
+                ksp_precond_side = gmres_precond_side
         x_full = expand_reduced(res_reduced.x)
         residual_norm_full = jnp.linalg.norm(mv(x_full) - rhs)
         result = GMRESSolveResult(x=x_full, residual_norm=residual_norm_full)
@@ -909,6 +987,11 @@ def solve_v3_full_system_linear_gmres(
                 solve_method="incremental",
                 precondition_side="none",
             )
+            ksp_matvec = mv_pc
+            ksp_b = rhs_pc
+            ksp_precond = None
+            ksp_x0 = x0
+            ksp_precond_side = "none"
             residual_norm_full = jnp.linalg.norm(mv(res_pc.x) - rhs)
             result = GMRESSolveResult(x=res_pc.x, residual_norm=residual_norm_full)
         else:
@@ -950,6 +1033,11 @@ def solve_v3_full_system_linear_gmres(
                 solve_method=solve_method,
                 precondition_side=gmres_precond_side,
             )
+            ksp_matvec = mv
+            ksp_b = rhs
+            ksp_precond = preconditioner_full
+            ksp_x0 = x0
+            ksp_precond_side = gmres_precond_side
             if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
                 if emit is not None:
                     emit(0, "solve_v3_full_system_linear_gmres: preconditioned GMRES returned non-finite result; retrying without preconditioner")
@@ -965,6 +1053,11 @@ def solve_v3_full_system_linear_gmres(
                     solve_method=solve_method,
                     precondition_side=gmres_precond_side,
                 )
+                ksp_matvec = mv
+                ksp_b = rhs
+                ksp_precond = None
+                ksp_x0 = x0
+                ksp_precond_side = gmres_precond_side
             # If GMRES does not reach the requested tolerance (common without preconditioning),
             # retry with a larger iteration budget and the more robust incremental mode.
             target = max(float(atol), float(tol) * float(rhs_norm))
@@ -995,6 +1088,13 @@ def solve_v3_full_system_linear_gmres(
                 )
                 if float(res2.residual_norm) < float(result.residual_norm):
                     result = res2
+                    ksp_matvec = mv
+                    ksp_b = rhs
+                    ksp_precond = preconditioner_full
+                    ksp_x0 = result.x
+                    ksp_restart = stage2_restart
+                    ksp_maxiter = stage2_maxiter
+                    ksp_precond_side = gmres_precond_side
     if int(op.rhs_mode) == 1:
         project_rhs1 = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower() in {
             "1",
@@ -1013,6 +1113,18 @@ def solve_v3_full_system_linear_gmres(
             if not bool(jnp.allclose(x_projected, result.x)):
                 residual_norm_projected = jnp.linalg.norm(mv(x_projected) - rhs)
                 result = GMRESSolveResult(x=x_projected, residual_norm=residual_norm_projected)
+    if ksp_matvec is not None and ksp_b is not None:
+        _emit_ksp_history(
+            matvec_fn=ksp_matvec,
+            b_vec=ksp_b,
+            precond_fn=ksp_precond,
+            x0_vec=ksp_x0,
+            tol_val=tol,
+            atol_val=atol,
+            restart_val=int(ksp_restart),
+            maxiter_val=ksp_maxiter,
+            precond_side=ksp_precond_side,
+        )
     if emit is not None:
         emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
         emit(1, f"solve_v3_full_system_linear_gmres: elapsed_s={t.elapsed_s():.3f}")
@@ -1159,6 +1271,13 @@ def solve_v3_full_system_newton_krylov_history(
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift)
     if emit is not None:
         emit(1, f"solve_v3_full_system_newton_krylov_history: total_size={int(op.total_size)}")
+    fortran_stdout_env = os.environ.get("SFINCS_JAX_FORTRAN_STDOUT", "").strip().lower()
+    if fortran_stdout_env in {"0", "false", "no", "off"}:
+        fortran_stdout = False
+    elif fortran_stdout_env in {"1", "true", "yes", "on"}:
+        fortran_stdout = True
+    else:
+        fortran_stdout = emit is not None
     env_gmres_tol = os.environ.get("SFINCS_JAX_PHI1_GMRES_TOL", "").strip()
     if env_gmres_tol:
         gmres_tol = float(env_gmres_tol)
@@ -1238,6 +1357,41 @@ def solve_v3_full_system_newton_krylov_history(
     accepted: list[jnp.ndarray] = []
     rnorm_initial: float | None = None
 
+    def _emit_ksp_history_nk(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        precond_fn,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        precond_side: str,
+    ) -> None:
+        if emit is None or not fortran_stdout:
+            return
+        try:
+            _x_hist, _rn, history = gmres_solve_with_history_scipy(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=precond_fn,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+                precondition_side=precond_side,
+            )
+        except Exception as exc:  # noqa: BLE001
+            emit(1, f"fortran-stdout: KSP history unavailable ({type(exc).__name__}: {exc})")
+            return
+        for k_hist, rn in enumerate(history):
+            emit(0, f"{k_hist:4d} KSP Residual norm {rn: .12e} ")
+        if history:
+            emit(0, " Linear iteration (KSP) converged.  KSPConvergedReason =            2")
+            emit(0, "   KSP_CONVERGED_RTOL: Norm decreased by rtol.")
+
     for k in range(int(max_newton)):
         if emit is not None:
             emit(1, f"newton_iter={k}: evaluateResidual called")
@@ -1254,6 +1408,8 @@ def solve_v3_full_system_newton_krylov_history(
             rnorm_initial = max(rnorm_f, 1e-300)
         if emit is not None:
             emit(0, f"newton_iter={k}: residual_norm={rnorm_f:.6e}")
+        if emit is not None and fortran_stdout:
+            emit(0, f"{k:4d} SNES Function norm {rnorm_f: .12e} ")
         if not np.isfinite(rnorm_f):
             # Keep the latest finite iterate. This mirrors PETSc's behavior of
             # stopping when the nonlinear residual becomes invalid instead of
@@ -1371,6 +1527,17 @@ def solve_v3_full_system_newton_krylov_history(
                 maxiter=gmres_maxiter,
                 solve_method=solve_method_linear,
             )
+            _emit_ksp_history_nk(
+                matvec_fn=matvec_reduced,
+                b_vec=rhs_reduced,
+                precond_fn=preconditioner,
+                x0_vec=None,
+                tol_val=float(gmres_tol),
+                atol_val=0.0,
+                restart_val=int(gmres_restart),
+                maxiter_val=gmres_maxiter,
+                precond_side="left",
+            )
             if preconditioner is not None and (not _gmres_result_is_finite(lin)):
                 if emit is not None:
                     emit(
@@ -1387,6 +1554,17 @@ def solve_v3_full_system_newton_krylov_history(
                     maxiter=gmres_maxiter,
                     solve_method=solve_method_linear,
                 )
+                _emit_ksp_history_nk(
+                    matvec_fn=matvec_reduced,
+                    b_vec=rhs_reduced,
+                    precond_fn=None,
+                    x0_vec=None,
+                    tol_val=float(gmres_tol),
+                    atol_val=0.0,
+                    restart_val=int(gmres_restart),
+                    maxiter_val=gmres_maxiter,
+                    precond_side="left",
+                )
             s = _expand_reduced(lin.x)
             linear_resid_norm = jnp.linalg.norm(matvec(s) + r)
         else:
@@ -1398,6 +1576,17 @@ def solve_v3_full_system_newton_krylov_history(
                 restart=int(gmres_restart),
                 maxiter=gmres_maxiter,
                 solve_method=solve_method_linear,
+            )
+            _emit_ksp_history_nk(
+                matvec_fn=matvec,
+                b_vec=-r,
+                precond_fn=preconditioner,
+                x0_vec=None,
+                tol_val=float(gmres_tol),
+                atol_val=0.0,
+                restart_val=int(gmres_restart),
+                maxiter_val=gmres_maxiter,
+                precond_side="left",
             )
             if preconditioner is not None and (not _gmres_result_is_finite(lin)):
                 if emit is not None:
@@ -1414,6 +1603,17 @@ def solve_v3_full_system_newton_krylov_history(
                     restart=int(gmres_restart),
                     maxiter=gmres_maxiter,
                     solve_method=solve_method_linear,
+                )
+                _emit_ksp_history_nk(
+                    matvec_fn=matvec,
+                    b_vec=-r,
+                    precond_fn=None,
+                    x0_vec=None,
+                    tol_val=float(gmres_tol),
+                    atol_val=0.0,
+                    restart_val=int(gmres_restart),
+                    maxiter_val=gmres_maxiter,
+                    precond_side="left",
                 )
             s = lin.x
             linear_resid_norm = lin.residual_norm

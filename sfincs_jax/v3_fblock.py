@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 
 from jax import config as _jax_config
@@ -232,7 +233,9 @@ def pas_collision_operator_from_namelist(
     )
 
 
-def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Grids) -> FokkerPlanckV3Operator:
+def fokker_planck_collision_operator_from_namelist(
+    *, nml: Namelist, grids: V3Grids, strict_parity: bool | None = None
+) -> FokkerPlanckV3Operator:
     species = nml.group("speciesParameters")
     phys = nml.group("physicsParameters")
     other = nml.group("otherNumericalParameters")
@@ -254,6 +257,11 @@ def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Gr
     t_hats = _as_1d_float(species, "THats")
     nu_n = _get_float(phys, "nu_n", _V3_DEFAULT_NU_N)
     krook = _get_float(phys, "Krook", 0.0)
+    if strict_parity is None:
+        rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+        strict_env = os.environ.get("SFINCS_JAX_FP_STRICT_PARITY", "").strip().lower()
+        strict_requested = strict_env in {"1", "true", "yes", "on"}
+        strict_parity = bool(strict_requested and rhs_mode == 1)
 
     return make_fokker_planck_v3_operator(
         x=np.asarray(grids.x, dtype=np.float64),
@@ -270,6 +278,7 @@ def fokker_planck_collision_operator_from_namelist(*, nml: Namelist, grids: V3Gr
         n_xi=int(grids.n_xi),
         nl=int(grids.n_l),
         n_xi_for_x=np.asarray(grids.n_xi_for_x, dtype=np.int32),
+        strict_parity=bool(strict_parity),
     )
 
 

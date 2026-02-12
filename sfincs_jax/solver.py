@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import numpy as np
 
 from jax import config as _jax_config
 
@@ -12,6 +13,8 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 from jax import vmap
 from jax.scipy.sparse.linalg import gmres
+from scipy.sparse.linalg import LinearOperator as _LinearOperator
+from scipy.sparse.linalg import gmres as _scipy_gmres
 
 
 @jtu.register_pytree_node_class
@@ -30,6 +33,75 @@ class GMRESSolveResult:
         del aux
         x, residual_norm = children
         return cls(x=x, residual_norm=residual_norm)
+
+
+def gmres_solve_with_history_scipy(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 50,
+    maxiter: int | None = None,
+    precondition_side: str = "left",
+) -> tuple[np.ndarray, float, list[float]]:
+    """Run SciPy GMRES to collect residual history for Fortran-style logging."""
+    b_np = np.asarray(b, dtype=np.float64).reshape((-1,))
+    n = int(b_np.size)
+    x0_np = np.asarray(x0, dtype=np.float64).reshape((-1,)) if x0 is not None else None
+
+    def _mv(x_np: np.ndarray) -> np.ndarray:
+        return np.asarray(matvec(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64)
+
+    def _prec(x_np: np.ndarray) -> np.ndarray:
+        if preconditioner is None:
+            return x_np
+        return np.asarray(preconditioner(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64)
+
+    side = str(precondition_side).strip().lower()
+    if side not in {"left", "right", "none"}:
+        side = "left"
+
+    if side == "right" and preconditioner is not None:
+        def _mv_right(y_np: np.ndarray) -> np.ndarray:
+            return _mv(_prec(y_np))
+
+        A = _LinearOperator((n, n), matvec=_mv_right, dtype=np.float64)
+        M = None
+    else:
+        A = _LinearOperator((n, n), matvec=_mv, dtype=np.float64)
+        M = _LinearOperator((n, n), matvec=_prec, dtype=np.float64) if preconditioner is not None else None
+
+    history: list[float] = []
+
+    def _cb(arg):
+        # SciPy passes residual norm when callback_type='pr_norm'.
+        if np.isscalar(arg):
+            history.append(float(arg))
+        else:
+            history.append(float(np.linalg.norm(arg)))
+
+    x_np, info = _scipy_gmres(
+        A,
+        b_np,
+        x0=x0_np,
+        rtol=float(tol),
+        atol=float(atol),
+        restart=int(restart),
+        maxiter=int(maxiter) if maxiter is not None else None,
+        M=M,
+        callback=_cb,
+        callback_type="pr_norm",
+    )
+
+    if side == "right" and preconditioner is not None:
+        x_np = _prec(x_np)
+
+    res = b_np - _mv(x_np)
+    rn = float(np.linalg.norm(res))
+    return x_np, rn, history
 
 
 def assemble_dense_matrix_from_matvec(*, matvec, n: int, dtype: jnp.dtype) -> jnp.ndarray:

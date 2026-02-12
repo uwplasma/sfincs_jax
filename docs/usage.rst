@@ -88,7 +88,8 @@ Running the Fortran v3 executable
 
 .. tip::
 
-   All CLI subcommands support ``-v/--verbose`` (repeatable) and ``-q/--quiet``.
+   All CLI subcommands support ``-v/--verbose`` (repeatable), ``-q/--quiet``,
+   and ``--fortran-stdout``/``--no-fortran-stdout`` for strict stdout mirroring.
 
 If you are developing from a source checkout and have not installed the console script,
 you can invoke the CLI module directly:
@@ -150,11 +151,19 @@ performance without changing the input file:
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1).
 
+- ``SFINCS_JAX_FORTRAN_STDOUT``: control strict Fortran-style stdout mirroring.
+
+  - ``1``/``true``: emit PETSc-like SNES/KSP iteration lines in addition to the standard v3 text.
+  - ``0``/``false``: skip the extra iteration logs (useful for speed in tests).
+
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
 
   - ``quadpack`` (default): match the Fortran v3 QUADPACK-based implementation for parity.
   - ``analytic``: faster analytic integrals (may differ at strict parity level).
+
+- ``SFINCS_JAX_FP_STRICT_PARITY``: for ``collisionOperator=0`` multispecies runs, force a
+  scalar-ordered accumulation of the FP cross-species coupling to match v3 ordering (default: off).
 
 Writing `sfincsOutput.h5` with `sfincs_jax`
 --------------------------------------------------

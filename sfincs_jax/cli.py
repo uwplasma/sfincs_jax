@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import time
 
@@ -277,6 +278,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sfincs_jax")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (repeatable).")
     parser.add_argument("-q", "--quiet", action="store_true", help="Reduce output to a minimum.")
+    parser.add_argument(
+        "--fortran-stdout",
+        dest="fortran_stdout",
+        action="store_true",
+        help="Mirror upstream v3 stdout line-for-line (including KSP/SNES iteration lines).",
+    )
+    parser.add_argument(
+        "--no-fortran-stdout",
+        dest="fortran_stdout",
+        action="store_false",
+        help="Disable strict Fortran-style stdout mirroring.",
+    )
+    parser.set_defaults(fortran_stdout=None)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_solve = sub.add_parser("solve-v3", help="Solve a supported v3 linear problem matrix-free and write stateVector.npy.")
@@ -433,4 +447,10 @@ def main(argv: list[str] | None = None) -> int:
     p_pp.set_defaults(func=_cmd_postprocess_upstream)
 
     args = parser.parse_args(argv)
+    if args.fortran_stdout is True:
+        os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "1"
+    elif args.fortran_stdout is False:
+        os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
+    else:
+        os.environ.setdefault("SFINCS_JAX_FORTRAN_STDOUT", "1" if not getattr(args, "quiet", False) else "0")
     return int(args.func(args))

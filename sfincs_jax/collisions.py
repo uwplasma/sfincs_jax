@@ -670,6 +670,7 @@ def make_fokker_planck_v3_operator(
     n_xi: int,
     nl: int,
     n_xi_for_x: np.ndarray,
+    strict_parity: bool = False,
 ) -> FokkerPlanckV3Operator:
     """Construct the collisionOperator=0 (no-Phi1) v3 collision operator."""
     x = np.asarray(x, dtype=np.float64)
@@ -707,6 +708,8 @@ def make_fokker_planck_v3_operator(
     nu_d_hat = np.zeros((n_species, n_x), dtype=np.float64)
     cecd = np.zeros((n_species, n_species, n_x, n_x), dtype=np.float64)
 
+    strict_fp = bool(strict_parity)
+
     for ia in range(n_species):
         t32m = float(t_hats[ia]) * math.sqrt(float(t_hats[ia]) * float(m_hats[ia]))
         for ib in range(n_species):
@@ -719,9 +722,14 @@ def make_fokker_planck_v3_operator(
             psi = (erfs - (2.0 / sqrt_pi) * xb * expxb2) / (2.0 * xb * xb)
 
             # nuDHat: uses base x-grid x^3 in the denominator (matching Fortran).
-            nu_d_hat[ia, :] += (3.0 * sqrt_pi / 4.0) / t32m * float(z_s[ia] ** 2) * float(
+            nu_factor = (3.0 * sqrt_pi / 4.0) / t32m * float(z_s[ia] ** 2) * float(
                 z_s[ib] ** 2
-            ) * float(n_hats[ib]) * (erfs - psi) / x3
+            ) * float(n_hats[ib])
+            if strict_fp:
+                for ix in range(n_x):
+                    nu_d_hat[ia, ix] += nu_factor * (erfs[ix] - psi[ix]) / x3[ix]
+            else:
+                nu_d_hat[ia, :] += nu_factor * (erfs - psi) / x3
 
             # Interpolate species-B f(x_b) onto the species-A x grid.
             if ia == ib:
@@ -740,7 +748,12 @@ def make_fokker_planck_v3_operator(
                 * float(z_s[ib] ** 2)
                 / t32m
             )
-            cecd[ia, ib, :, :] += (species_factor_cd * expx2)[:, None] * f_to_f
+            if strict_fp:
+                for ix in range(n_x):
+                    for jx in range(n_x):
+                        cecd[ia, ib, ix, jx] += species_factor_cd * expx2[ix] * f_to_f[ix, jx]
+            else:
+                cecd[ia, ib, :, :] += (species_factor_cd * expx2)[:, None] * f_to_f
 
             # CE: energy scattering (diagonal in species indices, but depends on species B).
             species_factor_ce = (
@@ -763,7 +776,12 @@ def make_fokker_planck_v3_operator(
                 )[:, None]
                 * ddx
             )
-            cecd[ia, ia, :, :] += species_factor_ce * (coef_d2 + coef_dx)
+            if strict_fp:
+                for ix in range(n_x):
+                    for jx in range(n_x):
+                        cecd[ia, ia, ix, jx] += species_factor_ce * (coef_d2[ix, jx] + coef_dx[ix, jx])
+            else:
+                cecd[ia, ia, :, :] += species_factor_ce * (coef_d2 + coef_dx)
 
             diag_extra = (
                 species_factor_ce
@@ -773,7 +791,11 @@ def make_fokker_planck_v3_operator(
                 * math.sqrt(float(t_hats[ia] * m_hats[ib] / (t_hats[ib] * m_hats[ia])))
                 * expxb2
             )
-            cecd[ia, ia, range(n_x), range(n_x)] += diag_extra
+            if strict_fp:
+                for ix in range(n_x):
+                    cecd[ia, ia, ix, ix] += diag_extra[ix]
+            else:
+                cecd[ia, ia, range(n_x), range(n_x)] += diag_extra
 
     # Assemble per-L matrices and include the overall (-nu_n) factor to match the PETSc Jacobian entries.
     mat = np.zeros((n_species, n_species, int(n_xi), n_x, n_x), dtype=np.float64)
