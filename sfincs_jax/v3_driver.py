@@ -61,6 +61,167 @@ class V3LinearSolveResult:
         return self.gmres.residual_norm
 
 
+def _gmres_result_is_finite(res: GMRESSolveResult) -> bool:
+    """Return True when GMRES returned finite state and residual."""
+    return bool(jnp.all(jnp.isfinite(res.x)) and jnp.isfinite(res.residual_norm))
+
+
+def _build_rhsmode1_preconditioner_operator(op: V3FullSystemOperator) -> V3FullSystemOperator:
+    """Return a simplified RHSMode=1 operator for block preconditioning.
+
+    The preconditioner retains local x/L couplings and collisions while dropping
+    theta/zeta derivative couplings (streaming, ExB, and magnetic-drift derivatives).
+    """
+    if int(op.rhs_mode) != 1:
+        return op
+
+    fblock = op.fblock
+    def _diag_only(m: jnp.ndarray) -> jnp.ndarray:
+        return jnp.diag(jnp.diag(m))
+
+    coll = replace(
+        fblock.collisionless,
+        ddtheta=_diag_only(fblock.collisionless.ddtheta),
+        ddzeta=_diag_only(fblock.collisionless.ddzeta),
+    )
+    exb_theta = replace(fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta))
+    exb_zeta = replace(fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta))
+    mag_theta = None
+    if fblock.magdrift_theta is not None:
+        mag_theta = replace(
+            fblock.magdrift_theta,
+            ddtheta_plus=_diag_only(fblock.magdrift_theta.ddtheta_plus),
+            ddtheta_minus=_diag_only(fblock.magdrift_theta.ddtheta_minus),
+        )
+    mag_zeta = None
+    if fblock.magdrift_zeta is not None:
+        mag_zeta = replace(
+            fblock.magdrift_zeta,
+            ddzeta_plus=_diag_only(fblock.magdrift_zeta.ddzeta_plus),
+            ddzeta_minus=_diag_only(fblock.magdrift_zeta.ddzeta_minus),
+        )
+    fblock_pc = replace(
+        fblock,
+        collisionless=coll,
+        exb_theta=exb_theta,
+        exb_zeta=exb_zeta,
+        magdrift_theta=mag_theta,
+        magdrift_zeta=mag_zeta,
+    )
+    return replace(op, fblock=fblock_pc)
+
+
+def _build_rhsmode1_block_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a PETSc-like block preconditioner for RHSMode=1 solves.
+
+    Structure:
+    - x/L local block solve per species at each (theta,zeta), using a representative
+      per-species block matrix from a simplified operator.
+    - explicit extra/source-row solve via a dense small block.
+    """
+    op_pc = _build_rhsmode1_preconditioner_operator(op)
+    n_s = int(op.n_species)
+    n_x = int(op.n_x)
+    n_l = int(op.n_xi)
+    n_t = int(op.n_theta)
+    n_z = int(op.n_zeta)
+    total = int(op.total_size)
+
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    local_per_species = int(np.sum(nxi_for_x))
+
+    # Representative local x/L blocks at (theta,zeta)=(0,0), one per species.
+    rep_indices_by_species: list[np.ndarray] = []
+    for s in range(n_s):
+        idx: list[int] = []
+        for ix in range(n_x):
+            max_l = int(nxi_for_x[ix])
+            for il in range(max_l):
+                f_idx = ((((s * n_x + ix) * n_l + il) * n_t + 0) * n_z + 0)
+                idx.append(int(f_idx))
+        rep_indices_by_species.append(np.asarray(idx, dtype=np.int32))
+
+    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+    reg_val = float(reg_env) if reg_env else 1e-10
+    reg = np.float64(reg_val)
+
+    block_inv = np.zeros((n_s, local_per_species, local_per_species), dtype=np.float64)
+    for s in range(n_s):
+        rep_idx = rep_indices_by_species[s]
+        m = int(rep_idx.shape[0])
+        b = np.zeros((m, m), dtype=np.float64)
+        for j, col in enumerate(rep_idx.tolist()):
+            e = jnp.zeros((total,), dtype=jnp.float64).at[col].set(1.0)
+            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
+            b[:, j] = y[rep_idx]
+        b = b + reg * np.eye(m, dtype=np.float64)
+        try:
+            inv = np.linalg.inv(b)
+        except np.linalg.LinAlgError:
+            inv = np.linalg.pinv(b, rcond=1e-12)
+        block_inv[s, :, :] = inv
+
+    # Build per-(s,theta,zeta) gather map for active x/L rows.
+    idx_map = np.zeros((n_s, n_t, n_z, local_per_species), dtype=np.int32)
+    for s in range(n_s):
+        for it in range(n_t):
+            for iz in range(n_z):
+                k = 0
+                for ix in range(n_x):
+                    max_l = int(nxi_for_x[ix])
+                    for il in range(max_l):
+                        idx_map[s, it, iz, k] = int(((((s * n_x + ix) * n_l + il) * n_t + it) * n_z + iz))
+                        k += 1
+
+    idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+    flat_idx_jnp = idx_map_jnp.reshape((-1,))
+    block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+
+    extra_start = int(op.f_size + op.phi1_size)
+    extra_size = int(op.extra_size)
+    extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+    extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+    extra_inv_jnp: jnp.ndarray | None = None
+    if extra_size > 0:
+        ee = np.zeros((extra_size, extra_size), dtype=np.float64)
+        for j, col in enumerate(extra_idx_np.tolist()):
+            e = jnp.zeros((total,), dtype=jnp.float64).at[col].set(1.0)
+            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
+            ee[:, j] = y[extra_idx_np]
+        ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+        try:
+            ee_inv = np.linalg.inv(ee)
+        except np.linalg.LinAlgError:
+            ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+        extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_loc = r_full[flat_idx_jnp].reshape((n_s, n_t, n_z, local_per_species))
+        z_loc = jnp.einsum("sab,stzb->stza", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)))
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra)
+        return z_full
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 def solve_v3_full_system_linear_gmres(
     *,
     nml: Namelist,
@@ -143,6 +304,21 @@ def solve_v3_full_system_linear_gmres(
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
+    rhs1_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECONDITIONER", "").strip().lower()
+    rhs1_precond_enabled = (
+        int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and int(op.extra_size) > 0
+        and rhs1_precond_env in {"1", "true", "yes", "on"}
+    )
+    stage2_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2", "").strip().lower()
+    if stage2_env in {"0", "false", "no", "off"}:
+        stage2_enabled = False
+    elif stage2_env in {"1", "true", "yes", "on"}:
+        stage2_enabled = True
+    else:
+        stage2_enabled = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
+    stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "10.0"))
     if use_active_dof_mode:
         assert active_idx_jnp is not None
         assert full_to_active_jnp is not None
@@ -166,9 +342,17 @@ def solve_v3_full_system_linear_gmres(
                 x0_reduced = x0_arr
             elif x0_arr.shape == (op.total_size,):
                 x0_reduced = reduce_full(x0_arr)
+        preconditioner_reduced = None
+        if rhs1_precond_enabled:
+            if emit is not None:
+                emit(1, "solve_v3_full_system_linear_gmres: building RHSMode=1 block preconditioner (active-DOF)")
+            preconditioner_reduced = _build_rhsmode1_block_preconditioner(
+                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+            )
         res_reduced = gmres_solve(
             matvec=mv_reduced,
             b=rhs_reduced,
+            preconditioner=preconditioner_reduced,
             x0=x0_reduced,
             tol=tol,
             atol=atol,
@@ -176,40 +360,60 @@ def solve_v3_full_system_linear_gmres(
             maxiter=maxiter,
             solve_method=solve_method,
         )
+        if preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
+            if emit is not None:
+                emit(0, "solve_v3_full_system_linear_gmres: preconditioned reduced GMRES returned non-finite result; retrying without preconditioner")
+            res_reduced = gmres_solve(
+                matvec=mv_reduced,
+                b=rhs_reduced,
+                preconditioner=None,
+                x0=x0_reduced,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method=solve_method,
+            )
         target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
-        if float(res_reduced.residual_norm) > target_reduced:
-            # Active-DOF fallback is opt-in to avoid long retries in reduced-suite CI runs.
-            fallback_env = os.environ.get("SFINCS_JAX_LINEAR_GMRES_FALLBACK_ACTIVE", "").strip().lower()
-            if fallback_env in {"1", "true", "yes", "on"}:
-                fallback_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_MAXITER", "2000"))
-                fallback_restart = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_RESTART", "200"))
-                fallback_method = os.environ.get("SFINCS_JAX_LINEAR_GMRES_METHOD", "incremental").strip().lower()
-                if fallback_method not in {"batched", "incremental", "dense"}:
-                    fallback_method = "incremental"
-                if emit is not None:
-                    emit(
-                        0,
-                        "solve_v3_full_system_linear_gmres: retrying reduced GMRES "
-                        f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e}) "
-                        f"with maxiter={fallback_maxiter} restart={fallback_restart} method={fallback_method}",
-                    )
-                res_reduced = gmres_solve(
-                    matvec=mv_reduced,
-                    b=rhs_reduced,
-                    x0=x0_reduced,
-                    tol=tol,
-                    atol=atol,
-                    restart=fallback_restart,
-                    maxiter=fallback_maxiter,
-                    solve_method=fallback_method,
+        if float(res_reduced.residual_norm) > target_reduced and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+            stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
+            stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
+            stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
+            if stage2_method not in {"batched", "incremental", "dense"}:
+                stage2_method = "incremental"
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: stage2 reduced GMRES "
+                    f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e}) "
+                    f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
                 )
+            res2 = gmres_solve(
+                matvec=mv_reduced,
+                b=rhs_reduced,
+                preconditioner=preconditioner_reduced,
+                x0=res_reduced.x,
+                tol=tol,
+                atol=atol,
+                restart=stage2_restart,
+                maxiter=stage2_maxiter,
+                solve_method=stage2_method,
+            )
+            if float(res2.residual_norm) < float(res_reduced.residual_norm):
+                res_reduced = res2
         x_full = expand_reduced(res_reduced.x)
         residual_norm_full = jnp.linalg.norm(mv(x_full) - rhs)
         result = GMRESSolveResult(x=x_full, residual_norm=residual_norm_full)
     else:
+        preconditioner_full = None
+        if rhs1_precond_enabled:
+            if emit is not None:
+                emit(1, "solve_v3_full_system_linear_gmres: building RHSMode=1 block preconditioner")
+            preconditioner_full = _build_rhsmode1_block_preconditioner(op=op)
         result = gmres_solve(
             matvec=mv,
             b=rhs,
+            preconditioner=preconditioner_full,
             x0=x0,
             tol=tol,
             atol=atol,
@@ -217,34 +421,49 @@ def solve_v3_full_system_linear_gmres(
             maxiter=maxiter,
             solve_method=solve_method,
         )
+        if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
+            if emit is not None:
+                emit(0, "solve_v3_full_system_linear_gmres: preconditioned GMRES returned non-finite result; retrying without preconditioner")
+            result = gmres_solve(
+                matvec=mv,
+                b=rhs,
+                preconditioner=None,
+                x0=x0,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method=solve_method,
+            )
         # If GMRES does not reach the requested tolerance (common without preconditioning),
         # retry with a larger iteration budget and the more robust incremental mode.
         target = max(float(atol), float(tol) * float(rhs_norm))
-        if float(result.residual_norm) > target:
-            fallback_env = os.environ.get("SFINCS_JAX_LINEAR_GMRES_FALLBACK", "").strip().lower()
-            if fallback_env not in {"0", "false", "no", "off"}:
-                fallback_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_MAXITER", "2000"))
-                fallback_restart = int(os.environ.get("SFINCS_JAX_LINEAR_GMRES_RESTART", "200"))
-                fallback_method = os.environ.get("SFINCS_JAX_LINEAR_GMRES_METHOD", "incremental").strip().lower()
-                if fallback_method not in {"batched", "incremental", "dense"}:
-                    fallback_method = "incremental"
-                if emit is not None:
-                    emit(
-                        0,
-                        "solve_v3_full_system_linear_gmres: retrying GMRES "
-                        f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
-                        f"with maxiter={fallback_maxiter} restart={fallback_restart} method={fallback_method}",
-                    )
-                result = gmres_solve(
-                    matvec=mv,
-                    b=rhs,
-                    x0=x0,
-                    tol=tol,
-                    atol=atol,
-                    restart=fallback_restart,
-                    maxiter=fallback_maxiter,
-                    solve_method=fallback_method,
+        if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+            stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
+            stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
+            stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
+            if stage2_method not in {"batched", "incremental", "dense"}:
+                stage2_method = "incremental"
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: stage2 GMRES "
+                    f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
+                    f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
                 )
+            res2 = gmres_solve(
+                matvec=mv,
+                b=rhs,
+                preconditioner=preconditioner_full,
+                x0=result.x,
+                tol=tol,
+                atol=atol,
+                restart=stage2_restart,
+                maxiter=stage2_maxiter,
+                solve_method=stage2_method,
+            )
+            if float(res2.residual_norm) < float(result.residual_norm):
+                result = res2
     if int(op.rhs_mode) == 1:
         project_rhs1 = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower() in {
             "1",
@@ -826,7 +1045,11 @@ def solve_v3_transport_matrix_linear_gmres(
         op_matvec: V3FullSystemOperator,
         rhs_vec: jnp.ndarray,
     ) -> jnp.ndarray:
-        if int(rhs_mode) != 2 or int(which_rhs) != 3:
+        apply_projection = (
+            (int(rhs_mode) == 2 and int(which_rhs) == 3)
+            or (int(rhs_mode) == 3 and int(which_rhs) == 2)
+        )
+        if not apply_projection:
             return x_vec
         return _project_constraint_scheme1_nullspace_solution(
             op=op0,

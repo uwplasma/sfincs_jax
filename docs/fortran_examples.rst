@@ -58,7 +58,7 @@ For rapid parity iteration, we also keep a reduced-resolution sweep generated wi
 
 .. code-block:: bash
 
-   python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 8
+   python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 6
 
 This workflow:
 
@@ -89,12 +89,10 @@ Current audited subset:
 For these cases, PETSc-vs-JAX operator deltas are already near roundoff
 (``~1e-10`` to ``~1e-14`` in matrix-action checks), so remaining output mismatches
 are tracked as diagnostics/solver-branch effects rather than missing operator terms.
-Field-wise reduced-suite tolerances for those tiny residual mismatches are stored in:
 
-- ``tests/reduced_inputs/geometryScheme4_2species_noEr.compare_tolerances.json``
-- ``tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.compare_tolerances.json``
-- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_noEr.compare_tolerances.json``
-- ``tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_withEr.compare_tolerances.json``
+Field-wise reduced-suite tolerances are stored in
+``tests/reduced_inputs/*.compare_tolerances.json`` and applied automatically by
+``scripts/run_reduced_upstream_suite.py`` during output comparison.
 
 Promoted reduced-input fixtures
 -------------------------------

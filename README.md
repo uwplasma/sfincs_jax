@@ -194,6 +194,11 @@ The latest reduced-suite status table is written to:
 
 - `docs/_generated/reduced_upstream_suite_status.rst`
 
+Current reduced-suite snapshot (auto-generated) is **35/38 parity_ok**.
+The remaining 3 cases are marked `fortran_diverged` because the upstream
+Fortran run diverges in SNES at reduced resolution, so no direct output
+comparison is possible for those inputs.
+
 For operator-level parity diagnosis against Fortran PETSc matrices:
 
 ```bash

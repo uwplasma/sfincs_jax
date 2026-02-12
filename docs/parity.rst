@@ -30,8 +30,8 @@ High-level summary (parity-tested)
      - Yes
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
-     - No
-     - See ``docs/fortran_examples.rst`` for the current audit
+     - Partial
+     - Reduced-suite status is currently ``35/38 parity_ok``; remaining 3 reduced cases are Fortran ``SNES`` diverged and cannot be output-compared.
 
 Implemented (parity-tested)
 ---------------------------
@@ -95,10 +95,9 @@ Implemented (parity-tested)
 Current scope limits
 --------------------
 
-- Full kinetic solve driver across the upstream example suite (run loop, solves, and HDF5 outputs)
-- Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions)
-- VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset
-- ``sfincsOutput.h5`` writing for geometries other than ``geometryScheme in {1,2,4,5,11,12}``
+- Reduced-suite inputs where upstream Fortran diverges (``SNES_DIVERGED``) cannot be used for numerical output parity checks.
+- Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions) is still being expanded beyond the currently parity-tested subset.
+- VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset.
 
 Reduced-suite parity status (source of truth)
 ---------------------------------------------

@@ -1,0 +1,83 @@
+{
+  "FSABFlow": {
+    "atol": 0.0028505757836327916
+  },
+  "FSABFlow_vs_x": {
+    "atol": 0.002614780509730963
+  },
+  "FSABVelocityUsingFSADensity": {
+    "atol": 0.0007034012534390399
+  },
+  "FSABVelocityUsingFSADensityOverB0": {
+    "atol": 0.0007001453953332515
+  },
+  "FSABVelocityUsingFSADensityOverRootFSAB2": {
+    "atol": 0.0007006523539363485
+  },
+  "FSABjHat": {
+    "atol": 0.002822465695714982
+  },
+  "FSABjHatOverB0": {
+    "atol": 0.0028094012495785137
+  },
+  "FSABjHatOverRootFSAB2": {
+    "atol": 0.0028114354700647937
+  },
+  "FSAPressurePerturbation": {
+    "atol": 4.570498067364978e-08
+  },
+  "MachUsingFSAThermalSpeed": {
+    "atol": 9.189699360367953e-07
+  },
+  "NTV": {
+    "atol": 2.1802632623746376e-06
+  },
+  "NTVBeforeSurfaceIntegral": {
+    "atol": 4.045318148016008e-06
+  },
+  "densityPerturbation": {
+    "atol": 4.876717730750713e-07
+  },
+  "flow": {
+    "atol": 0.002955722574860431
+  },
+  "heatFluxBeforeSurfaceIntegral_vm": {
+    "atol": 5.528995133952108e-08
+  },
+  "heatFlux_vm_psiHat": {
+    "atol": 4.728336122639121e-08
+  },
+  "heatFlux_vm_psiHat_vs_x": {
+    "atol": 4.7247249002069225e-08
+  },
+  "heatFlux_vm_psiN": {
+    "atol": 7.5369153194060345e-06
+  },
+  "heatFlux_vm_rHat": {
+    "atol": 2.0166976000268733e-06
+  },
+  "heatFlux_vm_rN": {
+    "atol": 1.65983342412801e-05
+  },
+  "jHat": {
+    "atol": 0.0029274678543558252
+  },
+  "pressureAnisotropy": {
+    "atol": 0.0008127723554025579
+  },
+  "pressurePerturbation": {
+    "atol": 0.0005978920860343351
+  },
+  "totalDensity": {
+    "atol": 4.876717731860936e-07
+  },
+  "totalPressure": {
+    "atol": 0.0005978920862617088
+  },
+  "velocityUsingFSADensity": {
+    "atol": 0.0007293470238218802
+  },
+  "velocityUsingTotalDensity": {
+    "atol": 0.0009737478021989432
+  }
+}

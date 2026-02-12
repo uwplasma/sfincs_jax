@@ -787,7 +787,7 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
         out["epsilon_antisymm"] = np.asarray(_get_float(geom_params, "epsilon_antisymm", 0.0), dtype=np.float64)
         out["helicity_l"] = np.asarray(helicity_l, dtype=np.int32)
         out["helicity_n"] = np.asarray(helicity_n, dtype=np.int32)
-        out["helicity_antisymm_l"] = np.asarray(_get_int(geom_params, "helicity_antisymm_l", helicity_l), dtype=np.int32)
+        out["helicity_antisymm_l"] = np.asarray(_get_int(geom_params, "helicity_antisymm_l", 1), dtype=np.int32)
         out["helicity_antisymm_n"] = np.asarray(_get_int(geom_params, "helicity_antisymm_n", 0), dtype=np.int32)
 
     # Physics parameters (subset):
@@ -1215,16 +1215,28 @@ def write_sfincs_jax_output_h5(
         # Decide on the linear solver method based on system size.
         solve_method = "batched"
         op0 = full_system_operator_from_namelist(nml=nml)
+        nxi_for_x = np.asarray(op0.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        active_f_size = int(op0.n_species) * int(np.sum(nxi_for_x)) * int(op0.n_theta) * int(op0.n_zeta)
+        active_total_size = active_f_size + int(op0.phi1_size) + int(op0.extra_size)
+        dense_active_cutoff_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF", "").strip()
+        try:
+            dense_active_cutoff = int(dense_active_cutoff_env) if dense_active_cutoff_env else 5000
+        except ValueError:
+            dense_active_cutoff = 5000
         if include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
             # For includePhi1 + linear kinetic equation runs, `incremental` GMRES is
             # more robust than dense-regularized solves on tiny reduced fixtures.
             solve_method = "incremental"
             if emit is not None:
                 emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
-        elif int(op0.total_size) <= 5000:
+        elif active_total_size <= int(dense_active_cutoff):
             solve_method = "dense"
             if emit is not None:
-                emit(1, f"write_sfincs_jax_output_h5: using dense solve (n={int(op0.total_size)})")
+                emit(
+                    1,
+                    "write_sfincs_jax_output_h5: using dense solve "
+                    f"(active_n={active_total_size}, total_n={int(op0.total_size)})",
+                )
 
         # Solve and build a list of per-iteration states `xs` matching v3's diagnostic output layout.
         nonlinear_phi1 = bool(include_phi1 and (include_phi1_in_kinetic or (quasineutrality_option == 1)))

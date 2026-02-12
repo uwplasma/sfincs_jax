@@ -1,0 +1,50 @@
+{
+  "FSABFlow": {
+    "atol": 1.9925886846294816e-05
+  },
+  "FSABFlow_vs_x": {
+    "atol": 1.999674779540328e-05
+  },
+  "FSABVelocityUsingFSADensity": {
+    "atol": 4.916864121184972e-06
+  },
+  "FSABVelocityUsingFSADensityOverB0": {
+    "atol": 4.8941051957740456e-06
+  },
+  "FSABVelocityUsingFSADensityOverRootFSAB2": {
+    "atol": 4.897632429390342e-06
+  },
+  "FSABjHat": {
+    "atol": 1.9925806071796615e-05
+  },
+  "FSABjHatOverB0": {
+    "atol": 1.9833574555150335e-05
+  },
+  "FSABjHatOverRootFSAB2": {
+    "atol": 1.9847868799161006e-05
+  },
+  "NTV": {
+    "atol": 7.393562739821391e-08
+  },
+  "NTVBeforeSurfaceIntegral": {
+    "atol": 7.530321433080189e-08
+  },
+  "flow": {
+    "atol": 2.0531520931399427e-05
+  },
+  "jHat": {
+    "atol": 2.0531441862203792e-05
+  },
+  "pressureAnisotropy": {
+    "atol": 4.70363738713786e-06
+  },
+  "pressurePerturbation": {
+    "atol": 3.225568775633292e-06
+  },
+  "velocityUsingFSADensity": {
+    "atol": 5.066308929713159e-06
+  },
+  "velocityUsingTotalDensity": {
+    "atol": 5.56305673882207e-06
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "FSABFlow": {
+    "atol": 2.463590467402261e-08
+  },
+  "FSABFlow_vs_x": {
+    "atol": 2.187467378468675e-08
+  },
+  "FSABVelocityUsingFSADensity": {
+    "atol": 3.73271282938948e-08
+  },
+  "FSABjHat": {
+    "atol": 2.3300054090985567e-08
+  },
+  "velocityUsingFSADensity": {
+    "atol": 3.0118665658718236e-08
+  },
+  "velocityUsingTotalDensity": {
+    "atol": 3.012077789965595e-08
+  }
+}

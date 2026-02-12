@@ -1,0 +1,65 @@
+{
+  "FSABFlow": {
+    "atol": 1.4207069879146328e-06
+  },
+  "FSABFlow_vs_x": {
+    "atol": 9.490193096997612e-07
+  },
+  "FSABVelocityUsingFSADensity": {
+    "atol": 1.4207069879146328e-06
+  },
+  "FSABVelocityUsingFSADensityOverB0": {
+    "atol": 1.4207069879285106e-06
+  },
+  "FSABVelocityUsingFSADensityOverRootFSAB2": {
+    "atol": 1.431456377876117e-06
+  },
+  "FSABjHat": {
+    "atol": 1.4207069879146328e-06
+  },
+  "FSABjHatOverB0": {
+    "atol": 1.4207069879285106e-06
+  },
+  "FSABjHatOverRootFSAB2": {
+    "atol": 1.431456377876117e-06
+  },
+  "MachUsingFSAThermalSpeed": {
+    "atol": 4.198065342048141e-06
+  },
+  "Phi1Hat": {
+    "atol": 4.776437307853676e-06
+  },
+  "dPhi1Hatdtheta": {
+    "atol": 5.495673747192396e-06
+  },
+  "densityPerturbation": {
+    "atol": 1.910574923007333e-05
+  },
+  "flow": {
+    "atol": 2.968480471224333e-06
+  },
+  "jHat": {
+    "atol": 2.968480471224333e-06
+  },
+  "pressureAnisotropy": {
+    "atol": 0.00015387358515813842
+  },
+  "pressurePerturbation": {
+    "atol": 2.62752003309057e-05
+  },
+  "sources": {
+    "atol": 5.153816599832672e-05
+  },
+  "totalDensity": {
+    "atol": 9.55536999169837e-06
+  },
+  "totalPressure": {
+    "atol": 2.1711350734143764e-05
+  },
+  "velocityUsingFSADensity": {
+    "atol": 2.968480471224333e-06
+  },
+  "velocityUsingTotalDensity": {
+    "atol": 3.267512782539894e-06
+  }
+}

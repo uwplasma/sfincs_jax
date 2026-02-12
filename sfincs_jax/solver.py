@@ -93,6 +93,7 @@ def gmres_solve(
     *,
     matvec,
     b: jnp.ndarray,
+    preconditioner=None,
     x0: jnp.ndarray | None = None,
     tol: float = 1e-10,
     atol: float = 0.0,
@@ -132,10 +133,11 @@ def gmres_solve(
         atol=float(atol),
         restart=int(restart),
         maxiter=maxiter,
+        M=preconditioner,
         solve_method=solve_method,
     )
     r = b - matvec(x)
     return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 
 
-gmres_solve_jit = jax.jit(gmres_solve, static_argnames=("matvec", "restart", "maxiter", "solve_method"))
+gmres_solve_jit = jax.jit(gmres_solve, static_argnames=("matvec", "preconditioner", "restart", "maxiter", "solve_method"))
