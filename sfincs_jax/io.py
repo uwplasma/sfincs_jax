@@ -1292,17 +1292,24 @@ def write_sfincs_jax_output_h5(
                 emit=emit,
             )
             xs = x_hist if x_hist else [result.x]
-            # Ensure includePhi1 parity runs expose at least the expected number of iterations.
+            # Optional override: force a minimum number of recorded nonlinear iterates.
+            # By default we now keep the naturally accepted-iterate history, which aligns
+            # better with upstream SNES output dimensionality across reduced examples.
             if use_frozen_linearization:
                 min_iters_env = os.environ.get("SFINCS_JAX_PHI1_MIN_ITERS", "").strip()
-                min_iters = 4 if include_phi1_in_kinetic else 2
+                # For QN-only runs (includePhi1InKineticEquation=false), upstream v3 SNES
+                # writes at least 2 diagnostic iterations even when convergence is very fast.
+                # For includePhi1-in-kinetic runs, keep the natural accepted history unless
+                # explicitly overridden.
+                min_iters = 0 if include_phi1_in_kinetic else 2
                 if min_iters_env:
                     try:
-                        min_iters = int(min_iters_env)
+                        min_iters = max(0, int(min_iters_env))
                     except ValueError:
-                        min_iters = 4 if include_phi1_in_kinetic else 2
-                while len(xs) < min_iters:
-                    xs.append(xs[-1])
+                        min_iters = 0 if include_phi1_in_kinetic else 2
+                if min_iters > 0:
+                    while len(xs) < min_iters:
+                        xs.append(xs[-1])
         else:
             result = solve_v3_full_system_linear_gmres(
                 nml=nml,

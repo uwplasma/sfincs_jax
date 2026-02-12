@@ -1,0 +1,42 @@
+{
+  "Phi1Hat": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "dPhi1Hatdzeta": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "densityPerturbation": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "flow": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "pressureAnisotropy": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "pressurePerturbation": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "sources": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "velocityUsingFSADensity": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "velocityUsingTotalDensity": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  },
+  "MachUsingFSAThermalSpeed": {
+    "atol": 2.0e-7,
+    "rtol": 0.0
+  }
+}
