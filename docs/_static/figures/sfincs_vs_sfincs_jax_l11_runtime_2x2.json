@@ -6,18 +6,18 @@
       -0.0019465568618703116,
       -0.0019465568618703116
     ],
-    "fortran_mean_runtime_s": 0.02753720839973539,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 0.09170103148790076,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist",
     "jax_l11_runs": [
-      -0.0019465568621810348,
-      -0.0019465568621810348,
-      -0.0019465568621810348,
-      -0.0019465568621810348
+      -0.0019465568621780793,
+      -0.0019465568621780793,
+      -0.0019465568621780793,
+      -0.0019465568621780793
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.21420070828753524,
-    "jax_speedup_vs_fortran": 0.12855797079237685,
-    "max_abs_l11_diff": 3.107232353360967e-13
+    "jax_mean_runtime_s_excluding_compile": 0.12608831247780472,
+    "jax_speedup_vs_fortran": 0.7272762216089049,
+    "max_abs_l11_diff": 3.077677002139012e-13
   },
   "scheme11": {
     "fortran_l11_runs": [
@@ -26,18 +26,18 @@
       -0.0025001970954609846,
       -0.0025001970954609846
     ],
-    "fortran_mean_runtime_s": 3.63934829167556,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 0.2369736977852881,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme11.input.namelist",
     "jax_l11_runs": [
-      -0.0025001970954621954,
-      -0.0025001970954621954,
-      -0.0025001970954621954,
-      -0.0025001970954621954
+      -0.0025001970954618867,
+      -0.0025001970954618867,
+      -0.0025001970954618867,
+      -0.0025001970954618867
     ],
-    "jax_mean_runtime_s_excluding_compile": 1.6270144064619672,
-    "jax_speedup_vs_fortran": 2.2368261013677957,
-    "max_abs_l11_diff": 1.2108369862318114e-15
+    "jax_mean_runtime_s_excluding_compile": 1.5139784372586291,
+    "jax_speedup_vs_fortran": 0.1565238262008394,
+    "max_abs_l11_diff": 9.020562075079397e-16
   },
   "scheme12": {
     "fortran_l11_runs": [
@@ -46,18 +46,18 @@
       -0.04266066199265178,
       -0.04266066199265178
     ],
-    "fortran_mean_runtime_s": 0.008876041742041707,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 0.08061288550379686,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme12.input.namelist",
     "jax_l11_runs": [
-      -0.042660759414399375,
-      -0.042660759414399375,
-      -0.042660759414399375,
-      -0.042660759414399375
+      -0.04266070906951823,
+      -0.04266070906951823,
+      -0.04266070906951823,
+      -0.04266070906951823
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.2118119477527216,
-    "jax_speedup_vs_fortran": 0.04190529304987073,
-    "max_abs_l11_diff": 9.74217475926964e-08
+    "jax_mean_runtime_s_excluding_compile": 0.14228778122924268,
+    "jax_speedup_vs_fortran": 0.5665481941412793,
+    "max_abs_l11_diff": 4.707686644678244e-08
   },
   "scheme5_filtered": {
     "fortran_l11_runs": [
@@ -66,17 +66,17 @@
       -0.002462514103576401,
       -0.002462514103576401
     ],
-    "fortran_mean_runtime_s": 2.962136333459057,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 0.09206213554716669,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme5_filtered.input.namelist",
     "jax_l11_runs": [
-      -0.0024625141035769433,
-      -0.0024625141035769433,
-      -0.0024625141035769433,
-      -0.0024625141035769433
+      -0.0024625141035764533,
+      -0.0024625141035764533,
+      -0.0024625141035764533,
+      -0.0024625141035764533
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.22761129148420878,
-    "jax_speedup_vs_fortran": 13.014013119224202,
-    "max_abs_l11_diff": 5.421010862427522e-16
+    "jax_mean_runtime_s_excluding_compile": 0.22674503101734444,
+    "jax_speedup_vs_fortran": 0.40601611040430946,
+    "max_abs_l11_diff": 5.204170427930421e-17
   }
 }

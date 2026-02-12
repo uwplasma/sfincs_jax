@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from jax import config as _jax_config
@@ -14,6 +15,8 @@ from jax import lax
 
 from .geometry import BoozerGeometry
 from .v3_system import V3FullSystemOperator, with_transport_rhs_settings
+
+_STRICT_SUM_ORDER = os.environ.get("SFINCS_JAX_STRICT_SUM_ORDER", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @jtu.register_pytree_node_class
@@ -98,12 +101,14 @@ def _weighted_sum_x_fortran(w_x: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.n
     n_x = int(values_sxtz.shape[1])
     if w_x.shape[0] != n_x:
         raise ValueError(f"w_x has length {w_x.shape[0]}, expected {n_x}.")
-    acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[2], values_sxtz.shape[3]), dtype=jnp.float64)
+    if _STRICT_SUM_ORDER:
+        acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[2], values_sxtz.shape[3]), dtype=jnp.float64)
 
-    def body(ix: int, acc: jnp.ndarray) -> jnp.ndarray:
-        return acc + w_x[ix] * values_sxtz[:, ix, :, :]
+        def body(ix: int, acc: jnp.ndarray) -> jnp.ndarray:
+            return acc + w_x[ix] * values_sxtz[:, ix, :, :]
 
-    return lax.fori_loop(0, n_x, body, acc0)
+        return lax.fori_loop(0, n_x, body, acc0)
+    return jnp.einsum("x,sxtz->stz", w_x, values_sxtz, precision=lax.Precision.HIGHEST)
 
 
 def _weighted_sum_tz_fortran(w_t: jnp.ndarray, w_z: jnp.ndarray, values_stz: jnp.ndarray) -> jnp.ndarray:
@@ -115,15 +120,17 @@ def _weighted_sum_tz_fortran(w_t: jnp.ndarray, w_z: jnp.ndarray, values_stz: jnp
     n_z = int(values_stz.shape[2])
     if w_t.shape[0] != n_t or w_z.shape[0] != n_z:
         raise ValueError(f"Weight shapes {(w_t.shape[0], w_z.shape[0])} do not match values {values_stz.shape}.")
-    acc0 = jnp.zeros((values_stz.shape[0],), dtype=jnp.float64)
+    if _STRICT_SUM_ORDER:
+        acc0 = jnp.zeros((values_stz.shape[0],), dtype=jnp.float64)
 
-    def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
-        def body_z(iz: int, acc_z: jnp.ndarray) -> jnp.ndarray:
-            return acc_z + (w_t[it] * w_z[iz]) * values_stz[:, it, iz]
+        def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
+            def body_z(iz: int, acc_z: jnp.ndarray) -> jnp.ndarray:
+                return acc_z + (w_t[it] * w_z[iz]) * values_stz[:, it, iz]
 
-        return lax.fori_loop(0, n_z, body_z, acc_t)
+            return lax.fori_loop(0, n_z, body_z, acc_t)
 
-    return lax.fori_loop(0, n_t, body_t, acc0)
+        return lax.fori_loop(0, n_t, body_t, acc0)
+    return jnp.einsum("t,z,stz->s", w_t, w_z, values_stz, precision=lax.Precision.HIGHEST)
 
 
 def _weighted_sum_tz_fortran_sx(w_t: jnp.ndarray, w_z: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.ndarray:
@@ -135,15 +142,17 @@ def _weighted_sum_tz_fortran_sx(w_t: jnp.ndarray, w_z: jnp.ndarray, values_sxtz:
     n_z = int(values_sxtz.shape[3])
     if w_t.shape[0] != n_t or w_z.shape[0] != n_z:
         raise ValueError(f"Weight shapes {(w_t.shape[0], w_z.shape[0])} do not match values {values_sxtz.shape}.")
-    acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[1]), dtype=jnp.float64)
+    if _STRICT_SUM_ORDER:
+        acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[1]), dtype=jnp.float64)
 
-    def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
-        def body_z(iz: int, acc_z: jnp.ndarray) -> jnp.ndarray:
-            return acc_z + (w_t[it] * w_z[iz]) * values_sxtz[:, :, it, iz]
+        def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
+            def body_z(iz: int, acc_z: jnp.ndarray) -> jnp.ndarray:
+                return acc_z + (w_t[it] * w_z[iz]) * values_sxtz[:, :, it, iz]
 
-        return lax.fori_loop(0, n_z, body_z, acc_t)
+            return lax.fori_loop(0, n_z, body_z, acc_t)
 
-    return lax.fori_loop(0, n_t, body_t, acc0)
+        return lax.fori_loop(0, n_t, body_t, acc0)
+    return jnp.einsum("t,z,sxtz->sx", w_t, w_z, values_sxtz, precision=lax.Precision.HIGHEST)
 
 
 def _vprime_hat_from_op(op: V3FullSystemOperator) -> jnp.ndarray:

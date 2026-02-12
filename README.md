@@ -23,14 +23,14 @@ python examples/performance/benchmark_transport_l11_vs_fortran.py \
   --repeats 4
 ```
 
-Current benchmark snapshot (live executable, 4 repeats, JAX runtime excludes compilation):
+Current benchmark snapshot (frozen fixtures, 4 repeats, JAX runtime excludes compilation):
 
 | Case | Fortran mean (s/run) | sfincs_jax mean (s/run) | Max \|ΔL11\| |
 | --- | ---: | ---: | ---: |
-| scheme1 | 0.0856 | 3.4905 | 3.08e-13 |
-| scheme11 | 0.2504 | 5.0020 | 1.10e-15 |
-| scheme12 | 0.1154 | 4.4669 | 7.43e-08 |
-| scheme5_filtered | 0.1501 | 4.7881 | 5.20e-17 |
+| scheme1 | 0.0275 | 0.0948 | 3.11e-13 |
+| scheme11 | 3.6393 | 0.8015 | 1.35e-15 |
+| scheme12 | 0.0089 | 0.1090 | 8.83e-08 |
+| scheme5_filtered | 2.9621 | 0.1191 | 6.57e-16 |
 
 Outputs are written to:
 

@@ -1628,28 +1628,28 @@ def write_sfincs_jax_output_h5(
         sqrt_t = jnp.sqrt(t_hat)
         sqrt_m = jnp.sqrt(m_hat)
 
-        ntv_before_list: list[np.ndarray] = []
-        ntv_list: list[np.ndarray] = []
+        ntv_before_nstz: jnp.ndarray
+        ntv_n_s: jnp.ndarray
         if compute_ntv and int(result.op.n_xi) > 2:
-            for x_full in xs:
-                f_delta = jnp.asarray(x_full[: result.op.f_size], dtype=jnp.float64).reshape(result.op.fblock.f_shape)
-                sum_ntv = jnp.einsum("x,sxtz->stz", w_ntv, f_delta[:, :, 2, :, :])
-                ntv_before_stz = (
-                    (4.0 * jnp.pi * (t_hat * t_hat) * sqrt_t / (m_hat * sqrt_m * vprime_hat))[:, None, None]
-                    * ntv_kernel[None, :, :]
-                    * sum_ntv
-                )
-                ntv_s = jnp.einsum("tz,stz->s", w2d, ntv_before_stz)
-                ntv_before_list.append(np.asarray(ntv_before_stz, dtype=np.float64))
-                ntv_list.append(np.asarray(ntv_s, dtype=np.float64))
+            f_delta_stack = jnp.asarray(x_stack[:, : result.op.f_size], dtype=jnp.float64).reshape(
+                (n_iter, int(result.op.n_species), int(result.op.n_x), int(result.op.n_xi), int(result.op.n_theta), int(result.op.n_zeta))
+            )
+            sum_ntv_nstz = jnp.einsum("x,nsxtz->nstz", w_ntv, f_delta_stack[:, :, :, 2, :, :])
+            ntv_before_nstz = (
+                (4.0 * jnp.pi * (t_hat * t_hat) * sqrt_t / (m_hat * sqrt_m * vprime_hat))[None, :, None, None]
+                * ntv_kernel[None, None, :, :]
+                * sum_ntv_nstz
+            )
+            ntv_n_s = jnp.einsum("tz,nstz->ns", w2d, ntv_before_nstz)
         else:
-            zeros_before = np.zeros((int(result.op.n_species), int(result.op.n_theta), int(result.op.n_zeta)), dtype=np.float64)
-            zeros_s = np.zeros((int(result.op.n_species),), dtype=np.float64)
-            ntv_before_list = [zeros_before for _ in range(n_iter)]
-            ntv_list = [zeros_s for _ in range(n_iter)]
+            ntv_before_nstz = jnp.zeros(
+                (n_iter, int(result.op.n_species), int(result.op.n_theta), int(result.op.n_zeta)),
+                dtype=jnp.float64,
+            )
+            ntv_n_s = jnp.zeros((n_iter, int(result.op.n_species)), dtype=jnp.float64)
 
-        data["NTVBeforeSurfaceIntegral"] = _fortran_h5_layout(_stz_to_ztsN(ntv_before_list))
-        data["NTV"] = _fortran_h5_layout(_s_to_sN(ntv_list))
+        data["NTVBeforeSurfaceIntegral"] = _fortran_h5_layout(np.transpose(np.asarray(ntv_before_nstz, dtype=np.float64), (3, 2, 1, 0)))
+        data["NTV"] = _fortran_h5_layout(np.transpose(np.asarray(ntv_n_s, dtype=np.float64), (1, 0)))
 
         # Phi1 outputs + vE/NTV diagnostics:
         if phi1_list:
@@ -1839,7 +1839,7 @@ def write_sfincs_jax_output_h5(
 
             # Import lazily to keep geometry-only use-cases lightweight.
             from .v3_driver import solve_v3_transport_matrix_linear_gmres
-            from .transport_matrix import v3_rhsmode1_output_fields_vm_only, v3_transport_output_fields_vm_only
+            from .transport_matrix import v3_rhsmode1_output_fields_vm_only_jit, v3_transport_output_fields_vm_only
 
             if emit is not None:
                 emit(0, f"write_sfincs_jax_output_h5: computing transportMatrix for RHSMode={rhs_mode} (solverTolerance={solver_tol:g})")
@@ -1941,7 +1941,7 @@ def write_sfincs_jax_output_h5(
                 from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
 
                 op_rhs = with_transport_rhs_settings(op0, which_rhs=int(which_rhs))
-                d = v3_rhsmode1_output_fields_vm_only(op_rhs, x_full=x_full)
+                d = v3_rhsmode1_output_fields_vm_only_jit(op_rhs, x_full=x_full)
 
                 dens = dens.at[:, :, :, j].set(jnp.transpose(d["densityPerturbation"], (2, 1, 0)))
                 pres = pres.at[:, :, :, j].set(jnp.transpose(d["pressurePerturbation"], (2, 1, 0)))

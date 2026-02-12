@@ -1,0 +1,50 @@
+{
+  "scheme1": {
+    "cold_first_call_s": 2.5148533339379355,
+    "compile_estimate_s": 1.7351476670010015,
+    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist",
+    "warm_first_call_s": 0.779705666936934,
+    "warm_steady_mean_s": 0.06037370833413055,
+    "warm_steady_runs_s": [
+      0.0603279999922961,
+      0.060947249992750585,
+      0.05984587501734495
+    ]
+  },
+  "scheme11": {
+    "cold_first_call_s": 2.9553069999674335,
+    "compile_estimate_s": 1.5066870419541374,
+    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme11.input.namelist",
+    "warm_first_call_s": 1.4486199580132961,
+    "warm_steady_mean_s": 0.7720459859507779,
+    "warm_steady_runs_s": [
+      0.7715139579959214,
+      0.7692207079380751,
+      0.7754032919183373
+    ]
+  },
+  "scheme12": {
+    "cold_first_call_s": 2.2830259159673005,
+    "compile_estimate_s": 1.5432932080002502,
+    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme12.input.namelist",
+    "warm_first_call_s": 0.7397327079670504,
+    "warm_steady_mean_s": 0.07183091703336686,
+    "warm_steady_runs_s": [
+      0.07124716707039624,
+      0.07282866700552404,
+      0.0714169170241803
+    ]
+  },
+  "scheme5_filtered": {
+    "cold_first_call_s": 2.4019227089593187,
+    "compile_estimate_s": 1.624476667959243,
+    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme5_filtered.input.namelist",
+    "warm_first_call_s": 0.7774460410000756,
+    "warm_steady_mean_s": 0.09874529166457553,
+    "warm_steady_runs_s": [
+      0.09906795795541257,
+      0.09999116708058864,
+      0.0971767499577254
+    ]
+  }
+}

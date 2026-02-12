@@ -49,6 +49,14 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Vectorized RHSMode=1 diagnostics**: vm-only moment/flux accumulation and output shaping are
   stacked/batched in JAX for non-``Phi1`` runs, reducing Python-loop overhead during
   ``write_sfincs_jax_output_h5(..., compute_solution=True)``.
+- **Fast weighted reductions in diagnostics**: transport/rhsmode1 weighted sums now use
+  fused ``einsum`` kernels by default (with an opt-in strict-order fallback), reducing
+  diagnostic accumulation overhead in both RHSMode=1 and RHSMode=2/3 paths.
+- **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
+  surfaces keyed by file path + stat metadata, removing repeated header/surface parse work
+  within repeated runs and benchmark loops.
+- **Vectorized NTV accumulation across nonlinear iterates**: RHSMode=1 output writing now
+  computes NTV from stacked iterates in one batched JAX call instead of Python per-iterate loops.
 - **Auto active-DOF reduction for RHSMode=1 (no Phi1)**: when ``Nxi_for_x`` truncates
   the pitch basis, the linear solve now reduces to active unknowns by default, cutting
   both matrix-free solve cost and JIT work on upstream-style reduced cases.
@@ -171,6 +179,9 @@ opt-in environment variables:
   override dense solve regularization strength for singular/near-singular systems.
 - ``SFINCS_JAX_DENSE_SINGULAR_MODE``:
   choose singular branch handling in dense solves (default regularized mode; ``lstsq`` for minimum-norm).
+- ``SFINCS_JAX_STRICT_SUM_ORDER``:
+  force explicit loop-order weighted sums in diagnostics (debug/parity mode); by default
+  fast fused ``einsum`` reductions are used.
 
 
 Reference benchmark figure (README/index)
@@ -186,7 +197,7 @@ comparison figure used in ``README.md`` and the docs index:
 By default this uses frozen Fortran fixtures from ``tests/ref`` (no local Fortran runtime required).
 If a local Fortran executable is available, pass ``--fortran-exe /path/to/sfincs`` for live runs.
 
-Latest live-run snapshot (4 repeats, compile excluded for JAX):
+Latest frozen-fixture snapshot (4 repeats, compile excluded for JAX):
 
 .. list-table::
    :header-rows: 1
@@ -197,21 +208,21 @@ Latest live-run snapshot (4 repeats, compile excluded for JAX):
      - sfincs_jax mean (s/run)
      - max abs(ΔL11)
    * - ``scheme1``
-     - 0.0856
-     - 3.4905
-     - 3.08e-13
+     - 0.0275
+     - 0.0948
+     - 3.11e-13
    * - ``scheme11``
-     - 0.2504
-     - 5.0020
-     - 1.10e-15
+     - 3.6393
+     - 0.8015
+     - 1.35e-15
    * - ``scheme12``
-     - 0.1154
-     - 4.4669
-     - 7.43e-08
+     - 0.0089
+     - 0.1090
+     - 8.83e-08
    * - ``scheme5_filtered``
-     - 0.1501
-     - 4.7881
-     - 5.20e-17
+     - 2.9621
+     - 0.1191
+     - 6.57e-16
 
 Persistent-cache compile/runtime split
 --------------------------------------
@@ -239,17 +250,17 @@ Latest snapshot (3 repeats):
      - Compile estimate (s)
      - Warm steady solve (s/run)
    * - ``scheme1``
-     - 1.8789
-     - 0.3344
+     - 1.6720
+     - 0.0612
    * - ``scheme11``
-     - 1.6594
-     - 0.8750
+     - 1.5451
+     - 0.0676
    * - ``scheme12``
-     - 1.7134
-     - 0.3454
+     - 1.4497
+     - 0.0718
    * - ``scheme5_filtered``
-     - 1.6797
-     - 0.3801
+     - 1.5458
+     - 0.0816
 
 
 Connection to MONKES / adjoint methods

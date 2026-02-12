@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import IO, Iterable, Iterator, List, Tuple
 
@@ -47,6 +48,12 @@ def _parse_header(first_non_cc_line: str) -> Tuple[List[int], List[float]]:
 
 def read_boozer_bc_header(*, path: str | Path, geometry_scheme: int) -> BoozerBCHeader:
     """Read the header of a SFINCS v3 `.bc` file (geometryScheme 11/12)."""
+    header, _surfaces = _read_boozer_bc_all_surfaces(path=path, geometry_scheme=geometry_scheme)
+    return header
+
+
+def _read_boozer_bc_header_uncached(*, path: str | Path, geometry_scheme: int) -> BoozerBCHeader:
+    """Uncached header reader used by the file-level cache parser."""
     if geometry_scheme not in {11, 12}:
         raise ValueError(f"geometry_scheme must be 11 or 12, got {geometry_scheme}")
 
@@ -84,6 +91,56 @@ def read_boozer_bc_header(*, path: str | Path, geometry_scheme: int) -> BoozerBC
         psi_a_hat = psi_a_hat * (-1.0)
 
     return BoozerBCHeader(n_periods=n_periods, psi_a_hat=psi_a_hat, a_hat=a_hat, turkin_sign=turkin_sign)
+
+
+def _bc_cache_key(path: str | Path) -> tuple[str, int, int]:
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    st = p.stat()
+    return str(p), int(st.st_mtime_ns), int(st.st_size)
+
+
+@lru_cache(maxsize=64)
+def _read_boozer_bc_all_surfaces_cached(
+    path_resolved: str,
+    mtime_ns: int,
+    file_size: int,
+    geometry_scheme: int,
+) -> tuple[BoozerBCHeader, tuple[BoozerBCSurface, ...]]:
+    # mtime/file_size are part of the cache key to invalidate stale parses when files change.
+    del mtime_ns, file_size
+    p = Path(path_resolved)
+    header = _read_boozer_bc_header_uncached(path=p, geometry_scheme=geometry_scheme)
+
+    with p.open("r") as f:
+        # Skip CC lines and the (possibly multi-line) header section.
+        while True:
+            line = f.readline()
+            if not line:
+                raise ValueError(f"Unexpected EOF while reading {str(p)!r}")
+            if line.startswith("CC"):
+                continue
+            try:
+                _ = _parse_header(line)
+            except Exception:  # noqa: BLE001
+                continue
+            else:
+                break
+        surfaces = tuple(
+            _iter_surfaces(
+                fh=f,
+                geometry_scheme=geometry_scheme,
+                n_periods=header.n_periods,
+                psi_a_hat=header.psi_a_hat,
+            )
+        )
+    return header, surfaces
+
+
+def _read_boozer_bc_all_surfaces(*, path: str | Path, geometry_scheme: int) -> tuple[BoozerBCHeader, tuple[BoozerBCSurface, ...]]:
+    path_resolved, mtime_ns, file_size = _bc_cache_key(path)
+    return _read_boozer_bc_all_surfaces_cached(path_resolved, mtime_ns, file_size, int(geometry_scheme))
 
 
 def _try_parse_floats(tokens: List[str], n: int) -> List[float] | None:
@@ -260,39 +317,23 @@ def read_boozer_bc_bracketing_surfaces(
     r_n_wish: float,
 ) -> Tuple[BoozerBCHeader, BoozerBCSurface, BoozerBCSurface]:
     """Read and return (header, surface_old, surface_new) bracketing `rN_wish`."""
-    header = read_boozer_bc_header(path=path, geometry_scheme=geometry_scheme)
-
+    header, surfaces = _read_boozer_bc_all_surfaces(path=path, geometry_scheme=geometry_scheme)
     p = Path(path).expanduser()
-    with p.open("r") as f:
-        # Skip CC lines and the (possibly multi-line) header section.
-        while True:
-            line = f.readline()
-            if not line:
-                raise ValueError(f"Unexpected EOF while reading {str(p)!r}")
-            if line.startswith("CC"):
-                continue
-            try:
-                _ = _parse_header(line)
-            except Exception:  # noqa: BLE001
-                continue
-            else:
-                break
 
-        old: BoozerBCSurface | None = None
-        new: BoozerBCSurface | None = None
-
-        for s in _iter_surfaces(fh=f, geometry_scheme=geometry_scheme, n_periods=header.n_periods, psi_a_hat=header.psi_a_hat):
-            if new is None:
-                new = s
-            if new.r_n < float(r_n_wish):
-                old = new
-                new = None
-                continue
-            # new.r_n >= r_n_wish: bracket found if old exists, else use new for both.
-            if old is None:
-                old = s
+    old: BoozerBCSurface | None = None
+    new: BoozerBCSurface | None = None
+    for s in surfaces:
+        if new is None:
             new = s
-            break
+        if new.r_n < float(r_n_wish):
+            old = new
+            new = None
+            continue
+        # new.r_n >= r_n_wish: bracket found if old exists, else use new for both.
+        if old is None:
+            old = s
+        new = s
+        break
 
     if old is None or new is None:
         raise ValueError(f"Failed to locate surfaces bracketing rN_wish={r_n_wish} in {str(p)!r}")
