@@ -200,9 +200,10 @@ And machine-readable reports are written to:
 - `tests/reduced_upstream_examples/suite_report.json` (practical)
 - `tests/reduced_upstream_examples/suite_report_strict.json` (strict)
 
-Current reduced-suite snapshot (auto-generated practical report) is **35/38 parity_ok**.
-The remaining 3 cases are currently `max_attempts` in the 30s policy because the
-JAX includePhi1/QN solve path times out for those reduced seeds before comparison.
+Current reduced-suite snapshot (auto-generated practical report) is **38/38 parity_ok**.
+Strict mode (no per-case tolerance overrides) still reports a residual subset of
+solver-branch-sensitive mismatches; see
+`docs/_generated/reduced_upstream_suite_status_strict.rst`.
 
 For operator-level parity diagnosis against Fortran PETSc matrices:
 

@@ -1214,7 +1214,7 @@ def write_sfincs_jax_output_h5(
         include_phi1_in_kinetic = bool(nml.group("physicsParameters").get("INCLUDEPHI1INKINETICEQUATION", False))
         quasineutrality_option = int(nml.group("physicsParameters").get("QUASINEUTRALITYOPTION", 1))
 
-        # Decide on the linear solver method based on system size.
+        # Decide on the linear solver method.
         solve_method = "batched"
         op0 = full_system_operator_from_namelist(nml=nml)
         nxi_for_x = np.asarray(op0.fblock.collisionless.n_xi_for_x, dtype=np.int32)
@@ -1225,12 +1225,25 @@ def write_sfincs_jax_output_h5(
             dense_active_cutoff = int(dense_active_cutoff_env) if dense_active_cutoff_env else 5000
         except ValueError:
             dense_active_cutoff = 5000
-        if include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
+        solve_method_env = os.environ.get("SFINCS_JAX_RHSMODE1_SOLVE_METHOD", "").strip().lower()
+        if solve_method_env in {"dense", "incremental", "batched"}:
+            solve_method = solve_method_env
+            if emit is not None:
+                emit(1, f"write_sfincs_jax_output_h5: solve method forced by env -> {solve_method}")
+        elif include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
             # For includePhi1 + linear kinetic equation runs, `incremental` GMRES is
             # more robust than dense-regularized solves on tiny reduced fixtures.
             solve_method = "incremental"
             if emit is not None:
                 emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
+        elif os.environ.get("SFINCS_JAX_RHSMODE1_FORCE_KRYLOV", "").strip().lower() in {"1", "true", "yes", "on"}:
+            solve_method = "incremental"
+            if emit is not None:
+                emit(
+                    1,
+                    "write_sfincs_jax_output_h5: forced Krylov mode for RHSMode=1 "
+                    "(SFINCS_JAX_RHSMODE1_FORCE_KRYLOV=1)",
+                )
         elif active_total_size <= int(dense_active_cutoff):
             solve_method = "dense"
             if emit is not None:

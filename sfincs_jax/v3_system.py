@@ -640,6 +640,128 @@ def apply_v3_full_system_jacobian(
 
         y_f = y[: op.f_size].reshape(op.fblock.f_shape)
         y_f = y_f + term_state
+
+        # Add Jacobian-only diagonal d(kinetic)/dPhi1 terms from populateMatrix.F90 factorJ1..J5.
+        # These are present in whichMatrix=1/0 but not in whichMatrix=3.
+        phi1_base = op.phi1_hat_base
+        phi1_perturb = phi1  # (T,Z)
+
+        x = op.x
+        x2 = x * x
+        expx2 = jnp.exp(-x2)
+        x2_expx2 = x2 * expx2
+        sqrt_pi = jnp.sqrt(jnp.pi)
+        norm = jnp.pi * sqrt_pi
+        two_pi = jnp.asarray(2.0 * jnp.pi, dtype=jnp.float64)
+
+        z = op.z_s
+        n_hat = op.n_hat
+        m_hat = op.m_hat
+        t_hat = op.t_hat
+        dn = op.dn_hat_dpsi_hat
+        dt = op.dt_hat_dpsi_hat
+
+        dphi_hat_dpsi_hat_to_use = jnp.where(
+            (op.rhs_mode == 1) | (op.rhs_mode > 3),
+            op.dphi_hat_dpsi_hat,
+            jnp.asarray(0.0, dtype=jnp.float64),
+        )
+
+        x_part = x2_expx2[None, :] * (
+            dn[:, None] / n_hat[:, None]
+            + (op.alpha * z / t_hat)[:, None] * dphi_hat_dpsi_hat_to_use
+            + (x2[None, :] - 1.5) * (dt / t_hat)[:, None]
+        )  # (S,X)
+        x_part2 = x2_expx2[None, :] * (dt / (t_hat * t_hat))[:, None]  # (S,X)
+
+        exp_phi = jnp.exp(
+            -(z[:, None, None] * op.alpha / t_hat[:, None, None]) * phi1_base[None, :, :]
+        )  # (S,T,Z)
+        geom_b = (
+            (-op.b_hat_sub_zeta * op.db_hat_dtheta + op.b_hat_sub_theta * op.db_hat_dzeta)
+            * op.d_hat
+            / (op.b_hat * op.b_hat * op.b_hat)
+        )  # (T,Z)
+
+        pref_common = op.delta * n_hat * m_hat * jnp.sqrt(m_hat) / (two_pi * sqrt_pi * jnp.sqrt(t_hat))  # (S,)
+        factor_j3 = (
+            (pref_common / z)[:, None, None, None]
+            * geom_b[None, None, :, :]
+            * (
+                x_part[:, :, None, None]
+                + x_part2[:, :, None, None] * (z * op.alpha)[:, None, None, None] * phi1_base[None, None, :, :]
+            )
+            * exp_phi[:, None, :, :]
+        )  # (S,X,T,Z)
+        factor_j5 = (
+            pref_common[:, None, None, None]
+            * geom_b[None, None, :, :]
+            * x_part2[:, :, None, None]
+            * op.alpha
+            * exp_phi[:, None, :, :]
+        )  # (S,X,T,Z)
+
+        ddtheta = op.fblock.collisionless.ddtheta
+        ddzeta = op.fblock.collisionless.ddzeta
+        dphi1_base_dtheta = ddtheta @ phi1_base
+        dphi1_base_dzeta = phi1_base @ ddzeta.T
+        geom_phi = (
+            -op.b_hat_sub_zeta * dphi1_base_dtheta + op.b_hat_sub_theta * dphi1_base_dzeta
+        )  # (T,Z)
+
+        sp_pref1 = n_hat * (m_hat * jnp.sqrt(m_hat)) / (t_hat * jnp.sqrt(t_hat) * norm)  # (S,)
+        bracket_no_phi = (dn / n_hat)[:, None] + (x2[None, :] - 1.5) * (dt / t_hat)[:, None]  # (S,X)
+        factor_j1 = (
+            (op.alpha * op.delta * op.d_hat / (2.0 * op.b_hat * op.b_hat))[None, None, :, :]
+            * geom_phi[None, None, :, :]
+            * sp_pref1[:, None, None, None]
+            * expx2[None, :, None, None]
+            * bracket_no_phi[:, :, None, None]
+            * exp_phi[:, None, :, :]
+        )  # (S,X,T,Z)
+
+        sp_pref2 = z * n_hat * (m_hat * jnp.sqrt(m_hat)) / (t_hat * t_hat * jnp.sqrt(t_hat))  # (S,)
+        phi_term = dphi_hat_dpsi_hat_to_use + phi1_base[None, :, :] * (dt / t_hat)[:, None, None]  # (S,T,Z)
+        factor_j2_pref = (op.alpha * op.alpha * op.delta * op.d_hat) / (2.0 * norm * (op.b_hat * op.b_hat))  # (T,Z)
+        factor_j2 = (
+            factor_j2_pref[None, None, :, :]
+            * geom_phi[None, None, :, :]
+            * sp_pref2[:, None, None, None]
+            * expx2[None, :, None, None]
+            * exp_phi[:, None, :, :]
+            * phi_term[:, None, :, :]
+        )  # (S,X,T,Z)
+        factor_j4 = (
+            factor_j2_pref[None, None, :, :]
+            * geom_phi[None, None, :, :]
+            * sp_pref2[:, None, None, None]
+            * expx2[None, :, None, None]
+            * exp_phi[:, None, :, :]
+            * (dt / t_hat)[:, None, None, None]
+        )  # (S,X,T,Z)
+
+        j35 = (-(z * op.alpha / t_hat)[:, None, None, None] * factor_j3 + factor_j5)  # (S,X,T,Z)
+        coeff_l0_diag = (
+            -(z * op.alpha / t_hat)[:, None, None, None] * (factor_j1 + factor_j2)
+            + factor_j4
+            + (4.0 / 3.0) * j35
+        )
+        coeff_l2_diag = (2.0 / 3.0) * j35
+
+        ix0 = _ix_min(bool(op.point_at_x0))
+        mask_x = (jnp.arange(op.n_x) >= ix0).astype(jnp.float64)  # (X,)
+        nxi_for_x = op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)
+        mask_l0 = (nxi_for_x > 0).astype(jnp.float64) * mask_x
+        mask_l2 = (nxi_for_x > 2).astype(jnp.float64) * mask_x
+
+        y_f = y_f.at[:, :, 0, :, :].add(
+            coeff_l0_diag * phi1_perturb[None, None, :, :] * mask_l0[None, :, None, None]
+        )
+        if op.n_xi > 2:
+            y_f = y_f.at[:, :, 2, :, :].add(
+                coeff_l2_diag * phi1_perturb[None, None, :, :] * mask_l2[None, :, None, None]
+            )
+
         y = jnp.concatenate([y_f.reshape((-1,)), y[op.f_size :]], axis=0)
 
     return y

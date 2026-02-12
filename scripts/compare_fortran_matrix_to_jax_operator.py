@@ -44,8 +44,21 @@ def main() -> int:
 
     phi1_hat_base = None
     if bool(op0.include_phi1) and args.fortran_state is not None:
-        x_ref = read_petsc_vec(args.fortran_state).values
-        phi1_flat = x_ref[op0.f_size : op0.f_size + op0.n_theta * op0.n_zeta]
+        x_ref_raw = read_petsc_vec(args.fortran_state).values
+        x_ref = np.asarray(x_ref_raw, dtype=np.float64)
+        if x_ref.shape == (int(op0.total_size),):
+            x_ref_full = x_ref
+        else:
+            active_idx = np.asarray(_transport_active_dof_indices(op0), dtype=np.int32)
+            if x_ref.shape == (int(active_idx.shape[0]),):
+                x_ref_full = np.zeros((int(op0.total_size),), dtype=np.float64)
+                x_ref_full[active_idx] = x_ref
+            else:
+                raise ValueError(
+                    "fortran-state size does not match full or active-DOF system: "
+                    f"state={x_ref.shape} full={(int(op0.total_size),)} active={(int(active_idx.shape[0]),)}"
+                )
+        phi1_flat = x_ref_full[op0.f_size : op0.f_size + op0.n_theta * op0.n_zeta]
         phi1_hat_base = jnp.asarray(phi1_flat.reshape((op0.n_theta, op0.n_zeta)), dtype=jnp.float64)
 
     op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0, phi1_hat_base=phi1_hat_base)

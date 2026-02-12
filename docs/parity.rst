@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite practical status is ``35/38 parity_ok``; remaining 3 reduced cases currently hit the 30s JAX timeout in includePhi1/QN nonlinear solves (reported as ``max_attempts``).
+     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode (no per-case tolerance overrides) still reports residual solver-branch deltas in a subset of cases.
 
 Implemented (parity-tested)
 ---------------------------
@@ -95,7 +95,11 @@ Implemented (parity-tested)
 Current scope limits
 --------------------
 
-- Reduced-suite inputs where upstream Fortran diverges (``SNES_DIVERGED``) cannot be used for numerical output parity checks.
+- Strict parity (``docs/_generated/reduced_upstream_suite_status_strict.rst``) still has a residual set dominated by
+  solver-branch-sensitive diagnostics (HSX/full-trajectory families, transport-matrix moment families, and
+  ``monoenergetic_geometryScheme1``/``tokamak_1species_FPCollisions_noEr`` normalization-sensitive branches).
+- The unconstrained ``constraintScheme=0`` branch remains solver-choice-sensitive (rank-deficient systems can produce
+  different valid states while preserving practical output parity).
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions) is still being expanded beyond the currently parity-tested subset.
 - VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset.
 
