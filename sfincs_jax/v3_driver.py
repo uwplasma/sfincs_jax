@@ -645,6 +645,53 @@ def solve_v3_full_system_newton_krylov_history(
         if x.shape != (op.total_size,):
             raise ValueError(f"x0 must have shape {(op.total_size,)}, got {x.shape}")
 
+    active_env = os.environ.get("SFINCS_JAX_PHI1_ACTIVE_DOF", "").strip().lower()
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    has_reduced_modes = bool(np.any(nxi_for_x < int(op.n_xi)))
+    if active_env in {"1", "true", "yes", "on"}:
+        use_active_dof_mode = True
+    elif active_env in {"0", "false", "no", "off"}:
+        use_active_dof_mode = False
+    else:
+        # Auto mode: for includePhi1 nonlinear RHSMode=1 solves with a truncated pitch grid,
+        # solve only active DOFs to avoid singular dense solves on inactive rows and to better
+        # match Fortran's PETSc solve space.
+        use_active_dof_mode = bool(
+            use_frozen_linearization
+            and int(op.rhs_mode) == 1
+            and bool(op.include_phi1)
+            and has_reduced_modes
+        )
+
+    active_idx_jnp: jnp.ndarray | None = None
+    full_to_active_jnp: jnp.ndarray | None = None
+    active_size = int(op.total_size)
+    if use_active_dof_mode:
+        active_idx_np = _transport_active_dof_indices(op)
+        active_idx_jnp = jnp.asarray(active_idx_np, dtype=jnp.int32)
+        full_to_active_np = np.zeros((int(op.total_size),), dtype=np.int32)
+        full_to_active_np[np.asarray(active_idx_np, dtype=np.int32)] = np.arange(
+            1, int(active_idx_np.shape[0]) + 1, dtype=np.int32
+        )
+        full_to_active_jnp = jnp.asarray(full_to_active_np, dtype=jnp.int32)
+        active_size = int(active_idx_np.shape[0])
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_full_system_newton_krylov_history: active-DOF mode enabled "
+                f"(size={active_size}/{int(op.total_size)})",
+            )
+
+    def _reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
+        assert active_idx_jnp is not None
+        return v_full[active_idx_jnp]
+
+    def _expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+        assert full_to_active_jnp is not None
+        z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
+        padded = jnp.concatenate([z0, v_reduced], axis=0)
+        return padded[full_to_active_jnp]
+
     preconditioner = None
     # Only enable block preconditioning in the PETSc-like parity mode that freezes the
     # Jacobian/linearization. For autodiff-linearized Newton steps, JAX's GMRES can
@@ -655,7 +702,12 @@ def solve_v3_full_system_newton_krylov_history(
     if use_preconditioner and use_frozen_linearization and int(op.rhs_mode) == 1:
         if emit is not None:
             emit(1, "solve_v3_full_system_newton_krylov_history: building RHSMode=1 block preconditioner")
-        preconditioner = _build_rhsmode1_block_preconditioner(op=op)
+        if use_active_dof_mode:
+            preconditioner = _build_rhsmode1_block_preconditioner(
+                op=op, reduce_full=_reduce_full, expand_reduced=_expand_reduced
+            )
+        else:
+            preconditioner = _build_rhsmode1_block_preconditioner(op=op)
 
     last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
     accepted: list[jnp.ndarray] = []
@@ -775,36 +827,74 @@ def solve_v3_full_system_newton_krylov_history(
                 dense_cutoff = int(dense_cutoff_env) if dense_cutoff_env else 5000
             except ValueError:
                 dense_cutoff = 5000
-            if int(op.total_size) <= int(dense_cutoff):
+            linear_size = active_size if use_active_dof_mode else int(op.total_size)
+            if int(linear_size) <= int(dense_cutoff):
                 solve_method_linear = "dense"
 
-        lin = gmres_solve(
-            matvec=matvec,
-            b=-r,
-            preconditioner=preconditioner,
-            tol=float(gmres_tol),
-            restart=int(gmres_restart),
-            maxiter=gmres_maxiter,
-            solve_method=solve_method_linear,
-        )
-        if preconditioner is not None and (not _gmres_result_is_finite(lin)):
-            if emit is not None:
-                emit(
-                    0,
-                    "newton_iter="
-                    f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
-                )
+        if use_active_dof_mode:
+            rhs_reduced = _reduce_full(-r)
+
+            def matvec_reduced(dx_reduced: jnp.ndarray) -> jnp.ndarray:
+                return _reduce_full(matvec(_expand_reduced(dx_reduced)))
+
             lin = gmres_solve(
-                matvec=matvec,
-                b=-r,
-                preconditioner=None,
+                matvec=matvec_reduced,
+                b=rhs_reduced,
+                preconditioner=preconditioner,
                 tol=float(gmres_tol),
                 restart=int(gmres_restart),
                 maxiter=gmres_maxiter,
                 solve_method=solve_method_linear,
             )
+            if preconditioner is not None and (not _gmres_result_is_finite(lin)):
+                if emit is not None:
+                    emit(
+                        0,
+                        "newton_iter="
+                        f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
+                    )
+                lin = gmres_solve(
+                    matvec=matvec_reduced,
+                    b=rhs_reduced,
+                    preconditioner=None,
+                    tol=float(gmres_tol),
+                    restart=int(gmres_restart),
+                    maxiter=gmres_maxiter,
+                    solve_method=solve_method_linear,
+                )
+            s = _expand_reduced(lin.x)
+            linear_resid_norm = jnp.linalg.norm(matvec(s) + r)
+        else:
+            lin = gmres_solve(
+                matvec=matvec,
+                b=-r,
+                preconditioner=preconditioner,
+                tol=float(gmres_tol),
+                restart=int(gmres_restart),
+                maxiter=gmres_maxiter,
+                solve_method=solve_method_linear,
+            )
+            if preconditioner is not None and (not _gmres_result_is_finite(lin)):
+                if emit is not None:
+                    emit(
+                        0,
+                        "newton_iter="
+                        f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
+                    )
+                lin = gmres_solve(
+                    matvec=matvec,
+                    b=-r,
+                    preconditioner=None,
+                    tol=float(gmres_tol),
+                    restart=int(gmres_restart),
+                    maxiter=gmres_maxiter,
+                    solve_method=solve_method_linear,
+                )
+            s = lin.x
+            linear_resid_norm = lin.residual_norm
+
         if emit is not None:
-            emit(1, f"newton_iter={k}: gmres_residual={float(lin.residual_norm):.6e}")
+            emit(1, f"newton_iter={k}: gmres_residual={float(linear_resid_norm):.6e}")
         if not _gmres_result_is_finite(lin):
             x_return = accepted[-1] if accepted else x
             r_return = residual_v3_full_system(op, x_return)
@@ -818,8 +908,7 @@ def solve_v3_full_system_newton_krylov_history(
                 ),
                 accepted,
             )
-        s = lin.x
-        last_linear_resid = lin.residual_norm
+        last_linear_resid = linear_resid_norm
 
         step = 1.0
         step_scale_env = os.environ.get("SFINCS_JAX_PHI1_STEP_SCALE", "").strip()
