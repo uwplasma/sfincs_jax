@@ -1440,17 +1440,6 @@ def write_sfincs_jax_output_h5(
                     "write_sfincs_jax_output_h5: forced Krylov mode for RHSMode=1 "
                     "(SFINCS_JAX_RHSMODE1_FORCE_KRYLOV=1)",
                 )
-        elif (not include_phi1) and active_total_size <= int(dense_active_cutoff):
-            # Dense assembly + PETSc-like KSP on the reduced system is often faster than
-            # matrix-free GMRES for small fixtures, and matches the inexact PETSc branch
-            # needed for strict parity in some multi-species cases (notably HSX).
-            solve_method = "dense_ksp"
-            if emit is not None:
-                emit(
-                    1,
-                    "write_sfincs_jax_output_h5: using dense-KSP solve "
-                    f"(active_n={active_total_size}, total_n={int(op0.total_size)})",
-                )
         elif emit is not None:
             emit(
                 1,

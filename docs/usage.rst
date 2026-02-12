@@ -155,6 +155,16 @@ performance without changing the input file:
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1).
 
+- ``SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE``: control constraintScheme=1 nullspace projection
+  for linear RHSMode=1 solves.
+
+  - Default: enabled when ``constraintScheme=1`` and ``includePhi1=false``.
+  - ``0``/``false``: disable (use raw GMRES solution).
+
+- ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``: enable a dense fallback solve for RHSMode=1
+  when GMRES stagnates. This is only applied when the active system size is below the
+  specified threshold (default: ``2500``). Set to ``0`` to disable.
+
 - ``SFINCS_JAX_FORTRAN_STDOUT``: control strict Fortran-style stdout mirroring.
 
   - ``1``/``true``: emit PETSc-like SNES/KSP iteration lines in addition to the standard v3 text.

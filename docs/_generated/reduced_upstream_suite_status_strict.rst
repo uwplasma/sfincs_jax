@@ -27,13 +27,13 @@
      - Note
    * - HSX_FPCollisions_DKESTrajectories
      - parity_mismatch
-     - none
+     - solver branch mismatch
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.370
-     - 2.909
-     - 28/193
+     - 
+     - 24.974
+     - 31/193
      - S:12 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=28/193
+     - -
+     - Common numeric dataset mismatches present. sample=FSADensityPerturbation,FSAPressurePerturbation,densityPerturbation,heatFluxBeforeSurfaceIntegral_vm buckets=solver:10 physics:0 strict=31/193

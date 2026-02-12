@@ -204,6 +204,8 @@ def _run_jax_cli(
     cache_dir: Path | None = None,
 ) -> float:
     cmd = [
+        "python",
+        "-m",
         "sfincs_jax",
         "-v",
         "write-output",

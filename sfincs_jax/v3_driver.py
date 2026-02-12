@@ -912,6 +912,41 @@ def solve_v3_full_system_linear_gmres(
                 ksp_restart = stage2_restart
                 ksp_maxiter = stage2_maxiter
                 ksp_precond_side = gmres_precond_side
+        dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
+        try:
+            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
+        except ValueError:
+            dense_fallback_max = 2500
+        if (
+            dense_fallback_max > 0
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and int(active_size) <= dense_fallback_max
+            and float(res_reduced.residual_norm) > target_reduced
+        ):
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: dense fallback "
+                    f"(size={active_size} residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
+                )
+            try:
+                res_dense = gmres_solve(
+                    matvec=mv_reduced,
+                    b=rhs_reduced,
+                    preconditioner=None,
+                    tol=tol,
+                    atol=atol,
+                    restart=restart,
+                    maxiter=maxiter,
+                    solve_method="dense",
+                    precondition_side="none",
+                )
+                if float(res_dense.residual_norm) < float(res_reduced.residual_norm):
+                    res_reduced = res_dense
+            except Exception as exc:  # noqa: BLE001
+                if emit is not None:
+                    emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
         x_full = expand_reduced(res_reduced.x)
         residual_norm_full = jnp.linalg.norm(mv(x_full) - rhs)
         result = GMRESSolveResult(x=x_full, residual_norm=residual_norm_full)
@@ -1095,13 +1130,51 @@ def solve_v3_full_system_linear_gmres(
                     ksp_restart = stage2_restart
                     ksp_maxiter = stage2_maxiter
                     ksp_precond_side = gmres_precond_side
+            dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
+            try:
+                dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
+            except ValueError:
+                dense_fallback_max = 2500
+            if (
+                dense_fallback_max > 0
+                and int(op.rhs_mode) == 1
+                and (not bool(op.include_phi1))
+                and int(op.total_size) <= dense_fallback_max
+                and float(result.residual_norm) > target
+            ):
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: dense fallback "
+                        f"(size={int(op.total_size)} residual={float(result.residual_norm):.3e} > target={target:.3e})",
+                    )
+                try:
+                    res_dense = gmres_solve(
+                        matvec=mv,
+                        b=rhs,
+                        preconditioner=None,
+                        tol=tol,
+                        atol=atol,
+                        restart=restart,
+                        maxiter=maxiter,
+                        solve_method="dense",
+                        precondition_side="none",
+                    )
+                    if float(res_dense.residual_norm) < float(result.residual_norm):
+                        result = res_dense
+                except Exception as exc:  # noqa: BLE001
+                    if emit is not None:
+                        emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
     if int(op.rhs_mode) == 1:
-        project_rhs1 = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        project_env = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower()
+        if project_env in {"0", "false", "no", "off"}:
+            project_rhs1 = False
+        elif project_env in {"1", "true", "yes", "on"}:
+            project_rhs1 = True
+        else:
+            # Default parity-first behavior: enforce constraintScheme=1 nullspace projection
+            # for linear RHSMode=1 solves without Phi1.
+            project_rhs1 = bool(int(op.constraint_scheme) == 1 and (not bool(op.include_phi1)))
         if project_rhs1:
             x_projected = _project_constraint_scheme1_nullspace_solution(
                 op=op,

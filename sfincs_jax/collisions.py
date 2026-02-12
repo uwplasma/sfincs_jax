@@ -717,9 +717,24 @@ def make_fokker_planck_v3_operator(
                 math.sqrt((t_hats[ia] * m_hats[ib]) / (t_hats[ib] * m_hats[ia]))
             )
             xb = x * species_factor
-            expxb2 = np.exp(-(xb * xb))
-            erfs = _erf_np(xb)
-            psi = (erfs - (2.0 / sqrt_pi) * xb * expxb2) / (2.0 * xb * xb)
+            if strict_fp:
+                expxb2 = np.empty((n_x,), dtype=np.float64)
+                erfs = np.empty((n_x,), dtype=np.float64)
+                psi = np.empty((n_x,), dtype=np.float64)
+                for ix in range(n_x):
+                    xb_val = float(xb[ix])
+                    exp_val = math.exp(-(xb_val * xb_val))
+                    erf_val = math.erf(xb_val)
+                    expxb2[ix] = exp_val
+                    erfs[ix] = erf_val
+                    if abs(xb_val) < 1e-14:
+                        psi[ix] = (2.0 / sqrt_pi) * xb_val / 3.0
+                    else:
+                        psi[ix] = (erf_val - (2.0 / sqrt_pi) * xb_val * exp_val) / (2.0 * xb_val * xb_val)
+            else:
+                expxb2 = np.exp(-(xb * xb))
+                erfs = _erf_np(xb)
+                psi = (erfs - (2.0 / sqrt_pi) * xb * expxb2) / (2.0 * xb * xb)
 
             # nuDHat: uses base x-grid x^3 in the denominator (matching Fortran).
             nu_factor = (3.0 * sqrt_pi / 4.0) / t32m * float(z_s[ia] ** 2) * float(

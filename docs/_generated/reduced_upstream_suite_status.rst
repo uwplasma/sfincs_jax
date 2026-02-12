@@ -4,7 +4,7 @@
 
 - Comparison mode: **practical**
 - Cases: **1**
-- Status counts: parity_ok=1
+- Status counts: parity_mismatch=1
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: practical mode applies per-case `*.compare_tolerances.json` when present.
@@ -26,14 +26,14 @@
      - Print parity
      - Note
    * - HSX_FPCollisions_DKESTrajectories
-     - parity_ok
-     - none
+     - parity_mismatch
+     - solver branch mismatch
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.370
-     - 2.909
-     - 0/193
-     - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=28/193
+     - 
+     - 24.974
+     - 10/193
+     - S:10 P:0
+     - -
+     - Common numeric dataset mismatches present. sample=FSADensityPerturbation,FSAPressurePerturbation,densityPerturbation,heatFluxBeforeSurfaceIntegral_vm buckets=solver:10 physics:0 strict=31/193
