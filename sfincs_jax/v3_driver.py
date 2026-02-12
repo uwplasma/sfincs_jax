@@ -16,7 +16,12 @@ from jax import tree_util as jtu
 
 from .namelist import Namelist
 from .solver import GMRESSolveResult, assemble_dense_matrix_from_matvec, dense_solve_from_matrix, gmres_solve
-from .transport_matrix import V3TransportDiagnostics, transport_matrix_size_from_rhs_mode, v3_transport_matrix_column
+from .transport_matrix import (
+    V3TransportDiagnostics,
+    transport_matrix_size_from_rhs_mode,
+    v3_transport_diagnostics_vm_only_batch_jit,
+    v3_transport_matrix_column,
+)
 from .v3_system import _source_basis_constraint_scheme_1
 from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
@@ -1241,18 +1246,20 @@ def solve_v3_transport_matrix_linear_gmres(
                 )
             elapsed_s.append(jnp.asarray(t_rhs.elapsed_s(), dtype=jnp.float64))
 
-    from .transport_matrix import v3_transport_diagnostics_vm_only
+    if emit is not None:
+        emit(0, "solve_v3_transport_matrix_linear_gmres: computing whichRHS diagnostics (batched)")
+    x_stack = jnp.stack([state_vectors[which_rhs] for which_rhs in which_rhs_values], axis=0)  # (N,total)
+    diag_op_stack = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *diag_op_by_index)
+    diag_stack = v3_transport_diagnostics_vm_only_batch_jit(op_stack=diag_op_stack, x_full_stack=x_stack)
 
-    for idx, which_rhs in enumerate(which_rhs_values):
-        diag_op = diag_op_by_index[idx]
-        if emit is not None:
-            emit(1, f"whichRHS={which_rhs}/{n}: Computing diagnostics")
-        x_full = state_vectors[which_rhs]
-        diag = v3_transport_diagnostics_vm_only(diag_op, x_full=x_full)
-        diag_by_rhs.append(diag)
-        diag_fsab_flow.append(diag.fsab_flow)
-        diag_pf.append(diag.particle_flux_vm_psi_hat)
-        diag_hf.append(diag.heat_flux_vm_psi_hat)
+    diag_pf_arr = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
+    diag_hf_arr = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
+    diag_flow_arr = jnp.transpose(diag_stack.fsab_flow, (1, 0))  # (S,N)
+
+    diag_pf = [diag_pf_arr[:, i] for i in range(n)]
+    diag_hf = [diag_hf_arr[:, i] for i in range(n)]
+    diag_fsab_flow = [diag_flow_arr[:, i] for i in range(n)]
+    diag_by_rhs = [jtu.tree_map(lambda a, i=i: a[i], diag_stack) for i in range(n)]
 
     tm_cols = [
         v3_transport_matrix_column(op=op_rhs_by_index[i], geom=geom, which_rhs=int(which_rhs_values[i]), diag=diag_by_rhs[i])

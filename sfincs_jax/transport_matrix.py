@@ -6,7 +6,9 @@ from jax import config as _jax_config
 
 _jax_config.update("jax_enable_x64", True)
 
+import jax
 import jax.numpy as jnp
+from jax import tree_util as jtu
 from jax import vmap
 from jax import lax
 
@@ -14,6 +16,7 @@ from .geometry import BoozerGeometry
 from .v3_system import V3FullSystemOperator, with_transport_rhs_settings
 
 
+@jtu.register_pytree_node_class
 @dataclass(frozen=True)
 class V3TransportDiagnostics:
     """Subset of v3 diagnostics needed for RHSMode=2/3 transport matrices.
@@ -33,6 +36,59 @@ class V3TransportDiagnostics:
     particle_flux_vm_psi_hat_vs_x: jnp.ndarray  # (X,S) contributions that sum to particle_flux_vm_psi_hat
     heat_flux_vm_psi_hat_vs_x: jnp.ndarray  # (X,S)
     fsab_flow_vs_x: jnp.ndarray  # (X,S) contributions that sum to fsab_flow
+
+    def tree_flatten(self):
+        children = (
+            self.vprime_hat,
+            self.particle_flux_vm_psi_hat,
+            self.heat_flux_vm_psi_hat,
+            self.fsab_flow,
+            self.particle_flux_before_surface_integral_vm,
+            self.heat_flux_before_surface_integral_vm,
+            self.particle_flux_before_surface_integral_vm0,
+            self.heat_flux_before_surface_integral_vm0,
+            self.particle_flux_vm_psi_hat_vs_x,
+            self.heat_flux_vm_psi_hat_vs_x,
+            self.fsab_flow_vs_x,
+        )
+        aux = None
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        del aux
+        (
+            vprime_hat,
+            particle_flux_vm_psi_hat,
+            heat_flux_vm_psi_hat,
+            fsab_flow,
+            particle_flux_before_surface_integral_vm,
+            heat_flux_before_surface_integral_vm,
+            particle_flux_before_surface_integral_vm0,
+            heat_flux_before_surface_integral_vm0,
+            particle_flux_vm_psi_hat_vs_x,
+            heat_flux_vm_psi_hat_vs_x,
+            fsab_flow_vs_x,
+        ) = children
+        return cls(
+            vprime_hat=vprime_hat,
+            particle_flux_vm_psi_hat=particle_flux_vm_psi_hat,
+            heat_flux_vm_psi_hat=heat_flux_vm_psi_hat,
+            fsab_flow=fsab_flow,
+            particle_flux_before_surface_integral_vm=particle_flux_before_surface_integral_vm,
+            heat_flux_before_surface_integral_vm=heat_flux_before_surface_integral_vm,
+            particle_flux_before_surface_integral_vm0=particle_flux_before_surface_integral_vm0,
+            heat_flux_before_surface_integral_vm0=heat_flux_before_surface_integral_vm0,
+            particle_flux_vm_psi_hat_vs_x=particle_flux_vm_psi_hat_vs_x,
+            heat_flux_vm_psi_hat_vs_x=heat_flux_vm_psi_hat_vs_x,
+            fsab_flow_vs_x=fsab_flow_vs_x,
+        )
+
+
+def _stack_full_system_operators(ops: list[V3FullSystemOperator]) -> V3FullSystemOperator:
+    if not ops:
+        raise ValueError("Expected a non-empty operator list.")
+    return jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *ops)
 
 
 def _weighted_sum_x_fortran(w_x: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.ndarray:
@@ -294,6 +350,25 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
         heat_flux_vm_psi_hat_vs_x=jnp.transpose(hf_vs_x, (1, 0)),  # (X,S)
         fsab_flow_vs_x=jnp.transpose(fsab_flow_vs_x, (1, 0)),  # (X,S)
     )
+
+
+def v3_transport_diagnostics_vm_only_batch(
+    *,
+    op_stack: V3FullSystemOperator,
+    x_full_stack: jnp.ndarray,
+) -> V3TransportDiagnostics:
+    """Vectorized transport diagnostics over the whichRHS axis."""
+    x_full_stack = jnp.asarray(x_full_stack, dtype=jnp.float64)
+    if x_full_stack.ndim != 2:
+        raise ValueError(f"x_full_stack must have shape (N,total_size), got {x_full_stack.shape}")
+
+    def _one(op: V3FullSystemOperator, x_state: jnp.ndarray) -> V3TransportDiagnostics:
+        return v3_transport_diagnostics_vm_only(op, x_full=x_state)
+
+    return vmap(_one, in_axes=(0, 0), out_axes=0)(op_stack, x_full_stack)
+
+
+v3_transport_diagnostics_vm_only_batch_jit = jax.jit(v3_transport_diagnostics_vm_only_batch)
 
 
 def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.ndarray) -> dict[str, jnp.ndarray]:
@@ -587,18 +662,22 @@ def v3_transport_output_fields_vm_only(
         if which_rhs not in state_vectors_by_rhs:
             raise ValueError(f"Missing state vector for which_rhs={which_rhs}.")
 
-    x_stack = jnp.stack([jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values], axis=0)  # (N,total)
+    x_stack = jnp.stack(
+        [jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values],
+        axis=0,
+    )  # (N,total)
     op_rhs_list = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in rhs_values]
-    diag_list = [v3_transport_diagnostics_vm_only(op_rhs, x_full=x_stack[i]) for i, op_rhs in enumerate(op_rhs_list)]
+    op_rhs_stack = _stack_full_system_operators(op_rhs_list)
+    diag_stack = v3_transport_diagnostics_vm_only_batch_jit(op_stack=op_rhs_stack, x_full_stack=x_stack)
 
-    pf_vm_psi_hat = jnp.stack([d.particle_flux_vm_psi_hat for d in diag_list], axis=1)  # (S,N)
-    hf_vm_psi_hat = jnp.stack([d.heat_flux_vm_psi_hat for d in diag_list], axis=1)  # (S,N)
-    flow = jnp.stack([d.fsab_flow for d in diag_list], axis=1)  # (S,N)
+    pf_vm_psi_hat = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
+    hf_vm_psi_hat = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
+    flow = jnp.transpose(diag_stack.fsab_flow, (1, 0))  # (S,N)
 
-    pf_before_vm_stzn = jnp.stack([d.particle_flux_before_surface_integral_vm for d in diag_list], axis=0)  # (N,S,T,Z)
-    hf_before_vm_stzn = jnp.stack([d.heat_flux_before_surface_integral_vm for d in diag_list], axis=0)  # (N,S,T,Z)
-    pf_before_vm0_stzn = jnp.stack([d.particle_flux_before_surface_integral_vm0 for d in diag_list], axis=0)  # (N,S,T,Z)
-    hf_before_vm0_stzn = jnp.stack([d.heat_flux_before_surface_integral_vm0 for d in diag_list], axis=0)  # (N,S,T,Z)
+    pf_before_vm_stzn = diag_stack.particle_flux_before_surface_integral_vm  # (N,S,T,Z)
+    hf_before_vm_stzn = diag_stack.heat_flux_before_surface_integral_vm  # (N,S,T,Z)
+    pf_before_vm0_stzn = diag_stack.particle_flux_before_surface_integral_vm0  # (N,S,T,Z)
+    hf_before_vm0_stzn = diag_stack.heat_flux_before_surface_integral_vm0  # (N,S,T,Z)
 
     # Convert to Python-read order (Z,T,S,N):
     pf_before_vm = jnp.transpose(pf_before_vm_stzn, (3, 2, 1, 0))
@@ -606,13 +685,13 @@ def v3_transport_output_fields_vm_only(
     pf_before_vm0 = jnp.transpose(pf_before_vm0_stzn, (3, 2, 1, 0))
     hf_before_vm0 = jnp.transpose(hf_before_vm0_stzn, (3, 2, 1, 0))
 
-    w2d_stack = jnp.stack([op_rhs.theta_weights[:, None] * op_rhs.zeta_weights[None, :] for op_rhs in op_rhs_list], axis=0)  # (N,T,Z)
+    w2d_stack = op_rhs_stack.theta_weights[:, :, None] * op_rhs_stack.zeta_weights[:, None, :]  # (N,T,Z)
     pf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, pf_before_vm0_stzn)
     hf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, hf_before_vm0_stzn)
 
-    pf_vs_x = jnp.stack([d.particle_flux_vm_psi_hat_vs_x for d in diag_list], axis=2)  # (X,S,N)
-    hf_vs_x = jnp.stack([d.heat_flux_vm_psi_hat_vs_x for d in diag_list], axis=2)  # (X,S,N)
-    flow_vs_x = jnp.stack([d.fsab_flow_vs_x for d in diag_list], axis=2)  # (X,S,N)
+    pf_vs_x = jnp.transpose(diag_stack.particle_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
+    hf_vs_x = jnp.transpose(diag_stack.heat_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
+    flow_vs_x = jnp.transpose(diag_stack.fsab_flow_vs_x, (1, 2, 0))  # (X,S,N)
 
     # vE terms are 0 in the parity-tested RHSMode=2/3 fixtures without Phi1/Er.
     pf_before_ve = jnp.zeros((z, t, s, n), dtype=jnp.float64)
