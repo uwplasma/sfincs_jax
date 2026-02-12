@@ -838,8 +838,8 @@
     "message": "All common numeric datasets matched tolerance. strict=35/203 printParity=8/9 missing=jacobian",
     "attempts": 1,
     "reductions": 0,
-    "fortran_runtime_s": null,
-    "jax_runtime_s": 3.354906624997966,
+    "fortran_runtime_s": 0.1449422079604119,
+    "jax_runtime_s": 3.1481897910125554,
     "print_parity_signals": 8,
     "print_parity_total": 9,
     "print_missing_signals": [
