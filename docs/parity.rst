@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite status is currently ``35/38 parity_ok``; remaining 3 reduced cases are Fortran ``SNES`` diverged and cannot be output-compared.
+     - Reduced-suite practical status is ``35/38 parity_ok``; remaining 3 reduced cases currently hit the 30s JAX timeout in includePhi1/QN nonlinear solves (reported as ``max_attempts``).
 
 Implemented (parity-tested)
 ---------------------------
@@ -106,7 +106,9 @@ The reduced upstream parity inventory is auto-generated and should be treated as
 authoritative status:
 
 - ``docs/_generated/reduced_upstream_suite_status.rst``
+- ``docs/_generated/reduced_upstream_suite_status_strict.rst``
 - ``tests/reduced_upstream_examples/suite_report.json``
+- ``tests/reduced_upstream_examples/suite_report_strict.json``
 
 Regenerate these files:
 

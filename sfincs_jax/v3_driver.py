@@ -659,6 +659,22 @@ def solve_v3_full_system_newton_krylov_history(
             rnorm_initial = max(rnorm_f, 1e-300)
         if emit is not None:
             emit(0, f"newton_iter={k}: residual_norm={rnorm_f:.6e}")
+        if not np.isfinite(rnorm_f):
+            # Keep the latest finite iterate. This mirrors PETSc's behavior of
+            # stopping when the nonlinear residual becomes invalid instead of
+            # continuing with NaN/Inf states.
+            x_return = accepted[-1] if accepted else x
+            r_return = residual_v3_full_system(op, x_return)
+            return (
+                V3NewtonKrylovResult(
+                    op=op,
+                    x=x_return,
+                    residual_norm=jnp.linalg.norm(r_return),
+                    n_newton=k,
+                    last_linear_residual_norm=last_linear_resid,
+                ),
+                accepted,
+            )
 
         converged_abs = rnorm_f < float(tol)
         converged_rel = rnorm_f <= float(nonlinear_rtol) * float(rnorm_initial)
@@ -738,6 +754,19 @@ def solve_v3_full_system_newton_krylov_history(
         )
         if emit is not None:
             emit(1, f"newton_iter={k}: gmres_residual={float(lin.residual_norm):.6e}")
+        if not _gmres_result_is_finite(lin):
+            x_return = accepted[-1] if accepted else x
+            r_return = residual_v3_full_system(op, x_return)
+            return (
+                V3NewtonKrylovResult(
+                    op=op,
+                    x=x_return,
+                    residual_norm=jnp.linalg.norm(r_return),
+                    n_newton=k,
+                    last_linear_residual_norm=last_linear_resid,
+                ),
+                accepted,
+            )
         s = lin.x
         last_linear_resid = lin.residual_norm
 
@@ -787,6 +816,10 @@ def solve_v3_full_system_newton_krylov_history(
             # SNES line-search behavior and improves includePhi1 iteration parity.
             r_try = residual_v3_full_system(op, x_try)
             rnorm_try = float(jnp.linalg.norm(r_try))
+            if not np.isfinite(rnorm_try):
+                if ls_mode != "best":
+                    step *= 0.5
+                continue
             if rnorm_try < best_rnorm:
                 best_rnorm = rnorm_try
                 best_x = x_try
@@ -804,6 +837,12 @@ def solve_v3_full_system_newton_krylov_history(
         else:
             if ls_mode == "best" and best_x is not None and best_rnorm < rnorm0:
                 x = best_x
+            elif best_x is not None and np.isfinite(best_rnorm):
+                # Accept the best finite trial even if not strictly improving.
+                x = best_x
+            elif accepted:
+                # Reuse the last accepted finite state to avoid propagating non-finite updates.
+                x = accepted[-1]
             else:
                 x = x + (1.0 / 64.0) * s
             accepted.append(x)

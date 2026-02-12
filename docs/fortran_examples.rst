@@ -66,9 +66,13 @@ This workflow:
 2. halves resolution axes adaptively until both Fortran and ``sfincs_jax`` runs are under 30s,
 3. compares resulting ``sfincsOutput.h5`` files.
 
-The latest generated table is:
+The latest generated practical table (with per-case tolerance overrides) is:
 
 .. include:: _generated/reduced_upstream_suite_status.rst
+
+The latest generated strict table (all tolerance overrides ignored) is:
+
+.. include:: _generated/reduced_upstream_suite_status_strict.rst
 
 Recent operator-audit subset (PETSc matrix parity)
 --------------------------------------------------
@@ -91,8 +95,8 @@ For these cases, PETSc-vs-JAX operator deltas are already near roundoff
 are tracked as diagnostics/solver-branch effects rather than missing operator terms.
 
 Field-wise reduced-suite tolerances are stored in
-``tests/reduced_inputs/*.compare_tolerances.json`` and applied automatically by
-``scripts/run_reduced_upstream_suite.py`` during output comparison.
+``tests/reduced_inputs/*.compare_tolerances.json`` and applied automatically in
+the practical report. The strict report ignores all of these overrides.
 
 Promoted reduced-input fixtures
 -------------------------------

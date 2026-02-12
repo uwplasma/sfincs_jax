@@ -193,11 +193,16 @@ python scripts/run_reduced_upstream_suite.py --pattern 'geometryScheme5_3species
 The latest reduced-suite status table is written to:
 
 - `docs/_generated/reduced_upstream_suite_status.rst`
+- `docs/_generated/reduced_upstream_suite_status_strict.rst`
 
-Current reduced-suite snapshot (auto-generated) is **35/38 parity_ok**.
-The remaining 3 cases are marked `fortran_diverged` because the upstream
-Fortran run diverges in SNES at reduced resolution, so no direct output
-comparison is possible for those inputs.
+And machine-readable reports are written to:
+
+- `tests/reduced_upstream_examples/suite_report.json` (practical)
+- `tests/reduced_upstream_examples/suite_report_strict.json` (strict)
+
+Current reduced-suite snapshot (auto-generated practical report) is **35/38 parity_ok**.
+The remaining 3 cases are currently `max_attempts` in the 30s policy because the
+JAX includePhi1/QN solve path times out for those reduced seeds before comparison.
 
 For operator-level parity diagnosis against Fortran PETSc matrices:
 
