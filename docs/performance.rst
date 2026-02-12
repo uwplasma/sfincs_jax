@@ -52,6 +52,9 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Fast weighted reductions in diagnostics**: transport/rhsmode1 weighted sums now use
   fused ``einsum`` kernels by default (with an opt-in strict-order fallback), reducing
   diagnostic accumulation overhead in both RHSMode=1 and RHSMode=2/3 paths.
+- **Vectorized transport-matrix assembly**: RHSMode=2/3 now builds
+  ``transportMatrix`` directly from batched flux arrays, avoiding per-``whichRHS``
+  Python loops and repeated diagnostic tree slicing.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.
@@ -209,19 +212,19 @@ Latest frozen-fixture snapshot (4 repeats, compile excluded for JAX):
      - max abs(ΔL11)
    * - ``scheme1``
      - 0.0275
-     - 0.0948
+     - 0.0903
      - 3.11e-13
    * - ``scheme11``
      - 3.6393
-     - 0.1259
+     - 0.1202
      - 1.35e-15
    * - ``scheme12``
      - 0.0089
-     - 0.1090
+     - 0.1014
      - 8.83e-08
    * - ``scheme5_filtered``
      - 2.9621
-     - 0.1191
+     - 0.1096
      - 6.57e-16
 
 Persistent-cache compile/runtime split
@@ -250,17 +253,17 @@ Latest snapshot (3 repeats):
      - Compile estimate (s)
      - Warm steady solve (s/run)
    * - ``scheme1``
-     - 1.6720
-     - 0.0612
+     - 1.5599
+     - 0.0569
    * - ``scheme11``
-     - 1.5451
-     - 0.0692
+     - 1.3253
+     - 0.0650
    * - ``scheme12``
-     - 1.4497
-     - 0.0718
+     - 1.3611
+     - 0.0687
    * - ``scheme5_filtered``
-     - 1.5458
-     - 0.0816
+     - 1.4042
+     - 0.0743
 
 
 Connection to MONKES / adjoint methods

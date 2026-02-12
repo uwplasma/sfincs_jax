@@ -883,6 +883,138 @@ def v3_transport_matrix_column(
     raise AssertionError("unreachable")
 
 
+def v3_transport_matrix_from_flux_arrays(
+    *,
+    op: V3FullSystemOperator,
+    geom: BoozerGeometry,
+    particle_flux_vm_psi_hat: jnp.ndarray,  # (S,N)
+    heat_flux_vm_psi_hat: jnp.ndarray,  # (S,N)
+    fsab_flow: jnp.ndarray,  # (S,N)
+) -> jnp.ndarray:
+    """Assemble the RHSMode=2/3 transport matrix from flux/flow arrays.
+
+    This is a vectorized equivalent of repeatedly calling
+    :func:`v3_transport_matrix_column` for each ``whichRHS``.
+    """
+    rhs_mode = int(op.rhs_mode)
+    n = transport_matrix_size_from_rhs_mode(rhs_mode)
+    if particle_flux_vm_psi_hat.shape != (int(op.n_species), n):
+        raise ValueError(
+            f"particle_flux_vm_psi_hat expected shape {(int(op.n_species), n)}, got {particle_flux_vm_psi_hat.shape}"
+        )
+    if heat_flux_vm_psi_hat.shape != (int(op.n_species), n):
+        raise ValueError(
+            f"heat_flux_vm_psi_hat expected shape {(int(op.n_species), n)}, got {heat_flux_vm_psi_hat.shape}"
+        )
+    if fsab_flow.shape != (int(op.n_species), n):
+        raise ValueError(f"fsab_flow expected shape {(int(op.n_species), n)}, got {fsab_flow.shape}")
+
+    # v3 uses ispecies=1 for RHSMode=2/3.
+    s = 0
+    n_hat = jnp.asarray(op.n_hat[s], dtype=jnp.float64)
+    t_hat = jnp.asarray(op.t_hat[s], dtype=jnp.float64)
+    m_hat = jnp.asarray(op.m_hat[s], dtype=jnp.float64)
+    z = jnp.asarray(op.z_s[s], dtype=jnp.float64)
+    sqrt_t = jnp.sqrt(t_hat)
+    sqrt_m = jnp.sqrt(m_hat)
+
+    delta = jnp.asarray(op.delta, dtype=jnp.float64)
+    alpha = jnp.asarray(op.alpha, dtype=jnp.float64)
+
+    g_hat = jnp.asarray(float(geom.g_hat), dtype=jnp.float64)
+    i_hat = jnp.asarray(float(geom.i_hat), dtype=jnp.float64)
+    iota = jnp.asarray(float(geom.iota), dtype=jnp.float64)
+    b0_over_bbar = jnp.asarray(float(geom.b0_over_bbar), dtype=jnp.float64)
+    fsab_hat2 = jnp.asarray(op.fsab_hat2, dtype=jnp.float64)
+
+    if (jnp.abs(g_hat) < 1e-30) | (jnp.abs(b0_over_bbar) < 1e-30):
+        b0_eff, g_eff, i_eff = _flux_functions_from_op(op)
+        b0_over_bbar = jnp.where(jnp.abs(b0_over_bbar) < 1e-30, b0_eff, b0_over_bbar)
+        g_hat = jnp.where(jnp.abs(g_hat) < 1e-30, g_eff, g_hat)
+        i_hat = jnp.where(jnp.abs(i_hat) < 1e-30, i_eff, i_hat)
+
+    g_plus = g_hat + iota * i_hat
+    pf = jnp.asarray(particle_flux_vm_psi_hat[s, :], dtype=jnp.float64)  # (N,)
+    hf = jnp.asarray(heat_flux_vm_psi_hat[s, :], dtype=jnp.float64)  # (N,)
+    flow = jnp.asarray(fsab_flow[s, :], dtype=jnp.float64)  # (N,)
+
+    if rhs_mode == 3:
+        col1 = jnp.array(
+            [
+                (4.0 / (delta * delta))
+                * (sqrt_t / sqrt_m)
+                * (z * z)
+                * g_plus
+                * pf[0]
+                * b0_over_bbar
+                / (t_hat * t_hat * g_hat * g_hat),
+                2.0 * z * flow[0] / (delta * g_hat * t_hat),
+            ],
+            dtype=jnp.float64,
+        )
+        col2 = jnp.array(
+            [
+                pf[1] * 2.0 * fsab_hat2 / (n_hat * alpha * delta * g_hat),
+                flow[1] * sqrt_t * sqrt_m * fsab_hat2 / (g_plus * alpha * z * n_hat * b0_over_bbar),
+            ],
+            dtype=jnp.float64,
+        )
+        return jnp.stack([col1, col2], axis=1)
+
+    if rhs_mode == 2:
+        col1 = jnp.array(
+            [
+                (4.0 / (delta * delta))
+                * (sqrt_t / sqrt_m)
+                * (z * z)
+                * g_plus
+                * pf[0]
+                * b0_over_bbar
+                / (t_hat * t_hat * g_hat * g_hat),
+                (8.0 / (delta * delta))
+                * (sqrt_t / sqrt_m)
+                * (z * z)
+                * g_plus
+                * hf[0]
+                * b0_over_bbar
+                / (t_hat * t_hat * t_hat * g_hat * g_hat),
+                2.0 * z * flow[0] / (delta * g_hat * t_hat),
+            ],
+            dtype=jnp.float64,
+        )
+        col2 = jnp.array(
+            [
+                (4.0 / (delta * delta))
+                * (sqrt_t / sqrt_m)
+                * (z * z)
+                * g_plus
+                * pf[1]
+                * b0_over_bbar
+                / (n_hat * t_hat * g_hat * g_hat),
+                (8.0 / (delta * delta))
+                * (sqrt_t / sqrt_m)
+                * (z * z)
+                * g_plus
+                * hf[1]
+                * b0_over_bbar
+                / (n_hat * t_hat * t_hat * g_hat * g_hat),
+                2.0 * z * flow[1] / (delta * g_hat * n_hat),
+            ],
+            dtype=jnp.float64,
+        )
+        col3 = jnp.array(
+            [
+                pf[2] * 2.0 * fsab_hat2 / (n_hat * alpha * delta * g_hat),
+                hf[2] * 4.0 * fsab_hat2 / (n_hat * t_hat * alpha * delta * g_hat),
+                flow[2] * sqrt_t * sqrt_m * fsab_hat2 / (g_plus * alpha * z * n_hat * b0_over_bbar),
+            ],
+            dtype=jnp.float64,
+        )
+        return jnp.stack([col1, col2, col3], axis=1)
+
+    raise ValueError("transport matrix is only defined for RHSMode=2 or RHSMode=3.")
+
+
 def v3_transport_matrix_from_state_vectors(
     *,
     op0: V3FullSystemOperator,
@@ -898,9 +1030,15 @@ def v3_transport_matrix_from_state_vectors(
             raise ValueError(f"Missing state vector for which_rhs={which_rhs}.")
     x_stack = jnp.stack([jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values], axis=0)  # (N,total)
     op_rhs_list = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in rhs_values]
-    diag_list = [v3_transport_diagnostics_vm_only(op_rhs, x_full=x_stack[i]) for i, op_rhs in enumerate(op_rhs_list)]
-    cols = [
-        v3_transport_matrix_column(op=op_rhs_list[i], geom=geom, which_rhs=which_rhs, diag=diag_list[i])
-        for i, which_rhs in enumerate(rhs_values)
-    ]
-    return jnp.stack(cols, axis=1)
+    op_rhs_stack = _stack_full_system_operators(op_rhs_list)
+    diag_stack = v3_transport_diagnostics_vm_only_batch_jit(op_stack=op_rhs_stack, x_full_stack=x_stack)
+    pf_sn = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
+    hf_sn = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
+    flow_sn = jnp.transpose(diag_stack.fsab_flow, (1, 0))  # (S,N)
+    return v3_transport_matrix_from_flux_arrays(
+        op=op0,
+        geom=geom,
+        particle_flux_vm_psi_hat=pf_sn,
+        heat_flux_vm_psi_hat=hf_sn,
+        fsab_flow=flow_sn,
+    )

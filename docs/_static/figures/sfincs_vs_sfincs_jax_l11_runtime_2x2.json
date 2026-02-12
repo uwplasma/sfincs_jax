@@ -15,8 +15,8 @@
       -0.0019465568621811423,
       -0.0019465568621811423
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.09430312502081506,
-    "jax_speedup_vs_fortran": 0.29200737932764415,
+    "jax_mean_runtime_s_excluding_compile": 0.09033603122225031,
+    "jax_speedup_vs_fortran": 0.3048308413282696,
     "max_abs_l11_diff": 3.1083078819160725e-13
   },
   "scheme11": {
@@ -35,8 +35,8 @@
       -0.002500197095462332,
       -0.002500197095462332
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.1258651667740196,
-    "jax_speedup_vs_fortran": 28.91465832011891,
+    "jax_mean_runtime_s_excluding_compile": 0.12021015622303821,
+    "jax_speedup_vs_fortran": 30.274881973558912,
     "max_abs_l11_diff": 1.347446459964985e-15
   },
   "scheme12": {
@@ -55,8 +55,8 @@
       -0.042660750293215546,
       -0.042660750293215546
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.10823602072196081,
-    "jax_speedup_vs_fortran": 0.08200635687487706,
+    "jax_mean_runtime_s_excluding_compile": 0.10138378100236878,
+    "jax_speedup_vs_fortran": 0.08754893193255757,
     "max_abs_l11_diff": 8.830056376363249e-08
   },
   "scheme5_filtered": {
@@ -75,8 +75,8 @@
       -0.002462514103577058,
       -0.002462514103577058
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.11927999003091827,
-    "jax_speedup_vs_fortran": 24.8334723426054,
+    "jax_mean_runtime_s_excluding_compile": 0.10961995823890902,
+    "jax_speedup_vs_fortran": 27.02187066157504,
     "max_abs_l11_diff": 6.565928356572215e-16
   }
 }

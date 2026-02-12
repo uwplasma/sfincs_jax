@@ -17,10 +17,9 @@ from jax import tree_util as jtu
 from .namelist import Namelist
 from .solver import GMRESSolveResult, assemble_dense_matrix_from_matvec, dense_solve_from_matrix, gmres_solve
 from .transport_matrix import (
-    V3TransportDiagnostics,
     transport_matrix_size_from_rhs_mode,
     v3_transport_diagnostics_vm_only_batch_jit,
-    v3_transport_matrix_column,
+    v3_transport_matrix_from_flux_arrays,
 )
 from .v3_system import _source_basis_constraint_scheme_1
 from .verbose import Timer
@@ -1088,10 +1087,6 @@ def solve_v3_transport_matrix_linear_gmres(
 
     state_vectors: dict[int, jnp.ndarray] = {}
     residual_norms: dict[int, jnp.ndarray] = {}
-    diag_fsab_flow: list[jnp.ndarray] = []
-    diag_pf: list[jnp.ndarray] = []
-    diag_hf: list[jnp.ndarray] = []
-    diag_by_rhs: list[V3TransportDiagnostics] = []
     elapsed_s: list[jnp.ndarray] = []
     which_rhs_values = list(range(1, n + 1))
     op_rhs_by_index = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in which_rhs_values]
@@ -1303,16 +1298,13 @@ def solve_v3_transport_matrix_linear_gmres(
     diag_hf_arr = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
     diag_flow_arr = jnp.transpose(diag_stack.fsab_flow, (1, 0))  # (S,N)
 
-    diag_pf = [diag_pf_arr[:, i] for i in range(n)]
-    diag_hf = [diag_hf_arr[:, i] for i in range(n)]
-    diag_fsab_flow = [diag_flow_arr[:, i] for i in range(n)]
-    diag_by_rhs = [jtu.tree_map(lambda a, i=i: a[i], diag_stack) for i in range(n)]
-
-    tm_cols = [
-        v3_transport_matrix_column(op=op_rhs_by_index[i], geom=geom, which_rhs=int(which_rhs_values[i]), diag=diag_by_rhs[i])
-        for i in range(n)
-    ]
-    tm = jnp.stack(tm_cols, axis=1)
+    tm = v3_transport_matrix_from_flux_arrays(
+        op=op0,
+        geom=geom,
+        particle_flux_vm_psi_hat=diag_pf_arr,
+        heat_flux_vm_psi_hat=diag_hf_arr,
+        fsab_flow=diag_flow_arr,
+    )
     if emit is not None:
         emit(0, "solve_v3_transport_matrix_linear_gmres: done")
         emit(1, f"solve_v3_transport_matrix_linear_gmres: elapsed_s={t_all.elapsed_s():.3f}")
@@ -1321,8 +1313,8 @@ def solve_v3_transport_matrix_linear_gmres(
         transport_matrix=tm,
         state_vectors_by_rhs=state_vectors,
         residual_norms_by_rhs=residual_norms,
-        fsab_flow=jnp.stack(diag_fsab_flow, axis=1),
-        particle_flux_vm_psi_hat=jnp.stack(diag_pf, axis=1),
-        heat_flux_vm_psi_hat=jnp.stack(diag_hf, axis=1),
+        fsab_flow=diag_flow_arr,
+        particle_flux_vm_psi_hat=diag_pf_arr,
+        heat_flux_vm_psi_hat=diag_hf_arr,
         elapsed_time_s=jnp.stack(elapsed_s, axis=0),
     )
