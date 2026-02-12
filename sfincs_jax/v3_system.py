@@ -645,7 +645,12 @@ def apply_v3_full_system_jacobian(
     return y
 
 
-apply_v3_full_system_operator_jit = jax.jit(apply_v3_full_system_operator, static_argnums=())
+apply_v3_full_system_operator_jit = jax.jit(
+    apply_v3_full_system_operator,
+    static_argnames=("include_jacobian_terms",),
+)
+
+apply_v3_full_system_jacobian_jit = jax.jit(apply_v3_full_system_jacobian)
 
 
 def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
@@ -764,6 +769,9 @@ def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
     return jnp.concatenate([rhs_f_flat, rhs_phi1, rhs_extra], axis=0)
 
 
+rhs_v3_full_system_jit = jax.jit(rhs_v3_full_system)
+
+
 def with_transport_rhs_settings(op: V3FullSystemOperator, *, which_rhs: int) -> V3FullSystemOperator:
     """Return an operator with v3's internal RHSMode-dependent RHS settings applied.
 
@@ -820,7 +828,10 @@ def residual_v3_full_system(op: V3FullSystemOperator, x_full: jnp.ndarray) -> jn
         phi1_flat = x_full[op.f_size : op.f_size + op.n_theta * op.n_zeta]
         phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
         op_use = replace(op, phi1_hat_base=phi1)
-    return apply_v3_full_system_operator(op_use, x_full, include_jacobian_terms=False) - rhs_v3_full_system(op_use)
+    return (
+        apply_v3_full_system_operator_jit(op_use, x_full, include_jacobian_terms=False)
+        - rhs_v3_full_system_jit(op_use)
+    )
 
 
 def full_system_operator_from_namelist(

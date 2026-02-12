@@ -1201,6 +1201,8 @@ def write_sfincs_jax_output_h5(
             f0_v3_from_operator,
             v3_rhsmode1_output_fields_vm_only,
             v3_rhsmode1_output_fields_vm_only_batch,
+            v3_rhsmode1_output_fields_vm_only_batch_jit,
+            v3_rhsmode1_output_fields_vm_only_jit,
         )
         from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_full_system_newton_krylov_history
         from .v3_system import full_system_operator_from_namelist
@@ -1434,7 +1436,7 @@ def write_sfincs_jax_output_h5(
                             f"max_abs_nonlin={float(np.max(np.abs(qn_nonlin_arr))):.6e} "
                             f"max_abs_diag={float(np.max(np.abs(qn_diag_arr))):.6e}",
                         )
-                diags.append(v3_rhsmode1_output_fields_vm_only(op_use, x_full=np.asarray(x_full)))
+                diags.append(v3_rhsmode1_output_fields_vm_only_jit(op_use, x_full=x_full))
             diag_arrays = {
                 key: np.stack([np.asarray(d[key], dtype=np.float64) for d in diags], axis=0)
                 for key in diags[0]
@@ -1442,7 +1444,7 @@ def write_sfincs_jax_output_h5(
         else:
             diag_arrays = {
                 key: np.asarray(val, dtype=np.float64)
-                for key, val in v3_rhsmode1_output_fields_vm_only_batch(result.op, x_full_stack=x_stack).items()
+                for key, val in v3_rhsmode1_output_fields_vm_only_batch_jit(result.op, x_full_stack=x_stack).items()
             }
 
         # Write core grid moments:

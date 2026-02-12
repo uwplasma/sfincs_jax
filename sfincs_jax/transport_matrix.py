@@ -640,6 +640,10 @@ def v3_rhsmode1_output_fields_vm_only_batch(
     return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
 
 
+v3_rhsmode1_output_fields_vm_only_jit = jax.jit(v3_rhsmode1_output_fields_vm_only)
+v3_rhsmode1_output_fields_vm_only_batch_jit = jax.jit(v3_rhsmode1_output_fields_vm_only_batch)
+
+
 def v3_transport_output_fields_vm_only(
     *,
     op0: V3FullSystemOperator,

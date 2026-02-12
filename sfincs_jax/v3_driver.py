@@ -28,11 +28,13 @@ from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
     V3FullSystemOperator,
     apply_v3_full_system_jacobian,
+    apply_v3_full_system_jacobian_jit,
     apply_v3_full_system_operator,
     apply_v3_full_system_operator_jit,
     full_system_operator_from_namelist,
     residual_v3_full_system,
     rhs_v3_full_system,
+    rhs_v3_full_system_jit,
     with_transport_rhs_settings,
 )
 
@@ -644,6 +646,18 @@ def solve_v3_full_system_newton_krylov_history(
         if x.shape != (op.total_size,):
             raise ValueError(f"x0 must have shape {(op.total_size,)}, got {x.shape}")
 
+    preconditioner = None
+    # Only enable block preconditioning in the PETSc-like parity mode that freezes the
+    # Jacobian/linearization. For autodiff-linearized Newton steps, JAX's GMRES can
+    # behave differently with an approximate preconditioner, which impacts iteration
+    # histories and `sfincsOutput.h5` shape parity for linear Phi1 fixtures.
+    pc_env = os.environ.get("SFINCS_JAX_PHI1_USE_PRECONDITIONER", "").strip().lower()
+    use_preconditioner = pc_env not in {"0", "false", "no", "off"}
+    if use_preconditioner and use_frozen_linearization and int(op.rhs_mode) == 1:
+        if emit is not None:
+            emit(1, "solve_v3_full_system_newton_krylov_history: building RHSMode=1 block preconditioner")
+        preconditioner = _build_rhsmode1_block_preconditioner(op=op)
+
     last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
     accepted: list[jnp.ndarray] = []
     rnorm_initial: float | None = None
@@ -657,7 +671,7 @@ def solve_v3_full_system_newton_krylov_history(
             phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
             op_use = replace(op, phi1_hat_base=phi1)
 
-        r = apply_v3_full_system_operator(op_use, x, include_jacobian_terms=False) - rhs_v3_full_system(op_use)
+        r = apply_v3_full_system_operator_jit(op_use, x, include_jacobian_terms=False) - rhs_v3_full_system_jit(op_use)
         rnorm = jnp.linalg.norm(r)
         rnorm_f = float(rnorm)
         if rnorm_initial is None:
@@ -715,7 +729,10 @@ def solve_v3_full_system_newton_krylov_history(
                         op_rhs_x = replace(op, phi1_hat_base=phi1_x)
                     else:
                         op_rhs_x = op
-                    return apply_v3_full_system_operator(op_use, xx, include_jacobian_terms=True) - rhs_v3_full_system(op_rhs_x)
+                    return (
+                        apply_v3_full_system_operator_jit(op_use, xx, include_jacobian_terms=True)
+                        - rhs_v3_full_system_jit(op_rhs_x)
+                    )
 
                 _r_lin, jvp = jax.linearize(residual_for_jac, x)
                 matvec = jvp
@@ -732,14 +749,17 @@ def solve_v3_full_system_newton_krylov_history(
                         op_mat_x = replace(op, phi1_hat_base=phi1_x)
                     else:
                         op_mat_x = op
-                    return apply_v3_full_system_operator(op_mat_x, xx, include_jacobian_terms=True) - rhs_v3_full_system(op_use)
+                    return (
+                        apply_v3_full_system_operator_jit(op_mat_x, xx, include_jacobian_terms=True)
+                        - rhs_v3_full_system_jit(op_use)
+                    )
 
                 _r_lin, jvp = jax.linearize(residual_for_jac, x)
                 matvec = jvp
                 if emit is not None:
                     emit(1, f"newton_iter={k}: evaluateJacobian called (dynamic operator + frozen RHS)")
             else:
-                matvec = lambda dx: apply_v3_full_system_jacobian(op_use, x, dx)
+                matvec = lambda dx: apply_v3_full_system_jacobian_jit(op_use, x, dx)
                 if emit is not None:
                     emit(1, f"newton_iter={k}: evaluateJacobian called (fully frozen linearization)")
         else:
@@ -749,14 +769,41 @@ def solve_v3_full_system_newton_krylov_history(
             if emit is not None:
                 emit(1, f"newton_iter={k}: evaluateJacobian called (autodiff linearization)")
 
+        solve_method_linear = str(solve_method)
+        if use_frozen_linearization:
+            dense_cutoff_env = os.environ.get("SFINCS_JAX_PHI1_NK_DENSE_CUTOFF", "").strip()
+            try:
+                dense_cutoff = int(dense_cutoff_env) if dense_cutoff_env else 5000
+            except ValueError:
+                dense_cutoff = 5000
+            if int(op.total_size) <= int(dense_cutoff):
+                solve_method_linear = "dense"
+
         lin = gmres_solve(
             matvec=matvec,
             b=-r,
+            preconditioner=preconditioner,
             tol=float(gmres_tol),
             restart=int(gmres_restart),
             maxiter=gmres_maxiter,
-            solve_method=str(solve_method),
+            solve_method=solve_method_linear,
         )
+        if preconditioner is not None and (not _gmres_result_is_finite(lin)):
+            if emit is not None:
+                emit(
+                    0,
+                    "newton_iter="
+                    f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
+                )
+            lin = gmres_solve(
+                matvec=matvec,
+                b=-r,
+                preconditioner=None,
+                tol=float(gmres_tol),
+                restart=int(gmres_restart),
+                maxiter=gmres_maxiter,
+                solve_method=solve_method_linear,
+            )
         if emit is not None:
             emit(1, f"newton_iter={k}: gmres_residual={float(lin.residual_norm):.6e}")
         if not _gmres_result_is_finite(lin):
