@@ -150,6 +150,12 @@ performance without changing the input file:
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1).
 
+- ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
+  are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
+
+  - ``quadpack`` (default): match the Fortran v3 QUADPACK-based implementation for parity.
+  - ``analytic``: faster analytic integrals (may differ at strict parity level).
+
 Writing `sfincsOutput.h5` with `sfincs_jax`
 --------------------------------------------------
 
@@ -169,6 +175,16 @@ Writing `sfincsOutput.h5` with `sfincs_jax`
    write_sfincs_jax_output_h5(
        input_namelist=Path("input.namelist"),
        output_path=Path("sfincsOutput.h5"),
+   )
+
+Silence stdout (useful for batch runs):
+
+.. code-block:: python
+
+   write_sfincs_jax_output_h5(
+       input_namelist=Path("input.namelist"),
+       output_path=Path("sfincsOutput.h5"),
+       verbose=False,
    )
 
 For transport-matrix runs (``RHSMode=2`` or ``RHSMode=3``), you can also request the

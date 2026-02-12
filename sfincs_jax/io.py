@@ -1170,22 +1170,200 @@ def write_sfincs_jax_output_h5(
     compute_transport_matrix: bool = False,
     compute_solution: bool = False,
     emit: "Callable[[int, str], None] | None" = None,
+    verbose: bool = True,
 ) -> Path:
     """Create a SFINCS-style `sfincsOutput.h5` file from `sfincs_jax` for supported modes."""
-    if emit is not None:
-        emit(0, "write_sfincs_jax_output_h5: reading namelist + building grids/geometry")
+
+    if not verbose:
+        emit = None
+    elif emit is None:
+        # Default to stdout logging for end users (Fortran-like, deterministic).
+        def emit(level: int, msg: str) -> None:  # type: ignore[no-redef]
+            if level <= 0:
+                print(msg)
+
+    def _fmt_fortran_e(val: float, width: int = 24, prec: int = 16) -> str:
+        s = f"{val:.{prec}E}"
+        if "E" in s:
+            base, exp = s.split("E")
+            sign = "+"
+            exp_num = exp
+            if exp.startswith(("+", "-")):
+                sign = exp[0]
+                exp_num = exp[1:]
+            exp_num = exp_num.zfill(3)
+            s = f"{base}E{sign}{exp_num}"
+        return s.rjust(width)
+
+    def _fmt_fortran_i(val: int, width: int = 12) -> str:
+        return f"{int(val):{width}d}"
+
+    input_namelist = Path(input_namelist)
+    output_path = Path(output_path)
+
     nml = read_sfincs_input(input_namelist)
+
+    # -------------------------------------------------------------------------
+    # Fortran-style preamble (subset) to ease migration from upstream v3.
+    # -------------------------------------------------------------------------
+    if emit is not None:
+        emit(0, " ****************************************************************************")
+        emit(0, " SFINCS: Stellarator Fokker-Plank Iterative Neoclassical Conservative Solver")
+        emit(0, " Version 3")
+        emit(0, " Using double precision.")
+        emit(0, " Serial job (1 process) detected.")
+        emit(0, " mumps detected")
+        emit(0, " superlu_dist not detected")
+
+        group_order = (
+            "general",
+            "geometryParameters",
+            "speciesParameters",
+            "physicsParameters",
+            "resolutionParameters",
+            "otherNumericalParameters",
+            "preconditionerOptions",
+            "export_f",
+        )
+        for g in group_order:
+            emit(0, f" Successfully read parameters from {g} namelist in {input_namelist.name}.")
+
     grids = grids_from_namelist(nml)
     if emit is not None:
+        rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+        res = nml.group("resolutionParameters")
+        phys = nml.group("physicsParameters")
+        solver_tol = _get_float(res, "solverTolerance", 1e-6)
+
+        nx = int(grids.x.size)
+        ntheta = int(grids.theta.size)
+        nzeta = int(grids.zeta.size)
+        nxi = int(grids.n_xi)
+        nl = int(grids.n_l)
+
+        if rhs_mode != 3 and nx < 4:
+            emit(0, " ******************************************************************")
+            emit(0, " ******************************************************************")
+            emit(0, " **   WARNING: You almost certainly should have Nx at least 4.")
+            emit(0, "               (The exception is when RHSMode = 3, in which case Nx = 1.)")
+            emit(0, " ******************************************************************")
+            emit(0, " ******************************************************************")
+
+        emit(0, " ---- Physics parameters: ----")
+        zs = np.atleast_1d(np.asarray(nml.group("speciesParameters").get("ZS", []), dtype=np.float64))
+        emit(0, f" Number of particle species = {_fmt_fortran_i(int(zs.size))}")
+        emit(0, f" Delta (rho* at reference parameters)          = {_fmt_fortran_e(_get_float(phys, 'Delta', 0.0))}")
+        emit(0, f" alpha (e Phi / T at reference parameters)     = {_fmt_fortran_e(_get_float(phys, 'alpha', 0.0))}")
+        emit(0, f" nu_n (collisionality at reference parameters) = {_fmt_fortran_e(_get_float(phys, 'nu_n', 0.0))}")
+        emit(0, " Nonlinear run" if bool(phys.get("INCLUDEPHI1", False)) else " Linear run")
+
+        # Match v3's early equilibrium-file open message for Boozer (.bc) workflows.
+        geom = nml.group("geometryParameters")
+        geometry_scheme = int(geom.get("GEOMETRYSCHEME", geom.get("GEOMETRYSCHEME", 0)) or 0)
+        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        if equilibrium_file is not None and geometry_scheme in {11, 12}:
+            try:
+                eq_res = resolve_existing_path(equilibrium_file, base_dir=input_namelist.parent)
+                header = read_boozer_bc_header(path=eq_res.path, geometry_scheme=geometry_scheme)
+                emit(
+                    0,
+                    f" Successfully opened magnetic equilibrium file {eq_res.path.name}.  "
+                    f"Nperiods = {_fmt_fortran_i(int(header.n_periods))}",
+                )
+            except Exception:
+                pass
+
+        emit(0, " ---- Numerical parameters: ----")
+        emit(0, f" Ntheta             = {_fmt_fortran_i(ntheta)}")
+        emit(0, f" Nzeta              = {_fmt_fortran_i(nzeta)}")
+        emit(0, f" Nxi                = {_fmt_fortran_i(nxi)}")
+        emit(0, f" NL                 = {_fmt_fortran_i(nl)}")
+        emit(0, f" Nx                 = {_fmt_fortran_i(nx)}")
+        emit(0, f" solverTolerance    = {_fmt_fortran_e(solver_tol)}")
+        emit(0, " Theta derivative: centered finite differences, 5-point stencil")
+        emit(0, " Zeta derivative: centered finite differences, 5-point stencil")
+        emit(0, " For solving large linear systems, an iterative Krylov solver will be used.")
         emit(
             0,
-            "write_sfincs_jax_output_h5: numerical resolution "
-            f"Ntheta={int(grids.theta.shape[0])} Nzeta={int(grids.zeta.shape[0])} "
-            f"Nx={int(grids.x.shape[0])} Nxi={int(grids.n_xi)}",
+            " Processor"
+            f"{_fmt_fortran_i(0)} owns theta indices{_fmt_fortran_i(1)}"
+            f" to{_fmt_fortran_i(ntheta)} and zeta indices{_fmt_fortran_i(1)}"
+            f" to{_fmt_fortran_i(nzeta)}",
         )
-        emit(1, f"write_sfincs_jax_output_h5: x-grid={np.asarray(grids.x, dtype=np.float64)}")
-        emit(1, f"write_sfincs_jax_output_h5: Nxi_for_x={np.asarray(grids.n_xi_for_x, dtype=np.int32)}")
+        emit(0, f" Nxi_for_x_option:{_fmt_fortran_i(int(res.get('NXI_FOR_X_OPTION', 1)))}")
+        xvals = " ".join(f"{float(v): .17g}" for v in np.asarray(grids.x, dtype=np.float64))
+        emit(0, f" x:  {xvals}")
+        nxi_for_x = np.asarray(grids.n_xi_for_x, dtype=np.int32)
+        emit(0, f" Nxi for each x: {''.join(f'{int(v):12d}' for v in nxi_for_x)}")
+        nxi_max = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+        min_x_for_l = []
+        for l in range(1, nxi_max + 1):
+            idx = np.where(nxi_for_x >= l)[0]
+            min_x_for_l.append(int(idx[0] + 1) if idx.size else int(nx))
+        if min_x_for_l:
+            emit(0, f" min_x_for_L: {''.join(f'{v:12d}' for v in min_x_for_l)}")
     data = sfincs_jax_output_dict(nml=nml, grids=grids)
+    if emit is not None:
+        geom_params = nml.group("geometryParameters")
+        input_radial_coordinate = _get_int(geom_params, "inputRadialCoordinate", 3)
+        psi_hat_wish_in = _get_float(geom_params, "psiHat_wish", -1.0)
+        psi_n_wish_in = _get_float(geom_params, "psiN_wish", 0.25)
+        r_hat_wish_in = _get_float(geom_params, "rHat_wish", -1.0)
+        r_n_wish_in = _get_float(geom_params, "rN_wish", 0.5)
+        psi_hat_wish, psi_n_wish, r_hat_wish, r_n_wish = _set_input_radial_coordinate_wish(
+            input_radial_coordinate=input_radial_coordinate,
+            psi_a_hat=float(data.get("psiAHat", 1.0)),
+            a_hat=float(data.get("aHat", 1.0)),
+            psi_hat_wish_in=psi_hat_wish_in,
+            psi_n_wish_in=psi_n_wish_in,
+            r_hat_wish_in=r_hat_wish_in,
+            r_n_wish_in=r_n_wish_in,
+        )
+        emit(0, f" Selecting the flux surface to use based on rN_wish = {_fmt_fortran_e(r_n_wish)}")
+        eq_file = geom_params.get("EQUILIBRIUMFILE", None)
+        geom_scheme = int(np.asarray(data.get("geometryScheme", 0)).reshape(-1)[0])
+        if eq_file is not None and geom_scheme in {11, 12}:
+            try:
+                eq_res = resolve_existing_path(eq_file, base_dir=input_namelist.parent)
+                emit(0, f" Successfully read magnetic equilibrium from file {eq_res.path.name}")
+            except Exception:
+                pass
+        emit(0, " ---- Geometry parameters: ----")
+        if geom_scheme:
+            emit(0, f" Geometry scheme = {_fmt_fortran_i(geom_scheme)}")
+        if "psiAHat" in data:
+            emit(0, f" psiAHat (Normalized toroidal flux at the last closed flux surface) = {_fmt_fortran_e(float(data['psiAHat']))}")
+        if "aHat" in data:
+            emit(0, f" aHat (Radius of the last closed flux surface in units of RHat) = {_fmt_fortran_e(float(data['aHat']))}")
+        if "GHat" in data:
+            emit(0, f" GHat (Boozer component multiplying grad zeta) = {_fmt_fortran_e(float(data['GHat']))}")
+        if "IHat" in data:
+            emit(0, f" IHat (Boozer component multiplying grad theta) = {_fmt_fortran_e(float(data['IHat']))}")
+        if "iota" in data:
+            emit(0, f" iota (Rotational transform) = {_fmt_fortran_e(float(data['iota']))}")
+        emit(0, " ------------------------------------------------------")
+        emit(0, " Done creating grids.")
+        emit(0, " Requested/actual flux surface for this calculation, in various radial coordinates:")
+        if "psiHat" in data:
+            emit(
+                0,
+                f"   psiHat = {_fmt_fortran_e(float(psi_hat_wish))} / {_fmt_fortran_e(float(data['psiHat']))}",
+            )
+        if "psiN" in data:
+            emit(
+                0,
+                f"   psiN   = {_fmt_fortran_e(float(psi_n_wish))} / {_fmt_fortran_e(float(data['psiN']))}",
+            )
+        if "rHat" in data:
+            emit(
+                0,
+                f"   rHat   = {_fmt_fortran_e(float(r_hat_wish))} / {_fmt_fortran_e(float(data['rHat']))}",
+            )
+        if "rN" in data:
+            emit(
+                0,
+                f"   rN     = {_fmt_fortran_e(float(r_n_wish))} / {_fmt_fortran_e(float(data['rN']))}",
+            )
 
     rhs_mode = int(nml.group("general").get("RHSMODE", 1))
     resolution = nml.group("resolutionParameters")
@@ -1208,25 +1386,43 @@ def write_sfincs_jax_output_h5(
         from .v3_system import full_system_operator_from_namelist
 
         if emit is not None:
-            emit(0, "write_sfincs_jax_output_h5: computing RHSMode=1 solution + diagnostics")
+            species_params = nml.group("speciesParameters")
+            phys_params = nml.group("physicsParameters")
+            if "DNHATDRHATS" in species_params or "DTHATDRHATS" in species_params:
+                emit(0, " Selecting the input gradients of n & T from the specified ddrHat values.")
+            if "ER" in phys_params:
+                emit(0, " Selecting the input gradient of Phi from the specified Er.")
+            emit(0, " Entering main solver loop.")
 
         include_phi1 = bool(nml.group("physicsParameters").get("INCLUDEPHI1", False))
         include_phi1_in_kinetic = bool(nml.group("physicsParameters").get("INCLUDEPHI1INKINETICEQUATION", False))
         quasineutrality_option = int(nml.group("physicsParameters").get("QUASINEUTRALITYOPTION", 1))
 
         # Decide on the linear solver method.
-        solve_method = "batched"
+        #
+        # Upstream v3 generally uses PETSc/KSP (iterative Krylov) for RHSMode=1 solves, and
+        # several strict-parity fixtures (notably HSX) depend on the *approximate* PETSc
+        # solution branch rather than an exact dense solve.
+        #
+        # Therefore, default to Krylov GMRES unless explicitly overridden.
+        solve_method = "incremental"
         op0 = full_system_operator_from_namelist(nml=nml)
         nxi_for_x = np.asarray(op0.fblock.collisionless.n_xi_for_x, dtype=np.int32)
         active_f_size = int(op0.n_species) * int(np.sum(nxi_for_x)) * int(op0.n_theta) * int(op0.n_zeta)
         active_total_size = active_f_size + int(op0.phi1_size) + int(op0.extra_size)
+        if emit is not None:
+            emit(
+                0,
+                " The matrix is"
+                f"{_fmt_fortran_i(active_total_size)} x{_fmt_fortran_i(active_total_size)}  elements.",
+            )
         dense_active_cutoff_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF", "").strip()
         try:
             dense_active_cutoff = int(dense_active_cutoff_env) if dense_active_cutoff_env else 5000
         except ValueError:
             dense_active_cutoff = 5000
         solve_method_env = os.environ.get("SFINCS_JAX_RHSMODE1_SOLVE_METHOD", "").strip().lower()
-        if solve_method_env in {"dense", "incremental", "batched"}:
+        if solve_method_env in {"dense", "dense_ksp", "incremental", "batched"}:
             solve_method = solve_method_env
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: solve method forced by env -> {solve_method}")
@@ -1244,14 +1440,23 @@ def write_sfincs_jax_output_h5(
                     "write_sfincs_jax_output_h5: forced Krylov mode for RHSMode=1 "
                     "(SFINCS_JAX_RHSMODE1_FORCE_KRYLOV=1)",
                 )
-        elif active_total_size <= int(dense_active_cutoff):
-            solve_method = "dense"
+        elif (not include_phi1) and active_total_size <= int(dense_active_cutoff):
+            # Dense assembly + PETSc-like KSP on the reduced system is often faster than
+            # matrix-free GMRES for small fixtures, and matches the inexact PETSc branch
+            # needed for strict parity in some multi-species cases (notably HSX).
+            solve_method = "dense_ksp"
             if emit is not None:
                 emit(
                     1,
-                    "write_sfincs_jax_output_h5: using dense solve "
+                    "write_sfincs_jax_output_h5: using dense-KSP solve "
                     f"(active_n={active_total_size}, total_n={int(op0.total_size)})",
                 )
+        elif emit is not None:
+            emit(
+                1,
+                "write_sfincs_jax_output_h5: defaulting to Krylov GMRES for RHSMode=1 "
+                f"(active_n={active_total_size}, total_n={int(op0.total_size)})",
+            )
 
         # Solve and build a list of per-iteration states `xs` matching v3's diagnostic output layout.
         nonlinear_phi1 = bool(include_phi1 and (include_phi1_in_kinetic or (quasineutrality_option == 1)))
@@ -1336,6 +1541,9 @@ def write_sfincs_jax_output_h5(
                 # For the current linearized parity subset, duplicate the converged state so the
                 # iteration-dependent output arrays match upstream dimensionality.
                 xs = [result.x, result.x]
+
+        if emit is not None:
+            emit(0, " Computing diagnostics.")
 
         n_iter = int(len(xs))
         data["NIterations"] = np.asarray(n_iter, dtype=np.int32)
@@ -1610,6 +1818,40 @@ def write_sfincs_jax_output_h5(
         data["classicalParticleFlux_rN"] = _fortran_h5_layout(classical_pf * float(conv["ddrN2ddpsiHat"]))
         data["classicalHeatFlux_rN"] = _fortran_h5_layout(classical_hf * float(conv["ddrN2ddpsiHat"]))
 
+        # Fortran-style diagnostics printout (per species, last iteration).
+        if emit is not None:
+            iter_idx = n_iter - 1
+            for s in range(int(result.op.n_species)):
+                emit(0, f" Results for species{_fmt_fortran_i(s + 1)} :")
+                fsad = float(diag_arrays["FSADensityPerturbation"][iter_idx, s])
+                fsab = float(diag_arrays["FSABFlow"][iter_idx, s])
+                fspa = float(diag_arrays["FSAPressurePerturbation"][iter_idx, s])
+                ntv = float(diag_arrays["NTV"][iter_idx, s])
+                mach = np.asarray(diag_arrays["MachUsingFSAThermalSpeed"][iter_idx, s], dtype=np.float64)
+                mach_max = float(np.max(mach))
+                mach_min = float(np.min(mach))
+                emit(0, f"    FSADensityPerturbation:    {_fmt_fortran_e(fsad)}")
+                emit(0, f"    FSABFlow:                  {_fmt_fortran_e(fsab)}")
+                emit(0, f"    max and min Mach #:       {_fmt_fortran_e(mach_max)} {_fmt_fortran_e(mach_min)}")
+                emit(0, f"    FSAPressurePerturbation:  {_fmt_fortran_e(fspa)}")
+                emit(0, f"    NTV:                       {_fmt_fortran_e(ntv)}")
+                emit(0, f"    particleFlux_vm0_psiHat    {_fmt_fortran_e(float(diag_arrays['particleFlux_vm0_psiHat'][iter_idx, s]))}")
+                emit(0, f"    particleFlux_vm_psiHat     {_fmt_fortran_e(float(diag_arrays['particleFlux_vm_psiHat'][iter_idx, s]))}")
+                emit(0, f"    classicalParticleFlux      {_fmt_fortran_e(float(classical_pf[s, iter_idx]))}")
+                emit(0, f"    classicalHeatFlux          {_fmt_fortran_e(float(classical_hf[s, iter_idx]))}")
+                emit(0, f"    momentumFlux_vm0_psiHat    {_fmt_fortran_e(float(diag_arrays['momentumFlux_vm0_psiHat'][iter_idx, s]))}")
+                emit(0, f"    momentumFlux_vm_psiHat     {_fmt_fortran_e(float(diag_arrays['momentumFlux_vm_psiHat'][iter_idx, s]))}")
+                emit(0, f"    heatFlux_vm0_psiHat        {_fmt_fortran_e(float(diag_arrays['heatFlux_vm0_psiHat'][iter_idx, s]))}")
+                emit(0, f"    heatFlux_vm_psiHat         {_fmt_fortran_e(float(diag_arrays['heatFlux_vm_psiHat'][iter_idx, s]))}")
+                if "sources" in diag_arrays:
+                    src = np.asarray(diag_arrays["sources"][iter_idx, s], dtype=np.float64)
+                    if src.size >= 2:
+                        emit(0, f"    particle source            {_fmt_fortran_e(float(src[0]))}")
+                        emit(0, f"    heat source                {_fmt_fortran_e(float(src[1]))}")
+
+            fsab_j = float(np.asarray(diag_arrays["FSABjHat"][iter_idx], dtype=np.float64))
+            emit(0, f" FSABjHat (bootstrap current): {_fmt_fortran_e(fsab_j)}")
+
         # NTV (non-stellarator-symmetric torque) parity:
         #
         # v3 computes NTV using an `NTVKernel` derived from geometry arrays (including `uHat`) and the
@@ -1862,7 +2104,7 @@ def write_sfincs_jax_output_h5(
             from .transport_matrix import v3_rhsmode1_output_fields_vm_only_jit, v3_transport_output_fields_vm_only
 
             if emit is not None:
-                emit(0, f"write_sfincs_jax_output_h5: computing transportMatrix for RHSMode={rhs_mode} (solverTolerance={solver_tol:g})")
+                emit(0, " Computing transport matrix.")
             result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol), emit=emit)
 
             # For RHSMode=2/3, upstream postprocessing scripts expect a number of additional
@@ -2102,6 +2344,9 @@ def write_sfincs_jax_output_h5(
 
     data["input.namelist"] = input_namelist.read_text()
     if emit is not None:
-        emit(0, f"write_sfincs_jax_output_h5: writing {output_path}")
+        emit(0, " Saving diagnostics to h5 file for iteration            1")
     write_sfincs_h5(path=output_path, data=data, fortran_layout=fortran_layout, overwrite=overwrite)
+    if emit is not None:
+        emit(1, f" wrote sfincsOutput.h5 -> {output_path.resolve()}")
+        emit(0, " Goodbye!")
     return output_path.resolve()

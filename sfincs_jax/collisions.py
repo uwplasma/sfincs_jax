@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 
 from jax import config as _jax_config
@@ -18,6 +19,19 @@ from scipy.integrate import quad
 from .xgrid import XGrid, make_x_grid
 
 
+_V3_PI = 3.14159265358979
+_V3_SQRTPI = 1.77245385090552
+
+
+def _erf_np(x: np.ndarray) -> np.ndarray:
+    """Use libm-based erf for closer parity with Fortran's intrinsic."""
+    x = np.asarray(x, dtype=np.float64)
+    if x.size == 0:
+        return x
+    vec = np.vectorize(math.erf, otypes=[np.float64])
+    return vec(x)
+
+
 def _psi_chandra(x: jnp.ndarray) -> jnp.ndarray:
     """Chandrasekhar function Ψ(x).
 
@@ -26,7 +40,7 @@ def _psi_chandra(x: jnp.ndarray) -> jnp.ndarray:
       Ψ = (erf(x) - (2/sqrt(pi)) x exp(-x^2)) / (2 x^2)
     """
     x = x.astype(jnp.float64)
-    sqrt_pi = jnp.sqrt(jnp.pi)
+    sqrt_pi = jnp.asarray(_V3_SQRTPI, dtype=jnp.float64)
     num = erf(x) - (2.0 / sqrt_pi) * x * jnp.exp(-(x * x))
     den = 2.0 * x * x
     # Avoid NaNs at x=0 (not typically used with v3 default x grids, but keep robust).
@@ -40,8 +54,8 @@ def _psi_chandra(x: jnp.ndarray) -> jnp.ndarray:
 def _psi_chandra_np(x: np.ndarray) -> np.ndarray:
     """NumPy version of :func:`_psi_chandra` used in collision-operator precomputations."""
     x = np.asarray(x, dtype=np.float64)
-    sqrt_pi = float(np.sqrt(np.pi))
-    num = sp_special.erf(x) - (2.0 / sqrt_pi) * x * np.exp(-(x * x))
+    sqrt_pi = float(_V3_SQRTPI)
+    num = _erf_np(x) - (2.0 / sqrt_pi) * x * np.exp(-(x * x))
     den = 2.0 * x * x
     out = np.empty_like(x)
     eps = 1e-14
@@ -89,7 +103,7 @@ def nu_d_hat_pitch_angle_scattering_v3(
     x3 = jnp.where(x3 == 0, jnp.asarray(jnp.inf, dtype=jnp.float64), x3)
     term = term / x3[None, None, :]  # (S,S,X)
 
-    prefac = (3.0 * jnp.sqrt(jnp.pi) / 4.0) / t32m  # (S,)
+    prefac = (3.0 * jnp.asarray(_V3_SQRTPI, dtype=jnp.float64) / 4.0) / t32m  # (S,)
     sum_b = jnp.sum((z2[None, :, None] * n_hats[None, :, None]) * term, axis=1)  # (S,X)
     return prefac[:, None] * z2[:, None] * sum_b
 
@@ -117,19 +131,42 @@ def polynomial_interpolation_matrix_np(
     if alpx.shape != (m,):
         raise ValueError(f"alpx must have shape {(m,)}, got {alpx.shape}")
 
-    # Barycentric weights: w(j) = 1 / Π_{i≠j} (xk(i) - xk(j)).
-    d = xk[:, None] - xk[None, :]
-    np.fill_diagonal(d, 1.0)
-    w = 1.0 / np.prod(d, axis=0)
+    # Mirror v3 Fortran (polynomialInterpolationMatrix.F90) with explicit loops
+    # to reduce rounding-order differences in strict parity tests.
+    d = np.zeros((n, n), dtype=np.float64)
+    for i in range(n):
+        for j in range(n):
+            d[i, j] = xk[i] - xk[j]
+    for i in range(n):
+        d[i, i] = 1.0
 
-    # D(i,j) = 1/(x(i) - xk(j)) with a tiny regularization at exact matches.
-    dx = x[:, None] - xk[None, :]
-    dx = np.where(dx == 0.0, 1e-15, dx)
-    inv_dx = 1.0 / dx
+    w = np.zeros((n,), dtype=np.float64)
+    for j in range(n):
+        prod = 1.0
+        for i in range(n):
+            prod *= d[i, j]
+        w[j] = 1.0 / prod
 
-    denom = np.sum(inv_dx * w[None, :], axis=1)  # (M,)
-    mat = inv_dx * (alpx[:, None] / denom[:, None])  # (M,N)
-    mat = mat * (w[None, :] / alpxk[None, :])
+    mat = np.zeros((m, n), dtype=np.float64)
+    for i in range(m):
+        for j in range(n):
+            dx = x[i] - xk[j]
+            if dx == 0.0:
+                dx = 1e-15
+            mat[i, j] = 1.0 / dx
+
+    for i in range(m):
+        denom = 0.0
+        for j in range(n):
+            denom += mat[i, j] * w[j]
+        factor = alpx[i] / denom
+        for j in range(n):
+            mat[i, j] *= factor
+
+    for j in range(n):
+        factor = w[j] / alpxk[j]
+        for i in range(m):
+            mat[i, j] *= factor
     return mat
 
 
@@ -189,6 +226,172 @@ def _monomial_int_upper(xb: float, n: int) -> float:
     return float(val)
 
 
+def _evaluate_polynomial_v3(x: float, *, j: int, a: np.ndarray, b: np.ndarray) -> float:
+    """Evaluate v3's orthogonal polynomial p_j(x) using the 3-term recurrence.
+
+    Mirrors `xGrid.F90:evaluatePolynomial()`. Index `j` is 1-based.
+    """
+    if j == 1:
+        return 1.0
+    pj_minus1 = 0.0
+    pj = 1.0
+    y = 0.0
+    for ii in range(1, j):
+        y = (x - float(a[ii])) * pj - float(b[ii]) * pj_minus1
+        pj_minus1, pj = pj, y
+    return float(y)
+
+
+def _rosenbluth_potential_terms_v3_np_quadpack(
+    *,
+    x: np.ndarray,
+    x_weights: np.ndarray,
+    x_grid_k: float,
+    xg: XGrid,
+    z_s: np.ndarray,
+    m_hats: np.ndarray,
+    n_hats: np.ndarray,
+    t_hats: np.ndarray,
+    nl: int,
+) -> np.ndarray:
+    """Quadpack-based Rosenbluth response matrices matching v3 `xGrid.F90`.
+
+    This implementation intentionally mirrors the upstream Fortran algorithm:
+    - Polynomials are evaluated via the 3-term recurrence (not monomial expansion).
+    - All required integrals are evaluated using QUADPACK (`scipy.integrate.quad`) with
+      epsabs=epsrel=1e-13 and an upper split at `partition=max(10, 2*xb)` for semi-infinite
+      integrals, matching `xGrid.F90`.
+
+    Notes
+    -----
+    This function is not JAX-differentiable (SciPy). It is used to precompute the
+    linearized v3 Fokker-Planck collision operator coefficients.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    x_weights = np.asarray(x_weights, dtype=np.float64)
+    z_s = np.asarray(z_s, dtype=np.float64)
+    m_hats = np.asarray(m_hats, dtype=np.float64)
+    n_hats = np.asarray(n_hats, dtype=np.float64)
+    t_hats = np.asarray(t_hats, dtype=np.float64)
+
+    n_x = int(x.size)
+    n_species = int(z_s.size)
+
+    expx2 = np.exp(-(x * x))
+    a = np.asarray(xg.poly_a, dtype=np.float64)
+    b = np.asarray(xg.poly_b, dtype=np.float64)
+    poly_c = np.asarray(xg.poly_c, dtype=np.float64)
+
+    # collocation2modal(j,i) in the Fortran code:
+    pvals = np.zeros((n_x, n_x), dtype=np.float64)  # (j,i)
+    for j in range(1, n_x + 1):
+        for i in range(n_x):
+            pvals[j - 1, i] = _evaluate_polynomial_v3(float(x[i]), j=j, a=a, b=b)
+    collocation2modal = (x_weights[None, :] * (x[None, :] ** float(x_grid_k)) * pvals) / (
+        poly_c[1 : n_x + 1, None]
+    )
+
+    pi = float(_V3_PI)
+    epsabs = 1e-13
+    epsrel = 1e-13
+    limit = 5000
+
+    terms = np.zeros((n_species, n_species, int(nl), n_x, n_x), dtype=np.float64)
+    for l in range(int(nl)):
+        alpha = -float(2 * l - 1) / float(2 * l + 3)
+        denom_h = float(2 * l + 1)
+        denom_g = float(4 * l * l - 1)
+
+        for ia in range(n_species):
+            for ib in range(n_species):
+                species_factor = float(
+                    math.sqrt((t_hats[ia] * m_hats[ib]) / (t_hats[ib] * m_hats[ia]))
+                )
+                species_factor2 = float(3.0 / (2.0 * pi)) * float(n_hats[ia]) * float(z_s[ia] ** 2) * float(
+                    z_s[ib] ** 2
+                )
+                species_factor2 *= float(t_hats[ib] * m_hats[ia]) / float(t_hats[ia] * m_hats[ib])
+                species_factor2 /= float(t_hats[ia] * math.sqrt(t_hats[ia] * m_hats[ia]))
+
+                temp_h = np.zeros((n_x, n_x), dtype=np.float64)
+                temp_dh = np.zeros((n_x, n_x), dtype=np.float64)
+                temp_d2g = np.zeros((n_x, n_x), dtype=np.float64)
+
+                for ix in range(n_x):
+                    xb = float(x[ix] * species_factor)
+                    xb_safe = xb if xb > 0 else 1e-14
+
+                    # For semi-infinite integrals, v3 splits at `partition=max(10,2*xb)`.
+                    partition = float(max(10.0, 2.0 * xb_safe))
+
+                    for j in range(1, n_x + 1):
+                        def poly(t: float) -> float:
+                            return _evaluate_polynomial_v3(t, j=j, a=a, b=b)
+
+                        def integrand(t: float, power: int) -> float:
+                            # Note: do NOT include t**xGrid_k here; v3 excludes it in these integrals.
+                            return (t**power) * poly(t) * math.exp(-(t * t))
+
+                        def quad_finite(power: int, a0: float, b0: float) -> float:
+                            val, _ = quad(
+                                lambda tt: integrand(tt, power),
+                                a0,
+                                b0,
+                                epsabs=epsabs,
+                                epsrel=epsrel,
+                                limit=limit,
+                            )
+                            return float(val)
+
+                        def quad_semiinf(power: int, a0: float) -> float:
+                            val, _ = quad(
+                                lambda tt: integrand(tt, power),
+                                a0,
+                                np.inf,
+                                epsabs=epsabs,
+                                epsrel=epsrel,
+                                limit=limit,
+                            )
+                            return float(val)
+
+                        i_2pl = quad_finite(l + 2, 0.0, xb_safe)
+                        i_4pl = quad_finite(l + 4, 0.0, xb_safe)
+
+                        i_1ml = quad_finite(1 - l, xb_safe, partition) + quad_semiinf(1 - l, partition)
+                        i_3ml = quad_finite(3 - l, xb_safe, partition) + quad_semiinf(3 - l, partition)
+
+                        xb_pow_l = xb_safe**l
+                        xb_pow_lm1 = xb_safe ** (l - 1) if l >= 1 else xb_safe ** (-1)
+                        xb_pow_lm2 = xb_safe ** (l - 2) if l >= 2 else xb_safe ** (-2)
+
+                        temp_h[ix, j - 1] = (4.0 * pi / denom_h) * (
+                            i_2pl / (xb_safe ** (l + 1)) + xb_pow_l * i_1ml
+                        )
+                        temp_dh[ix, j - 1] = (4.0 * pi / denom_h) * (
+                            -(l + 1) * i_2pl / (xb_safe ** (l + 2)) + l * xb_pow_lm1 * i_1ml
+                        )
+                        temp_d2g[ix, j - 1] = (-4.0 * pi / denom_g) * (
+                            l * (l - 1) * xb_pow_lm2 * i_3ml
+                            + alpha * (l + 1) * (l + 2) * xb_pow_l * i_1ml
+                            + alpha * (l + 1) * (l + 2) * i_4pl / (xb_safe ** (l + 3))
+                            + l * (l - 1) * i_2pl / (xb_safe ** (l + 1))
+                        )
+
+                temp_combined = np.zeros((n_x, n_x), dtype=np.float64)
+                mass_ratio = float(m_hats[ia] / m_hats[ib])
+                for i in range(n_x):
+                    xb = float(x[i] * species_factor)
+                    temp_combined[i, :] = species_factor2 * expx2[i] * (
+                        -temp_h[i, :]
+                        - (1.0 - mass_ratio) * xb * temp_dh[i, :]
+                        + float(x[i] * x[i]) * temp_d2g[i, :]
+                    )
+
+                terms[ia, ib, l, :, :] = temp_combined @ collocation2modal
+
+    return terms
+
+
 def rosenbluth_potential_terms_v3_np(
     *,
     x: np.ndarray,  # (X,)
@@ -200,6 +403,7 @@ def rosenbluth_potential_terms_v3_np(
     n_hats: np.ndarray,  # (S,)
     t_hats: np.ndarray,  # (S,)
     nl: int,
+    method: str | None = None,
 ) -> np.ndarray:
     """Compute v3 `RosenbluthPotentialTerms` for xGridScheme=5/6 (new scheme).
 
@@ -209,6 +413,27 @@ def rosenbluth_potential_terms_v3_np(
       Array of shape (S, S, NL, X, X) with index ordering:
       (species_row, species_col, L, x_row, x_col).
     """
+    if method is None:
+        # Default to the upstream Fortran algorithm for parity. Users can opt into the
+        # faster analytic path via `SFINCS_JAX_ROSENBLUTH_METHOD=analytic`.
+        method = os.environ.get("SFINCS_JAX_ROSENBLUTH_METHOD", "").strip().lower() or "quadpack"
+    method = str(method).strip().lower()
+
+    if method == "quadpack":
+        return _rosenbluth_potential_terms_v3_np_quadpack(
+            x=x,
+            x_weights=x_weights,
+            x_grid_k=x_grid_k,
+            xg=xg,
+            z_s=z_s,
+            m_hats=m_hats,
+            n_hats=n_hats,
+            t_hats=t_hats,
+            nl=nl,
+        )
+    if method != "analytic":
+        raise ValueError(f"Unknown RosenbluthPotentialTerms method={method!r}. Use 'analytic' or 'quadpack'.")
+
     x = np.asarray(x, dtype=np.float64)
     x_weights = np.asarray(x_weights, dtype=np.float64)
     z_s = np.asarray(z_s, dtype=np.float64)
@@ -236,7 +461,7 @@ def rosenbluth_potential_terms_v3_np(
     )
 
     terms = np.zeros((n_species, n_species, int(nl), n_x, n_x), dtype=np.float64)
-    pi = float(np.pi)
+    pi = float(_V3_PI)
 
     for l in range(int(nl)):
         alpha = -float(2 * l - 1) / float(2 * l + 3)
@@ -459,7 +684,7 @@ def make_fokker_planck_v3_operator(
 
     n_species = int(z_s.size)
     n_x = int(x.size)
-    sqrt_pi = float(np.sqrt(np.pi))
+    sqrt_pi = float(_V3_SQRTPI)
     expx2 = np.exp(-(x * x))
     x2 = x * x
     x3 = x2 * x
@@ -490,7 +715,7 @@ def make_fokker_planck_v3_operator(
             )
             xb = x * species_factor
             expxb2 = np.exp(-(xb * xb))
-            erfs = sp_special.erf(xb)
+            erfs = _erf_np(xb)
             psi = (erfs - (2.0 / sqrt_pi) * xb * expxb2) / (2.0 * xb * xb)
 
             # nuDHat: uses base x-grid x^3 in the denominator (matching Fortran).
@@ -708,7 +933,7 @@ def make_fokker_planck_v3_phi1_operator(
 
     n_species = int(z_s.size)
     n_x = int(x.size)
-    sqrt_pi = float(np.sqrt(np.pi))
+    sqrt_pi = float(_V3_SQRTPI)
     expx2 = np.exp(-(x * x))
     x2 = x * x
     x3 = x2 * x

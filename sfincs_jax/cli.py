@@ -127,26 +127,23 @@ def _cmd_run_fortran(args: argparse.Namespace) -> int:
 def _cmd_write_output(args: argparse.Namespace) -> int:
     t0 = _now()
     nml = read_sfincs_input(Path(args.input))
-    _emit("################################################################", level=0, args=args)
-    _emit(" sfincs_jax write-output", level=0, args=args)
-    _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
-    _emit(f" out={Path(args.out).resolve()}", level=0, args=args)
-    _emit_namelist_summary(nml=nml, args=args)
-    _emit_runtime_info(args=args)
-    if bool(args.compute_transport_matrix):
-        _emit(" compute_transport_matrix=true (will run whichRHS solves for RHSMode=2/3)", level=0, args=args)
-    if bool(getattr(args, "compute_solution", False)):
-        _emit(" compute_solution=true (will solve RHSMode=1 and write solution-derived fields)", level=0, args=args)
+    rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+
+    # Default to upstream v3 behavior: full solve/write appropriate to RHSMode.
+    geometry_only = bool(getattr(args, "geometry_only", False))
+    compute_solution = (not geometry_only) and (bool(getattr(args, "compute_solution", False)) or rhs_mode == 1)
+    compute_transport_matrix = (not geometry_only) and (bool(args.compute_transport_matrix) or rhs_mode in (2, 3))
+
     out_path = write_sfincs_jax_output_h5(
         input_namelist=Path(args.input),
         output_path=Path(args.out),
         fortran_layout=bool(args.fortran_layout),
         overwrite=bool(args.overwrite),
-        compute_transport_matrix=bool(args.compute_transport_matrix),
-        compute_solution=bool(getattr(args, "compute_solution", False)),
+        compute_transport_matrix=bool(compute_transport_matrix),
+        compute_solution=bool(compute_solution),
         emit=lambda level, msg: _emit(msg, level=level, args=args),
+        verbose=not bool(getattr(args, "quiet", False)),
     )
-    _emit(f" wrote sfincsOutput.h5 -> {out_path}", level=0, args=args)
     _emit(f" elapsed_s={_now()-t0:.3f}", level=1, args=args)
     return 0
 
@@ -353,12 +350,17 @@ def main(argv: list[str] | None = None) -> int:
     p_out.add_argument(
         "--compute-transport-matrix",
         action="store_true",
-        help="For RHSMode=2/3 runs, also perform the whichRHS solves and write `transportMatrix` (may be slow).",
+        help="Force transport-matrix solves for RHSMode=2/3 (default: enabled when RHSMode=2/3).",
     )
     p_out.add_argument(
         "--compute-solution",
         action="store_true",
-        help="For RHSMode=1 runs, also solve the linear system and write solution-derived fields (may be slow).",
+        help="Force RHSMode=1 solves (default: enabled when RHSMode=1).",
+    )
+    p_out.add_argument(
+        "--geometry-only",
+        action="store_true",
+        help="Only write geometry/grid outputs (skip RHSMode=1 solve and RHSMode=2/3 transport-matrix loop).",
     )
     p_out.set_defaults(func=_cmd_write_output)
 

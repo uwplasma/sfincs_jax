@@ -58,15 +58,17 @@ class CaseResult:
 
 
 PRINT_SIGNALS: dict[str, tuple[str, str]] = {
-    "input_namelist": (r"input\.namelist|Successfully read parameters", r"input\.namelist summary|input="),
-    "geometry_summary": (r"Geometry scheme|Geometry parameters", r"geometryScheme"),
-    "resolution_summary": (r"Ntheta|Nzeta|Nxi|Nx", r"numerical resolution|resolution:"),
-    "x_grid": (r"\bx:\s", r"x-grid="),
-    "residual": (r"Residual function norm|evaluateResidual called", r"residual"),
-    "jacobian": (r"evaluateJacobian called|populateMatrix", r"jacobian|whichMatrix"),
-    "diagnostics": (r"Computing diagnostics|Results for species", r"diagnostic"),
-    "output_write": (r"Saving diagnostics to h5 file|sfincsOutput\.h5", r"writing .*sfincsOutput|wrote sfincsOutput"),
-    "runtime": (r"Time to solve|seconds", r"elapsed_s="),
+    # These patterns are intentionally aligned with upstream v3 stdout so we can
+    # track how close `sfincs_jax` is to being a drop-in replacement.
+    "input_namelist": (r"input\.namelist|Successfully read parameters", r"input\.namelist|Successfully read parameters"),
+    "geometry_summary": (r"Geometry scheme|Geometry parameters", r"Geometry scheme|Geometry parameters"),
+    "resolution_summary": (r"Ntheta|Nzeta|Nxi|Nx", r"Ntheta|Nzeta|Nxi|Nx"),
+    "x_grid": (r"\bx:\s", r"\bx:\s"),
+    "residual": (r"Residual function norm|evaluateResidual called", r"Residual function norm|evaluateResidual called|residual_norm"),
+    "jacobian": (r"evaluateJacobian called|populateMatrix", r"evaluateJacobian called|populateMatrix|whichMatrix"),
+    "diagnostics": (r"Computing diagnostics|Results for species", r"Computing diagnostics|Results for species"),
+    "output_write": (r"Saving diagnostics to h5 file|sfincsOutput\.h5", r"Saving diagnostics to h5 file|sfincsOutput\.h5"),
+    "runtime": (r"Time to solve|seconds", r"Time to solve|seconds|elapsed_s="),
 }
 
 GEOMETRY_MISMATCH_HINTS = (

@@ -327,39 +327,9 @@ def _build_rhsmode1_theta_line_preconditioner(
     local_per_species = int(np.sum(nxi_for_x))
     line_size = int(n_theta * local_per_species)
 
-    # Representative theta-line blocks at zeta=0, one per species.
-    rep_indices_by_species: list[np.ndarray] = []
-    for s in range(n_species):
-        idx: list[int] = []
-        for it in range(n_theta):
-            for ix in range(n_x):
-                max_l = int(nxi_for_x[ix])
-                for il in range(max_l):
-                    f_idx = ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + 0)
-                    idx.append(int(f_idx))
-        rep_indices_by_species.append(np.asarray(idx, dtype=np.int32))
-
     reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
     reg_val = float(reg_env) if reg_env else 1e-10
     reg = np.float64(reg_val)
-
-    block_inv = np.zeros((n_species, line_size, line_size), dtype=np.float64)
-    for s in range(n_species):
-        rep_idx = rep_indices_by_species[s]
-        m = int(rep_idx.shape[0])
-        if m != line_size:
-            raise RuntimeError(f"Internal error: line_size={line_size} but rep_idx has size {m}")
-        a = np.zeros((m, m), dtype=np.float64)
-        for j, col in enumerate(rep_idx.tolist()):
-            e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
-            a[:, j] = y[rep_idx]
-        a = a + reg * np.eye(m, dtype=np.float64)
-        try:
-            inv = np.linalg.inv(a)
-        except np.linalg.LinAlgError:
-            inv = np.linalg.pinv(a, rcond=1e-12)
-        block_inv[s, :, :] = inv
 
     # Build per-(species,zeta) gather map for all theta points and local (x,L) indices.
     idx_map = np.zeros((n_species, n_zeta, line_size), dtype=np.int32)
@@ -375,6 +345,24 @@ def _build_rhsmode1_theta_line_preconditioner(
 
     idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
     flat_idx_jnp = idx_map_jnp.reshape((-1,))
+
+    # Invert a theta-line block for each zeta plane. This is more robust (and closer to
+    # v3's zeta-local whichMatrix=0 structure) than freezing coefficients at a single zeta.
+    block_inv = np.zeros((n_species, n_zeta, line_size, line_size), dtype=np.float64)
+    for s in range(n_species):
+        for iz in range(n_zeta):
+            rep_idx = idx_map_jnp[s, iz, :]
+            basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
+            y = jax.vmap(lambda v: apply_v3_full_system_operator_jit(op_pc, v))(basis)  # (line_size, total_size)
+            a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
+            a = a + reg * np.eye(line_size, dtype=np.float64)
+            try:
+                inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(inv)):
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            block_inv[s, iz, :, :] = inv
     block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
 
     extra_start = int(op.f_size + op.phi1_size)
@@ -386,7 +374,7 @@ def _build_rhsmode1_theta_line_preconditioner(
         ee = np.zeros((extra_size, extra_size), dtype=np.float64)
         for j, col in enumerate(extra_idx_np.tolist()):
             e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
+            y = np.asarray(apply_v3_full_system_operator_jit(op_pc, e), dtype=np.float64)
             ee[:, j] = y[extra_idx_np]
         ee = ee + reg * np.eye(extra_size, dtype=np.float64)
         try:
@@ -398,7 +386,7 @@ def _build_rhsmode1_theta_line_preconditioner(
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
         r_loc = r_full[flat_idx_jnp].reshape((n_species, n_zeta, line_size))
-        z_loc = jnp.einsum("sab,szb->sza", block_inv_jnp, r_loc)
+        z_loc = jnp.einsum("szab,szb->sza", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
         z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
         if extra_inv_jnp is not None:
@@ -441,39 +429,9 @@ def _build_rhsmode1_zeta_line_preconditioner(
     local_per_species = int(np.sum(nxi_for_x))
     line_size = int(n_zeta * local_per_species)
 
-    # Representative zeta-line blocks at theta=0, one per species.
-    rep_indices_by_species: list[np.ndarray] = []
-    for s in range(n_species):
-        idx: list[int] = []
-        for iz in range(n_zeta):
-            for ix in range(n_x):
-                max_l = int(nxi_for_x[ix])
-                for il in range(max_l):
-                    f_idx = ((((s * n_x + ix) * n_l + il) * n_theta + 0) * n_zeta + iz)
-                    idx.append(int(f_idx))
-        rep_indices_by_species.append(np.asarray(idx, dtype=np.int32))
-
     reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
     reg_val = float(reg_env) if reg_env else 1e-10
     reg = np.float64(reg_val)
-
-    block_inv = np.zeros((n_species, line_size, line_size), dtype=np.float64)
-    for s in range(n_species):
-        rep_idx = rep_indices_by_species[s]
-        m = int(rep_idx.shape[0])
-        if m != line_size:
-            raise RuntimeError(f"Internal error: line_size={line_size} but rep_idx has size {m}")
-        a = np.zeros((m, m), dtype=np.float64)
-        for j, col in enumerate(rep_idx.tolist()):
-            e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
-            a[:, j] = y[rep_idx]
-        a = a + reg * np.eye(m, dtype=np.float64)
-        try:
-            inv = np.linalg.inv(a)
-        except np.linalg.LinAlgError:
-            inv = np.linalg.pinv(a, rcond=1e-12)
-        block_inv[s, :, :] = inv
 
     # Build per-(species,theta) gather map for all zeta points and local (x,L) indices.
     idx_map = np.zeros((n_species, n_theta, line_size), dtype=np.int32)
@@ -489,6 +447,23 @@ def _build_rhsmode1_zeta_line_preconditioner(
 
     idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
     flat_idx_jnp = idx_map_jnp.reshape((-1,))
+
+    # Invert a zeta-line block for each theta plane.
+    block_inv = np.zeros((n_species, n_theta, line_size, line_size), dtype=np.float64)
+    for s in range(n_species):
+        for it in range(n_theta):
+            rep_idx = idx_map_jnp[s, it, :]
+            basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
+            y = jax.vmap(lambda v: apply_v3_full_system_operator_jit(op_pc, v))(basis)  # (line_size, total_size)
+            a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
+            a = a + reg * np.eye(line_size, dtype=np.float64)
+            try:
+                inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(inv)):
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            block_inv[s, it, :, :] = inv
     block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
 
     extra_start = int(op.f_size + op.phi1_size)
@@ -500,7 +475,7 @@ def _build_rhsmode1_zeta_line_preconditioner(
         ee = np.zeros((extra_size, extra_size), dtype=np.float64)
         for j, col in enumerate(extra_idx_np.tolist()):
             e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
+            y = np.asarray(apply_v3_full_system_operator_jit(op_pc, e), dtype=np.float64)
             ee[:, j] = y[extra_idx_np]
         ee = ee + reg * np.eye(extra_size, dtype=np.float64)
         try:
@@ -512,7 +487,7 @@ def _build_rhsmode1_zeta_line_preconditioner(
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
         r_loc = r_full[flat_idx_jnp].reshape((n_species, n_theta, line_size))
-        z_loc = jnp.einsum("sab,stb->sta", block_inv_jnp, r_loc)
+        z_loc = jnp.einsum("stab,stb->sta", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
         z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
         if extra_inv_jnp is not None:
@@ -615,26 +590,47 @@ def solve_v3_full_system_linear_gmres(
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
     rhs1_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECONDITIONER", "").strip().lower()
     rhs1_precond_kind: str | None
-    if rhs1_precond_env in {"0", "false", "no", "off"}:
-        rhs1_precond_kind = None
-    elif rhs1_precond_env in {"theta", "theta_line", "line_theta"}:
-        rhs1_precond_kind = "theta_line"
-    elif rhs1_precond_env in {"zeta", "zeta_line", "line_zeta"}:
-        rhs1_precond_kind = "zeta_line"
-    elif rhs1_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
-        rhs1_precond_kind = "adi"
-    elif rhs1_precond_env in {"1", "true", "yes", "on", "point", "point_block"}:
-        rhs1_precond_kind = "point"
+    if rhs1_precond_env:
+        if rhs1_precond_env in {"0", "false", "no", "off"}:
+            rhs1_precond_kind = None
+        elif rhs1_precond_env in {"theta", "theta_line", "line_theta"}:
+            rhs1_precond_kind = "theta_line"
+        elif rhs1_precond_env in {"zeta", "zeta_line", "line_zeta"}:
+            rhs1_precond_kind = "zeta_line"
+        elif rhs1_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
+            rhs1_precond_kind = "adi"
+        elif rhs1_precond_env in {"1", "true", "yes", "on", "point", "point_block"}:
+            rhs1_precond_kind = "point"
+        else:
+            rhs1_precond_kind = None
     else:
-        rhs1_precond_kind = None
+        # Default to a PETSc-like fast path: precondition RHSMode=1 linear solves without Phi1.
+        # Many upstream v3 examples rely on a strong preconditioner (whichMatrix=0) for convergence.
+        if int(op.rhs_mode) == 1 and (not bool(op.include_phi1)):
+            if int(op.n_theta) > 1 and int(op.n_zeta) > 1:
+                rhs1_precond_kind = "adi"
+            elif int(op.n_theta) > 1:
+                rhs1_precond_kind = "theta_line"
+            elif int(op.n_zeta) > 1:
+                rhs1_precond_kind = "zeta_line"
+            else:
+                rhs1_precond_kind = "point"
+        else:
+            rhs1_precond_kind = None
     rhs1_precond_enabled = (
         rhs1_precond_kind is not None
         and int(op.rhs_mode) == 1
         and (not bool(op.include_phi1))
     )
+    solve_method_kind = str(solve_method).strip().lower()
+    if solve_method_kind == "dense_ksp":
+        # `dense_ksp` uses its own PETSc-like block preconditioner on the assembled dense system.
+        rhs1_precond_enabled = False
     gmres_precond_side_env = os.environ.get("SFINCS_JAX_GMRES_PRECONDITION_SIDE", "").strip().lower()
     if gmres_precond_side_env not in {"", "left", "right", "none"}:
         gmres_precond_side_env = ""
+    # Upstream SFINCS v3 reports KSP residual norms for the *preconditioned* residual, matching
+    # a left-preconditioned solve. Default to left to align solver-branch parity.
     gmres_precond_side = gmres_precond_side_env or "left"
     stage2_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2", "").strip().lower()
     if stage2_env in {"0", "false", "no", "off"}:
@@ -643,7 +639,10 @@ def solve_v3_full_system_linear_gmres(
         stage2_enabled = True
     else:
         stage2_enabled = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
-    stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "10.0"))
+    # Stage-2 is a "stronger" fallback solve for difficult cases. The default time cap
+    # must be large enough to still trigger after any one-time preconditioner setup,
+    # while remaining bounded for interactive use and CI.
+    stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "30.0"))
     if use_active_dof_mode:
         assert active_idx_jnp is not None
         assert full_to_active_jnp is not None
@@ -691,24 +690,107 @@ def solve_v3_full_system_linear_gmres(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
 
+                sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+                try:
+                    sweeps = int(sweeps_env) if sweeps_env else 2
+                except ValueError:
+                    sweeps = 2
+                sweeps = max(1, sweeps)
+
                 def preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
-                    return pre_zeta(pre_theta(v))
+                    out = v
+                    for _ in range(sweeps):
+                        out = pre_zeta(pre_theta(out))
+                    return out
             else:
                 preconditioner_reduced = _build_rhsmode1_block_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
-        res_reduced = gmres_solve(
-            matvec=mv_reduced,
-            b=rhs_reduced,
-            preconditioner=preconditioner_reduced,
-            x0=x0_reduced,
-            tol=tol,
-            atol=atol,
-            restart=restart,
-            maxiter=maxiter,
-            solve_method=solve_method,
-            precondition_side=gmres_precond_side,
-        )
+        if solve_method_kind == "dense_ksp":
+            if int(op.phi1_size) != 0:
+                raise NotImplementedError("dense_ksp is only supported for includePhi1=false RHSMode=1 solves.")
+            if emit is not None:
+                emit(1, "solve_v3_full_system_linear_gmres: assembling dense reduced matrix for dense_ksp")
+            a_dense = assemble_dense_matrix_from_matvec(matvec=mv_reduced, n=active_size, dtype=rhs_reduced.dtype)
+
+            if emit is not None:
+                emit(1, "solve_v3_full_system_linear_gmres: building PETSc-like species-block preconditioner (dense_ksp)")
+
+            import jax.scipy.linalg as jla  # noqa: PLC0415
+
+            n_species = int(op.n_species)
+            n_theta = int(op.n_theta)
+            n_zeta = int(op.n_zeta)
+            local_per_species = int(np.sum(nxi_for_x))
+            dke_size = int(local_per_species * n_theta * n_zeta)
+            extra_size = int(op.extra_size)
+            extra_per_species = int(extra_size // max(1, n_species)) if extra_size else 0
+            if extra_size and (extra_per_species * n_species != extra_size):
+                extra_per_species = 0
+
+            f_size = int(n_species * dke_size)
+            expected_active = int(f_size + int(op.phi1_size) + extra_size)
+            if int(active_size) != expected_active:
+                raise RuntimeError(f"dense_ksp expects active_size={expected_active}, got {active_size}")
+
+            lu_factors: list[tuple[jnp.ndarray, jnp.ndarray]] = []
+            idx_blocks: list[jnp.ndarray] = []
+            for s in range(n_species):
+                f_idx = np.arange(s * dke_size, (s + 1) * dke_size, dtype=np.int32)
+                extra_idx = np.arange(f_size + s * extra_per_species, f_size + (s + 1) * extra_per_species, dtype=np.int32)
+                block_idx_np = np.concatenate([f_idx, extra_idx], axis=0) if extra_per_species else f_idx
+                block_idx = jnp.asarray(block_idx_np, dtype=jnp.int32)
+                a_block = a_dense[jnp.ix_(block_idx, block_idx)]
+                lu, piv = jla.lu_factor(a_block)
+                lu_factors.append((lu, piv))
+                idx_blocks.append(block_idx)
+
+            def preconditioner_dense(v: jnp.ndarray) -> jnp.ndarray:
+                out = jnp.zeros_like(v)
+                for block_idx, (lu, piv) in zip(idx_blocks, lu_factors, strict=True):
+                    rhs_block = v[block_idx]
+                    sol_block = jla.lu_solve((lu, piv), rhs_block)
+                    out = out.at[block_idx].set(sol_block, unique_indices=True)
+                return out
+
+            def mv_dense(x: jnp.ndarray) -> jnp.ndarray:
+                return a_dense @ x
+
+            # PETSc v3 uses *left* preconditioning and checks convergence in the
+            # preconditioned residual norm ||M^{-1} r||. To match this behavior with
+            # JAX's GMRES (which uses a SciPy-style convergence check), solve the
+            # explicitly left-preconditioned system:
+            #   (M^{-1} A) x = (M^{-1} b).
+            rhs_pc = preconditioner_dense(rhs_reduced)
+
+            def mv_pc(x: jnp.ndarray) -> jnp.ndarray:
+                return preconditioner_dense(mv_dense(x))
+
+            res_reduced = gmres_solve(
+                matvec=mv_pc,
+                b=rhs_pc,
+                preconditioner=None,
+                x0=x0_reduced,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method="incremental",
+                precondition_side="none",
+            )
+        else:
+            res_reduced = gmres_solve(
+                matvec=mv_reduced,
+                b=rhs_reduced,
+                preconditioner=preconditioner_reduced,
+                x0=x0_reduced,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method=solve_method,
+                precondition_side=gmres_precond_side,
+            )
         if preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
             if emit is not None:
                 emit(0, "solve_v3_full_system_linear_gmres: preconditioned reduced GMRES returned non-finite result; retrying without preconditioner")
@@ -756,41 +838,110 @@ def solve_v3_full_system_linear_gmres(
         residual_norm_full = jnp.linalg.norm(mv(x_full) - rhs)
         result = GMRESSolveResult(x=x_full, residual_norm=residual_norm_full)
     else:
-        preconditioner_full = None
-        if rhs1_precond_enabled:
+        if solve_method_kind == "dense_ksp":
+            if int(op.phi1_size) != 0:
+                raise NotImplementedError("dense_ksp is only supported for includePhi1=false RHSMode=1 solves.")
             if emit is not None:
-                emit(1, f"solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner={rhs1_precond_kind}")
-            if rhs1_precond_kind == "theta_line":
-                preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
-            elif rhs1_precond_kind == "zeta_line":
-                preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
-            elif rhs1_precond_kind == "adi":
-                pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
-                pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                emit(1, "solve_v3_full_system_linear_gmres: assembling dense full matrix for dense_ksp")
+            a_dense = assemble_dense_matrix_from_matvec(matvec=mv, n=int(op.total_size), dtype=rhs.dtype)
 
-                def preconditioner_full(v: jnp.ndarray) -> jnp.ndarray:
-                    return pre_zeta(pre_theta(v))
-            else:
-                preconditioner_full = _build_rhsmode1_block_preconditioner(op=op)
-        result = gmres_solve(
-            matvec=mv,
-            b=rhs,
-            preconditioner=preconditioner_full,
-            x0=x0,
-            tol=tol,
-            atol=atol,
-            restart=restart,
-            maxiter=maxiter,
-            solve_method=solve_method,
-            precondition_side=gmres_precond_side,
-        )
-        if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
             if emit is not None:
-                emit(0, "solve_v3_full_system_linear_gmres: preconditioned GMRES returned non-finite result; retrying without preconditioner")
+                emit(1, "solve_v3_full_system_linear_gmres: building PETSc-like species-block preconditioner (dense_ksp)")
+
+            import jax.scipy.linalg as jla  # noqa: PLC0415
+
+            n_species = int(op.n_species)
+            n_theta = int(op.n_theta)
+            n_zeta = int(op.n_zeta)
+            local_per_species = int(np.sum(nxi_for_x))
+            dke_size = int(local_per_species * n_theta * n_zeta)
+            extra_size = int(op.extra_size)
+            extra_per_species = int(extra_size // max(1, n_species)) if extra_size else 0
+            if extra_size and (extra_per_species * n_species != extra_size):
+                extra_per_species = 0
+
+            f_size = int(n_species * dke_size)
+            expected_size = int(f_size + int(op.phi1_size) + extra_size)
+            if int(op.total_size) != expected_size:
+                raise RuntimeError(f"dense_ksp expects total_size={expected_size}, got {int(op.total_size)}")
+
+            lu_factors: list[tuple[jnp.ndarray, jnp.ndarray]] = []
+            idx_blocks: list[jnp.ndarray] = []
+            for s in range(n_species):
+                f_idx = np.arange(s * dke_size, (s + 1) * dke_size, dtype=np.int32)
+                extra_idx = np.arange(
+                    f_size + s * extra_per_species,
+                    f_size + (s + 1) * extra_per_species,
+                    dtype=np.int32,
+                )
+                block_idx_np = np.concatenate([f_idx, extra_idx], axis=0) if extra_per_species else f_idx
+                block_idx = jnp.asarray(block_idx_np, dtype=jnp.int32)
+                a_block = a_dense[jnp.ix_(block_idx, block_idx)]
+                lu, piv = jla.lu_factor(a_block)
+                lu_factors.append((lu, piv))
+                idx_blocks.append(block_idx)
+
+            def preconditioner_dense(v: jnp.ndarray) -> jnp.ndarray:
+                out = jnp.zeros_like(v)
+                for block_idx, (lu, piv) in zip(idx_blocks, lu_factors, strict=True):
+                    rhs_block = v[block_idx]
+                    sol_block = jla.lu_solve((lu, piv), rhs_block)
+                    out = out.at[block_idx].set(sol_block, unique_indices=True)
+                return out
+
+            def mv_dense(x: jnp.ndarray) -> jnp.ndarray:
+                return a_dense @ x
+
+            rhs_pc = preconditioner_dense(rhs)
+
+            def mv_pc(x: jnp.ndarray) -> jnp.ndarray:
+                return preconditioner_dense(mv_dense(x))
+
+            res_pc = gmres_solve(
+                matvec=mv_pc,
+                b=rhs_pc,
+                preconditioner=None,
+                x0=x0,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method="incremental",
+                precondition_side="none",
+            )
+            residual_norm_full = jnp.linalg.norm(mv(res_pc.x) - rhs)
+            result = GMRESSolveResult(x=res_pc.x, residual_norm=residual_norm_full)
+        else:
+            preconditioner_full = None
+            if rhs1_precond_enabled:
+                if emit is not None:
+                    emit(1, f"solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner={rhs1_precond_kind}")
+                if rhs1_precond_kind == "theta_line":
+                    preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
+                elif rhs1_precond_kind == "zeta_line":
+                    preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                elif rhs1_precond_kind == "adi":
+                    pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
+                    pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
+
+                    sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+                    try:
+                        sweeps = int(sweeps_env) if sweeps_env else 2
+                    except ValueError:
+                        sweeps = 2
+                    sweeps = max(1, sweeps)
+
+                    def preconditioner_full(v: jnp.ndarray) -> jnp.ndarray:
+                        out = v
+                        for _ in range(sweeps):
+                            out = pre_zeta(pre_theta(out))
+                        return out
+                else:
+                    preconditioner_full = _build_rhsmode1_block_preconditioner(op=op)
             result = gmres_solve(
                 matvec=mv,
                 b=rhs,
-                preconditioner=None,
+                preconditioner=preconditioner_full,
                 x0=x0,
                 tol=tol,
                 atol=atol,
@@ -799,36 +950,51 @@ def solve_v3_full_system_linear_gmres(
                 solve_method=solve_method,
                 precondition_side=gmres_precond_side,
             )
-        # If GMRES does not reach the requested tolerance (common without preconditioning),
-        # retry with a larger iteration budget and the more robust incremental mode.
-        target = max(float(atol), float(tol) * float(rhs_norm))
-        if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
-            stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
-            stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
-            stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
-            if stage2_method not in {"batched", "incremental", "dense"}:
-                stage2_method = "incremental"
-            if emit is not None:
-                emit(
-                    0,
-                    "solve_v3_full_system_linear_gmres: stage2 GMRES "
-                    f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
-                    f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
+            if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
+                if emit is not None:
+                    emit(0, "solve_v3_full_system_linear_gmres: preconditioned GMRES returned non-finite result; retrying without preconditioner")
+                result = gmres_solve(
+                    matvec=mv,
+                    b=rhs,
+                    preconditioner=None,
+                    x0=x0,
+                    tol=tol,
+                    atol=atol,
+                    restart=restart,
+                    maxiter=maxiter,
+                    solve_method=solve_method,
+                    precondition_side=gmres_precond_side,
                 )
-            res2 = gmres_solve(
-                matvec=mv,
-                b=rhs,
-                preconditioner=preconditioner_full,
-                x0=result.x,
-                tol=tol,
-                atol=atol,
-                restart=stage2_restart,
-                maxiter=stage2_maxiter,
-                solve_method=stage2_method,
-                precondition_side=gmres_precond_side,
-            )
-            if float(res2.residual_norm) < float(result.residual_norm):
-                result = res2
+            # If GMRES does not reach the requested tolerance (common without preconditioning),
+            # retry with a larger iteration budget and the more robust incremental mode.
+            target = max(float(atol), float(tol) * float(rhs_norm))
+            if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+                stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
+                stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
+                stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
+                if stage2_method not in {"batched", "incremental", "dense"}:
+                    stage2_method = "incremental"
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: stage2 GMRES "
+                        f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
+                        f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
+                    )
+                res2 = gmres_solve(
+                    matvec=mv,
+                    b=rhs,
+                    preconditioner=preconditioner_full,
+                    x0=result.x,
+                    tol=tol,
+                    atol=atol,
+                    restart=stage2_restart,
+                    maxiter=stage2_maxiter,
+                    solve_method=stage2_method,
+                    precondition_side=gmres_precond_side,
+                )
+                if float(res2.residual_norm) < float(result.residual_norm):
+                    result = res2
     if int(op.rhs_mode) == 1:
         project_rhs1 = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower() in {
             "1",

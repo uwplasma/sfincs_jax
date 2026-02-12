@@ -100,9 +100,10 @@ def _integrate_split(
     epsrel: float = 1e-13,
     limit: int = 5000,
 ) -> float:
-    a1, _ = quad(f, 0.0, finite_bound, epsabs=epsabs, epsrel=epsrel, limit=limit)
+    # Match v3 ordering: semi-infinite integral first, then finite.
     a2, _ = quad(f, finite_bound, np.inf, epsabs=epsabs, epsrel=epsrel, limit=limit)
-    return float(a1 + a2)
+    a1, _ = quad(f, 0.0, finite_bound, epsabs=epsabs, epsrel=epsrel, limit=limit)
+    return float(a2 + a1)
 
 
 def _evaluate_polynomial(x: float, *, j: int, a: np.ndarray, b: np.ndarray) -> float:
@@ -229,13 +230,26 @@ def _make_x_grid_uncached(
     # Jacobi matrix eigen-decomposition (Golub-Welsch).
     diag = a[1 : n + 1].copy()
     off = np.sqrt(b[2 : n + 1].copy())
+    try:
+        if include_point_at_x0:
+            from scipy.linalg import eigh_tridiagonal
 
-    jmat = np.diag(diag)
-    for i in range(n - 1):
-        jmat[i, i + 1] = off[i]
-        jmat[i + 1, i] = off[i]
+            abscissae, eigenvectors = eigh_tridiagonal(diag, off, lapack_driver="stevr")
+        else:
+            from scipy.linalg.lapack import dpteqr
 
-    abscissae, eigenvectors = np.linalg.eigh(jmat)
+            d_out, e_out, z, info = dpteqr("I", diag.copy(), off.copy())
+            if info != 0:
+                raise RuntimeError(f"dpteqr failed with info={info}")
+            # Fortran reverses order for DPTEQR.
+            abscissae = d_out[::-1]
+            eigenvectors = z[:, ::-1]
+    except Exception:  # noqa: BLE001
+        jmat = np.diag(diag)
+        for i in range(n - 1):
+            jmat[i, i + 1] = off[i]
+            jmat[i + 1, i] = off[i]
+        abscissae, eigenvectors = np.linalg.eigh(jmat)
     weights = c[1] * (eigenvectors[0, :] ** 2)
 
     if include_point_at_x0:
