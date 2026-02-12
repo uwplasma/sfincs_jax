@@ -260,8 +260,13 @@ def fokker_planck_collision_operator_from_namelist(
     if strict_parity is None:
         rhs_mode = int(nml.group("general").get("RHSMODE", 1))
         strict_env = os.environ.get("SFINCS_JAX_FP_STRICT_PARITY", "").strip().lower()
-        strict_requested = strict_env in {"1", "true", "yes", "on"}
-        strict_parity = bool(strict_requested and rhs_mode == 1)
+        if strict_env in {"0", "false", "no", "off"}:
+            strict_parity = False
+        elif strict_env in {"1", "true", "yes", "on"}:
+            strict_parity = True
+        else:
+            # Default to strict ordering for multispecies RHSMode=1 parity.
+            strict_parity = bool(rhs_mode == 1 and z_s.size > 1)
 
     return make_fokker_planck_v3_operator(
         x=np.asarray(grids.x, dtype=np.float64),

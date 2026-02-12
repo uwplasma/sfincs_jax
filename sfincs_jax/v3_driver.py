@@ -695,10 +695,10 @@ def solve_v3_full_system_linear_gmres(
             emit(1, f"fortran-stdout: KSP history unavailable ({type(exc).__name__}: {exc})")
             return
         for k, rn in enumerate(history):
-            emit(0, f\"{k:4d} KSP Residual norm {rn: .12e} \")
+            emit(0, f"{k:4d} KSP Residual norm {rn: .12e} ")
         if history:
-            emit(0, \" Linear iteration (KSP) converged.  KSPConvergedReason =            2\")
-            emit(0, \"   KSP_CONVERGED_RTOL: Norm decreased by rtol.\")
+            emit(0, " Linear iteration (KSP) converged.  KSPConvergedReason =            2")
+            emit(0, "   KSP_CONVERGED_RTOL: Norm decreased by rtol.")
     if use_active_dof_mode:
         assert active_idx_jnp is not None
         assert full_to_active_jnp is not None

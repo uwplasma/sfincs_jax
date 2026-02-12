@@ -118,6 +118,10 @@ Solving a supported v3 linear run (matrix-free)
 Solver controls (environment variables)
 ---------------------------------------
 
+Defaults are parity-first: running with the same input.namelist as v3 should produce
+matching outputs and stdout without extra flags. The environment variables below are
+advanced tuning knobs for performance or debugging.
+
 Some solver options are intentionally exposed as environment variables so you can tune
 performance without changing the input file:
 
@@ -163,7 +167,10 @@ performance without changing the input file:
   - ``analytic``: faster analytic integrals (may differ at strict parity level).
 
 - ``SFINCS_JAX_FP_STRICT_PARITY``: for ``collisionOperator=0`` multispecies runs, force a
-  scalar-ordered accumulation of the FP cross-species coupling to match v3 ordering (default: off).
+  scalar-ordered accumulation of the FP cross-species coupling to match v3 ordering.
+
+  - Default: enabled automatically for RHSMode=1 multispecies cases.
+  - ``0``/``false``: disable (use faster vectorized accumulation).
 
 Writing `sfincsOutput.h5` with `sfincs_jax`
 --------------------------------------------------
