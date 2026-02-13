@@ -276,7 +276,7 @@
     "case": "geometryScheme4_1species_PAS_withEr_DKESTrajectories",
     "status": "fortran_error",
     "blocker_type": "unsupported physics/path",
-    "message": "Fortran MPI init error: Fortran failed rc=143.\nAbort(136439951): Fatal error in internal_Init: Other MPI error, error stack:\ninternal_Init(70)........: MPI_Init(argc=0x0, argv=0x0) failed\nMPII_Init_thread(255)....: \nMPID_Init(566)...........: \nMPIDI_OFI_init_local(769): \ncreate_vci_context(1255).: OFI call ep_enable failed (default nic=tcp: Bad file descriptor)",
+    "message": "Fortran MPI init error: Fortran failed rc=213.\n[36580] /openmpi-5.0.8/3rd-party/openpmix/src/mca/ptl/base/ptl_base_listener.c:521 bind() failed for socket 7 storage size 16: Operation not permitted",
     "attempts": 1,
     "reductions": 0,
     "fortran_runtime_s": null,

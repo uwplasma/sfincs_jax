@@ -264,10 +264,18 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
         mpi_hint = any(s in tail.lower() for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
         if mpi_hint:
             # In restricted/sandboxed environments, socket-based providers can fail
-            # even for single-process jobs. Prefer a shared-memory provider first.
-            for provider in ("shm", "tcp"):
+            # even for single-process jobs. Prefer a shared-memory provider first and
+            # try a few common MPI/OFI fallbacks used on CI runners.
+            retry_variants = [
+                {"FI_PROVIDER": "shm"},
+                {"FI_PROVIDER": "tcp"},
+                {"I_MPI_FABRICS": "shm:tcp", "FI_PROVIDER": "tcp"},
+                {"I_MPI_OFI_PROVIDER": "shm", "FI_PROVIDER": "shm"},
+                {"MPIR_CVAR_CH4_OFI_ENABLE": "0"},
+            ]
+            for variant in retry_variants:
                 env_retry = dict(env)
-                env_retry.setdefault("FI_PROVIDER", provider)
+                env_retry.update(variant)
                 env_retry.setdefault("FI_MR_CACHE_MAX_COUNT", "0")
                 # Try to avoid touching non-loopback NICs on macOS runners.
                 env_retry.setdefault("MPICH_OFI_INTERFACE_NAME", "lo0")
@@ -286,6 +294,31 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
                 if proc.returncode == 0 and out.exists():
                     return dt, out, int(proc.returncode)
                 tail = _tail(log_path, n=80)
+            mpi_exec = shutil.which("mpiexec") or shutil.which("mpirun")
+            if mpi_exec:
+                cmd_mpi = [mpi_exec, "-n", "1", str(exe.resolve())]
+                for variant in retry_variants:
+                    env_retry = dict(env)
+                    env_retry.update(variant)
+                    env_retry.setdefault("FI_MR_CACHE_MAX_COUNT", "0")
+                    env_retry.setdefault("MPICH_OFI_INTERFACE_NAME", "lo0")
+                    env_retry.setdefault("FI_TCP_IFACE", "lo0")
+                    env_retry.setdefault("OMPI_MCA_oob_tcp_if_include", "lo0")
+                    env_retry.setdefault("PRTE_MCA_oob_tcp_if_include", "lo0")
+                    with log_path.open("w", encoding="utf-8") as log:
+                        proc = subprocess.run(
+                            cmd_mpi,
+                            cwd=str(input_path.parent),
+                            check=False,
+                            timeout=timeout_s,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            env=env_retry,
+                        )
+                    dt = time.perf_counter() - t0
+                    if proc.returncode == 0 and out.exists():
+                        return dt, out, int(proc.returncode)
+                    tail = _tail(log_path, n=80)
         raise RuntimeError(f"Fortran failed rc={proc.returncode}.\n{tail}")
     if not out.exists():
         tail = _tail(log_path, n=40)
@@ -464,6 +497,13 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
     lines.append("     - Buckets\n")
     lines.append("     - Print parity\n")
     lines.append("     - Note\n")
+
+    def _single_line(text: str | None) -> str:
+        if text is None:
+            return "-"
+        collapsed = " ".join(str(text).split())
+        return collapsed if collapsed else "-"
+
     for row in rows:
         mode_status = _status_for_mode(row, strict=strict)
         res = ",".join(f"{k}={v}" for k, v in sorted(row.final_resolution.items()))
@@ -487,7 +527,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         lines.append(f"     - {mm}\n")
         lines.append(f"     - {buckets}\n")
         lines.append(f"     - {pp}\n")
-        lines.append(f"     - {row.message}\n")
+        lines.append(f"     - {_single_line(row.message)}\n")
     out_path.write_text("".join(lines), encoding="utf-8")
 
 
@@ -590,7 +630,21 @@ def _run_case(
         except Exception as exc:  # noqa: BLE001
             exc_text = str(exc)
             lower = exc_text.lower()
-            if any(s in lower for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi")):
+            if any(
+                s in lower
+                for s in (
+                    "mpi_init",
+                    "ofi call",
+                    "libfabric",
+                    "mpidi_ofi",
+                    "openmpi",
+                    "prte",
+                    "pmix",
+                    "oob_tcp",
+                    "bind() failed",
+                    "prterun",
+                )
+            ):
                 note = f"Fortran MPI init error: {exc_text}"
                 status = "fortran_error"
                 break

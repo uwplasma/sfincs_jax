@@ -120,13 +120,7 @@
      - -
      - S:0 P:0
      - -
-     - Fortran MPI init error: Fortran failed rc=143.
-Abort(136439951): Fatal error in internal_Init: Other MPI error, error stack:
-internal_Init(70)........: MPI_Init(argc=0x0, argv=0x0) failed
-MPII_Init_thread(255)....: 
-MPID_Init(566)...........: 
-MPIDI_OFI_init_local(769): 
-create_vci_context(1255).: OFI call ep_enable failed (default nic=tcp: Bad file descriptor)
+     - Fortran MPI init error: Fortran failed rc=213. [36580] /openmpi-5.0.8/3rd-party/openpmix/src/mca/ptl/base/ptl_base_listener.c:521 bind() failed for socket 7 storage size 16: Operation not permitted
    * - geometryScheme4_2species_PAS_noEr
      - parity_ok
      - none
