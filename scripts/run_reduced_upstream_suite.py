@@ -290,8 +290,11 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
     out = input_path.parent / "sfincsOutput.h5"
     if proc.returncode != 0:
         tail = _tail(log_path, n=80)
+        lower_tail = tail.lower()
+        if out.exists() and "attempting to use an mpi routine" in lower_tail and "mpich" in lower_tail:
+            return dt, out, int(proc.returncode)
         # Some MPI-enabled builds error out on libfabric defaults. Retry once with a TCP provider.
-        mpi_hint = any(s in tail.lower() for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
+        mpi_hint = any(s in lower_tail for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
         if mpi_hint:
             mpi_vendor = _detect_mpi_vendor_for_exe(exe)
             # In restricted/sandboxed environments, socket-based providers can fail

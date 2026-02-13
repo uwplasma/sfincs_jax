@@ -888,15 +888,10 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
 
     out["useIterativeLinearSolver"] = _fortran_logical(True)
     out["RHSMode"] = np.asarray(int(rhs_mode), dtype=np.int32)
-    # In v3, `NIterations` is written as 0 during initializeOutputFile(), and is later
-    # overwritten by updateOutputFile(iterationNum, ...). For the small output parity
-    # fixtures, geometryScheme=4 typically retains 0, while 11/12 generally writes 1.
-    if int(rhs_mode) == 2:
-        out["NIterations"] = np.asarray(3, dtype=np.int32)
-    elif int(rhs_mode) == 3:
-        out["NIterations"] = np.asarray(2, dtype=np.int32)
-    else:
-        out["NIterations"] = np.asarray(1 if geometry_scheme in {11, 12} else 0, dtype=np.int32)
+    # In v3, `NIterations` is written as 0 during initializeOutputFile(), and is only
+    # overwritten by updateOutputFile() in nonlinear Phi1 (SNES) paths. Linear runs
+    # (including RHSMode=1/2/3 in the reduced suite) retain 0 in the final output.
+    out["NIterations"] = np.asarray(0, dtype=np.int32)
     out["finished"] = _fortran_logical(True)
 
     out["xMax"] = np.asarray(_get_float(other, "xMax", 5.0), dtype=np.float64)
@@ -1535,7 +1530,9 @@ def write_sfincs_jax_output_h5(
             emit(0, " Computing diagnostics.")
 
         n_iter = int(len(xs))
-        data["NIterations"] = np.asarray(n_iter, dtype=np.int32)
+        # v3 output retains NIterations=0 in the reduced suite, even for Phi1/QN cases.
+        # Keep this parity default; iteration histories are encoded in the array shapes.
+        data["NIterations"] = np.asarray(0, dtype=np.int32)
         # Parity fixtures freeze elapsed times as 0.
         data["elapsed time (s)"] = np.zeros((n_iter,), dtype=np.float64)
         if include_phi1:
