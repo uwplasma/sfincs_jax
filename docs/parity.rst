@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode matches the same 38/38 split. For cases that emit stdout signals, print parity is 7/7.
+     - Reduced-suite practical status is ``0/38 parity_ok``. Strict mode matches the same 0/38 split. For cases that emit stdout signals, print parity is 9/9.
 
 Implemented (parity-tested)
 ---------------------------
