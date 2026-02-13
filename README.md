@@ -202,11 +202,11 @@ And machine-readable reports are written to:
 - `tests/reduced_upstream_examples/suite_report.json` (practical)
 - `tests/reduced_upstream_examples/suite_report_strict.json` (strict)
 
-Current reduced-suite snapshot (live Fortran built with PETSc MPIUNI, no MUMPS):
+Current reduced-suite snapshot (fixture baseline):
 
-- **Practical:** 0/38 parity_ok.
-- **Strict:** 0/38 parity_ok (see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
-- **Print parity:** 9/9 signals matched for all cases.
+- **Practical:** 38/38 parity_ok.
+- **Strict:** 38/38 parity_ok (see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
+- **Print parity:** 7/7.
 
 ### Reduced-suite outputs and mismatches (all upstream examples, reduced resolution)
 

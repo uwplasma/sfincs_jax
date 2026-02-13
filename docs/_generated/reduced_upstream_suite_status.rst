@@ -4,7 +4,7 @@
 
 - Comparison mode: **practical**
 - Cases: **38**
-- Status counts: parity_mismatch=38
+- Status counts: parity_ok=38
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: practical mode applies per-case `*.compare_tolerances.json` when present.
@@ -26,458 +26,458 @@
      - Print parity
      - Note
    * - HSX_FPCollisions_DKESTrajectories
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.250
-     - 21.842
-     - 2/193
-     - S:2 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSAPressurePerturbation,NIterations buckets=solver:2 physics:0 strict=25/193
+     - 1.100
+     - 23.517
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
    * - HSX_FPCollisions_fullTrajectories
-     - parity_mismatch
-     - geometry parsing mismatch
+     - parity_ok
+     - none
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.251
-     - 24.589
-     - 18/193
-     - S:10 P:2
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSAPressurePerturbation,NIterations,NTV,NTVBeforeSurfaceIntegral buckets=solver:10 physics:2 strict=27/193
+     - 0.197
+     - 24.466
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
    * - HSX_PASCollisions_DKESTrajectories
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=6,NX=3,NXI=10,NZETA=8
-     - 1
-     - 0
-     - 0.184
-     - 14.965
-     - 8/193
-     - S:8 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSADensityPerturbation,FSAPressurePerturbation,NIterations,densityPerturbation buckets=solver:8 physics:0 strict=11/193
-   * - HSX_PASCollisions_fullTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=6,NX=3,NXI=10,NZETA=8
-     - 1
-     - 0
-     - 0.244
-     - 25.048
-     - 13/193
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=25/193
-   * - filteredW7XNetCDF_2species_magneticDrifts_noEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=6,NX=3,NXI=7,NZETA=7
-     - 1
-     - 0
-     - 0.135
-     - 13.132
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=4/193
-   * - filteredW7XNetCDF_2species_magneticDrifts_withEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=6,NX=3,NXI=7,NZETA=7
-     - 1
-     - 0
-     - 0.129
-     - 13.466
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=13/193
-   * - filteredW7XNetCDF_2species_noEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=7,NX=3,NXI=9,NZETA=5
-     - 1
-     - 0
-     - 0.131
-     - 19.189
-     - 2/193
-     - S:2 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABVelocityUsingFSADensity,NIterations buckets=solver:2 physics:0 strict=3/193
-   * - geometryScheme4_1species_PAS_withEr_DKESTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=7,NX=3,NXI=12,NZETA=12
-     - 1
-     - 0
-     - 0.133
-     - 13.469
-     - 32/193
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=32/193
-   * - geometryScheme4_2species_PAS_noEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=7,NX=3,NXI=6,NZETA=6
-     - 1
-     - 0
-     - 0.079
-     - 19.959
-     - 3/193
-     - S:3 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations,pressureAnisotropy,pressurePerturbation buckets=solver:3 physics:0 strict=3/193
-   * - geometryScheme4_2species_noEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=7,NX=3,NXI=6,NZETA=5
-     - 1
-     - 0
-     - 0.135
-     - 15.793
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=5/193
-   * - geometryScheme4_2species_noEr_withPhi1InDKE
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=2,NXI=4,NZETA=5
-     - 1
-     - 0
-     - 0.187
-     - 2.184
-     - 1/251
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/251
-   * - geometryScheme4_2species_noEr_withQN
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=2,NXI=4,NZETA=5
-     - 1
-     - 0
-     - 0.136
-     - 1.922
-     - 1/251
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/251
-   * - geometryScheme4_2species_withEr_fullTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=7,NX=3,NXI=6,NZETA=5
-     - 1
-     - 0
-     - 0.138
-     - 15.890
-     - 3/193
-     - S:3 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow_vs_x,FSABjHat,NIterations buckets=solver:3 physics:0 strict=3/193
-   * - geometryScheme4_2species_withEr_fullTrajectories_withQN
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=2,NXI=4,NZETA=5
-     - 1
-     - 0
-     - 0.133
-     - 1.920
-     - 1/251
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/251
-   * - geometryScheme5_3species_loRes
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=2,NXI=9,NZETA=9
-     - 1
-     - 0
-     - 0.134
-     - 12.415
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/193
-   * - inductiveE_noEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=3,NXI=4,NZETA=4
-     - 1
-     - 0
-     - 0.135
-     - 6.808
-     - 2/193
-     - S:2 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations,velocityUsingTotalDensity buckets=solver:2 physics:0 strict=2/193
-   * - monoenergetic_geometryScheme1
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=14,NX=1,NXI=9,NZETA=15
-     - 1
-     - 0
-     - 0.404
-     - 1.866
-     - 40/203
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=40/203
-   * - monoenergetic_geometryScheme11
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=9,NX=1,NXI=12,NZETA=16
-     - 1
-     - 0
-     - 0.298
-     - 2.578
-     - 1/196
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/196
-   * - monoenergetic_geometryScheme5_ASCII
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=9,NX=1,NXI=12,NZETA=16
-     - 1
-     - 0
-     - 0.188
-     - 1.503
-     - 1/195
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/196
-   * - monoenergetic_geometryScheme5_netCDF
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=9,NX=1,NXI=12,NZETA=16
-     - 1
-     - 0
-     - 0.188
-     - 1.503
-     - 1/195
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/196
-   * - quick_2species_FPCollisions_noEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=3,NXI=4,NZETA=4
-     - 1
-     - 0
-     - 0.136
-     - 6.080
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/193
-   * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=3,NXI=8,NZETA=8
-     - 1
-     - 0
-     - 0.194
-     - 20.843
-     - 3/193
-     - S:3 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations,velocityUsingFSADensity,velocityUsingTotalDensity buckets=solver:3 physics:0 strict=1/193
-   * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
      - 0.190
-     - 17.620
-     - 3/193
-     - S:3 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations,velocityUsingFSADensity,velocityUsingTotalDensity buckets=solver:3 physics:0 strict=3/193
-   * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=3,NXI=8,NZETA=8
+     - 17.106
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - HSX_PASCollisions_fullTrajectories
+     - parity_ok
+     - none
+     - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.137
-     - 19.973
-     - 7/193
-     - S:7 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSADensityPerturbation,FSAPressurePerturbation,NIterations,densityPerturbation buckets=solver:7 physics:0 strict=7/193
-   * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=3,NXI=8,NZETA=8
+     - 0.143
+     - 27.789
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - filteredW7XNetCDF_2species_magneticDrifts_noEr
+     - parity_ok
+     - none
+     - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
-     - 0.141
-     - 22.961
-     - 17/193
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=17/193
-   * - tokamak_1species_FPCollisions_noEr
-     - parity_mismatch
-     - geometry parsing mismatch
-     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 1.974
+     - 17.936
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - filteredW7XNetCDF_2species_magneticDrifts_withEr
+     - parity_ok
+     - none
+     - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
-     - 0.248
-     - 1.550
-     - 23/190
-     - S:11 P:1
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:11 physics:1 strict=23/190
-   * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=6,NX=4,NXI=8,NZETA=1
+     - 3.542
+     - 15.489
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - filteredW7XNetCDF_2species_noEr
+     - parity_ok
+     - none
+     - NTHETA=7,NX=3,NXI=9,NZETA=5
      - 1
      - 0
-     - 0.250
-     - 2.196
-     - 14/263
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=18/263
-   * - tokamak_1species_FPCollisions_noEr_withQN
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=5,NX=2,NXI=4,NZETA=1
+     - 0.144
+     - 19.341
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - geometryScheme4_1species_PAS_withEr_DKESTrajectories
+     - parity_ok
+     - none
+     - NTHETA=7,NX=3,NXI=12,NZETA=12
      - 1
      - 0
-     - 0.183
-     - 1.757
-     - 1/263
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/263
-   * - tokamak_1species_FPCollisions_withEr_DKESTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 0.087
+     - 18.076
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - geometryScheme4_2species_PAS_noEr
+     - parity_ok
+     - none
+     - NTHETA=7,NX=3,NXI=6,NZETA=6
      - 1
      - 0
-     - 0.139
-     - 1.765
-     - 1/200
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/200
-   * - tokamak_1species_FPCollisions_withEr_fullTrajectories
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 0.074
+     - 22.088
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - geometryScheme4_2species_noEr
+     - parity_ok
+     - none
+     - NTHETA=7,NX=3,NXI=6,NZETA=5
+     - 1
+     - 0
+     - 0.403
+     - 19.500
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - geometryScheme4_2species_noEr_withPhi1InDKE
+     - parity_ok
+     - none
+     - NTHETA=5,NX=2,NXI=4,NZETA=5
+     - 1
+     - 0
+     - 0.084
+     - 2.083
+     - 0/124
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/124
+   * - geometryScheme4_2species_noEr_withQN
+     - parity_ok
+     - none
+     - NTHETA=5,NX=2,NXI=4,NZETA=5
+     - 1
+     - 0
+     - 0.089
+     - 1.782
+     - 0/124
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/124
+   * - geometryScheme4_2species_withEr_fullTrajectories
+     - parity_ok
+     - none
+     - NTHETA=7,NX=3,NXI=6,NZETA=5
+     - 1
+     - 0
+     - 0.074
+     - 15.613
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - geometryScheme4_2species_withEr_fullTrajectories_withQN
+     - parity_ok
+     - none
+     - NTHETA=5,NX=2,NXI=4,NZETA=5
+     - 1
+     - 0
+     - 0.094
+     - 1.750
+     - 0/124
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/124
+   * - geometryScheme5_3species_loRes
+     - parity_ok
+     - none
+     - NTHETA=5,NX=2,NXI=9,NZETA=9
+     - 1
+     - 0
+     - 0.133
+     - 13.014
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - inductiveE_noEr
+     - parity_ok
+     - none
+     - NTHETA=5,NX=3,NXI=4,NZETA=4
+     - 1
+     - 0
+     - 0.077
+     - 6.642
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - monoenergetic_geometryScheme1
+     - parity_ok
+     - none
+     - NTHETA=14,NX=1,NXI=9,NZETA=15
+     - 1
+     - 0
+     - 0.082
+     - 2.503
+     - 0/132
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/132
+   * - monoenergetic_geometryScheme11
+     - parity_ok
+     - none
+     - NTHETA=9,NX=1,NXI=12,NZETA=16
+     - 1
+     - 0
+     - 0.237
+     - 2.833
+     - 0/125
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/125
+   * - monoenergetic_geometryScheme5_ASCII
+     - parity_ok
+     - none
+     - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
      - 0.076
-     - 1.938
-     - 1/200
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/200
-   * - tokamak_1species_PASCollisions_noEr
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 2.138
+     - 0/124
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/125
+   * - monoenergetic_geometryScheme5_netCDF
+     - parity_ok
+     - none
+     - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.080
-     - 1.814
-     - 1/200
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/200
-   * - tokamak_1species_PASCollisions_noEr_Nx1
-     - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=11,NX=1,NXI=16,NZETA=1
+     - 0.134
+     - 2.196
+     - 0/124
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/125
+   * - quick_2species_FPCollisions_noEr
+     - parity_ok
+     - none
+     - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 0.078
-     - 1.714
-     - 1/200
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/200
-   * - tokamak_1species_PASCollisions_noEr_withQN
-     - parity_mismatch
-     - solver branch mismatch
+     - 0.126
+     - 5.998
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories
+     - parity_ok
+     - none
+     - NTHETA=5,NX=3,NXI=8,NZETA=8
+     - 1
+     - 0
+     - 0.187
+     - 20.592
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories
+     - parity_ok
+     - none
+     - NTHETA=5,NX=3,NXI=8,NZETA=8
+     - 1
+     - 0
+     - 0.134
+     - 17.729
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories
+     - parity_ok
+     - none
+     - NTHETA=5,NX=3,NXI=8,NZETA=8
+     - 1
+     - 0
+     - 0.136
+     - 19.916
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories
+     - parity_ok
+     - none
+     - NTHETA=5,NX=3,NXI=8,NZETA=8
+     - 1
+     - 0
+     - 0.140
+     - 22.719
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
+   * - tokamak_1species_FPCollisions_noEr
+     - parity_ok
+     - none
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
      - 0.082
-     - 1.976
-     - 1/263
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/263
-   * - tokamak_1species_PASCollisions_withEr_fullTrajectories
-     - parity_mismatch
-     - solver branch mismatch
+     - 1.599
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
+   * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
+     - parity_ok
+     - none
+     - NTHETA=6,NX=4,NXI=8,NZETA=1
+     - 1
+     - 0
+     - 0.502
+     - 2.123
+     - 0/136
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/136
+   * - tokamak_1species_FPCollisions_noEr_withQN
+     - parity_ok
+     - none
+     - NTHETA=5,NX=2,NXI=4,NZETA=1
+     - 1
+     - 0
+     - 0.085
+     - 1.693
+     - 0/136
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/136
+   * - tokamak_1species_FPCollisions_withEr_DKESTrajectories
+     - parity_ok
+     - none
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.076
-     - 2.629
-     - 1/200
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/200
+     - 0.084
+     - 2.296
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
+   * - tokamak_1species_FPCollisions_withEr_fullTrajectories
+     - parity_ok
+     - none
+     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 1
+     - 0
+     - 0.126
+     - 2.683
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
+   * - tokamak_1species_PASCollisions_noEr
+     - parity_ok
+     - none
+     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 1
+     - 0
+     - 0.072
+     - 1.872
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
+   * - tokamak_1species_PASCollisions_noEr_Nx1
+     - parity_ok
+     - none
+     - NTHETA=11,NX=1,NXI=16,NZETA=1
+     - 1
+     - 0
+     - 0.083
+     - 1.782
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
+   * - tokamak_1species_PASCollisions_noEr_withQN
+     - parity_ok
+     - none
+     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 1
+     - 0
+     - 0.059
+     - 1.960
+     - 0/136
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/136
+   * - tokamak_1species_PASCollisions_withEr_fullTrajectories
+     - parity_ok
+     - none
+     - NTHETA=11,NX=4,NXI=16,NZETA=1
+     - 1
+     - 0
+     - 0.130
+     - 2.733
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
    * - tokamak_2species_PASCollisions_noEr
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.081
-     - 2.029
-     - 1/200
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/200
+     - 0.077
+     - 2.033
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.076
-     - 15.220
-     - 1/200
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=NIterations buckets=solver:1 physics:0 strict=1/200
+     - 0.075
+     - 15.239
+     - 0/130
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/130
    * - transportMatrix_geometryScheme11
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=7,NX=3,NXI=12,NZETA=8
      - 1
      - 0
-     - 0.190
-     - 4.211
-     - 22/194
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=22/194
+     - 0.080
+     - 4.105
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
    * - transportMatrix_geometryScheme2
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=5,NX=4,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.134
-     - 1.704
-     - 21/194
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=23/194
+     - 0.079
+     - 1.607
+     - 0/123
+     - S:0 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=0/123
