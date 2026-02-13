@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite practical status is ``37/38 parity_ok`` with 1 Fortran-run error. Strict mode matches the same 37/38 split. For cases that emit stdout signals, print parity is 9/9.
+     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode matches the same 38/38 split. For cases that emit stdout signals, print parity is 7/7.
 
 Implemented (parity-tested)
 ---------------------------
@@ -96,8 +96,7 @@ Current scope limits
 --------------------
 
 - Strict parity (``docs/_generated/reduced_upstream_suite_status_strict.rst``) is currently clean on all
-  successfully-run reduced cases. One reduced case currently fails in the Fortran executable (MPI init error),
-  blocking parity classification for that input in this environment.
+  reduced cases; no Fortran-run errors remain in the reduced suite on this machine.
 - The unconstrained ``constraintScheme=0`` branch is rank-deficient, so different solvers can select different nullspace
   components. For comparisons, sfincs_jax treats a small set of density/pressure-like outputs as gauge-dependent and
   skips them when ``constraintScheme=0`` (see ``sfincs_jax/compare.py``).
@@ -107,8 +106,9 @@ Current scope limits
   scalar-order accumulation for the collocation-to-modal projection, but the remaining ~1e-10 deltas appear dominated by
   quadrature rounding differences rather than matrix-ordering effects.
 - A small number of RHSMode=1 reduced cases (notably filtered-W7X netCDF and sfincsPaper fig. 3) are ill-conditioned:
-  PETSc's GMRES+LU preconditioning converges to a slightly different solution than the exact linear solve. We capture
-  these solver-branch differences via per-case tolerances on flow/jHat diagnostics in the reduced-suite reports.
+  PETSc's GMRES+LU preconditioning can converge to a slightly different solution than an exact linear solve. We capture
+  these solver-branch differences via per-case tolerances on flow/jHat diagnostics in the reduced-suite reports, while
+  maintaining full reduced-suite parity at the current tolerances.
 
 Reduced-suite parity status (source of truth)
 ---------------------------------------------

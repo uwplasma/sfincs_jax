@@ -33,6 +33,7 @@ from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
     V3FullSystemOperator,
+    _operator_signature_cached,
     apply_v3_full_system_jacobian,
     apply_v3_full_system_jacobian_jit,
     apply_v3_full_system_operator_cached,
@@ -2183,15 +2184,10 @@ def solve_v3_transport_matrix_linear_gmres(
         requested_epar_krylov = any((_rhs3_krylov_flags(which_rhs)[0] or _rhs3_krylov_flags(which_rhs)[1]) for which_rhs in which_rhs_values)
         if not requested_epar_krylov:
             op_probe_ref = op_matvec_by_index[0]
-            probe0 = jnp.zeros((int(op0.total_size),), dtype=jnp.float64).at[0].set(1.0)
-            probe1 = jnp.zeros((int(op0.total_size),), dtype=jnp.float64).at[-1].set(1.0)
+            sig_ref = _operator_signature_cached(op_probe_ref)
             same_operator = True
-            y_ref0 = apply_v3_full_system_operator_cached(op_probe_ref, probe0)
-            y_ref1 = apply_v3_full_system_operator_cached(op_probe_ref, probe1)
             for op_probe in op_matvec_by_index[1:]:
-                d0 = float(jnp.linalg.norm(apply_v3_full_system_operator_cached(op_probe, probe0) - y_ref0))
-                d1 = float(jnp.linalg.norm(apply_v3_full_system_operator_cached(op_probe, probe1) - y_ref1))
-                if max(d0, d1) > 1e-13:
+                if _operator_signature_cached(op_probe) != sig_ref:
                     same_operator = False
                     break
 
