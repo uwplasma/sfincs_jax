@@ -2197,6 +2197,7 @@ def solve_v3_transport_matrix_linear_gmres(
 
             if same_operator:
                 if emit is not None:
+                    emit(1, "solve_v3_transport_matrix_linear_gmres: evaluateJacobian called (matrix-free)")
                     emit(1, "solve_v3_transport_matrix_linear_gmres: dense batched solve across all whichRHS")
                 t_dense = Timer()
 

@@ -62,7 +62,7 @@
 !ss NthetaMaxFactor = 2.5
 !ss NthetaNumRuns = 15
 
-  Nzeta = 9
+  Nzeta = 5
 !ss NzetaMinFactor = 0.8
 !ss NzetaMaxFactor = 2.5
 !ss NzetaNumRuns = 15

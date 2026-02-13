@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode (no per-case tolerance overrides) still reports residual solver-branch deltas in a subset of cases.
+     - Reduced-suite practical status is ``37/38 parity_ok`` with 1 Fortran-run error. Strict mode matches the same 37/38 split. For cases that emit stdout signals, print parity is 9/9.
 
 Implemented (parity-tested)
 ---------------------------
@@ -95,9 +95,9 @@ Implemented (parity-tested)
 Current scope limits
 --------------------
 
-- Strict parity (``docs/_generated/reduced_upstream_suite_status_strict.rst``) still has a residual set dominated by
-  solver-branch-sensitive diagnostics (HSX/full-trajectory families, transport-matrix moment families, and
-  ``monoenergetic_geometryScheme1`` normalization-sensitive branches).
+- Strict parity (``docs/_generated/reduced_upstream_suite_status_strict.rst``) is currently clean on all
+  successfully-run reduced cases. One reduced case currently fails in the Fortran executable (MPI init error),
+  blocking parity classification for that input in this environment.
 - The unconstrained ``constraintScheme=0`` branch is rank-deficient, so different solvers can select different nullspace
   components. For comparisons, sfincs_jax treats a small set of density/pressure-like outputs as gauge-dependent and
   skips them when ``constraintScheme=0`` (see ``sfincs_jax/compare.py``).

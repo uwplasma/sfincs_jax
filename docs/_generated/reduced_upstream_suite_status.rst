@@ -4,7 +4,7 @@
 
 - Comparison mode: **practical**
 - Cases: **38**
-- Status counts: max_attempts=1, parity_ok=37
+- Status counts: fortran_error=1, parity_ok=37
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: practical mode applies per-case `*.compare_tolerances.json` when present.
@@ -32,11 +32,11 @@
      - 1
      - 0
      - 
-     - 24.936
+     - 21.687
      - 0/193
      - S:0 P:0
      - -
-     - All common numeric datasets matched tolerance. strict=3/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_FPCollisions_fullTrajectories
      - parity_ok
      - none
@@ -44,11 +44,11 @@
      - 1
      - 0
      - 
-     - 27.892
+     - 23.629
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=4/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_PASCollisions_DKESTrajectories
      - parity_ok
      - none
@@ -80,11 +80,11 @@
      - 1
      - 0
      - 
-     - 19.264
+     - 17.165
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=5/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_magneticDrifts_withEr
      - parity_ok
      - none
@@ -92,11 +92,11 @@
      - 1
      - 0
      - 
-     - 14.991
+     - 13.621
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=4/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_noEr
      - parity_ok
      - none
@@ -104,23 +104,29 @@
      - 1
      - 0
      - 
-     - 22.143
+     - 18.740
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=4/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - geometryScheme4_1species_PAS_withEr_DKESTrajectories
-     - max_attempts
-     - solver branch mismatch
-     - NTHETA=7,NX=3,NXI=24,NZETA=12
+     - fortran_error
+     - unsupported physics/path
+     - NTHETA=7,NX=3,NXI=12,NZETA=12
      - 1
-     - 1
+     - 0
      - 
      - 
      - -
      - S:0 P:0
      - -
-     - Reached max attempts while reducing resolution.
+     - Fortran MPI init error: Fortran failed rc=143.
+Abort(136439951): Fatal error in internal_Init: Other MPI error, error stack:
+internal_Init(70)........: MPI_Init(argc=0x0, argv=0x0) failed
+MPII_Init_thread(255)....: 
+MPID_Init(566)...........: 
+MPIDI_OFI_init_local(769): 
+create_vci_context(1255).: OFI call ep_enable failed (default nic=tcp: Bad file descriptor)
    * - geometryScheme4_2species_PAS_noEr
      - parity_ok
      - none
@@ -140,11 +146,11 @@
      - 1
      - 0
      - 
-     - 18.162
+     - 15.605
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=7/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - geometryScheme4_2species_noEr_withPhi1InDKE
      - parity_ok
      - none
@@ -224,11 +230,11 @@
      - 1
      - 0
      - 
-     - 2.567
+     - 2.736
      - 0/203
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/203 printParity=7/9 missing=jacobian,diagnostics
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/203
    * - monoenergetic_geometryScheme11
      - parity_ok
      - none
@@ -236,11 +242,11 @@
      - 1
      - 0
      - 
-     - 3.306
+     - 3.391
      - 0/196
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/196 printParity=7/9 missing=jacobian,diagnostics
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/196
    * - monoenergetic_geometryScheme5_ASCII
      - parity_ok
      - none
@@ -248,11 +254,11 @@
      - 1
      - 0
      - 
-     - 2.400
+     - 2.643
      - 0/195
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/196 printParity=7/9 missing=jacobian,diagnostics
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/196
    * - monoenergetic_geometryScheme5_netCDF
      - parity_ok
      - none
@@ -260,11 +266,11 @@
      - 1
      - 0
      - 
-     - 2.396
+     - 2.590
      - 0/195
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/196 printParity=7/9 missing=jacobian,diagnostics
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/196
    * - quick_2species_FPCollisions_noEr
      - parity_ok
      - none
@@ -464,11 +470,11 @@
      - 1
      - 0
      - 
-     - 4.538
+     - 4.914
      - 0/194
      - S:0 P:0
-     - 8/9
-     - All common numeric datasets matched tolerance. strict=0/194 printParity=8/9 missing=diagnostics
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/194
    * - transportMatrix_geometryScheme2
      - parity_ok
      - none
@@ -476,8 +482,8 @@
      - 1
      - 0
      - 
-     - 2.119
+     - 1.874
      - 0/194
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/194 printParity=7/9 missing=jacobian,diagnostics
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/194

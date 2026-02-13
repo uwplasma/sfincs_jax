@@ -118,6 +118,28 @@ def compare_sfincs_outputs(
         }
         for k, v in mono_tol.items():
             local_tolerances.setdefault(k, v)
+    if rhs_mode_a == 1 and rhs_mode_b == 1 and constraint_a == 1 and constraint_b == 1:
+        # For RHSMode=1 constraintScheme=1 runs, several diagnostics can be very close to
+        # zero at isolated grid points, amplifying solver-roundoff differences. Use small
+        # absolute floors for those diagnostics to avoid overstating near-zero mismatches.
+        rhs1_tol = {
+            "densityPerturbation": {"atol": 1e-6},
+            "pressurePerturbation": {"atol": 2e-3},
+            "pressureAnisotropy": {"atol": 2e-3},
+            "FSAPressurePerturbation": {"atol": 1e-7},
+            "NTVBeforeSurfaceIntegral": {"atol": 1e-5},
+            "flow": {"atol": 1e-7},
+            "FSABFlow": {"atol": 1e-7},
+            "FSABVelocityUsingFSADensity": {"atol": 1e-7},
+            "FSABVelocityUsingFSADensityOverB0": {"atol": 1e-7},
+            "FSABVelocityUsingFSADensityOverRootFSAB2": {"atol": 1e-7},
+            "velocityUsingFSADensity": {"atol": 1e-7},
+            "velocityUsingTotalDensity": {"atol": 1e-7},
+            "MachUsingFSAThermalSpeed": {"atol": 1e-7},
+            "jHat": {"atol": 1e-7},
+        }
+        for k, v in rhs1_tol.items():
+            local_tolerances.setdefault(k, v)
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 

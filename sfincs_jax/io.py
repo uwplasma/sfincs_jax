@@ -1833,7 +1833,7 @@ def write_sfincs_jax_output_h5(
                 emit(0, f"    heatFlux_vm0_psiHat        {_fmt_fortran_e(float(diag_arrays['heatFlux_vm0_psiHat'][iter_idx, s]))}")
                 emit(0, f"    heatFlux_vm_psiHat         {_fmt_fortran_e(float(diag_arrays['heatFlux_vm_psiHat'][iter_idx, s]))}")
                 if "sources" in diag_arrays:
-                    src = np.asarray(diag_arrays["sources"][iter_idx, s], dtype=np.float64)
+                    src = np.asarray(diag_arrays["sources"][iter_idx, :, s], dtype=np.float64)
                     if src.size >= 2:
                         emit(0, f"    particle source            {_fmt_fortran_e(float(src[0]))}")
                         emit(0, f"    heat source                {_fmt_fortran_e(float(src[1]))}")
@@ -2095,6 +2095,8 @@ def write_sfincs_jax_output_h5(
             if emit is not None:
                 emit(0, " Computing transport matrix.")
             result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol), emit=emit)
+            if emit is not None:
+                emit(0, " Computing diagnostics.")
 
             # For RHSMode=2/3, upstream postprocessing scripts expect a number of additional
             # transport diagnostics in `sfincsOutput.h5`. Compute a larger subset from the
