@@ -731,9 +731,8 @@ def v3_transport_output_fields_vm_only(
     hf_before_vm0 = jnp.transpose(hf_before_vm0_stzn, (3, 2, 1, 0))
 
     w2d = op0.theta_weights[:, None] * op0.zeta_weights[None, :]  # (T,Z)
-    w2d_stack = jnp.broadcast_to(w2d[None, :, :], (n, t, z))  # (N,T,Z)
-    pf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, pf_before_vm0_stzn)
-    hf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, hf_before_vm0_stzn)
+    pf_vm0_psi_hat = jnp.einsum("tz,nstz->sn", w2d, pf_before_vm0_stzn)
+    hf_vm0_psi_hat = jnp.einsum("tz,nstz->sn", w2d, hf_before_vm0_stzn)
 
     pf_vs_x = jnp.transpose(diag_stack.particle_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
     hf_vs_x = jnp.transpose(diag_stack.heat_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
