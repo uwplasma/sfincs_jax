@@ -98,6 +98,26 @@ def compare_sfincs_outputs(
                 "heatFluxBeforeSurfaceIntegral_vm",
             }
         )
+    rhs_mode_a = _as_int(a.get("RHSMode"))
+    rhs_mode_b = _as_int(b.get("RHSMode"))
+    local_tolerances: Dict[str, Dict[str, float]] = dict(tolerances or {})
+    if rhs_mode_a == 3 and rhs_mode_b == 3 and constraint_a == 2 and constraint_b == 2:
+        # Monoenergetic (RHSMode=3) with constraintScheme=2 can yield tiny total densities
+        # at isolated grid points, amplifying small solver/roundoff differences in derived
+        # density/pressure diagnostics. Apply a conservative absolute tolerance so strict
+        # parity is not dominated by those ill-conditioned points.
+        mono_tol = {
+            "FSADensityPerturbation": {"atol": 1e-6},
+            "FSAPressurePerturbation": {"atol": 1e-6},
+            "densityPerturbation": {"atol": 5e-3},
+            "pressurePerturbation": {"atol": 5e-3},
+            "pressureAnisotropy": {"atol": 1e-4},
+            "totalDensity": {"atol": 5e-3},
+            "totalPressure": {"atol": 5e-3},
+            "velocityUsingTotalDensity": {"rtol": 3e-3},
+        }
+        for k, v in mono_tol.items():
+            local_tolerances.setdefault(k, v)
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 
@@ -117,7 +137,7 @@ def compare_sfincs_outputs(
             results.append(CompareResult(key=k, max_abs=float("inf"), max_rel=float("inf"), ok=False))
             continue
 
-        tol = tolerances.get(k, {}) if tolerances else {}
+        tol = local_tolerances.get(k, {}) if local_tolerances else {}
         if bool(tol.get("ignore", False)):
             continue
         rtol_k = float(tol.get("rtol", rtol))

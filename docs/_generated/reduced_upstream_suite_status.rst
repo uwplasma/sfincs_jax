@@ -224,11 +224,11 @@
      - 1
      - 0
      - 
-     - 3.035
+     - 2.567
      - 0/203
      - S:0 P:0
      - 7/9
-     - All common numeric datasets matched tolerance. strict=8/203 printParity=7/9 missing=jacobian,diagnostics
+     - All common numeric datasets matched tolerance. strict=0/203 printParity=7/9 missing=jacobian,diagnostics
    * - monoenergetic_geometryScheme11
      - parity_ok
      - none

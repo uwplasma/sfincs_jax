@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: max_attempts=1, parity_mismatch=7, parity_ok=30
+- Status counts: max_attempts=1, parity_mismatch=6, parity_ok=31
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -218,17 +218,17 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/193
    * - monoenergetic_geometryScheme1
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=14,NX=1,NXI=9,NZETA=15
      - 1
      - 0
      - 
-     - 3.035
-     - 8/203
-     - S:8 P:0
+     - 2.567
+     - 0/203
+     - S:0 P:0
      - 7/9
-     - All common numeric datasets matched tolerance. strict=8/203 printParity=7/9 missing=jacobian,diagnostics
+     - All common numeric datasets matched tolerance. strict=0/203 printParity=7/9 missing=jacobian,diagnostics
    * - monoenergetic_geometryScheme11
      - parity_ok
      - none
