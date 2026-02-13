@@ -190,18 +190,8 @@ def _flux_functions_from_op(op: V3FullSystemOperator) -> tuple[jnp.ndarray, jnp.
     return b0, g_hat, i_hat
 
 
-def f0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
-    """Compute v3 `f0` (Maxwellian) in the BLOCK_F layout.
-
-    This matches v3 `populateMatrix.F90:init_f0`:
-
-      f0(L=0) = exp(-Z*alpha*Phi1Hat/THat) * nHat*mHat/(pi*THat) * sqrt(mHat/(pi*THat)) * exp(-x^2)
-
-    with all L>0 entries set to 0.
-    """
-    # Shape: (S, X, L, T, Z)
-    out = jnp.zeros(op.fblock.f_shape, dtype=jnp.float64)
-
+def f0_l0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
+    """Compute v3 `f0` for L=0 only (shape: S,X,T,Z)."""
     x = jnp.asarray(op.x, dtype=jnp.float64)
     expx2 = jnp.exp(-(x * x))  # (X,)
 
@@ -218,20 +208,35 @@ def f0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
     phi1 = jnp.asarray(op.phi1_hat_base, dtype=jnp.float64)  # (T,Z)
     exp_phi1 = jnp.exp(-(z[:, None, None] * op.alpha / t_hat[:, None, None]) * phi1[None, :, :])  # (S,T,Z)
 
-    out = out.at[:, :, 0, :, :].set(pref[:, :, None, None] * exp_phi1[:, None, :, :])
+    return pref[:, :, None, None] * exp_phi1[:, None, :, :]
+
+
+def f0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
+    """Compute v3 `f0` (Maxwellian) in the BLOCK_F layout.
+
+    This matches v3 `populateMatrix.F90:init_f0`:
+
+      f0(L=0) = exp(-Z*alpha*Phi1Hat/THat) * nHat*mHat/(pi*THat) * sqrt(mHat/(pi*THat)) * exp(-x^2)
+
+    with all L>0 entries set to 0.
+    """
+    # Shape: (S, X, L, T, Z)
+    out = jnp.zeros(op.fblock.f_shape, dtype=jnp.float64)
+    out = out.at[:, :, 0, :, :].set(f0_l0_v3_from_operator(op))
     return out
 
 
-def _v3_transport_diagnostics_vm_only_from_f0(
-    op: V3FullSystemOperator, *, x_full: jnp.ndarray, f0: jnp.ndarray
+def _v3_transport_diagnostics_vm_only_from_f0_l0(
+    op: V3FullSystemOperator, *, x_full: jnp.ndarray, f0_l0: jnp.ndarray
 ) -> V3TransportDiagnostics:
-    """Core transport diagnostics with a precomputed Maxwellian f0."""
+    """Core transport diagnostics with a precomputed Maxwellian f0 (L=0)."""
     x_full = jnp.asarray(x_full, dtype=jnp.float64)
     if x_full.shape != (op.total_size,):
         raise ValueError(f"x_full must have shape {(op.total_size,)}, got {x_full.shape}")
 
     f_delta = x_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
-    f_full = f_delta + f0
+    f0_l0 = jnp.asarray(f0_l0, dtype=jnp.float64)
+    f_full_l0 = f_delta[:, :, 0, :, :] + f0_l0
 
     vprime_hat = _vprime_hat_from_op(op)  # scalar
 
@@ -262,9 +267,9 @@ def _v3_transport_diagnostics_vm_only_from_f0(
     flow_factor = 4.0 * jnp.pi * (t_hat * t_hat) / (3.0 * m_hat * m_hat)
 
     # L=0 and L=2 contributions:
-    f_l0 = f_full[:, :, 0, :, :]  # (S,X,T,Z)
+    f_l0 = f_full_l0  # (S,X,T,Z)
     if op.n_xi > 2:
-        f_l2 = f_full[:, :, 2, :, :]
+        f_l2 = f_delta[:, :, 2, :, :]
     else:
         f_l2 = jnp.zeros_like(f_l0)
 
@@ -306,8 +311,7 @@ def _v3_transport_diagnostics_vm_only_from_f0(
     fsab_flow = _weighted_sum_tz_fortran(theta_w, zeta_w, flow * op.b_hat[None, :, :] / op.d_hat[None, :, :]) / vprime_hat
 
     # vm0 contributions (use f0 only):
-    f0_l0 = f0[:, :, 0, :, :]
-    f0_l2 = f0[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f0_l0)
+    f0_l2 = jnp.zeros_like(f0_l0) if op.n_xi > 2 else jnp.zeros_like(f0_l0)
     sum_pf0_l0 = _weighted_sum_x_fortran(wpf0, f0_l0)
     sum_pf0_l2 = _weighted_sum_x_fortran(wpf2, f0_l2)
     pf_before_vm0 = particle_flux_factor_vm[:, None, None] * (
@@ -372,8 +376,8 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
     It deliberately omits vE terms, momentum flux, NTV, and classical terms since the RHSMode=2/3
     transport matrices in v3 only depend on the vm (magnetic drift) particle/heat fluxes and FSAB flow.
     """
-    f0 = f0_v3_from_operator(op)
-    return _v3_transport_diagnostics_vm_only_from_f0(op, x_full=x_full, f0=f0)
+    f0_l0 = f0_l0_v3_from_operator(op)
+    return _v3_transport_diagnostics_vm_only_from_f0_l0(op, x_full=x_full, f0_l0=f0_l0)
 
 
 def v3_transport_diagnostics_vm_only_batch(
@@ -405,10 +409,10 @@ def v3_transport_diagnostics_vm_only_batch_op0(
     if x_full_stack.ndim != 2:
         raise ValueError(f"x_full_stack must have shape (N,total_size), got {x_full_stack.shape}")
 
-    f0 = f0_v3_from_operator(op0)
+    f0_l0 = f0_l0_v3_from_operator(op0)
 
     def _one(x_state: jnp.ndarray) -> V3TransportDiagnostics:
-        return _v3_transport_diagnostics_vm_only_from_f0(op0, x_full=x_state, f0=f0)
+        return _v3_transport_diagnostics_vm_only_from_f0_l0(op0, x_full=x_state, f0_l0=f0_l0)
 
     return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
 
@@ -416,23 +420,17 @@ def v3_transport_diagnostics_vm_only_batch_op0(
 v3_transport_diagnostics_vm_only_batch_op0_jit = jax.jit(v3_transport_diagnostics_vm_only_batch_op0)
 
 
-def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.ndarray) -> dict[str, jnp.ndarray]:
-    """Compute a RHSMode=1 output subset from a solved state vector.
-
-    This helper targets end-to-end `sfincsOutput.h5` parity for the smallest RHSMode=1
-    fixtures. It currently includes the "vm-only" (magnetic drift) neoclassical
-    contributions and writes vE / NTV-related quantities as 0 placeholders.
-
-    The formulas mirror `sfincs/fortran/version3/diagnostics.F90`, including the
-    `... / VPrimeHat` normalization of flux-surface averages.
-    """
+def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(
+    op: V3FullSystemOperator, *, x_full: jnp.ndarray, f0_l0: jnp.ndarray
+) -> dict[str, jnp.ndarray]:
+    """RHSMode=1 output subset with a precomputed Maxwellian f0 (L=0)."""
     x_full = jnp.asarray(x_full, dtype=jnp.float64)
     if x_full.shape != (op.total_size,):
         raise ValueError(f"x_full must have shape {(op.total_size,)}, got {x_full.shape}")
 
     f_delta = x_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
-    f0 = f0_v3_from_operator(op)
-    f_full = f_delta + f0
+    f0_l0 = jnp.asarray(f0_l0, dtype=jnp.float64)
+    f_full_l0 = f_delta[:, :, 0, :, :] + f0_l0
 
     vprime_hat = _vprime_hat_from_op(op)  # scalar
     theta_w = jnp.asarray(op.theta_weights, dtype=jnp.float64)
@@ -499,8 +497,7 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     fsabflow = _weighted_sum_tz_fortran(theta_w, zeta_w, flow * op.b_hat[None, :, :] / op.d_hat[None, :, :]) / vprime_hat
 
     # Particle / heat flux (vm): L=0 and L=2 using full-f.
-    f_full_l0 = f_full[:, :, 0, :, :]
-    f_full_l2 = f_full[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f_full_l0)
+    f_full_l2 = f_delta[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f_full_l0)
 
     sum_pf_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f_full_l0)
     sum_pf_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f_full_l2)
@@ -517,8 +514,7 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     hf_vm_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, hf_before_vm)
 
     # vm0 contributions (f0 only):
-    f0_l0 = f0[:, :, 0, :, :]
-    f0_l2 = f0[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f0_l0)
+    f0_l2 = jnp.zeros_like(f0_l0) if op.n_xi > 2 else jnp.zeros_like(f0_l0)
 
     sum_pf0_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f0_l0)
     sum_pf0_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f0_l2)
@@ -536,11 +532,11 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
 
     # Momentum flux (vm): L=1 and L=3 using full-f.
     if op.n_xi > 1:
-        sum_mf_l1 = _weighted_sum_x_fortran(w_x5 * mask_l1, f_full[:, :, 1, :, :])
+        sum_mf_l1 = _weighted_sum_x_fortran(w_x5 * mask_l1, f_delta[:, :, 1, :, :])
     else:
         sum_mf_l1 = jnp.zeros_like(dens)
     if op.n_xi > 3:
-        sum_mf_l3 = _weighted_sum_x_fortran(w_x5 * mask_l3, f_full[:, :, 3, :, :])
+        sum_mf_l3 = _weighted_sum_x_fortran(w_x5 * mask_l3, f_delta[:, :, 3, :, :])
     else:
         sum_mf_l3 = jnp.zeros_like(dens)
 
@@ -658,6 +654,20 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     return out
 
 
+def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.ndarray) -> dict[str, jnp.ndarray]:
+    """Compute a RHSMode=1 output subset from a solved state vector.
+
+    This helper targets end-to-end `sfincsOutput.h5` parity for the smallest RHSMode=1
+    fixtures. It currently includes the "vm-only" (magnetic drift) neoclassical
+    contributions and writes vE / NTV-related quantities as 0 placeholders.
+
+    The formulas mirror `sfincs/fortran/version3/diagnostics.F90`, including the
+    `... / VPrimeHat` normalization of flux-surface averages.
+    """
+    f0_l0 = f0_l0_v3_from_operator(op)
+    return _v3_rhsmode1_output_fields_vm_only_from_f0_l0(op, x_full=x_full, f0_l0=f0_l0)
+
+
 def v3_rhsmode1_output_fields_vm_only_batch(
     op: V3FullSystemOperator,
     *,
@@ -686,8 +696,10 @@ def v3_rhsmode1_output_fields_vm_only_batch(
             f"x_full_stack must have shape (N,{int(op.total_size)}) or ({int(op.total_size)},), got {x_full_stack.shape}"
         )
 
+    f0_l0 = f0_l0_v3_from_operator(op)
+
     def _one(x_state: jnp.ndarray) -> dict[str, jnp.ndarray]:
-        return v3_rhsmode1_output_fields_vm_only(op, x_full=x_state)
+        return _v3_rhsmode1_output_fields_vm_only_from_f0_l0(op, x_full=x_state, f0_l0=f0_l0)
 
     return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
 

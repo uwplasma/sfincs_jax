@@ -1371,7 +1371,7 @@ def write_sfincs_jax_output_h5(
         import jax.numpy as jnp
 
         from .transport_matrix import (
-            f0_v3_from_operator,
+            f0_l0_v3_from_operator,
             v3_rhsmode1_output_fields_vm_only,
             v3_rhsmode1_output_fields_vm_only_batch,
             v3_rhsmode1_output_fields_vm_only_batch_jit,
@@ -1984,26 +1984,26 @@ def write_sfincs_jax_output_h5(
 
                 op_use = replace(result.op, phi1_hat_base=phi1)
                 f_delta = x_full[: result.op.f_size].reshape(result.op.fblock.f_shape)
-                f0 = f0_v3_from_operator(op_use)
-                f_full = f_delta + f0
+                f0_l0 = f0_l0_v3_from_operator(op_use)
+                f_full_l0 = f_delta[:, :, 0, :, :] + f0_l0
 
                 factor_vE = (result.op.b_hat_sub_theta * dpz - result.op.b_hat_sub_zeta * dpt) / (result.op.b_hat * result.op.b_hat)
 
-                sum_pf_full = jnp.einsum("x,sxtz->stz", w_pf_vE, f_full[:, :, 0, :, :])
-                sum_pf_0 = jnp.einsum("x,sxtz->stz", w_pf_vE, f0[:, :, 0, :, :])
+                sum_pf_full = jnp.einsum("x,sxtz->stz", w_pf_vE, f_full_l0)
+                sum_pf_0 = jnp.einsum("x,sxtz->stz", w_pf_vE, f0_l0)
                 pf_before_vE = pf_factor_vE[:, None, None] * factor_vE[None, :, :] * sum_pf_full
                 pf_before_vE0 = pf_factor_vE[:, None, None] * factor_vE[None, :, :] * sum_pf_0
                 pf_vE = jnp.einsum("tz,stz->s", w2d, pf_before_vE)
                 pf_vE0 = jnp.einsum("tz,stz->s", w2d, pf_before_vE0)
 
-                sum_hf_full = jnp.einsum("x,sxtz->stz", w_hf_vE, f_full[:, :, 0, :, :])
-                sum_hf_0 = jnp.einsum("x,sxtz->stz", w_hf_vE, f0[:, :, 0, :, :])
+                sum_hf_full = jnp.einsum("x,sxtz->stz", w_hf_vE, f_full_l0)
+                sum_hf_0 = jnp.einsum("x,sxtz->stz", w_hf_vE, f0_l0)
                 hf_before_vE = hf_factor_vE[:, None, None] * factor_vE[None, :, :] * sum_hf_full
                 hf_before_vE0 = hf_factor_vE[:, None, None] * factor_vE[None, :, :] * sum_hf_0
                 hf_vE = jnp.einsum("tz,stz->s", w2d, hf_before_vE)
                 hf_vE0 = jnp.einsum("tz,stz->s", w2d, hf_before_vE0)
 
-                sum_mf_full = jnp.einsum("x,sxtz->stz", w_mf_vE, f_full[:, :, 1, :, :])
+                sum_mf_full = jnp.einsum("x,sxtz->stz", w_mf_vE, f_delta[:, :, 1, :, :])
                 mf_before_vE = (2.0 / 3.0) * mf_factor_vE[:, None, None] * factor_vE[None, :, :] * result.op.b_hat[None, :, :] * sum_mf_full
                 mf_before_vE0 = jnp.zeros_like(mf_before_vE)
                 mf_vE = jnp.einsum("tz,stz->s", w2d, mf_before_vE)
