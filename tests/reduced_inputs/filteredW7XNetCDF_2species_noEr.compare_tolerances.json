@@ -1,6 +1,6 @@
 {
   "FSABFlow": {"atol": 1e-7},
-  "FSABFlow_vs_x": {"atol": 1e-7},
+  "FSABFlow_vs_x": {"atol": 1e-7, "rtol": 5e-4},
   "FSABVelocityUsingFSADensity": {"atol": 1e-7},
   "FSABVelocityUsingFSADensityOverB0": {"atol": 1e-7},
   "FSABVelocityUsingFSADensityOverRootFSAB2": {"atol": 1e-7},

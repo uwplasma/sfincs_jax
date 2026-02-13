@@ -103,6 +103,12 @@ Current scope limits
   skips them when ``constraintScheme=0`` (see ``sfincs_jax/compare.py``).
 - Full Phi1 coupling end-to-end (nonlinear residual assembly + collision operator contributions) is still being expanded beyond the currently parity-tested subset.
 - VMEC-based geometry schemes beyond the current ``geometryScheme=5`` parity subset.
+- Rosenbluth response matrices for FP cross-species coupling are computed with QUADPACK (matching v3). We added strict
+  scalar-order accumulation for the collocation-to-modal projection, but the remaining ~1e-10 deltas appear dominated by
+  quadrature rounding differences rather than matrix-ordering effects.
+- A small number of RHSMode=1 reduced cases (notably filtered-W7X netCDF and sfincsPaper fig. 3) are ill-conditioned:
+  PETSc's GMRES+LU preconditioning converges to a slightly different solution than the exact linear solve. We capture
+  these solver-branch differences via per-case tolerances on flow/jHat diagnostics in the reduced-suite reports.
 
 Reduced-suite parity status (source of truth)
 ---------------------------------------------

@@ -94,14 +94,15 @@ def _stack_full_system_operators(ops: list[V3FullSystemOperator]) -> V3FullSyste
     return jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *ops)
 
 
-def _weighted_sum_x_fortran(w_x: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.ndarray:
+def _weighted_sum_x_fortran(w_x: jnp.ndarray, values_sxtz: jnp.ndarray, *, strict: bool | None = None) -> jnp.ndarray:
     """Compute Σ_x w_x[x] * values[:,x,:,:] using a deterministic x-loop order."""
     w_x = jnp.asarray(w_x, dtype=jnp.float64).reshape((-1,))
     values_sxtz = jnp.asarray(values_sxtz, dtype=jnp.float64)
     n_x = int(values_sxtz.shape[1])
     if w_x.shape[0] != n_x:
         raise ValueError(f"w_x has length {w_x.shape[0]}, expected {n_x}.")
-    if _STRICT_SUM_ORDER:
+    use_strict = _STRICT_SUM_ORDER if strict is None else bool(strict)
+    if use_strict:
         acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[2], values_sxtz.shape[3]), dtype=jnp.float64)
 
         def body(ix: int, acc: jnp.ndarray) -> jnp.ndarray:
@@ -133,7 +134,13 @@ def _weighted_sum_tz_fortran(w_t: jnp.ndarray, w_z: jnp.ndarray, values_stz: jnp
     return jnp.einsum("t,z,stz->s", w_t, w_z, values_stz, precision=lax.Precision.HIGHEST)
 
 
-def _weighted_sum_tz_fortran_sx(w_t: jnp.ndarray, w_z: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.ndarray:
+def _weighted_sum_tz_fortran_sx(
+    w_t: jnp.ndarray,
+    w_z: jnp.ndarray,
+    values_sxtz: jnp.ndarray,
+    *,
+    strict: bool | None = None,
+) -> jnp.ndarray:
     """Compute Σ_t Σ_z w_t[t] w_z[z] values[:,x,t,z] in explicit order -> (S,X)."""
     w_t = jnp.asarray(w_t, dtype=jnp.float64).reshape((-1,))
     w_z = jnp.asarray(w_z, dtype=jnp.float64).reshape((-1,))
@@ -142,7 +149,8 @@ def _weighted_sum_tz_fortran_sx(w_t: jnp.ndarray, w_z: jnp.ndarray, values_sxtz:
     n_z = int(values_sxtz.shape[3])
     if w_t.shape[0] != n_t or w_z.shape[0] != n_z:
         raise ValueError(f"Weight shapes {(w_t.shape[0], w_z.shape[0])} do not match values {values_sxtz.shape}.")
-    if _STRICT_SUM_ORDER:
+    use_strict = _STRICT_SUM_ORDER if strict is None else bool(strict)
+    if use_strict:
         acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[1]), dtype=jnp.float64)
 
         def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
@@ -538,6 +546,7 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
             theta_w,
             zeta_w,
             flow_x * op.b_hat[None, None, :, :] / op.d_hat[None, None, :, :],
+            strict=True,
         ) / vprime_hat
     else:
         flow_vs_x = jnp.zeros((op.n_species, op.n_x), dtype=jnp.float64)
@@ -551,7 +560,13 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     mach = vel_fsadens * (sqrt_m[:, None, None] / sqrt_t[:, None, None])
 
     # Current-like diagnostics:
-    j_hat_tz = jnp.einsum("s,stz->tz", z, flow)  # (T,Z)
+    if op.n_xi > 1:
+        flow_for_jhat = flow_factor[:, None, None] * _weighted_sum_x_fortran(
+            w_x3 * mask_l1, f_delta[:, :, 1, :, :], strict=True
+        )
+    else:
+        flow_for_jhat = jnp.zeros_like(flow)
+    j_hat_tz = jnp.einsum("s,stz->tz", z, flow_for_jhat)  # (T,Z)
     b0, _g, _i = _flux_functions_from_op(op)
     fsab2 = jnp.asarray(op.fsab_hat2, dtype=jnp.float64)
     fsab_j = jnp.einsum("s,s->", z, fsabflow)  # scalar

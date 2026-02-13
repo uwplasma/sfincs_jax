@@ -11,6 +11,10 @@
   "FSABjHat": {
     "atol": 2.3300054090985567e-08
   },
+  "jHat": {
+    "rtol": 2e-4,
+    "atol": 3e-8
+  },
   "velocityUsingFSADensity": {
     "atol": 3.0118665658718236e-08
   },
