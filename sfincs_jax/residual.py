@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from .v3_fblock import V3FBlockOperator, matvec_v3_fblock_flat
-from .v3_system import V3FullSystemOperator, apply_v3_full_system_operator
+from .v3_system import V3FullSystemOperator, apply_v3_full_system_operator_cached
 
 
 @jtu.register_pytree_node_class
@@ -96,12 +96,12 @@ class V3FullLinearSystem:
     def residual(self, x_full: jnp.ndarray) -> jnp.ndarray:
         """Compute r(x) = A x - b."""
         x_full = jnp.asarray(x_full)
-        return apply_v3_full_system_operator(self.op, x_full) - self.b_full
+        return apply_v3_full_system_operator_cached(self.op, x_full) - self.b_full
 
     def jacobian_matvec(self, v_full: jnp.ndarray) -> jnp.ndarray:
         """Compute (dr/dx) v, matrix-free."""
         v_full = jnp.asarray(v_full)
-        return apply_v3_full_system_operator(self.op, v_full)
+        return apply_v3_full_system_operator_cached(self.op, v_full)
 
     def jvp(self, x_full: jnp.ndarray, v_full: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Return (r(x), (dr/dx) v) using JAX's JVP."""

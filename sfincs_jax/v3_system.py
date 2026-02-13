@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import os
+import hashlib
+import weakref
+from functools import lru_cache
 from pathlib import Path
 
 from jax import config as _jax_config
@@ -10,6 +13,7 @@ _jax_config.update("jax_enable_x64", True)
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import tree_util as jtu
 
 from .boozer_bc import read_boozer_bc_header, selected_r_n_from_bc
@@ -775,6 +779,74 @@ apply_v3_full_system_operator_jit = jax.jit(
 apply_v3_full_system_jacobian_jit = jax.jit(apply_v3_full_system_jacobian)
 
 
+def _fingerprint_array(arr: jnp.ndarray | np.ndarray) -> str:
+    arr_np = np.asarray(arr, dtype=np.float64)
+    return hashlib.blake2b(arr_np.tobytes(), digest_size=8).hexdigest()
+
+
+def _operator_signature(op: V3FullSystemOperator) -> tuple[object, ...]:
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    return (
+        int(op.rhs_mode),
+        int(op.n_species),
+        int(op.n_x),
+        int(op.n_xi),
+        int(op.n_theta),
+        int(op.n_zeta),
+        int(op.constraint_scheme),
+        int(op.quasineutrality_option),
+        bool(op.include_phi1),
+        bool(op.include_phi1_in_kinetic),
+        float(op.dphi_hat_dpsi_hat),
+        float(op.e_parallel_hat),
+        _fingerprint_array(op.z_s),
+        _fingerprint_array(op.m_hat),
+        _fingerprint_array(op.t_hat),
+        _fingerprint_array(op.n_hat),
+        _fingerprint_array(op.dn_hat_dpsi_hat),
+        _fingerprint_array(op.dt_hat_dpsi_hat),
+        _fingerprint_array(op.theta_weights),
+        _fingerprint_array(op.zeta_weights),
+        _fingerprint_array(op.b_hat),
+        _fingerprint_array(op.d_hat),
+        _fingerprint_array(op.b_hat_sub_theta),
+        _fingerprint_array(op.b_hat_sub_zeta),
+        _fingerprint_array(op.x),
+        _fingerprint_array(op.x_weights),
+        tuple(nxi_for_x.tolist()),
+    )
+
+
+_OPERATOR_SIGNATURE_CACHE: dict[int, tuple[weakref.ReferenceType[V3FullSystemOperator], tuple[object, ...]]] = {}
+
+
+def _operator_signature_cached(op: V3FullSystemOperator) -> tuple[object, ...]:
+    key = id(op)
+    cached = _OPERATOR_SIGNATURE_CACHE.get(key)
+    if cached is not None:
+        ref, sig = cached
+        if ref() is op:
+            return sig
+    sig = _operator_signature(op)
+    _OPERATOR_SIGNATURE_CACHE[key] = (weakref.ref(op), sig)
+    return sig
+
+
+@lru_cache(maxsize=32)
+def _get_apply_full_system_operator_jit(_signature: tuple[object, ...]):
+    def _apply(op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True) -> jnp.ndarray:
+        return apply_v3_full_system_operator(op, x_full, include_jacobian_terms=include_jacobian_terms)
+
+    return jax.jit(_apply, static_argnames=("include_jacobian_terms",))
+
+
+def apply_v3_full_system_operator_cached(
+    op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True
+) -> jnp.ndarray:
+    fn = _get_apply_full_system_operator_jit(_operator_signature_cached(op))
+    return fn(op, x_full, include_jacobian_terms=include_jacobian_terms)
+
+
 def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
     """Assemble the v3 RHS vector used in `evaluateResidual.F90` (subset).
 
@@ -951,7 +1023,7 @@ def residual_v3_full_system(op: V3FullSystemOperator, x_full: jnp.ndarray) -> jn
         phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
         op_use = replace(op, phi1_hat_base=phi1)
     return (
-        apply_v3_full_system_operator_jit(op_use, x_full, include_jacobian_terms=False)
+        apply_v3_full_system_operator_cached(op_use, x_full, include_jacobian_terms=False)
         - rhs_v3_full_system_jit(op_use)
     )
 

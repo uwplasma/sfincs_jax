@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 
 from jax import config as _jax_config
 
@@ -34,14 +35,70 @@ from .v3_system import (
     V3FullSystemOperator,
     apply_v3_full_system_jacobian,
     apply_v3_full_system_jacobian_jit,
-    apply_v3_full_system_operator,
-    apply_v3_full_system_operator_jit,
+    apply_v3_full_system_operator_cached,
     full_system_operator_from_namelist,
     residual_v3_full_system,
     rhs_v3_full_system,
     rhs_v3_full_system_jit,
     with_transport_rhs_settings,
 )
+
+
+@dataclass(frozen=True)
+class _RHSMode1PrecondCache:
+    idx_map_jnp: jnp.ndarray
+    flat_idx_jnp: jnp.ndarray
+    block_inv_jnp: jnp.ndarray
+    extra_idx_jnp: jnp.ndarray
+    extra_inv_jnp: jnp.ndarray | None
+
+
+_RHSMODE1_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
+
+
+def _hash_array(arr: jnp.ndarray | np.ndarray) -> str:
+    arr_np = np.asarray(arr, dtype=np.float64)
+    return hashlib.blake2b(arr_np.tobytes(), digest_size=8).hexdigest()
+
+
+def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[object, ...]:
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    return (
+        kind,
+        int(op.rhs_mode),
+        int(op.n_species),
+        int(op.n_x),
+        int(op.n_xi),
+        int(op.n_theta),
+        int(op.n_zeta),
+        int(op.constraint_scheme),
+        int(op.quasineutrality_option),
+        bool(op.include_phi1),
+        bool(op.include_phi1_in_kinetic),
+        bool(op.with_adiabatic),
+        float(op.alpha),
+        float(op.delta),
+        float(op.dphi_hat_dpsi_hat),
+        float(op.e_parallel_hat),
+        _hash_array(op.adiabatic_z),
+        _hash_array(op.adiabatic_nhat),
+        _hash_array(op.adiabatic_that),
+        _hash_array(op.z_s),
+        _hash_array(op.m_hat),
+        _hash_array(op.t_hat),
+        _hash_array(op.n_hat),
+        _hash_array(op.dn_hat_dpsi_hat),
+        _hash_array(op.dt_hat_dpsi_hat),
+        _hash_array(op.theta_weights),
+        _hash_array(op.zeta_weights),
+        _hash_array(op.b_hat),
+        _hash_array(op.d_hat),
+        _hash_array(op.b_hat_sub_theta),
+        _hash_array(op.b_hat_sub_zeta),
+        _hash_array(op.x),
+        _hash_array(op.x_weights),
+        tuple(nxi_for_x.tolist()),
+    )
 
 
 @jtu.register_pytree_node_class
@@ -211,81 +268,104 @@ def _build_rhsmode1_block_preconditioner(
       per-species block matrix from a simplified operator.
     - explicit extra/source-row solve via a dense small block.
     """
-    op_pc = _build_rhsmode1_preconditioner_operator_point(op)
+    cache_key = _rhsmode1_precond_cache_key(op, "point")
+    cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = _build_rhsmode1_preconditioner_operator_point(op)
+        n_s = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_t = int(op.n_theta)
+        n_z = int(op.n_zeta)
+        total = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+
+        # Representative local x/L blocks at (theta,zeta)=(0,0), one per species.
+        rep_indices_by_species: list[np.ndarray] = []
+        for s in range(n_s):
+            idx: list[int] = []
+            for ix in range(n_x):
+                max_l = int(nxi_for_x[ix])
+                for il in range(max_l):
+                    f_idx = ((((s * n_x + ix) * n_l + il) * n_t + 0) * n_z + 0)
+                    idx.append(int(f_idx))
+            rep_indices_by_species.append(np.asarray(idx, dtype=np.int32))
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        block_inv = np.zeros((n_s, local_per_species, local_per_species), dtype=np.float64)
+        for s in range(n_s):
+            rep_idx = rep_indices_by_species[s]
+            rep_idx_jnp = jnp.asarray(rep_idx, dtype=jnp.int32)
+            basis = jax.nn.one_hot(rep_idx_jnp, total, dtype=jnp.float64)
+            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
+            a = np.asarray((y[:, rep_idx_jnp]).T, dtype=np.float64)
+            a = a + reg * np.eye(local_per_species, dtype=np.float64)
+            try:
+                inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(inv)):
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            block_inv[s, :, :] = inv
+
+        # Build per-(s,theta,zeta) gather map for active x/L rows.
+        idx_map = np.zeros((n_s, n_t, n_z, local_per_species), dtype=np.int32)
+        for s in range(n_s):
+            for it in range(n_t):
+                for iz in range(n_z):
+                    k = 0
+                    for ix in range(n_x):
+                        max_l = int(nxi_for_x[ix])
+                        for il in range(max_l):
+                            idx_map[s, it, iz, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_t + it) * n_z + iz)
+                            )
+                            k += 1
+
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
+        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            basis = jax.nn.one_hot(extra_idx_jnp, total, dtype=jnp.float64)
+            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
+            ee = np.asarray((y[:, extra_idx_jnp]).T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_CACHE[cache_key] = cached
+
     n_s = int(op.n_species)
-    n_x = int(op.n_x)
-    n_l = int(op.n_xi)
     n_t = int(op.n_theta)
     n_z = int(op.n_zeta)
-    total = int(op.total_size)
-
-    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
-    local_per_species = int(np.sum(nxi_for_x))
-
-    # Representative local x/L blocks at (theta,zeta)=(0,0), one per species.
-    rep_indices_by_species: list[np.ndarray] = []
-    for s in range(n_s):
-        idx: list[int] = []
-        for ix in range(n_x):
-            max_l = int(nxi_for_x[ix])
-            for il in range(max_l):
-                f_idx = ((((s * n_x + ix) * n_l + il) * n_t + 0) * n_z + 0)
-                idx.append(int(f_idx))
-        rep_indices_by_species.append(np.asarray(idx, dtype=np.int32))
-
-    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
-    reg_val = float(reg_env) if reg_env else 1e-10
-    reg = np.float64(reg_val)
-
-    block_inv = np.zeros((n_s, local_per_species, local_per_species), dtype=np.float64)
-    for s in range(n_s):
-        rep_idx = rep_indices_by_species[s]
-        m = int(rep_idx.shape[0])
-        b = np.zeros((m, m), dtype=np.float64)
-        for j, col in enumerate(rep_idx.tolist()):
-            e = jnp.zeros((total,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
-            b[:, j] = y[rep_idx]
-        b = b + reg * np.eye(m, dtype=np.float64)
-        try:
-            inv = np.linalg.inv(b)
-        except np.linalg.LinAlgError:
-            inv = np.linalg.pinv(b, rcond=1e-12)
-        block_inv[s, :, :] = inv
-
-    # Build per-(s,theta,zeta) gather map for active x/L rows.
-    idx_map = np.zeros((n_s, n_t, n_z, local_per_species), dtype=np.int32)
-    for s in range(n_s):
-        for it in range(n_t):
-            for iz in range(n_z):
-                k = 0
-                for ix in range(n_x):
-                    max_l = int(nxi_for_x[ix])
-                    for il in range(max_l):
-                        idx_map[s, it, iz, k] = int(((((s * n_x + ix) * n_l + il) * n_t + it) * n_z + iz))
-                        k += 1
-
-    idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
-    flat_idx_jnp = idx_map_jnp.reshape((-1,))
-    block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
-
-    extra_start = int(op.f_size + op.phi1_size)
-    extra_size = int(op.extra_size)
-    extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
-    extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
-    extra_inv_jnp: jnp.ndarray | None = None
-    if extra_size > 0:
-        ee = np.zeros((extra_size, extra_size), dtype=np.float64)
-        for j, col in enumerate(extra_idx_np.tolist()):
-            e = jnp.zeros((total,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator(op_pc, e), dtype=np.float64)
-            ee[:, j] = y[extra_idx_np]
-        ee = ee + reg * np.eye(extra_size, dtype=np.float64)
-        try:
-            ee_inv = np.linalg.inv(ee)
-        except np.linalg.LinAlgError:
-            ee_inv = np.linalg.pinv(ee, rcond=1e-12)
-        extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+    local_per_species = int(cached.block_inv_jnp.shape[-1])
+    flat_idx_jnp = cached.flat_idx_jnp
+    block_inv_jnp = cached.block_inv_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -321,73 +401,94 @@ def _build_rhsmode1_theta_line_preconditioner(
     all theta points for all local (x,L) unknowns at that zeta. This approximates the
     dominant streaming/mirror couplings along theta while ignoring zeta derivatives.
     """
-    op_pc = _build_rhsmode1_preconditioner_operator_theta_line(op)
-    n_species = int(op.n_species)
-    n_x = int(op.n_x)
-    n_l = int(op.n_xi)
-    n_theta = int(op.n_theta)
-    n_zeta = int(op.n_zeta)
-    total_size = int(op.total_size)
+    cache_key = _rhsmode1_precond_cache_key(op, "theta_line")
+    cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = _build_rhsmode1_preconditioner_operator_theta_line(op)
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
 
-    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
-    local_per_species = int(np.sum(nxi_for_x))
-    line_size = int(n_theta * local_per_species)
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+        line_size = int(n_theta * local_per_species)
 
-    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
-    reg_val = float(reg_env) if reg_env else 1e-10
-    reg = np.float64(reg_val)
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
 
-    # Build per-(species,zeta) gather map for all theta points and local (x,L) indices.
-    idx_map = np.zeros((n_species, n_zeta, line_size), dtype=np.int32)
-    for s in range(n_species):
-        for iz in range(n_zeta):
-            k = 0
-            for it in range(n_theta):
-                for ix in range(n_x):
-                    max_l = int(nxi_for_x[ix])
-                    for il in range(max_l):
-                        idx_map[s, iz, k] = int(((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz))
-                        k += 1
+        # Build per-(species,zeta) gather map for all theta points and local (x,L) indices.
+        idx_map = np.zeros((n_species, n_zeta, line_size), dtype=np.int32)
+        for s in range(n_species):
+            for iz in range(n_zeta):
+                k = 0
+                for it in range(n_theta):
+                    for ix in range(n_x):
+                        max_l = int(nxi_for_x[ix])
+                        for il in range(max_l):
+                            idx_map[s, iz, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz)
+                            )
+                            k += 1
 
-    idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
-    flat_idx_jnp = idx_map_jnp.reshape((-1,))
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
 
-    # Invert a theta-line block for each zeta plane. This is more robust (and closer to
-    # v3's zeta-local whichMatrix=0 structure) than freezing coefficients at a single zeta.
-    block_inv = np.zeros((n_species, n_zeta, line_size, line_size), dtype=np.float64)
-    for s in range(n_species):
-        for iz in range(n_zeta):
-            rep_idx = idx_map_jnp[s, iz, :]
-            basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
-            y = jax.vmap(lambda v: apply_v3_full_system_operator_jit(op_pc, v))(basis)  # (line_size, total_size)
-            a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
-            a = a + reg * np.eye(line_size, dtype=np.float64)
+        # Invert a theta-line block for each zeta plane.
+        block_inv = np.zeros((n_species, n_zeta, line_size, line_size), dtype=np.float64)
+        for s in range(n_species):
+            for iz in range(n_zeta):
+                rep_idx = idx_map_jnp[s, iz, :]
+                basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
+                y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)  # (line_size, total_size)
+                a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
+                a = a + reg * np.eye(line_size, dtype=np.float64)
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                block_inv[s, iz, :, :] = inv
+        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            basis = jax.nn.one_hot(extra_idx_jnp, total_size, dtype=jnp.float64)
+            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
+            ee = np.asarray((y[:, extra_idx_jnp]).T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
             try:
-                inv = np.linalg.inv(a)
+                ee_inv = np.linalg.inv(ee)
             except np.linalg.LinAlgError:
-                inv = np.linalg.pinv(a, rcond=1e-12)
-            if not np.all(np.isfinite(inv)):
-                inv = np.linalg.pinv(a, rcond=1e-12)
-            block_inv[s, iz, :, :] = inv
-    block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
 
-    extra_start = int(op.f_size + op.phi1_size)
-    extra_size = int(op.extra_size)
-    extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
-    extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
-    extra_inv_jnp: jnp.ndarray | None = None
-    if extra_size > 0:
-        ee = np.zeros((extra_size, extra_size), dtype=np.float64)
-        for j, col in enumerate(extra_idx_np.tolist()):
-            e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator_jit(op_pc, e), dtype=np.float64)
-            ee[:, j] = y[extra_idx_np]
-        ee = ee + reg * np.eye(extra_size, dtype=np.float64)
-        try:
-            ee_inv = np.linalg.inv(ee)
-        except np.linalg.LinAlgError:
-            ee_inv = np.linalg.pinv(ee, rcond=1e-12)
-        extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_CACHE[cache_key] = cached
+
+    n_species = int(op.n_species)
+    n_zeta = int(op.n_zeta)
+    line_size = int(cached.block_inv_jnp.shape[-1])
+    flat_idx_jnp = cached.flat_idx_jnp
+    block_inv_jnp = cached.block_inv_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -423,72 +524,94 @@ def _build_rhsmode1_zeta_line_preconditioner(
     all zeta points for all local (x,L) unknowns at that theta. This approximates the
     dominant derivative couplings along zeta while ignoring theta derivatives.
     """
-    op_pc = _build_rhsmode1_preconditioner_operator_zeta_line(op)
-    n_species = int(op.n_species)
-    n_x = int(op.n_x)
-    n_l = int(op.n_xi)
-    n_theta = int(op.n_theta)
-    n_zeta = int(op.n_zeta)
-    total_size = int(op.total_size)
+    cache_key = _rhsmode1_precond_cache_key(op, "zeta_line")
+    cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = _build_rhsmode1_preconditioner_operator_zeta_line(op)
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
 
-    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
-    local_per_species = int(np.sum(nxi_for_x))
-    line_size = int(n_zeta * local_per_species)
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+        line_size = int(n_zeta * local_per_species)
 
-    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
-    reg_val = float(reg_env) if reg_env else 1e-10
-    reg = np.float64(reg_val)
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
 
-    # Build per-(species,theta) gather map for all zeta points and local (x,L) indices.
-    idx_map = np.zeros((n_species, n_theta, line_size), dtype=np.int32)
-    for s in range(n_species):
-        for it in range(n_theta):
-            k = 0
-            for iz in range(n_zeta):
-                for ix in range(n_x):
-                    max_l = int(nxi_for_x[ix])
-                    for il in range(max_l):
-                        idx_map[s, it, k] = int(((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz))
-                        k += 1
+        # Build per-(species,theta) gather map for all zeta points and local (x,L) indices.
+        idx_map = np.zeros((n_species, n_theta, line_size), dtype=np.int32)
+        for s in range(n_species):
+            for it in range(n_theta):
+                k = 0
+                for iz in range(n_zeta):
+                    for ix in range(n_x):
+                        max_l = int(nxi_for_x[ix])
+                        for il in range(max_l):
+                            idx_map[s, it, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz)
+                            )
+                            k += 1
 
-    idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
-    flat_idx_jnp = idx_map_jnp.reshape((-1,))
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
 
-    # Invert a zeta-line block for each theta plane.
-    block_inv = np.zeros((n_species, n_theta, line_size, line_size), dtype=np.float64)
-    for s in range(n_species):
-        for it in range(n_theta):
-            rep_idx = idx_map_jnp[s, it, :]
-            basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
-            y = jax.vmap(lambda v: apply_v3_full_system_operator_jit(op_pc, v))(basis)  # (line_size, total_size)
-            a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
-            a = a + reg * np.eye(line_size, dtype=np.float64)
+        # Invert a zeta-line block for each theta plane.
+        block_inv = np.zeros((n_species, n_theta, line_size, line_size), dtype=np.float64)
+        for s in range(n_species):
+            for it in range(n_theta):
+                rep_idx = idx_map_jnp[s, it, :]
+                basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
+                y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)  # (line_size, total_size)
+                a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
+                a = a + reg * np.eye(line_size, dtype=np.float64)
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                block_inv[s, it, :, :] = inv
+        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            basis = jax.nn.one_hot(extra_idx_jnp, total_size, dtype=jnp.float64)
+            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
+            ee = np.asarray((y[:, extra_idx_jnp]).T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
             try:
-                inv = np.linalg.inv(a)
+                ee_inv = np.linalg.inv(ee)
             except np.linalg.LinAlgError:
-                inv = np.linalg.pinv(a, rcond=1e-12)
-            if not np.all(np.isfinite(inv)):
-                inv = np.linalg.pinv(a, rcond=1e-12)
-            block_inv[s, it, :, :] = inv
-    block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
 
-    extra_start = int(op.f_size + op.phi1_size)
-    extra_size = int(op.extra_size)
-    extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
-    extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
-    extra_inv_jnp: jnp.ndarray | None = None
-    if extra_size > 0:
-        ee = np.zeros((extra_size, extra_size), dtype=np.float64)
-        for j, col in enumerate(extra_idx_np.tolist()):
-            e = jnp.zeros((total_size,), dtype=jnp.float64).at[col].set(1.0)
-            y = np.asarray(apply_v3_full_system_operator_jit(op_pc, e), dtype=np.float64)
-            ee[:, j] = y[extra_idx_np]
-        ee = ee + reg * np.eye(extra_size, dtype=np.float64)
-        try:
-            ee_inv = np.linalg.inv(ee)
-        except np.linalg.LinAlgError:
-            ee_inv = np.linalg.pinv(ee, rcond=1e-12)
-        extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_CACHE[cache_key] = cached
+
+    n_species = int(op.n_species)
+    n_theta = int(op.n_theta)
+    line_size = int(cached.block_inv_jnp.shape[-1])
+    flat_idx_jnp = cached.flat_idx_jnp
+    block_inv_jnp = cached.block_inv_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -557,7 +680,7 @@ def solve_v3_full_system_linear_gmres(
     def mv(x):
         # Use the JIT-compiled operator application to reduce Python overhead in repeated matvecs
         # (e.g. during GMRES iterations and Er scans).
-        return apply_v3_full_system_operator_jit(op, x)
+        return apply_v3_full_system_operator_cached(op, x)
 
     active_env = os.environ.get("SFINCS_JAX_ACTIVE_DOF", "").strip().lower()
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
@@ -917,11 +1040,23 @@ def solve_v3_full_system_linear_gmres(
             dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
         except ValueError:
             dense_fallback_max = 2500
+        dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
+        try:
+            dense_fallback_max_huge = int(dense_fallback_max_huge_env) if dense_fallback_max_huge_env else 6000
+        except ValueError:
+            dense_fallback_max_huge = 6000
+        dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
+        try:
+            dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e8
+        except ValueError:
+            dense_fallback_ratio = 1.0e8
+        res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
+        dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
         if (
-            dense_fallback_max > 0
+            dense_fallback_limit > 0
             and int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
-            and int(active_size) <= dense_fallback_max
+            and int(active_size) <= dense_fallback_limit
             and float(res_reduced.residual_norm) > target_reduced
         ):
             if emit is not None:
@@ -1474,7 +1609,7 @@ def solve_v3_full_system_newton_krylov_history(
             phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
             op_use = replace(op, phi1_hat_base=phi1)
 
-        r = apply_v3_full_system_operator_jit(op_use, x, include_jacobian_terms=False) - rhs_v3_full_system_jit(op_use)
+        r = apply_v3_full_system_operator_cached(op_use, x, include_jacobian_terms=False) - rhs_v3_full_system_jit(op_use)
         rnorm = jnp.linalg.norm(r)
         rnorm_f = float(rnorm)
         if rnorm_initial is None:
@@ -1535,7 +1670,7 @@ def solve_v3_full_system_newton_krylov_history(
                     else:
                         op_rhs_x = op
                     return (
-                        apply_v3_full_system_operator_jit(op_use, xx, include_jacobian_terms=True)
+                        apply_v3_full_system_operator_cached(op_use, xx, include_jacobian_terms=True)
                         - rhs_v3_full_system_jit(op_rhs_x)
                     )
 
@@ -1555,7 +1690,7 @@ def solve_v3_full_system_newton_krylov_history(
                     else:
                         op_mat_x = op
                     return (
-                        apply_v3_full_system_operator_jit(op_mat_x, xx, include_jacobian_terms=True)
+                        apply_v3_full_system_operator_cached(op_mat_x, xx, include_jacobian_terms=True)
                         - rhs_v3_full_system_jit(op_use)
                     )
 
@@ -1875,19 +2010,15 @@ def _project_constraint_scheme1_nullspace_solution(
         basis.append(_basis(s, 0, xpart1))
         basis.append(_basis(s, 1, xpart2))
 
-    r = apply_v3_full_system_operator_jit(matvec_op, x_vec) - rhs_vec
+    r = apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     r_extra = r[-op.extra_size :]
-    cols = [apply_v3_full_system_operator_jit(matvec_op, v)[-op.extra_size :] for v in basis]
+    cols = [apply_v3_full_system_operator_cached(matvec_op, v)[-op.extra_size :] for v in basis]
     m = jnp.stack(cols, axis=1)
     c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
     x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
-    x_vec = x_vec + x_corr
-
-    b_mat = jnp.stack(basis, axis=1)
-    gram = b_mat.T @ b_mat
-    proj_rhs = b_mat.T @ x_vec
-    c_proj = jnp.linalg.solve(gram, proj_rhs)
-    return x_vec - b_mat @ c_proj
+    # For constraintScheme=1, enforce the source rows directly and keep the corrected
+    # solution. Projecting out the basis reintroduces the constraint residuals.
+    return x_vec + x_corr
 
 
 def solve_v3_transport_matrix_linear_gmres(
@@ -2040,11 +2171,11 @@ def solve_v3_transport_matrix_linear_gmres(
             probe0 = jnp.zeros((int(op0.total_size),), dtype=jnp.float64).at[0].set(1.0)
             probe1 = jnp.zeros((int(op0.total_size),), dtype=jnp.float64).at[-1].set(1.0)
             same_operator = True
-            y_ref0 = apply_v3_full_system_operator_jit(op_probe_ref, probe0)
-            y_ref1 = apply_v3_full_system_operator_jit(op_probe_ref, probe1)
+            y_ref0 = apply_v3_full_system_operator_cached(op_probe_ref, probe0)
+            y_ref1 = apply_v3_full_system_operator_cached(op_probe_ref, probe1)
             for op_probe in op_matvec_by_index[1:]:
-                d0 = float(jnp.linalg.norm(apply_v3_full_system_operator_jit(op_probe, probe0) - y_ref0))
-                d1 = float(jnp.linalg.norm(apply_v3_full_system_operator_jit(op_probe, probe1) - y_ref1))
+                d0 = float(jnp.linalg.norm(apply_v3_full_system_operator_cached(op_probe, probe0) - y_ref0))
+                d1 = float(jnp.linalg.norm(apply_v3_full_system_operator_cached(op_probe, probe1) - y_ref1))
                 if max(d0, d1) > 1e-13:
                     same_operator = False
                     break
@@ -2055,7 +2186,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 t_dense = Timer()
 
                 def _mv_dense(x: jnp.ndarray) -> jnp.ndarray:
-                    return apply_v3_full_system_operator_jit(op_probe_ref, x)
+                    return apply_v3_full_system_operator_cached(op_probe_ref, x)
 
                 a_dense = assemble_dense_matrix_from_matvec(
                     matvec=_mv_dense, n=int(op0.total_size), dtype=jnp.float64
@@ -2071,7 +2202,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     )
                     state_vectors[which_rhs] = x_col
                     residual_norms[which_rhs] = jnp.linalg.norm(
-                        apply_v3_full_system_operator_jit(op_probe_ref, x_col) - rhs_vec
+                        apply_v3_full_system_operator_cached(op_probe_ref, x_col) - rhs_vec
                     )
                     elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
                     if emit is not None:
@@ -2118,7 +2249,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     return padded[full_to_active_jnp]
 
                 def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
-                    y_full = apply_v3_full_system_operator_jit(op_matvec, expand_reduced(x_reduced))
+                    y_full = apply_v3_full_system_operator_cached(op_matvec, expand_reduced(x_reduced))
                     return reduce_full(y_full)
 
                 rhs_reduced = reduce_full(rhs)
@@ -2144,12 +2275,12 @@ def solve_v3_transport_matrix_linear_gmres(
                 x_full = _maybe_project_constraint_nullspace(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
                 )
-                res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator_jit(op_matvec, x_full) - rhs)
+                res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator_cached(op_matvec, x_full) - rhs)
                 state_vectors[which_rhs] = x_full
                 residual_norms[which_rhs] = res_norm_full
             else:
                 def mv(x: jnp.ndarray) -> jnp.ndarray:
-                    return apply_v3_full_system_operator_jit(op_matvec, x)
+                    return apply_v3_full_system_operator_cached(op_matvec, x)
 
                 res = gmres_solve(
                     matvec=mv,
@@ -2166,7 +2297,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
                 )
                 state_vectors[which_rhs] = x_full
-                residual_norms[which_rhs] = jnp.linalg.norm(apply_v3_full_system_operator_jit(op_matvec, x_full) - rhs)
+                residual_norms[which_rhs] = jnp.linalg.norm(apply_v3_full_system_operator_cached(op_matvec, x_full) - rhs)
             if emit is not None:
                 emit(
                     0,
