@@ -2070,16 +2070,30 @@ def solve_v3_transport_matrix_linear_gmres(
                 emit(0, f"solve_v3_transport_matrix_linear_gmres: using dense solve for RHSMode={rhs_mode} (n={int(op0.total_size)})")
 
     active_dof_env = os.environ.get("SFINCS_JAX_TRANSPORT_ACTIVE_DOF", "").strip().lower()
-    use_active_dof_mode = int(rhs_mode) in {2, 3} and active_dof_env in {"1", "true", "yes", "on"}
+    active_dof_reason: str | None = None
+    if active_dof_env in {"0", "false", "no", "off"}:
+        use_active_dof_mode = False
+    elif active_dof_env in {"1", "true", "yes", "on"}:
+        use_active_dof_mode = True
+        active_dof_reason = "env"
+    else:
+        if int(rhs_mode) in {2, 3}:
+            nxi_for_x = np.asarray(op0.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+            use_active_dof_mode = bool(np.any(nxi_for_x < int(op0.n_xi)))
+            if use_active_dof_mode:
+                active_dof_reason = "auto"
+        else:
+            use_active_dof_mode = False
     # For reduced active-DOF parity mode, prefer Krylov iterations over dense direct
     # solves to stay closer to upstream PETSc/KSP behavior for singular transport systems.
     if use_active_dof_mode and str(solve_method_use).lower() == "dense":
         solve_method_use = str(solve_method)
-    elif int(rhs_mode) in {2, 3} and emit is not None:
+    elif int(rhs_mode) in {2, 3} and emit is not None and active_dof_env not in {"0", "false", "no", "off"}:
         emit(
             1,
             "solve_v3_transport_matrix_linear_gmres: active-DOF mode disabled "
-            "(set SFINCS_JAX_TRANSPORT_ACTIVE_DOF=1 to enable experimental reduced solve)",
+            "(set SFINCS_JAX_TRANSPORT_ACTIVE_DOF=1 to enable; "
+            "SFINCS_JAX_TRANSPORT_ACTIVE_DOF=0 to force full-size solve)",
         )
     active_idx_np: np.ndarray | None = None
     active_idx_jnp: jnp.ndarray | None = None
@@ -2093,10 +2107,11 @@ def solve_v3_transport_matrix_linear_gmres(
         full_to_active_jnp = jnp.asarray(full_to_active_np, dtype=jnp.int32)
         active_size = int(active_idx_np.shape[0])
         if emit is not None:
+            reason = f" ({active_dof_reason})" if active_dof_reason else ""
             emit(
                 1,
                 "solve_v3_transport_matrix_linear_gmres: active-DOF mode enabled "
-                f"(size={active_size}/{int(op0.total_size)})",
+                f"(size={active_size}/{int(op0.total_size)}){reason}",
             )
 
     # Geometry scalars needed for the transport-matrix formulas.
