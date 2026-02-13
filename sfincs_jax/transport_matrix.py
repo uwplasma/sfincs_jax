@@ -222,25 +222,15 @@ def f0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
     return out
 
 
-def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.ndarray) -> V3TransportDiagnostics:
-    """Compute the subset of `diagnostics.F90` needed for RHSMode=2/3 transport matrices.
-
-    Notes
-    -----
-    This implementation currently includes:
-    - `particleFlux_vm_psiHat`
-    - `heatFlux_vm_psiHat`
-    - `FSABFlow`
-
-    It deliberately omits vE terms, momentum flux, NTV, and classical terms since the RHSMode=2/3
-    transport matrices in v3 only depend on the vm (magnetic drift) particle/heat fluxes and FSAB flow.
-    """
+def _v3_transport_diagnostics_vm_only_from_f0(
+    op: V3FullSystemOperator, *, x_full: jnp.ndarray, f0: jnp.ndarray
+) -> V3TransportDiagnostics:
+    """Core transport diagnostics with a precomputed Maxwellian f0."""
     x_full = jnp.asarray(x_full, dtype=jnp.float64)
     if x_full.shape != (op.total_size,):
         raise ValueError(f"x_full must have shape {(op.total_size,)}, got {x_full.shape}")
 
     f_delta = x_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
-    f0 = f0_v3_from_operator(op)
     f_full = f_delta + f0
 
     vprime_hat = _vprime_hat_from_op(op)  # scalar
@@ -369,6 +359,23 @@ def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.nd
     )
 
 
+def v3_transport_diagnostics_vm_only(op: V3FullSystemOperator, *, x_full: jnp.ndarray) -> V3TransportDiagnostics:
+    """Compute the subset of `diagnostics.F90` needed for RHSMode=2/3 transport matrices.
+
+    Notes
+    -----
+    This implementation currently includes:
+    - `particleFlux_vm_psiHat`
+    - `heatFlux_vm_psiHat`
+    - `FSABFlow`
+
+    It deliberately omits vE terms, momentum flux, NTV, and classical terms since the RHSMode=2/3
+    transport matrices in v3 only depend on the vm (magnetic drift) particle/heat fluxes and FSAB flow.
+    """
+    f0 = f0_v3_from_operator(op)
+    return _v3_transport_diagnostics_vm_only_from_f0(op, x_full=x_full, f0=f0)
+
+
 def v3_transport_diagnostics_vm_only_batch(
     *,
     op_stack: V3FullSystemOperator,
@@ -398,8 +405,10 @@ def v3_transport_diagnostics_vm_only_batch_op0(
     if x_full_stack.ndim != 2:
         raise ValueError(f"x_full_stack must have shape (N,total_size), got {x_full_stack.shape}")
 
+    f0 = f0_v3_from_operator(op0)
+
     def _one(x_state: jnp.ndarray) -> V3TransportDiagnostics:
-        return v3_transport_diagnostics_vm_only(op0, x_full=x_state)
+        return _v3_transport_diagnostics_vm_only_from_f0(op0, x_full=x_state, f0=f0)
 
     return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
 
