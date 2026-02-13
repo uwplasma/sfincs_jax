@@ -120,7 +120,7 @@
      - -
      - S:0 P:0
      - -
-     - Fortran MPI init error: Fortran failed rc=213. [36580] /openmpi-5.0.8/3rd-party/openpmix/src/mca/ptl/base/ptl_base_listener.c:521 bind() failed for socket 7 storage size 16: Operation not permitted
+     - Fortran MPI init error: Fortran failed rc=255. [mpiexec@Rogerios-MacBook-Pro.local] HYDU_sock_listen (lib/utils/sock.c:77): failed to bind to any port [mpiexec@Rogerios-MacBook-Pro.local] HYDU_sock_create_and_listen_portstr (lib/utils/sock.c:483): unable to listen on port [mpiexec@Rogerios-MacBook-Pro.local] HYD_pmci_launch_procs (mpiexec/pmiserv_pmci.c:98): unable to create PMI port [mpiexec@Rogerios-MacBook-Pro.local] main (mpiexec/mpiexec.c:256): process manager returned error launching processes
    * - geometryScheme4_2species_PAS_noEr
      - parity_ok
      - none

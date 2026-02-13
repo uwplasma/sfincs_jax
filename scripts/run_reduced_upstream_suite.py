@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Sequence
@@ -19,6 +20,35 @@ from sfincs_jax.namelist import read_sfincs_input
 
 RES_KEYS: tuple[str, ...] = ("NTHETA", "NZETA", "NX", "NXI")
 MIN_RES: dict[str, int] = {"NTHETA": 5, "NZETA": 1, "NX": 1, "NXI": 2}
+
+
+def _detect_mpi_vendor_for_exe(exe: Path) -> str | None:
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.check_output(["otool", "-L", str(exe)], text=True, stderr=subprocess.STDOUT)
+        else:
+            out = subprocess.check_output(["ldd", str(exe)], text=True, stderr=subprocess.STDOUT)
+    except Exception:  # noqa: BLE001
+        return None
+    low = out.lower()
+    if "mpich" in low:
+        return "mpich"
+    if "openmpi" in low or "open mpi" in low:
+        return "openmpi"
+    return None
+
+
+def _detect_mpiexec_vendor(path: str) -> str | None:
+    try:
+        out = subprocess.check_output([path, "--version"], text=True, stderr=subprocess.STDOUT, timeout=2.0)
+    except Exception:  # noqa: BLE001
+        return None
+    low = out.lower()
+    if "open mpi" in low or "openmpi" in low:
+        return "openmpi"
+    if "mpich" in low or "hydra" in low:
+        return "mpich"
+    return None
 
 
 @dataclass
@@ -263,15 +293,47 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
         # Some MPI-enabled builds error out on libfabric defaults. Retry once with a TCP provider.
         mpi_hint = any(s in tail.lower() for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
         if mpi_hint:
+            mpi_vendor = _detect_mpi_vendor_for_exe(exe)
             # In restricted/sandboxed environments, socket-based providers can fail
             # even for single-process jobs. Prefer a shared-memory provider first and
             # try a few common MPI/OFI fallbacks used on CI runners.
             retry_variants = [
                 {"FI_PROVIDER": "shm"},
                 {"FI_PROVIDER": "tcp"},
+                {"FI_PROVIDER": "shm", "MPICH_OFI_PROVIDER": "shm"},
+                {"FI_PROVIDER": "tcp", "MPICH_OFI_PROVIDER": "tcp"},
                 {"I_MPI_FABRICS": "shm:tcp", "FI_PROVIDER": "tcp"},
                 {"I_MPI_OFI_PROVIDER": "shm", "FI_PROVIDER": "shm"},
                 {"MPIR_CVAR_CH4_OFI_ENABLE": "0"},
+                {
+                    "PMIX_MCA_ptl": "usock",
+                    "PRTE_MCA_oob": "usock",
+                    "OMPI_MCA_oob": "usock",
+                },
+                {
+                    "PMIX_MCA_ptl": "usock",
+                    "PMIX_MCA_ptl_tcp_if_include": "lo0",
+                    "OMPI_MCA_oob_tcp_if_include": "lo0",
+                    "PRTE_MCA_oob_tcp_if_include": "lo0",
+                },
+                {
+                    "OMPI_MCA_btl": "self,vader",
+                    "OMPI_MCA_btl_tcp_if_include": "lo0",
+                },
+                {
+                    "PMIX_MCA_ptl": "usock",
+                    "PMIX_MCA_gds": "hash",
+                    "PMIX_MCA_psec": "none",
+                    "PRTE_MCA_oob": "usock",
+                    "OMPI_MCA_oob": "usock",
+                },
+                {
+                    "OMPI_MCA_pml": "ob1",
+                    "OMPI_MCA_btl": "self",
+                    "OMPI_MCA_oob": "usock",
+                    "PRTE_MCA_oob": "usock",
+                    "PMIX_MCA_ptl": "usock",
+                },
             ]
             for variant in retry_variants:
                 env_retry = dict(env)
@@ -294,9 +356,38 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
                 if proc.returncode == 0 and out.exists():
                     return dt, out, int(proc.returncode)
                 tail = _tail(log_path, n=80)
-            mpi_exec = shutil.which("mpiexec") or shutil.which("mpirun")
-            if mpi_exec:
-                cmd_mpi = [mpi_exec, "-n", "1", str(exe.resolve())]
+            mpi_exec = None
+            mpi_exec_vendor = None
+            mpiexec_candidates = (
+                "mpiexec.mpich",
+                "mpiexec.hydra",
+                "mpiexec-mpich-clang16",
+                "mpiexec-mpich-gcc13",
+                "mpiexec.hydra-mpich-clang16",
+                "mpiexec.hydra-mpich-gcc13",
+                "mpirun-mpich-clang16",
+                "mpirun-mpich-gcc13",
+                "mpiexec",
+                "mpirun",
+            )
+            for candidate in mpiexec_candidates:
+                candidate_path = shutil.which(candidate)
+                if not candidate_path:
+                    continue
+                vendor = _detect_mpiexec_vendor(candidate_path)
+                if mpi_vendor is None or vendor is None:
+                    mpi_exec = candidate_path
+                    mpi_exec_vendor = vendor
+                    break
+                if mpi_vendor == vendor:
+                    mpi_exec = candidate_path
+                    mpi_exec_vendor = vendor
+                    break
+            if mpi_exec is not None:
+                if mpi_exec_vendor == "mpich":
+                    cmd_mpi = [mpi_exec, "-launcher", "fork", "-iface", "lo0", "-n", "1", str(exe.resolve())]
+                else:
+                    cmd_mpi = [mpi_exec, "-n", "1", str(exe.resolve())]
                 for variant in retry_variants:
                     env_retry = dict(env)
                     env_retry.update(variant)
@@ -305,6 +396,8 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
                     env_retry.setdefault("FI_TCP_IFACE", "lo0")
                     env_retry.setdefault("OMPI_MCA_oob_tcp_if_include", "lo0")
                     env_retry.setdefault("PRTE_MCA_oob_tcp_if_include", "lo0")
+                    env_retry.setdefault("HYDRA_IFACE", "lo0")
+                    env_retry.setdefault("HYDRA_USE_LOCALHOST", "1")
                     with log_path.open("w", encoding="utf-8") as log:
                         proc = subprocess.run(
                             cmd_mpi,
@@ -643,6 +736,9 @@ def _run_case(
                     "oob_tcp",
                     "bind() failed",
                     "prterun",
+                    "hydra",
+                    "hydu_sock_listen",
+                    "pmi port",
                 )
             ):
                 note = f"Fortran MPI init error: {exc_text}"
