@@ -57,6 +57,51 @@ class _RHSMode1PrecondCache:
 _RHSMODE1_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 
 
+def _precond_chunk_cols(total_size: int, n_cols: int) -> int:
+    env_cols = os.environ.get("SFINCS_JAX_PRECOND_CHUNK", "").strip()
+    if env_cols:
+        try:
+            cols = int(env_cols)
+            if cols > 0:
+                return min(cols, n_cols)
+        except ValueError:
+            pass
+    env_max_mb = os.environ.get("SFINCS_JAX_PRECOND_MAX_MB", "").strip()
+    try:
+        max_mb = float(env_max_mb) if env_max_mb else 256.0
+    except ValueError:
+        max_mb = 256.0
+    if max_mb <= 0:
+        return n_cols
+    bytes_per_row = int(total_size) * 8
+    if bytes_per_row <= 0:
+        return n_cols
+    max_cols = max(1, int((max_mb * 1e6) // bytes_per_row))
+    return min(n_cols, max_cols)
+
+
+def _matvec_submatrix(
+    op_pc: V3FullSystemOperator,
+    *,
+    col_idx: np.ndarray,
+    row_idx: np.ndarray,
+    total_size: int,
+    chunk_cols: int,
+) -> np.ndarray:
+    col_idx = np.asarray(col_idx, dtype=np.int32)
+    row_idx_jnp = jnp.asarray(row_idx, dtype=jnp.int32)
+    blocks: list[np.ndarray] = []
+    for start in range(0, int(col_idx.shape[0]), int(chunk_cols)):
+        idx = col_idx[start : start + int(chunk_cols)]
+        basis = jax.nn.one_hot(jnp.asarray(idx, dtype=jnp.int32), total_size, dtype=jnp.float64)
+        y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
+        y_sub = y[:, row_idx_jnp]
+        blocks.append(np.asarray(y_sub, dtype=np.float64))
+    if len(blocks) == 1:
+        return blocks[0]
+    return np.concatenate(blocks, axis=0)
+
+
 def _hash_array(arr: jnp.ndarray | np.ndarray) -> str:
     arr_np = np.asarray(arr, dtype=np.float64)
     return hashlib.blake2b(arr_np.tobytes(), digest_size=8).hexdigest()
@@ -301,10 +346,15 @@ def _build_rhsmode1_block_preconditioner(
         block_inv = np.zeros((n_s, local_per_species, local_per_species), dtype=np.float64)
         for s in range(n_s):
             rep_idx = rep_indices_by_species[s]
-            rep_idx_jnp = jnp.asarray(rep_idx, dtype=jnp.int32)
-            basis = jax.nn.one_hot(rep_idx_jnp, total, dtype=jnp.float64)
-            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
-            a = np.asarray((y[:, rep_idx_jnp]).T, dtype=np.float64)
+            chunk_cols = _precond_chunk_cols(total, int(np.asarray(rep_idx).shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=rep_idx,
+                row_idx=rep_idx,
+                total_size=total,
+                chunk_cols=chunk_cols,
+            )
+            a = np.asarray(y_sub.T, dtype=np.float64)
             a = a + reg * np.eye(local_per_species, dtype=np.float64)
             try:
                 inv = np.linalg.inv(a)
@@ -338,9 +388,15 @@ def _build_rhsmode1_block_preconditioner(
         extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
         extra_inv_jnp: jnp.ndarray | None = None
         if extra_size > 0:
-            basis = jax.nn.one_hot(extra_idx_jnp, total, dtype=jnp.float64)
-            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
-            ee = np.asarray((y[:, extra_idx_jnp]).T, dtype=np.float64)
+            chunk_cols = _precond_chunk_cols(total, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
             ee = ee + reg * np.eye(extra_size, dtype=np.float64)
             try:
                 ee_inv = np.linalg.inv(ee)
@@ -442,10 +498,16 @@ def _build_rhsmode1_theta_line_preconditioner(
         block_inv = np.zeros((n_species, n_zeta, line_size, line_size), dtype=np.float64)
         for s in range(n_species):
             for iz in range(n_zeta):
-                rep_idx = idx_map_jnp[s, iz, :]
-                basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
-                y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)  # (line_size, total_size)
-                a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
+                rep_idx = np.asarray(idx_map[s, iz, :], dtype=np.int32)
+                chunk_cols = _precond_chunk_cols(total_size, int(rep_idx.shape[0]))
+                y_sub = _matvec_submatrix(
+                    op_pc,
+                    col_idx=rep_idx,
+                    row_idx=rep_idx,
+                    total_size=total_size,
+                    chunk_cols=chunk_cols,
+                )
+                a = np.asarray(y_sub.T, dtype=np.float64)  # (line_size, line_size)
                 a = a + reg * np.eye(line_size, dtype=np.float64)
                 try:
                     inv = np.linalg.inv(a)
@@ -462,9 +524,15 @@ def _build_rhsmode1_theta_line_preconditioner(
         extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
         extra_inv_jnp: jnp.ndarray | None = None
         if extra_size > 0:
-            basis = jax.nn.one_hot(extra_idx_jnp, total_size, dtype=jnp.float64)
-            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
-            ee = np.asarray((y[:, extra_idx_jnp]).T, dtype=np.float64)
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
             ee = ee + reg * np.eye(extra_size, dtype=np.float64)
             try:
                 ee_inv = np.linalg.inv(ee)
@@ -565,10 +633,16 @@ def _build_rhsmode1_zeta_line_preconditioner(
         block_inv = np.zeros((n_species, n_theta, line_size, line_size), dtype=np.float64)
         for s in range(n_species):
             for it in range(n_theta):
-                rep_idx = idx_map_jnp[s, it, :]
-                basis = jax.nn.one_hot(rep_idx, total_size, dtype=jnp.float64)  # (line_size, total_size)
-                y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)  # (line_size, total_size)
-                a = np.asarray((y[:, rep_idx]).T, dtype=np.float64)  # (line_size, line_size)
+                rep_idx = np.asarray(idx_map[s, it, :], dtype=np.int32)
+                chunk_cols = _precond_chunk_cols(total_size, int(rep_idx.shape[0]))
+                y_sub = _matvec_submatrix(
+                    op_pc,
+                    col_idx=rep_idx,
+                    row_idx=rep_idx,
+                    total_size=total_size,
+                    chunk_cols=chunk_cols,
+                )
+                a = np.asarray(y_sub.T, dtype=np.float64)  # (line_size, line_size)
                 a = a + reg * np.eye(line_size, dtype=np.float64)
                 try:
                     inv = np.linalg.inv(a)
@@ -585,9 +659,15 @@ def _build_rhsmode1_zeta_line_preconditioner(
         extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
         extra_inv_jnp: jnp.ndarray | None = None
         if extra_size > 0:
-            basis = jax.nn.one_hot(extra_idx_jnp, total_size, dtype=jnp.float64)
-            y = jax.vmap(lambda v: apply_v3_full_system_operator_cached(op_pc, v))(basis)
-            ee = np.asarray((y[:, extra_idx_jnp]).T, dtype=np.float64)
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
             ee = ee + reg * np.eye(extra_size, dtype=np.float64)
             try:
                 ee_inv = np.linalg.inv(ee)

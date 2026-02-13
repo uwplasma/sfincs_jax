@@ -1176,6 +1176,18 @@ def write_sfincs_jax_output_h5(
         def emit(level: int, msg: str) -> None:  # type: ignore[no-redef]
             if level <= 0:
                 print(msg)
+    profiler = None
+    if emit is not None:
+        try:
+            from .profiling import maybe_profiler  # noqa: PLC0415
+
+            profiler = maybe_profiler(emit)
+        except Exception:
+            profiler = None
+
+    def _mark(label: str) -> None:
+        if profiler is not None:
+            profiler.mark(label)
 
     def _fmt_fortran_e(val: float, width: int = 24, prec: int = 16) -> str:
         s = f"{val:.{prec}E}"
@@ -1197,6 +1209,7 @@ def write_sfincs_jax_output_h5(
     output_path = Path(output_path)
 
     nml = read_sfincs_input(input_namelist)
+    _mark("read_namelist")
 
     # -------------------------------------------------------------------------
     # Fortran-style preamble (subset) to ease migration from upstream v3.
@@ -1224,6 +1237,7 @@ def write_sfincs_jax_output_h5(
             emit(0, f" Successfully read parameters from {g} namelist in {input_namelist.name}.")
 
     grids = grids_from_namelist(nml)
+    _mark("grids_from_namelist")
     if emit is not None:
         rhs_mode = int(nml.group("general").get("RHSMODE", 1))
         res = nml.group("resolutionParameters")
@@ -1298,6 +1312,7 @@ def write_sfincs_jax_output_h5(
         if min_x_for_l:
             emit(0, f" min_x_for_L: {''.join(f'{v:12d}' for v in min_x_for_l)}")
     data = sfincs_jax_output_dict(nml=nml, grids=grids)
+    _mark("sfincs_jax_output_dict")
     if emit is not None:
         geom_params = nml.group("geometryParameters")
         input_radial_coordinate = _get_int(geom_params, "inputRadialCoordinate", 3)
@@ -1480,6 +1495,7 @@ def write_sfincs_jax_output_h5(
                     gmres_maxiter = int(env_gmres_maxiter)
                 except ValueError:
                     gmres_maxiter = 2000
+            _mark("rhs1_solve_start")
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
                 x0=None,
@@ -1493,6 +1509,7 @@ def write_sfincs_jax_output_h5(
                 use_frozen_linearization=use_frozen_linearization,
                 emit=emit,
             )
+            _mark("rhs1_solve_done")
             xs = x_hist if x_hist else [result.x]
             # Optional override: force a minimum number of recorded nonlinear iterates.
             # By default we now keep the naturally accepted-iterate history, which aligns
@@ -1513,12 +1530,14 @@ def write_sfincs_jax_output_h5(
                     while len(xs) < min_iters:
                         xs.append(xs[-1])
         else:
+            _mark("rhs1_solve_start")
             result = solve_v3_full_system_linear_gmres(
                 nml=nml,
                 tol=float(solver_tol),
                 solve_method=solve_method,
                 emit=emit,
             )
+            _mark("rhs1_solve_done")
             xs = [result.x]
             if include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option == 1):
                 # v3 includePhi1 workflows run SNES and write at least 2 diagnostic iterations.
@@ -1528,6 +1547,7 @@ def write_sfincs_jax_output_h5(
 
         if emit is not None:
             emit(0, " Computing diagnostics.")
+        _mark("rhs1_diagnostics_start")
 
         n_iter = int(len(xs))
         # v3 output retains NIterations=0 in the reduced suite, even for Phi1/QN cases.
@@ -2081,6 +2101,8 @@ def write_sfincs_jax_output_h5(
             data["heatFlux_withoutPhi1_rHat"] = _fortran_h5_layout(hf_wo * float(conv["ddrHat2ddpsiHat"]))
             data["heatFlux_withoutPhi1_rN"] = _fortran_h5_layout(hf_wo * float(conv["ddrN2ddpsiHat"]))
 
+        _mark("rhs1_diagnostics_done")
+
     if bool(compute_transport_matrix):
         if rhs_mode in {2, 3}:
             import jax.numpy as jnp
@@ -2091,9 +2113,12 @@ def write_sfincs_jax_output_h5(
 
             if emit is not None:
                 emit(0, " Computing transport matrix.")
+            _mark("transport_solve_start")
             result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol), emit=emit)
+            _mark("transport_solve_done")
             if emit is not None:
                 emit(0, " Computing diagnostics.")
+            _mark("transport_diagnostics_start")
 
             # For RHSMode=2/3, upstream postprocessing scripts expect a number of additional
             # transport diagnostics in `sfincsOutput.h5`. Compute a larger subset from the
@@ -2329,11 +2354,14 @@ def write_sfincs_jax_output_h5(
             # produces the desired Python-read shape.
             for k, v in fields.items():
                 data[k] = _fortran_h5_layout(v)
+            _mark("transport_diagnostics_done")
 
     data["input.namelist"] = input_namelist.read_text()
     if emit is not None:
         emit(0, " Saving diagnostics to h5 file for iteration            1")
+    _mark("write_h5_start")
     write_sfincs_h5(path=output_path, data=data, fortran_layout=fortran_layout, overwrite=overwrite)
+    _mark("write_h5_done")
     if emit is not None:
         emit(1, f" wrote sfincsOutput.h5 -> {output_path.resolve()}")
         emit(0, " Goodbye!")
