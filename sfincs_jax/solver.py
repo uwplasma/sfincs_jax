@@ -134,8 +134,7 @@ def dense_solve_from_matrix(*, a: jnp.ndarray, b: jnp.ndarray) -> tuple[jnp.ndar
     eye = jnp.eye(n, dtype=a.dtype)
 
     x_direct = jnp.linalg.solve(a, b2)
-    rank = jnp.linalg.matrix_rank(a)
-    needs_reg = rank < jnp.asarray(n, dtype=rank.dtype)
+    direct_finite = jnp.all(jnp.isfinite(x_direct))
 
     reg_val = 2.2e-10
     env_reg = os.environ.get("SFINCS_JAX_DENSE_REG", "").strip()
@@ -143,16 +142,21 @@ def dense_solve_from_matrix(*, a: jnp.ndarray, b: jnp.ndarray) -> tuple[jnp.ndar
         reg_val = float(env_reg)
     reg = jnp.asarray(reg_val, dtype=a.dtype)
 
-    x_reg = jnp.linalg.solve(a + reg * eye, b2)
-    x_lstsq = jnp.linalg.lstsq(a, b2, rcond=None)[0]
-
     singular_mode = os.environ.get("SFINCS_JAX_DENSE_SINGULAR_MODE", "").strip().lower()
-    if singular_mode == "lstsq":
-        x2 = jnp.where(needs_reg, x_lstsq, x_direct)
-    else:
-        x2 = jnp.where(needs_reg, x_reg, x_direct)
+    force_reg = os.environ.get("SFINCS_JAX_DENSE_FORCE_REG", "").strip().lower() in {"1", "true", "yes", "on"}
+    force_lstsq = singular_mode == "lstsq"
 
-    x2 = jnp.where(jnp.all(jnp.isfinite(x2)), x2, x_lstsq)
+    def _solve_lstsq(_):
+        return jnp.linalg.lstsq(a, b2, rcond=None)[0]
+
+    if force_reg:
+        x2 = jnp.linalg.solve(a + reg * eye, b2)
+    elif force_lstsq:
+        x2 = _solve_lstsq(None)
+    else:
+        x2 = jax.lax.cond(direct_finite, lambda _: x_direct, _solve_lstsq, operand=None)
+
+    x2 = jax.lax.cond(jnp.all(jnp.isfinite(x2)), lambda _: x2, _solve_lstsq, operand=None)
     r2 = b2 - a @ x2
     rn = jnp.linalg.norm(r2, axis=0)
 

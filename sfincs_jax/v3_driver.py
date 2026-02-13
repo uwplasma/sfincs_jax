@@ -2205,17 +2205,23 @@ def solve_v3_transport_matrix_linear_gmres(
                 )
                 rhs_mat = jnp.stack(rhs_by_index, axis=1)
                 x_mat, _ = dense_solve_from_matrix(a=a_dense, b=rhs_mat)
-
+                x_cols: list[jnp.ndarray] = []
                 for idx, which_rhs in enumerate(which_rhs_values):
                     x_col = x_mat[:, idx]
                     rhs_vec = rhs_by_index[idx]
                     x_col = _maybe_project_constraint_nullspace(
                         x_col, which_rhs=int(which_rhs), op_matvec=op_probe_ref, rhs_vec=rhs_vec
                     )
+                    x_cols.append(x_col)
+
+                x_mat_proj = jnp.stack(x_cols, axis=1)
+                res_mat = a_dense @ x_mat_proj - rhs_mat
+                res_norms = jnp.linalg.norm(res_mat, axis=0)
+
+                for idx, which_rhs in enumerate(which_rhs_values):
+                    x_col = x_mat_proj[:, idx]
                     state_vectors[which_rhs] = x_col
-                    residual_norms[which_rhs] = jnp.linalg.norm(
-                        apply_v3_full_system_operator_cached(op_probe_ref, x_col) - rhs_vec
-                    )
+                    residual_norms[which_rhs] = res_norms[idx]
                     elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
                     if emit is not None:
                         emit(

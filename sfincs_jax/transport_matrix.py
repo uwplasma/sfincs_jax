@@ -388,6 +388,25 @@ def v3_transport_diagnostics_vm_only_batch(
 v3_transport_diagnostics_vm_only_batch_jit = jax.jit(v3_transport_diagnostics_vm_only_batch)
 
 
+def v3_transport_diagnostics_vm_only_batch_op0(
+    *,
+    op0: V3FullSystemOperator,
+    x_full_stack: jnp.ndarray,
+) -> V3TransportDiagnostics:
+    """Vectorized transport diagnostics over whichRHS with a fixed operator."""
+    x_full_stack = jnp.asarray(x_full_stack, dtype=jnp.float64)
+    if x_full_stack.ndim != 2:
+        raise ValueError(f"x_full_stack must have shape (N,total_size), got {x_full_stack.shape}")
+
+    def _one(x_state: jnp.ndarray) -> V3TransportDiagnostics:
+        return v3_transport_diagnostics_vm_only(op0, x_full=x_state)
+
+    return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
+
+
+v3_transport_diagnostics_vm_only_batch_op0_jit = jax.jit(v3_transport_diagnostics_vm_only_batch_op0)
+
+
 def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.ndarray) -> dict[str, jnp.ndarray]:
     """Compute a RHSMode=1 output subset from a solved state vector.
 
@@ -694,9 +713,7 @@ def v3_transport_output_fields_vm_only(
         [jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values],
         axis=0,
     )  # (N,total)
-    op_rhs_list = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in rhs_values]
-    op_rhs_stack = _stack_full_system_operators(op_rhs_list)
-    diag_stack = v3_transport_diagnostics_vm_only_batch_jit(op_stack=op_rhs_stack, x_full_stack=x_stack)
+    diag_stack = v3_transport_diagnostics_vm_only_batch_op0_jit(op0=op0, x_full_stack=x_stack)
 
     pf_vm_psi_hat = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
     hf_vm_psi_hat = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
@@ -713,7 +730,8 @@ def v3_transport_output_fields_vm_only(
     pf_before_vm0 = jnp.transpose(pf_before_vm0_stzn, (3, 2, 1, 0))
     hf_before_vm0 = jnp.transpose(hf_before_vm0_stzn, (3, 2, 1, 0))
 
-    w2d_stack = op_rhs_stack.theta_weights[:, :, None] * op_rhs_stack.zeta_weights[:, None, :]  # (N,T,Z)
+    w2d = op0.theta_weights[:, None] * op0.zeta_weights[None, :]  # (T,Z)
+    w2d_stack = jnp.broadcast_to(w2d[None, :, :], (n, t, z))  # (N,T,Z)
     pf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, pf_before_vm0_stzn)
     hf_vm0_psi_hat = jnp.einsum("ntz,nstz->sn", w2d_stack, hf_before_vm0_stzn)
 
@@ -1044,9 +1062,7 @@ def v3_transport_matrix_from_state_vectors(
         if which_rhs not in state_vectors_by_rhs:
             raise ValueError(f"Missing state vector for which_rhs={which_rhs}.")
     x_stack = jnp.stack([jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values], axis=0)  # (N,total)
-    op_rhs_list = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in rhs_values]
-    op_rhs_stack = _stack_full_system_operators(op_rhs_list)
-    diag_stack = v3_transport_diagnostics_vm_only_batch_jit(op_stack=op_rhs_stack, x_full_stack=x_stack)
+    diag_stack = v3_transport_diagnostics_vm_only_batch_op0_jit(op0=op0, x_full_stack=x_stack)
     pf_sn = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
     hf_sn = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
     flow_sn = jnp.transpose(diag_stack.fsab_flow, (1, 0))  # (S,N)

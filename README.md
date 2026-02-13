@@ -23,14 +23,16 @@ python examples/performance/benchmark_transport_l11_vs_fortran.py \
   --repeats 4
 ```
 
-Current benchmark snapshot (frozen fixtures, 4 repeats, JAX runtime excludes compilation):
+Current benchmark snapshot (live Fortran executable, 4 repeats, JAX runtime excludes compilation):
 
 | Case | Fortran mean (s/run) | sfincs_jax mean (s/run) | Max \|ΔL11\| |
 | --- | ---: | ---: | ---: |
-| scheme1 | 0.0275 | 0.0903 | 3.11e-13 |
-| scheme11 | 3.6393 | 0.1202 | 1.35e-15 |
-| scheme12 | 0.0089 | 0.1014 | 8.83e-08 |
-| scheme5_filtered | 2.9621 | 0.1096 | 6.57e-16 |
+| scheme1 | 0.0797 | 0.1545 | 5.01e-14 |
+| scheme11 | 0.2301 | 0.1839 | 1.46e-15 |
+| scheme12 | 1.2328 | 0.1765 | 1.50e-07 |
+| scheme5_filtered | 0.1041 | 0.1767 | 7.33e-16 |
+
+Live snapshot notes: the local Fortran binary was built against a PETSc MPIUNI (serial, no MUMPS) configuration to avoid MPI init issues in sandboxed runs.
 
 Outputs are written to:
 

@@ -1,73 +1,73 @@
 {
   "scheme1": {
     "fortran_l11_runs": [
-      -0.0019465568618703116,
-      -0.0019465568618703116,
-      -0.0019465568618703116,
-      -0.0019465568618703116
+      -0.0019465568621309655,
+      -0.0019465568621309655,
+      -0.0019465568621309655,
+      -0.0019465568621309655
     ],
-    "fortran_mean_runtime_s": 0.02753720839973539,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 0.07966085418593138,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist",
     "jax_l11_runs": [
-      -0.0019465568621811423,
-      -0.0019465568621811423,
-      -0.0019465568621811423,
-      -0.0019465568621811423
+      -0.0019465568621810211,
+      -0.0019465568621810211,
+      -0.0019465568621810211,
+      -0.0019465568621810211
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.09033603122225031,
-    "jax_speedup_vs_fortran": 0.3048308413282696,
-    "max_abs_l11_diff": 3.1083078819160725e-13
+    "jax_mean_runtime_s_excluding_compile": 0.1545371458050795,
+    "jax_speedup_vs_fortran": 0.5154802993864599,
+    "max_abs_l11_diff": 5.0055662739745266e-14
   },
   "scheme11": {
     "fortran_l11_runs": [
-      -0.0025001970954609846,
-      -0.0025001970954609846,
-      -0.0025001970954609846,
-      -0.0025001970954609846
+      -0.0025001970954609157,
+      -0.0025001970954609157,
+      -0.0025001970954609157,
+      -0.0025001970954609157
     ],
-    "fortran_mean_runtime_s": 3.63934829167556,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 0.23009681270923465,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme11.input.namelist",
     "jax_l11_runs": [
-      -0.002500197095462332,
-      -0.002500197095462332,
-      -0.002500197095462332,
-      -0.002500197095462332
+      -0.002500197095462371,
+      -0.002500197095462371,
+      -0.002500197095462371,
+      -0.002500197095462371
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.12021015622303821,
-    "jax_speedup_vs_fortran": 30.274881973558912,
-    "max_abs_l11_diff": 1.347446459964985e-15
+    "jax_mean_runtime_s_excluding_compile": 0.1839393959962763,
+    "jax_speedup_vs_fortran": 1.2509381770172432,
+    "max_abs_l11_diff": 1.4554329963445412e-15
   },
   "scheme12": {
     "fortran_l11_runs": [
-      -0.04266066199265178,
-      -0.04266066199265178,
-      -0.04266066199265178,
-      -0.04266066199265178
+      -0.04266059775903772,
+      -0.04266059775903772,
+      -0.04266059775903772,
+      -0.04266059775903772
     ],
-    "fortran_mean_runtime_s": 0.008876041742041707,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 1.2328228230471723,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme12.input.namelist",
     "jax_l11_runs": [
-      -0.042660750293215546,
-      -0.042660750293215546,
-      -0.042660750293215546,
-      -0.042660750293215546
+      -0.042660748215590155,
+      -0.042660748215590155,
+      -0.042660748215590155,
+      -0.042660748215590155
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.10138378100236878,
-    "jax_speedup_vs_fortran": 0.08754893193255757,
-    "max_abs_l11_diff": 8.830056376363249e-08
+    "jax_mean_runtime_s_excluding_compile": 0.17645441670902073,
+    "jax_speedup_vs_fortran": 6.9866362431728675,
+    "max_abs_l11_diff": 1.5045655243212108e-07
   },
   "scheme5_filtered": {
     "fortran_l11_runs": [
-      -0.002462514103576401,
-      -0.002462514103576401,
-      -0.002462514103576401,
-      -0.002462514103576401
+      -0.0024625141035763244,
+      -0.0024625141035763244,
+      -0.0024625141035763244,
+      -0.0024625141035763244
     ],
-    "fortran_mean_runtime_s": 2.962136333459057,
-    "fortran_source": "frozen fixture",
+    "fortran_mean_runtime_s": 0.10414540604688227,
+    "fortran_source": "live executable",
     "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme5_filtered.input.namelist",
     "jax_l11_runs": [
       -0.002462514103577058,
@@ -75,8 +75,8 @@
       -0.002462514103577058,
       -0.002462514103577058
     ],
-    "jax_mean_runtime_s_excluding_compile": 0.10961995823890902,
-    "jax_speedup_vs_fortran": 27.02187066157504,
-    "max_abs_l11_diff": 6.565928356572215e-16
+    "jax_mean_runtime_s_excluding_compile": 0.1766935420455411,
+    "jax_speedup_vs_fortran": 0.5894126341077014,
+    "max_abs_l11_diff": 7.333543494691952e-16
   }
 }

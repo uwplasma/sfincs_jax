@@ -235,7 +235,7 @@ comparison figure used in ``README.md`` and the docs index:
 By default this uses frozen Fortran fixtures from ``tests/ref`` (no local Fortran runtime required).
 If a local Fortran executable is available, pass ``--fortran-exe /path/to/sfincs`` for live runs.
 
-Latest frozen-fixture snapshot (4 repeats, compile excluded for JAX):
+Latest live-executable snapshot (4 repeats, compile excluded for JAX):
 
 .. list-table::
    :header-rows: 1
@@ -246,21 +246,23 @@ Latest frozen-fixture snapshot (4 repeats, compile excluded for JAX):
      - sfincs_jax mean (s/run)
      - max abs(ΔL11)
    * - ``scheme1``
-     - 0.0275
-     - 0.0903
-     - 3.11e-13
+     - 0.0797
+     - 0.1545
+     - 5.01e-14
    * - ``scheme11``
-     - 3.6393
-     - 0.1202
-     - 1.35e-15
+     - 0.2301
+     - 0.1839
+     - 1.46e-15
    * - ``scheme12``
-     - 0.0089
-     - 0.1014
-     - 8.83e-08
+     - 1.2328
+     - 0.1765
+     - 1.50e-07
    * - ``scheme5_filtered``
-     - 2.9621
-     - 0.1096
-     - 6.57e-16
+     - 0.1041
+     - 0.1767
+     - 7.33e-16
+
+Live snapshot note: the local Fortran binary was built against a PETSc MPIUNI (serial, no MUMPS) configuration to avoid MPI-init errors in sandboxed environments.
 
 Persistent-cache compile/runtime split
 --------------------------------------
@@ -288,17 +290,17 @@ Latest snapshot (3 repeats):
      - Compile estimate (s)
      - Warm steady solve (s/run)
    * - ``scheme1``
-     - 1.5599
-     - 0.0569
+     - 1.4425
+     - 0.0491
    * - ``scheme11``
-     - 1.3253
-     - 0.0650
+     - 1.2266
+     - 0.0547
    * - ``scheme12``
-     - 1.3611
-     - 0.0687
+     - 1.2046
+     - 0.0607
    * - ``scheme5_filtered``
-     - 1.4042
-     - 0.0743
+     - 1.3668
+     - 0.0632
 
 
 Connection to MONKES / adjoint methods
