@@ -1963,7 +1963,7 @@ def solve_v3_full_system_linear_gmres(
             # for linear RHSMode=1 solves without Phi1.
             project_rhs1 = bool(int(op.constraint_scheme) == 1 and (not bool(op.include_phi1)))
         if project_rhs1:
-            x_projected = _project_constraint_scheme1_nullspace_solution(
+            x_projected, residual_projected = _project_constraint_scheme1_nullspace_solution_with_residual(
                 op=op,
                 x_vec=result.x,
                 rhs_vec=rhs,
@@ -1971,7 +1971,7 @@ def solve_v3_full_system_linear_gmres(
                 enabled_env_var="SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE",
             )
             if not bool(jnp.allclose(x_projected, result.x)):
-                residual_norm_projected = jnp.linalg.norm(mv(x_projected) - rhs)
+                residual_norm_projected = jnp.linalg.norm(residual_projected)
                 result = GMRESSolveResult(x=x_projected, residual_norm=residual_norm_projected)
     if ksp_matvec is not None and ksp_b is not None:
         _emit_ksp_history(
@@ -2669,25 +2669,25 @@ def _transport_active_dof_indices(op: V3FullSystemOperator) -> np.ndarray:
     return np.concatenate([f_active.astype(np.int32), tail_active], axis=0)
 
 
-def _project_constraint_scheme1_nullspace_solution(
+def _project_constraint_scheme1_nullspace_solution_with_residual(
     *,
     op: V3FullSystemOperator,
     x_vec: jnp.ndarray,
     rhs_vec: jnp.ndarray,
     matvec_op: V3FullSystemOperator,
     enabled_env_var: str,
-) -> jnp.ndarray:
-    """Project solution to constraintScheme=1 nullspace complement and enforce source rows."""
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Project solution to constraintScheme=1 nullspace complement and return residual."""
     if int(op.constraint_scheme) != 1:
-        return x_vec
+        return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     if int(op.phi1_size) != 0:
-        return x_vec
+        return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     if int(op.extra_size) == 0:
-        return x_vec
+        return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
 
     project_env = os.environ.get(enabled_env_var, "").strip().lower()
     if project_env in {"0", "false", "no", "off"}:
-        return x_vec
+        return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
 
     xpart1, xpart2 = _source_basis_constraint_scheme_1(op.x)
     ix0 = 1 if bool(op.point_at_x0) else 0
@@ -2708,13 +2708,34 @@ def _project_constraint_scheme1_nullspace_solution(
 
     r = apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     r_extra = r[-op.extra_size :]
-    cols = [apply_v3_full_system_operator_cached(matvec_op, v)[-op.extra_size :] for v in basis]
-    m = jnp.stack(cols, axis=1)
+    cols_full = [apply_v3_full_system_operator_cached(matvec_op, v) for v in basis]
+    cols_extra = [col[-op.extra_size :] for col in cols_full]
+    m = jnp.stack(cols_extra, axis=1)
     c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
     x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
+    r_corr = sum(col * c_res[i] for i, col in enumerate(cols_full))
     # For constraintScheme=1, enforce the source rows directly and keep the corrected
     # solution. Projecting out the basis reintroduces the constraint residuals.
-    return x_vec + x_corr
+    return x_vec + x_corr, r + r_corr
+
+
+def _project_constraint_scheme1_nullspace_solution(
+    *,
+    op: V3FullSystemOperator,
+    x_vec: jnp.ndarray,
+    rhs_vec: jnp.ndarray,
+    matvec_op: V3FullSystemOperator,
+    enabled_env_var: str,
+) -> jnp.ndarray:
+    """Project solution to constraintScheme=1 nullspace complement and enforce source rows."""
+    x_proj, _r = _project_constraint_scheme1_nullspace_solution_with_residual(
+        op=op,
+        x_vec=x_vec,
+        rhs_vec=rhs_vec,
+        matvec_op=matvec_op,
+        enabled_env_var=enabled_env_var,
+    )
+    return x_proj
 
 
 def solve_v3_transport_matrix_linear_gmres(

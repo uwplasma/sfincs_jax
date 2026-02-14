@@ -31,8 +31,8 @@
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 0.465
-     - 2.742
+     - -
+     - 2.842
      - 0/124
      - S:0 P:0
      - 7/7
@@ -43,8 +43,8 @@
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 0.432
-     - 2.583
+     - -
+     - 2.570
      - 0/124
      - S:0 P:0
      - 7/7
@@ -56,11 +56,11 @@
      - 1
      - 0
      - -
-     - 5.565
+     - 5.797
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - All common numeric datasets matched tolerance. strict=4/193
    * - HSX_PASCollisions_fullTrajectories
      - parity_ok
      - none
@@ -68,7 +68,7 @@
      - 1
      - 0
      - -
-     - 6.233
+     - 6.618
      - 0/193
      - S:0 P:0
      - 9/9
@@ -80,11 +80,11 @@
      - 1
      - 0
      - -
-     - 4.951
+     - 4.965
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - All common numeric datasets matched tolerance. strict=3/193
    * - filteredW7XNetCDF_2species_magneticDrifts_withEr
      - parity_ok
      - none
@@ -92,19 +92,19 @@
      - 1
      - 0
      - -
-     - 4.920
+     - 4.896
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - All common numeric datasets matched tolerance. strict=12/193
    * - filteredW7XNetCDF_2species_noEr
      - parity_ok
      - none
      - NTHETA=7,NX=3,NXI=9,NZETA=5
      - 1
      - 0
-     - 0.188
-     - 4.133
+     - -
+     - 4.100
      - 0/193
      - S:0 P:0
      - 9/9
@@ -115,8 +115,8 @@
      - NTHETA=7,NX=3,NXI=12,NZETA=12
      - 1
      - 0
-     - 0.134
-     - 4.017
+     - -
+     - 4.083
      - 0/193
      - S:0 P:0
      - 9/9
@@ -127,8 +127,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=6
      - 1
      - 0
-     - 0.194
-     - 4.202
+     - -
+     - 4.105
      - 0/193
      - S:0 P:0
      - 9/9
@@ -139,20 +139,20 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 0.301
-     - 3.787
+     - -
+     - 3.660
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - All common numeric datasets matched tolerance. strict=4/193
    * - geometryScheme4_2species_noEr_withPhi1InDKE
      - parity_ok
      - none
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 1.163
-     - 1.982
+     - -
+     - 1.967
      - 0/251
      - S:0 P:0
      - 9/9
@@ -163,8 +163,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.299
-     - 1.653
+     - -
+     - 1.655
      - 0/251
      - S:0 P:0
      - 9/9
@@ -175,8 +175,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 0.248
-     - 3.617
+     - -
+     - 3.633
      - 0/193
      - S:0 P:0
      - 9/9
@@ -187,8 +187,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.246
-     - 1.607
+     - -
+     - 1.648
      - 0/251
      - S:0 P:0
      - 9/9
@@ -199,8 +199,8 @@
      - NTHETA=5,NX=2,NXI=9,NZETA=9
      - 1
      - 0
-     - 0.248
-     - 4.263
+     - -
+     - 4.299
      - 0/193
      - S:0 P:0
      - 9/9
@@ -211,8 +211,8 @@
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 0.187
-     - 2.962
+     - -
+     - 2.995
      - 0/193
      - S:0 P:0
      - 9/9
@@ -223,8 +223,8 @@
      - NTHETA=14,NX=1,NXI=9,NZETA=15
      - 1
      - 0
-     - 0.194
-     - 3.663
+     - -
+     - 3.747
      - 0/203
      - S:0 P:0
      - 9/9
@@ -235,8 +235,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.355
-     - 4.158
+     - -
+     - 4.267
      - 0/196
      - S:0 P:0
      - 9/9
@@ -247,8 +247,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.246
-     - 3.593
+     - -
+     - 3.591
      - 0/195
      - S:0 P:0
      - 9/9
@@ -259,8 +259,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.190
-     - 3.508
+     - -
+     - 3.603
      - 0/195
      - S:0 P:0
      - 9/9
@@ -271,8 +271,8 @@
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 0.188
-     - 2.631
+     - -
+     - 2.677
      - 0/193
      - S:0 P:0
      - 9/9
@@ -283,8 +283,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.313
-     - 3.940
+     - -
+     - 3.929
      - 0/193
      - S:0 P:0
      - 9/9
@@ -296,7 +296,7 @@
      - 1
      - 0
      - -
-     - 4.099
+     - 4.531
      - 0/193
      - S:0 P:0
      - 9/9
@@ -307,8 +307,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.139
-     - 3.707
+     - -
+     - 3.798
      - 0/193
      - S:0 P:0
      - 9/9
@@ -319,8 +319,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.135
-     - 4.157
+     - -
+     - 4.334
      - 0/193
      - S:0 P:0
      - 9/9
@@ -331,8 +331,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.135
-     - 2.519
+     - -
+     - 2.625
      - 0/190
      - S:0 P:0
      - 9/9
@@ -343,8 +343,8 @@
      - NTHETA=6,NX=4,NXI=8,NZETA=1
      - 1
      - 0
-     - 0.410
-     - 2.144
+     - -
+     - 2.365
      - 0/263
      - S:0 P:0
      - 9/9
@@ -355,8 +355,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=1
      - 1
      - 0
-     - 0.193
-     - 1.596
+     - -
+     - 1.648
      - 0/263
      - S:0 P:0
      - 9/9
@@ -367,8 +367,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.302
-     - 2.628
+     - -
+     - 2.748
      - 0/200
      - S:0 P:0
      - 9/9
@@ -379,8 +379,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.134
-     - 3.180
+     - -
+     - 3.209
      - 0/200
      - S:0 P:0
      - 9/9
@@ -391,8 +391,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.134
-     - 2.908
+     - -
+     - 3.141
      - 0/200
      - S:0 P:0
      - 9/9
@@ -403,8 +403,8 @@
      - NTHETA=11,NX=1,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.080
-     - 1.971
+     - -
+     - 2.123
      - 0/200
      - S:0 P:0
      - 9/9
@@ -415,8 +415,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.137
-     - 1.758
+     - -
+     - 1.784
      - 0/263
      - S:0 P:0
      - 9/9
@@ -427,8 +427,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.140
-     - 3.015
+     - -
+     - 2.978
      - 0/200
      - S:0 P:0
      - 9/9
@@ -439,8 +439,8 @@
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.080
-     - 3.872
+     - -
+     - 3.924
      - 0/200
      - S:0 P:0
      - 9/9
@@ -451,8 +451,8 @@
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.133
-     - 3.722
+     - -
+     - 3.774
      - 0/200
      - S:0 P:0
      - 9/9
@@ -464,7 +464,7 @@
      - 1
      - 0
      - -
-     - 5.606
+     - 5.792
      - 0/194
      - S:0 P:0
      - 9/9
@@ -476,8 +476,8 @@
      - 1
      - 0
      - -
-     - 1.711
+     - 1.839
      - 0/194
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/194
+     - All common numeric datasets matched tolerance. strict=20/194
