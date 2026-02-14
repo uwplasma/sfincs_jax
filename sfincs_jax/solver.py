@@ -232,6 +232,8 @@ def gmres_solve(
         x, residual_norm = dense_solve_from_matrix(a=a, b=b)
         return GMRESSolveResult(x=x, residual_norm=residual_norm)
 
+    restart_use = _maybe_limit_restart(int(b.size), int(restart), b.dtype)
+
     side = str(precondition_side).strip().lower()
     if side not in {"left", "right", "none"}:
         side = "left"
