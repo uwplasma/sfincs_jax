@@ -58,6 +58,14 @@ class _RHSMode1PrecondCache:
 _RHSMODE1_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 
 
+@dataclass(frozen=True)
+class _TransportPrecondCache:
+    inv_diag_f: jnp.ndarray
+
+
+_TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
+
+
 def _precond_chunk_cols(total_size: int, n_cols: int) -> int:
     env_cols = os.environ.get("SFINCS_JAX_PRECOND_CHUNK", "").strip()
     if env_cols:
@@ -146,6 +154,81 @@ def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[ob
         _hash_array(op.x_weights),
         tuple(nxi_for_x.tolist()),
     )
+
+
+def _transport_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[object, ...]:
+    return (kind, _operator_signature_cached(op))
+
+
+def _build_rhsmode23_collision_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Cheap diagonal preconditioner for RHSMode=2/3 transport solves.
+
+    Uses analytic diagonal contributions from the collision operator (PAS or FP) plus
+    the identity shift, and is diagonal in (theta, zeta).
+    """
+    cache_key = _transport_precond_cache_key(op, "collision_diag")
+    cached = _TRANSPORT_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+        diag = jnp.zeros(f_shape, dtype=jnp.float64)
+
+        # Identity shift contribution.
+        if float(op.fblock.identity_shift) != 0.0:
+            diag = diag + jnp.asarray(op.fblock.identity_shift, dtype=jnp.float64)
+
+        # Pitch-angle scattering diagonal term.
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l = jnp.arange(n_l, dtype=jnp.float64)
+            factor_l = 0.5 * (l * (l + 1.0) + 2.0 * pas.krook)
+            pas_diag = pas.nu_n * pas.nu_d_hat[:, :, None] * factor_l[None, None, :]
+            diag = diag + pas_diag[:, :, :, None, None]
+
+        # Fokker-Planck diagonal term (self-species, diagonal in x).
+        if op.fblock.fp is not None:
+            mat = op.fblock.fp.mat  # (S,S,L,X,X)
+            diag_x = jnp.diagonal(mat, axis1=3, axis2=4)  # (S,S,L,X)
+            diag_self = jnp.diagonal(diag_x, axis1=0, axis2=1)  # (L,X,S)
+            diag_self = jnp.transpose(diag_self, (2, 1, 0))  # (S,X,L)
+            diag = diag + diag_self[:, :, :, None, None]
+
+        # Mask out inactive L-modes.
+        nxi_for_x = op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)
+        mask = jnp.arange(n_l, dtype=jnp.int32)[None, :] < nxi_for_x[:, None]  # (X,L)
+        mask = mask[None, :, :, None, None]  # (1,X,L,1,1)
+        diag = jnp.where(mask, diag, jnp.asarray(1.0, dtype=jnp.float64))
+
+        reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-10
+        except ValueError:
+            reg = 1e-10
+        inv_diag_f = 1.0 / (diag + float(reg))
+        cached = _TransportPrecondCache(inv_diag_f=inv_diag_f)
+        _TRANSPORT_PRECOND_CACHE[cache_key] = cached
+
+    inv_diag_f = cached.inv_diag_f
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        f = r_full[: op.f_size].reshape(op.fblock.f_shape)
+        z_f = f * inv_diag_f
+        tail = r_full[op.f_size :]
+        return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
 
 
 @jtu.register_pytree_node_class
@@ -2279,15 +2362,25 @@ def solve_v3_transport_matrix_linear_gmres(
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
 
+    gmres_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_GMRES_RESTART", "").strip()
+    try:
+        gmres_restart = int(gmres_restart_env) if gmres_restart_env else min(int(restart), 40)
+    except ValueError:
+        gmres_restart = min(int(restart), 40)
+
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
         if method_l in {"auto", "default"}:
             if int(rhs_mode) in {2, 3}:
-                return "gmres", "incremental"
+                # Prefer short-recurrence Krylov for transport solves to reduce memory.
+                return "bicgstab", "batched"
             return "bicgstab", "batched"
         if method_l in {"bicgstab", "bicgstab_jax"}:
             return "bicgstab", "batched"
         return "gmres", method_l
+
+    def _restart_for_method(method: str) -> int:
+        return gmres_restart if _solver_kind(method)[0] == "gmres" else int(restart)
 
     def _solve_linear(
         *,
@@ -2299,12 +2392,15 @@ def solve_v3_transport_matrix_linear_gmres(
         restart_val: int,
         maxiter_val: int | None,
         solve_method_val: str,
+        preconditioner_val=None,
+        precondition_side_val: str = "left",
     ):
         if use_implicit:
             solver_kind, gmres_method = _solver_kind(solve_method_val)
             return linear_custom_solve(
                 matvec=matvec_fn,
                 b=b_vec,
+                preconditioner=preconditioner_val,
                 x0=x0_vec,
                 tol=tol_val,
                 atol=atol_val,
@@ -2312,17 +2408,19 @@ def solve_v3_transport_matrix_linear_gmres(
                 maxiter=maxiter_val,
                 solve_method=gmres_method,
                 solver=solver_kind,
-                precondition_side="left",
+                precondition_side=precondition_side_val,
             )
         return gmres_solve(
             matvec=matvec_fn,
             b=b_vec,
+            preconditioner=preconditioner_val,
             x0=x0_vec,
             tol=tol_val,
             atol=atol_val,
             restart=restart_val,
             maxiter=maxiter_val,
             solve_method=solve_method_val,
+            precondition_side=precondition_side_val,
         )
 
     active_dof_env = os.environ.get("SFINCS_JAX_TRANSPORT_ACTIVE_DOF", "").strip().lower()
@@ -2368,6 +2466,35 @@ def solve_v3_transport_matrix_linear_gmres(
                 1,
                 "solve_v3_transport_matrix_linear_gmres: active-DOF mode enabled "
                 f"(size={active_size}/{int(op0.total_size)}){reason}",
+            )
+
+    reduce_full = None
+    expand_reduced = None
+    if use_active_dof_mode:
+        assert active_idx_jnp is not None
+        assert full_to_active_jnp is not None
+
+        def reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
+            return v_full[active_idx_jnp]
+
+        def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+            z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
+            padded = jnp.concatenate([z0, v_reduced], axis=0)
+            return padded[full_to_active_jnp]
+
+    transport_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND", "").strip().lower()
+    if transport_precond_env in {"0", "none", "off", "false", "no"}:
+        transport_precond_kind = None
+    else:
+        transport_precond_kind = "collision"
+
+    preconditioner_full = None
+    preconditioner_reduced = None
+    if transport_precond_kind is not None and int(rhs_mode) in {2, 3}:
+        preconditioner_full = _build_rhsmode23_collision_preconditioner(op=op0)
+        if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+            preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
+                op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
             )
 
     # Geometry scalars needed for the transport-matrix formulas.
@@ -2532,14 +2659,8 @@ def solve_v3_transport_matrix_linear_gmres(
             if use_active_dof_mode:
                 assert active_idx_jnp is not None
                 assert full_to_active_jnp is not None
-
-                def reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
-                    return v_full[active_idx_jnp]
-
-                def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
-                    z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
-                    padded = jnp.concatenate([z0, v_reduced], axis=0)
-                    return padded[full_to_active_jnp]
+                assert reduce_full is not None
+                assert expand_reduced is not None
 
                 def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
                     y_full = apply_v3_full_system_operator_cached(op_matvec, expand_reduced(x_reduced))
@@ -2564,9 +2685,11 @@ def solve_v3_transport_matrix_linear_gmres(
                     x0_vec=x0_reduced,
                     tol_val=tol_rhs,
                     atol_val=atol,
-                    restart_val=restart,
+                    restart_val=_restart_for_method(solve_method_rhs),
                     maxiter_val=maxiter,
                     solve_method_val=solve_method_rhs,
+                    preconditioner_val=preconditioner_reduced,
+                    precondition_side_val="left",
                 )
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs_reduced)))
                 solver_kind = _solver_kind(solve_method_rhs)[0]
@@ -2583,9 +2706,11 @@ def solve_v3_transport_matrix_linear_gmres(
                         x0_vec=x0_reduced,
                         tol_val=tol_rhs,
                         atol_val=atol,
-                        restart_val=restart,
+                        restart_val=gmres_restart,
                         maxiter_val=maxiter,
                         solve_method_val="incremental",
+                        preconditioner_val=preconditioner_reduced,
+                        precondition_side_val="left",
                     )
                 x_full = expand_reduced(res_reduced.x)
                 x_full = _maybe_project_constraint_nullspace(
@@ -2613,9 +2738,11 @@ def solve_v3_transport_matrix_linear_gmres(
                     x0_vec=x0_full,
                     tol_val=tol_rhs,
                     atol_val=atol,
-                    restart_val=restart,
+                    restart_val=_restart_for_method(solve_method_rhs),
                     maxiter_val=maxiter,
                     solve_method_val=solve_method_rhs,
+                    preconditioner_val=preconditioner_full,
+                    precondition_side_val="left",
                 )
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs)))
                 solver_kind = _solver_kind(solve_method_rhs)[0]
@@ -2632,9 +2759,11 @@ def solve_v3_transport_matrix_linear_gmres(
                         x0_vec=x0_full,
                         tol_val=tol_rhs,
                         atol_val=atol,
-                        restart_val=restart,
+                        restart_val=gmres_restart,
                         maxiter_val=maxiter,
                         solve_method_val="incremental",
+                        preconditioner_val=preconditioner_full,
+                        precondition_side_val="left",
                     )
                 x_full = res.x
                 x_full = _maybe_project_constraint_nullspace(
