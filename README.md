@@ -277,7 +277,7 @@ python scripts/generate_readme_reduced_suite_table.py
 | tokamak_1species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.079 | 2.992 | 0/130 (strict 0/130) | 7/7 |
 | tokamak_2species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.090 | 2.358 | 0/130 (strict 0/130) | 7/7 |
 | tokamak_2species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.087 | 15.266 | 0/130 (strict 0/130) | 7/7 |
-| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | - | 6.232 | 0/123 (strict 0/123) | 7/7 |
+| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 1.137 | 5.967 | 0/123 (strict 0/123) | 7/7 |
 | transportMatrix_geometryScheme2 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.087 | 1.718 | 0/123 (strict 0/123) | 7/7 |
 <!-- END REDUCED_SUITE_TABLE -->
 
