@@ -1549,9 +1549,9 @@ def write_sfincs_jax_output_h5(
         _mark("rhs1_diagnostics_start")
 
         n_iter = int(len(xs))
-        # For RHSMode=1 solves, Fortran writes NIterations as the number of recorded iterates.
-        # Mirror that convention so parity fixtures match.
-        data["NIterations"] = np.asarray(n_iter, dtype=np.int32)
+        # Upstream v3 leaves NIterations at 0 for these linearized runs, even when
+        # diagnostics are written for multiple iterates. Mirror that behavior for parity.
+        data["NIterations"] = np.asarray(0, dtype=np.int32)
         # Parity fixtures freeze elapsed times as 0.
         data["elapsed time (s)"] = np.zeros((n_iter,), dtype=np.float64)
         if include_phi1:
@@ -2356,14 +2356,9 @@ def write_sfincs_jax_output_h5(
                 data[k] = _fortran_h5_layout(v)
             _mark("transport_diagnostics_done")
 
-    if int(rhs_mode) == 1:
-        n_iter_val = int(np.asarray(data.get("NIterations", 0)))
-        if n_iter_val == 0:
-            geom_scheme = int(np.asarray(data.get("geometryScheme", 0)))
-            eq_file = str(nml.group("geometryParameters").get("EQUILIBRIUMFILE", "")).strip()
-            eq_file = eq_file.strip('"').strip("'").lower()
-            if geom_scheme in {11, 12} and eq_file.endswith((".bc", ".bc.gz")):
-                data["NIterations"] = np.asarray(1, dtype=np.int32)
+    if int(rhs_mode) in {2, 3}:
+        # v3 leaves NIterations at 0 for transport runs as well.
+        data["NIterations"] = np.asarray(0, dtype=np.int32)
 
     data["input.namelist"] = input_namelist.read_text()
     if emit is not None:
