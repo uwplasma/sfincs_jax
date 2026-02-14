@@ -249,7 +249,7 @@ python scripts/generate_readme_reduced_suite_table.py
 | filteredW7XNetCDF_2species_magneticDrifts_withEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.134 | 13.492 | 0/123 (strict 0/123) | 7/7 |
 | filteredW7XNetCDF_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.136 | 19.924 | 0/123 (strict 0/123) | 7/7 |
 | geometryScheme4_1species_PAS_withEr_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.075 | 6.677 | 0/123 (strict 0/123) | 7/7 |
-| geometryScheme4_2species_PAS_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.076 | 20.789 | 0/123 (strict 0/123) | 7/7 |
+| geometryScheme4_2species_PAS_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | - | 4.379 | 0/123 (strict 0/123) | 7/7 |
 | geometryScheme4_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.086 | 16.296 | 0/123 (strict 0/123) | 7/7 |
 | geometryScheme4_2species_noEr_withPhi1InDKE | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.084 | 1.943 | 0/124 (strict 0/124) | 7/7 |
 | geometryScheme4_2species_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.089 | 1.746 | 0/124 (strict 0/124) | 7/7 |

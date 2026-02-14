@@ -937,18 +937,6 @@ def solve_v3_full_system_linear_gmres(
     # Upstream SFINCS v3 reports KSP residual norms for the *preconditioned* residual, matching
     # a left-preconditioned solve. Default to left to align solver-branch parity.
     gmres_precond_side = gmres_precond_side_env or "left"
-    stage2_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2", "").strip().lower()
-    if stage2_env in {"0", "false", "no", "off"}:
-        stage2_enabled = False
-    elif stage2_env in {"1", "true", "yes", "on"}:
-        stage2_enabled = True
-    else:
-        stage2_enabled = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
-    # Stage-2 is a "stronger" fallback solve for difficult cases. The default time cap
-    # must be large enough to still trigger after any one-time preconditioner setup,
-    # while remaining bounded for interactive use and CI.
-    stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "30.0"))
-
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
 
@@ -963,6 +951,23 @@ def solve_v3_full_system_linear_gmres(
         if method_l in {"bicgstab", "bicgstab_jax"}:
             return "bicgstab", "batched"
         return "gmres", method_l
+
+    stage2_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2", "").strip().lower()
+    if stage2_env in {"0", "false", "no", "off"}:
+        stage2_enabled = False
+    elif stage2_env in {"1", "true", "yes", "on"}:
+        stage2_enabled = True
+    else:
+        solver_kind_default = _solver_kind(solve_method)[0]
+        stage2_enabled = (
+            int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and solver_kind_default == "gmres"
+        )
+    # Stage-2 is a "stronger" fallback solve for difficult cases. The default time cap
+    # must be large enough to still trigger after any one-time preconditioner setup,
+    # while remaining bounded for interactive use and CI.
+    stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "30.0"))
 
     def _solve_linear(
         *,

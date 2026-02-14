@@ -178,7 +178,7 @@ performance without changing the input file:
   - ``none``: ignore any preconditioner (debugging).
 
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
-  the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1).
+  the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1 when GMRES is selected).
 
 - ``SFINCS_JAX_IMPLICIT_SOLVE``: control implicit differentiation through linear solves.
 
