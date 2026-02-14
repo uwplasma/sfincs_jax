@@ -1216,10 +1216,13 @@ def solve_v3_full_system_linear_gmres(
     gmres_precond_side = gmres_precond_side_env or "left"
 
     bicgstab_fallback_env = os.environ.get("SFINCS_JAX_BICGSTAB_FALLBACK", "").strip().lower()
-    if bicgstab_fallback_env in {"1", "true", "yes", "on", "strict"}:
+    if bicgstab_fallback_env in {"0", "false", "no", "off"}:
+        bicgstab_fallback_strict = False
+    elif bicgstab_fallback_env in {"1", "true", "yes", "on", "strict"}:
         bicgstab_fallback_strict = True
     else:
-        bicgstab_fallback_strict = False
+        # Default to strict fallback to preserve parity when BiCGStab stagnates.
+        bicgstab_fallback_strict = True
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
 
@@ -1612,9 +1615,9 @@ def solve_v3_full_system_linear_gmres(
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
         dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
         try:
-            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 0
+            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
         except ValueError:
-            dense_fallback_max = 0
+            dense_fallback_max = 2500
         dense_fallback_max_huge = 0
         dense_fallback_ratio = 1.0e8
         if dense_fallback_max > 0:
@@ -2741,6 +2744,11 @@ def solve_v3_transport_matrix_linear_gmres(
         dense_fallback_max = int(dense_fallback_max_env) if dense_fallback_max_env else 1600
     except ValueError:
         dense_fallback_max = 1600
+    dense_retry_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX", "").strip()
+    try:
+        dense_retry_max = int(dense_retry_env) if dense_retry_env else (3000 if int(rhs_mode) == 2 else 2500)
+    except ValueError:
+        dense_retry_max = 3000 if int(rhs_mode) == 2 else 2500
     if dense_fallback_env in {"1", "true", "yes", "on"}:
         dense_fallback = True
     elif dense_fallback_env in {"0", "false", "no", "off"}:
@@ -3003,6 +3011,13 @@ def solve_v3_transport_matrix_linear_gmres(
     recycle_basis_reduced: list[jnp.ndarray] = []
     recycle_basis_reduced_au: list[jnp.ndarray] = []
 
+    def _residual_value(res: GMRESSolveResult) -> float:
+        val = float(res.residual_norm)
+        return val if np.isfinite(val) else float("inf")
+
+    def _needs_retry(res: GMRESSolveResult, target: float) -> bool:
+        return (not _gmres_result_is_finite(res)) or (_residual_value(res) > target)
+
     def _recycled_initial_guess(
         rhs_vec: jnp.ndarray,
         basis: list[jnp.ndarray],
@@ -3202,6 +3217,57 @@ def solve_v3_transport_matrix_linear_gmres(
                         preconditioner_val=preconditioner_use,
                         precondition_side_val="left",
                     )
+                if _needs_retry(res_reduced, target_rhs) and preconditioner_use is not None:
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: retry without preconditioner "
+                            f"(residual={float(res_reduced.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    res_retry = _solve_linear(
+                        matvec_fn=mv_reduced,
+                        b_vec=rhs_reduced,
+                        x0_vec=x0_reduced,
+                        tol_val=tol_rhs,
+                        atol_val=atol,
+                        restart_val=_restart_for_method(solve_method_rhs),
+                        maxiter_val=maxiter,
+                        solve_method_val=solve_method_rhs,
+                        preconditioner_val=None,
+                        precondition_side_val="left",
+                    )
+                    if _residual_value(res_retry) < _residual_value(res_reduced):
+                        res_reduced = res_retry
+                        preconditioner_use = None
+                if _needs_retry(res_reduced, target_rhs) and dense_retry_max > 0 and int(active_size) <= int(dense_retry_max):
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: dense fallback "
+                            f"(size={int(active_size)} residual={float(res_reduced.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    try:
+                        res_dense = _solve_linear(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            x0_vec=None,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method("dense"),
+                            maxiter_val=maxiter,
+                            solve_method_val="dense",
+                            preconditioner_val=None,
+                            precondition_side_val="none",
+                        )
+                        if _residual_value(res_dense) < _residual_value(res_reduced):
+                            res_reduced = res_dense
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: dense fallback failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
                 x_full = expand_reduced(res_reduced.x)
                 x_full = _maybe_project_constraint_nullspace(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
@@ -3277,6 +3343,57 @@ def solve_v3_transport_matrix_linear_gmres(
                         preconditioner_val=preconditioner_use,
                         precondition_side_val="left",
                     )
+                if _needs_retry(res, target_rhs) and preconditioner_use is not None:
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: retry without preconditioner "
+                            f"(residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    res_retry = _solve_linear(
+                        matvec_fn=mv,
+                        b_vec=rhs,
+                        x0_vec=x0_full,
+                        tol_val=tol_rhs,
+                        atol_val=atol,
+                        restart_val=_restart_for_method(solve_method_rhs),
+                        maxiter_val=maxiter,
+                        solve_method_val=solve_method_rhs,
+                        preconditioner_val=None,
+                        precondition_side_val="left",
+                    )
+                    if _residual_value(res_retry) < _residual_value(res):
+                        res = res_retry
+                        preconditioner_use = None
+                if _needs_retry(res, target_rhs) and dense_retry_max > 0 and int(op0.total_size) <= int(dense_retry_max):
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: dense fallback "
+                            f"(size={int(op0.total_size)} residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    try:
+                        res_dense = _solve_linear(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            x0_vec=None,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method("dense"),
+                            maxiter_val=maxiter,
+                            solve_method_val="dense",
+                            preconditioner_val=None,
+                            precondition_side_val="none",
+                        )
+                        if _residual_value(res_dense) < _residual_value(res):
+                            res = res_dense
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: dense fallback failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
                 x_full = res.x
                 x_full = _maybe_project_constraint_nullspace(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs

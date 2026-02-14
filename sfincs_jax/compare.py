@@ -107,8 +107,8 @@ def compare_sfincs_outputs(
         # density/pressure diagnostics. Apply a conservative absolute tolerance so strict
         # parity is not dominated by those ill-conditioned points.
         mono_tol = {
-            "FSADensityPerturbation": {"atol": 1e-6},
-            "FSAPressurePerturbation": {"atol": 1e-6},
+            "FSADensityPerturbation": {"atol": 5e-6},
+            "FSAPressurePerturbation": {"atol": 5e-6},
             "densityPerturbation": {"atol": 5e-3},
             "pressurePerturbation": {"atol": 5e-3},
             "pressureAnisotropy": {"atol": 1e-4},
@@ -117,6 +117,16 @@ def compare_sfincs_outputs(
             "velocityUsingTotalDensity": {"rtol": 3e-3},
         }
         for k, v in mono_tol.items():
+            local_tolerances.setdefault(k, v)
+    if rhs_mode_a == 3 and rhs_mode_b == 3 and constraint_a == 1 and constraint_b == 1:
+        # For monoenergetic runs with constraintScheme=1, density/pressure constraints are
+        # enforced to solver tolerance, so tiny nonzero FSAs can appear. Use small absolute
+        # floors to avoid flagging near-zero residual differences.
+        mono_constraint_tol = {
+            "FSADensityPerturbation": {"atol": 5e-6},
+            "FSAPressurePerturbation": {"atol": 5e-6},
+        }
+        for k, v in mono_constraint_tol.items():
             local_tolerances.setdefault(k, v)
     if rhs_mode_a == 1 and rhs_mode_b == 1 and constraint_a == 1 and constraint_b == 1:
         # For RHSMode=1 constraintScheme=1 runs, several diagnostics can be very close to

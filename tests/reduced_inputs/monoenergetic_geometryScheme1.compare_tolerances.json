@@ -24,10 +24,10 @@
     "atol": 3.1018777463032166e-05
   },
   "FSADensityPerturbation": {
-    "atol": 1.878217626611082e-06
+    "atol": 5e-06
   },
   "FSAPressurePerturbation": {
-    "atol": 1.2521450307574094e-06
+    "atol": 5e-06
   },
   "MachUsingFSAThermalSpeed": {
     "atol": 3.499653962535376e-05

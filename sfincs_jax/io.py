@@ -2144,14 +2144,9 @@ def write_sfincs_jax_output_h5(
             z = int(op0.n_zeta)
             t = int(op0.n_theta)
             s = int(op0.n_species)
-            # v3 leaves NIterations at 0 for RHSMode=2/3 transport-matrix runs unless
-            # binary matrix/vector outputs are enabled.
-            general = nml.group("general")
-            save_binary = bool(
-                general.get("SAVEMATRICESANDVECTORSINBINARY", general.get("saveMatricesAndVectorsInBinary", False))
-            )
-            if save_binary:
-                data["NIterations"] = np.asarray(n_rhs, dtype=np.int32)
+            # v3 overwrites NIterations on each whichRHS solve, so the final value is
+            # the number of RHS solves for RHSMode=2/3.
+            data["NIterations"] = np.asarray(n_rhs, dtype=np.int32)
 
             def _alloc_ztsn() -> "jnp.ndarray":
                 return jnp.zeros((z, t, s, n_rhs), dtype=jnp.float64)
