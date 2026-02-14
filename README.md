@@ -213,13 +213,18 @@ And machine-readable reports are written to:
 Current reduced-suite snapshot (latest run):
 
 - **Practical:** 38/38 parity_ok.
-- **Strict:** 36/38 parity_ok (strict mode ignores per-case tolerance overrides; see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
+- **Strict:** 31/38 parity_ok (strict mode ignores per-case tolerance overrides; see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
 - **Print parity:** 38/38 cases (all emitted signals match; 7/7 or 9/9 depending on case).
 
 Strict-mode mismatches (reduced suite, rtol=5e-4):
 
 - `HSX_FPCollisions_DKESTrajectories`
 - `HSX_FPCollisions_fullTrajectories`
+- `HSX_PASCollisions_DKESTrajectories`
+- `filteredW7XNetCDF_2species_magneticDrifts_noEr`
+- `filteredW7XNetCDF_2species_magneticDrifts_withEr`
+- `geometryScheme4_2species_noEr`
+- `transportMatrix_geometryScheme2`
 
 ### Reduced-suite outputs and mismatches (all upstream examples, reduced resolution)
 
