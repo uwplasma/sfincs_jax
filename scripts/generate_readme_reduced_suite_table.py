@@ -40,9 +40,14 @@ def _format_row(case: str, row: dict, row_strict: dict | None) -> str:
     else:
         pp = "-"
 
+    ft = row.get("fortran_runtime_s")
+    jt = row.get("jax_runtime_s")
+    ft_s = "-" if ft is None else f"{float(ft):.3f}"
+    jt_s = "-" if jt is None else f"{float(jt):.3f}"
+
     return (
         f"| {case} | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | "
-        f"{mismatch} | {pp} |"
+        f"{ft_s} | {jt_s} | {mismatch} | {pp} |"
     )
 
 
@@ -53,8 +58,8 @@ def main() -> int:
     rows_strict = _load(REPORT_STRICT) if REPORT_STRICT.exists() else {}
 
     table_lines = [
-        "| Case | Fortran outputs | sfincs_jax outputs | Mismatches (practical/strict) | Print parity |",
-        "| --- | --- | --- | --- | --- |",
+        "| Case | Fortran outputs | sfincs_jax outputs | Fortran(s) | sfincs_jax(s) | Mismatches (practical/strict) | Print parity |",
+        "| --- | --- | --- | ---: | ---: | --- | --- |",
     ]
     for case in sorted(rows):
         table_lines.append(_format_row(case, rows[case], rows_strict.get(case)))

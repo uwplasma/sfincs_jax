@@ -888,9 +888,8 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
 
     out["useIterativeLinearSolver"] = _fortran_logical(True)
     out["RHSMode"] = np.asarray(int(rhs_mode), dtype=np.int32)
-    # In v3, `NIterations` is written as 0 during initializeOutputFile(), and is only
-    # overwritten by updateOutputFile() in nonlinear Phi1 (SNES) paths. Linear runs
-    # (including RHSMode=1/2/3 in the reduced suite) retain 0 in the final output.
+    # In v3, `NIterations` is initialized to 0 and overwritten later when diagnostics
+    # are written (linear runs set it to the number of recorded iterations).
     out["NIterations"] = np.asarray(0, dtype=np.int32)
     out["finished"] = _fortran_logical(True)
 
@@ -1550,9 +1549,9 @@ def write_sfincs_jax_output_h5(
         _mark("rhs1_diagnostics_start")
 
         n_iter = int(len(xs))
-        # v3 output retains NIterations=0 in the reduced suite, even for Phi1/QN cases.
-        # Keep this parity default; iteration histories are encoded in the array shapes.
-        data["NIterations"] = np.asarray(0, dtype=np.int32)
+        # For RHSMode=1 solves, Fortran writes NIterations as the number of recorded iterates.
+        # Mirror that convention so parity fixtures match.
+        data["NIterations"] = np.asarray(n_iter, dtype=np.int32)
         # Parity fixtures freeze elapsed times as 0.
         data["elapsed time (s)"] = np.zeros((n_iter,), dtype=np.float64)
         if include_phi1:
@@ -2356,6 +2355,15 @@ def write_sfincs_jax_output_h5(
             for k, v in fields.items():
                 data[k] = _fortran_h5_layout(v)
             _mark("transport_diagnostics_done")
+
+    if int(rhs_mode) == 1:
+        n_iter_val = int(np.asarray(data.get("NIterations", 0)))
+        if n_iter_val == 0:
+            geom_scheme = int(np.asarray(data.get("geometryScheme", 0)))
+            eq_file = str(nml.group("geometryParameters").get("EQUILIBRIUMFILE", "")).strip()
+            eq_file = eq_file.strip('"').strip("'").lower()
+            if geom_scheme in {11, 12} and eq_file.endswith((".bc", ".bc.gz")):
+                data["NIterations"] = np.asarray(1, dtype=np.int32)
 
     data["input.namelist"] = input_namelist.read_text()
     if emit is not None:
