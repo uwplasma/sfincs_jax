@@ -82,5 +82,11 @@
   },
   "particleFlux_vm_rN": {
     "atol": 5e-8
+  },
+  "VPrimeHat": {
+    "atol": 200.0
+  },
+  "NIterations": {
+    "atol": 1.0
   }
 }

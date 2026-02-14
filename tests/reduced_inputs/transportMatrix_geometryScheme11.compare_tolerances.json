@@ -1,0 +1,8 @@
+{
+  "pressureAnisotropy": {
+    "atol": 2e-6
+  },
+  "sources": {
+    "atol": 2e-6
+  }
+}

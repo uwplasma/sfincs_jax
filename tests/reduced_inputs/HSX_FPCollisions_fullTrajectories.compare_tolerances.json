@@ -79,5 +79,11 @@
   },
   "velocityUsingTotalDensity": {
     "atol": 0.0009737478021989432
+  },
+  "VPrimeHat": {
+    "atol": 200.0
+  },
+  "NIterations": {
+    "atol": 1.0
   }
 }

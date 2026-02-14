@@ -602,8 +602,8 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
     for row in rows:
         mode_status = _status_for_mode(row, strict=strict)
         res = ",".join(f"{k}={v}" for k, v in sorted(row.final_resolution.items()))
-        ft = "" if row.fortran_runtime_s is None else f"{row.fortran_runtime_s:.3f}"
-        jt = "" if row.jax_runtime_s is None else f"{row.jax_runtime_s:.3f}"
+        ft = "-" if row.fortran_runtime_s is None else f"{row.fortran_runtime_s:.3f}"
+        jt = "-" if row.jax_runtime_s is None else f"{row.jax_runtime_s:.3f}"
         n_common = row.strict_n_common_keys if strict else row.n_common_keys
         n_bad = row.strict_n_mismatch_common if strict else row.n_mismatch_common
         n_solver = row.strict_n_mismatch_solver if strict else row.n_mismatch_solver

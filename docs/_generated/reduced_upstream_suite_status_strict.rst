@@ -2,7 +2,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_mismatch=12, parity_ok=26
+- Status counts: max_attempts=2, parity_mismatch=10, parity_ok=26
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -25,52 +25,52 @@
      - Note
    * - HSX_FPCollisions_DKESTrajectories
      - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=6,NX=3,NXI=10,NZETA=8
+     - none
+     - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 0.627
-     - 24.142
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSAPressurePerturbation buckets=solver:1 physics:0 strict=1/193
+     - -
+     - 3.476
+     - 2/124
+     - S:2 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=2/124
    * - HSX_FPCollisions_fullTrajectories
      - parity_mismatch
-     - solver branch mismatch
-     - NTHETA=6,NX=3,NXI=10,NZETA=8
+     - none
+     - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 0.298
-     - 26.866
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSAPressurePerturbation buckets=solver:1 physics:0 strict=1/193
+     - 0.153
+     - 4.396
+     - 2/124
+     - S:2 P:0
+     - 7/7
+     - All common numeric datasets matched tolerance. strict=2/124
    * - HSX_PASCollisions_DKESTrajectories
      - parity_mismatch
      - solver branch mismatch
-     - NTHETA=6,NX=3,NXI=10,NZETA=8
+     - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 0.135
-     - 16.094
-     - 2/193
-     - S:2 P:0
+     - 0.145
+     - 4.413
+     - 43/193
+     - S:12 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=FSADensityPerturbation,FSAPressurePerturbation buckets=solver:2 physics:0 strict=2/193
+     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=43/193
    * - HSX_PASCollisions_fullTrajectories
-     - parity_mismatch
-     - none
+     - max_attempts
+     - solver branch mismatch
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
-     - 0
-     - 0.244
-     - 26.445
-     - 1/193
-     - S:1 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=1/193
+     - 1
+     - -
+     - -
+     - -
+     - S:0 P:0
+     - -
+     - Reached max attempts while reducing resolution.
    * - filteredW7XNetCDF_2species_magneticDrifts_noEr
      - parity_ok
      - none
@@ -113,12 +113,12 @@
      - NTHETA=7,NX=3,NXI=12,NZETA=12
      - 1
      - 0
-     - 0.136
-     - 7.262
-     - 40/193
+     - -
+     - 4.362
+     - 31/193
      - S:12 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=40/193
+     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=31/193
    * - geometryScheme4_2species_PAS_noEr
      - parity_ok
      - none
@@ -216,25 +216,25 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/193
    * - monoenergetic_geometryScheme1
-     - parity_mismatch
+     - max_attempts
      - solver branch mismatch
      - NTHETA=14,NX=1,NXI=9,NZETA=15
      - 1
-     - 0
-     - 0.406
-     - 1.870
-     - 39/203
-     - S:12 P:0
-     - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=39/203
+     - 1
+     - -
+     - -
+     - -
+     - S:0 P:0
+     - -
+     - Reached max attempts while reducing resolution.
    * - monoenergetic_geometryScheme11
      - parity_ok
      - none
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.305
-     - 3.196
+     - 0.295
+     - 2.169
      - 0/196
      - S:0 P:0
      - 9/9
@@ -306,7 +306,7 @@
      - 1
      - 0
      - 0.132
-     - 21.172
+     - 19.769
      - 2/193
      - S:2 P:0
      - 9/9
@@ -318,7 +318,7 @@
      - 1
      - 0
      - 0.134
-     - 24.163
+     - 23.843
      - 4/193
      - S:4 P:0
      - 9/9
@@ -329,8 +329,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.244
-     - 1.982
+     - 0.351
+     - 1.764
      - 22/190
      - S:10 P:2
      - 9/9
@@ -457,16 +457,16 @@
      - All common numeric datasets matched tolerance. strict=0/200
    * - transportMatrix_geometryScheme11
      - parity_mismatch
-     - output field mismatch
+     - none
      - NTHETA=7,NX=3,NXI=12,NZETA=8
      - 1
      - 0
-     - 0.188
-     - 5.718
-     - 4/194
-     - S:4 P:0
+     - -
+     - 6.876
+     - 2/194
+     - S:2 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=densityPerturbation,pressureAnisotropy,pressurePerturbation,sources buckets=solver:4 physics:0 strict=4/194
+     - All common numeric datasets matched tolerance. strict=2/194
    * - transportMatrix_geometryScheme2
      - parity_mismatch
      - solver branch mismatch
@@ -474,7 +474,7 @@
      - 1
      - 0
      - 0.138
-     - 2.044
+     - 1.601
      - 1/194
      - S:1 P:0
      - 9/9
