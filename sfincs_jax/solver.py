@@ -182,6 +182,12 @@ def bicgstab_solve(
     return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 
 
+bicgstab_solve_jit = jax.jit(
+    bicgstab_solve,
+    static_argnames=("matvec", "preconditioner", "tol", "atol", "maxiter", "precondition_side"),
+)
+
+
 def assemble_dense_matrix_from_matvec(*, matvec, n: int, dtype: jnp.dtype) -> jnp.ndarray:
     """Assemble a dense matrix from a matrix-free `matvec`."""
     eye = jnp.eye(int(n), dtype=dtype)
@@ -354,5 +360,5 @@ def gmres_solve(
 
 gmres_solve_jit = jax.jit(
     gmres_solve,
-    static_argnames=("matvec", "preconditioner", "restart", "maxiter", "solve_method", "precondition_side"),
+    static_argnames=("matvec", "preconditioner", "tol", "atol", "restart", "maxiter", "solve_method", "precondition_side"),
 )

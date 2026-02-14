@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 from sfincs_jax.compare import compare_sfincs_outputs
 from sfincs_jax.io import localize_equilibrium_file_in_place
@@ -61,6 +63,8 @@ class CaseResult:
     reductions: int
     fortran_runtime_s: float | None
     jax_runtime_s: float | None
+    jax_runtime_s_cold: float | None
+    jax_runtime_s_warm: float | None
     print_parity_signals: int
     print_parity_total: int
     print_missing_signals: list[str]
@@ -231,8 +235,9 @@ def _run_jax_cli(
     log_path: Path,
     compute_solution: bool,
     compute_transport_matrix: bool,
+    repeats: int = 1,
     cache_dir: Path | None = None,
-) -> float:
+) -> tuple[float, float | None]:
     cmd = [
         "python",
         "-m",
@@ -248,7 +253,6 @@ def _run_jax_cli(
         cmd.append("--compute-solution")
     if compute_transport_matrix:
         cmd.append("--compute-transport-matrix")
-    t0 = time.perf_counter()
     env = dict(os.environ)
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -256,20 +260,32 @@ def _run_jax_cli(
         env.setdefault("JAX_COMPILATION_CACHE_DIR", str(cache_dir))
         env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
         env.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
-    with log_path.open("w", encoding="utf-8") as log:
-        subprocess.run(
-            cmd,
-            cwd=str(REPO_ROOT),
-            check=True,
-            timeout=timeout_s,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
-    if not output_path.exists():
-        tail = _tail(log_path, n=40)
-        raise RuntimeError(f"JAX run returned success but did not create output: {output_path}\n{tail}")
-    return time.perf_counter() - t0
+    run_times: list[float] = []
+    repeat_count = max(1, int(repeats))
+    for idx in range(repeat_count):
+        t0 = time.perf_counter()
+        mode = "w" if idx == 0 else "a"
+        with log_path.open(mode, encoding="utf-8") as log:
+            if idx > 0:
+                log.write(f"\n--- sfincs_jax repeat {idx + 1}/{repeat_count} ---\n")
+            subprocess.run(
+                cmd,
+                cwd=str(REPO_ROOT),
+                check=True,
+                timeout=timeout_s,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+            )
+        if not output_path.exists():
+            tail = _tail(log_path, n=40)
+            raise RuntimeError(f"JAX run returned success but did not create output: {output_path}\n{tail}")
+        run_times.append(time.perf_counter() - t0)
+    cold = float(run_times[0])
+    warm = None
+    if len(run_times) > 1:
+        warm = float(np.mean(np.asarray(run_times[1:], dtype=np.float64)))
+    return cold, warm
 
 
 def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_path: Path) -> tuple[float, Path, int]:
@@ -537,6 +553,8 @@ def _load_existing_results(report_json: Path) -> dict[str, CaseResult]:
             reductions=int(item.get("reductions", 0)),
             fortran_runtime_s=item.get("fortran_runtime_s"),
             jax_runtime_s=item.get("jax_runtime_s"),
+            jax_runtime_s_cold=item.get("jax_runtime_s_cold"),
+            jax_runtime_s_warm=item.get("jax_runtime_s_warm"),
             print_parity_signals=int(item.get("print_parity_signals", 0)),
             print_parity_total=int(item.get("print_parity_total", 0)),
             print_missing_signals=list(item.get("print_missing_signals", [])),
@@ -662,6 +680,7 @@ def _run_case(
     max_attempts: int,
     use_seed_resolution: bool = False,
     reuse_fortran: bool = False,
+    jax_repeats: int = 1,
     jax_cache_dir: Path | None = None,
 ) -> CaseResult:
     case = str(case_name)
@@ -683,6 +702,8 @@ def _run_case(
     final_res = _resolution_from_namelist(dst_input)
     fortran_runtime = None
     jax_runtime = None
+    jax_runtime_cold = None
+    jax_runtime_warm = None
     note = ""
     status = "error"
     blocker_type = "unsupported physics/path"
@@ -782,15 +803,17 @@ def _run_case(
         jax_log = case_out_dir / "sfincs_jax.log"
         jax_log_path = jax_log
         try:
-            jax_runtime = _run_jax_cli(
+            jax_runtime_cold, jax_runtime_warm = _run_jax_cli(
                 input_path=dst_input,
                 output_path=jax_h5,
                 timeout_s=timeout_s,
                 log_path=jax_log,
                 compute_solution=compute_solution,
                 compute_transport_matrix=compute_transport_matrix,
+                repeats=jax_repeats,
                 cache_dir=jax_cache_dir,
             )
+            jax_runtime = jax_runtime_warm if jax_runtime_warm is not None else jax_runtime_cold
             jax_h5_path = jax_h5
         except subprocess.TimeoutExpired:
             note = "JAX timeout; reduced largest axis."
@@ -870,6 +893,8 @@ def _run_case(
         reductions=reductions,
         fortran_runtime_s=fortran_runtime,
         jax_runtime_s=jax_runtime,
+        jax_runtime_s_cold=jax_runtime_cold,
+        jax_runtime_s_warm=jax_runtime_warm,
         print_parity_signals=print_signals,
         print_parity_total=print_total,
         print_missing_signals=print_missing,
@@ -938,6 +963,12 @@ def main() -> int:
         default=Path("tests") / "reduced_upstream_examples" / ".jax_compilation_cache",
         help="Persistent JAX compilation cache directory for sfincs_jax subprocess runs.",
     )
+    parser.add_argument(
+        "--jax-repeats",
+        type=int,
+        default=1,
+        help="Number of sfincs_jax repeats per case (>=2 records warm runtime from repeats after the first).",
+    )
     args = parser.parse_args()
 
     examples_root = Path(args.examples_root)
@@ -979,6 +1010,7 @@ def main() -> int:
             max_attempts=int(args.max_attempts),
             use_seed_resolution=use_seed_resolution,
             reuse_fortran=bool(args.reuse_fortran),
+            jax_repeats=int(args.jax_repeats),
             jax_cache_dir=(REPO_ROOT / args.jax_cache_dir),
         )
         if result.status in {"parity_ok", "parity_mismatch"} and result.n_common_keys > 0:

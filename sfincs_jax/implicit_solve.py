@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Callable
 
 import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
-from .solver import GMRESSolveResult, bicgstab_solve, gmres_solve
+from .solver import GMRESSolveResult, bicgstab_solve, bicgstab_solve_jit, gmres_solve, gmres_solve_jit
 
 
 MatVec = Callable[[jnp.ndarray], jnp.ndarray]
@@ -130,9 +131,13 @@ def linear_custom_solve(
     if solver_kind in {"auto", "default"}:
         solver_kind = "bicgstab"
 
+    solver_jit_env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
+    use_solver_jit = solver_jit_env not in {"0", "false", "no", "off"}
+
     def _solve_direct(mv: MatVec, rhs: jnp.ndarray) -> GMRESSolveResult:
         if solver_kind in {"bicgstab", "bicgstab_jax"}:
-            return bicgstab_solve(
+            solver_fn = bicgstab_solve_jit if use_solver_jit else bicgstab_solve
+            return solver_fn(
                 matvec=mv,
                 b=rhs,
                 preconditioner=preconditioner,
@@ -142,7 +147,8 @@ def linear_custom_solve(
                 maxiter=maxiter,
                 precondition_side=precondition_side,
             )
-        return gmres_solve(
+        solver_fn = gmres_solve_jit if use_solver_jit else gmres_solve
+        return solver_fn(
             matvec=mv,
             b=rhs,
             preconditioner=preconditioner,
@@ -161,7 +167,8 @@ def linear_custom_solve(
     def transpose_solve(mv_T: MatVec, rhs: jnp.ndarray) -> jnp.ndarray:
         precond_T = preconditioner_transpose if preconditioner_transpose is not None else preconditioner
         if solver_kind in {"bicgstab", "bicgstab_jax"}:
-            return bicgstab_solve(
+            solver_fn = bicgstab_solve_jit if use_solver_jit else bicgstab_solve
+            return solver_fn(
                 matvec=mv_T,
                 b=rhs,
                 preconditioner=precond_T,
@@ -171,7 +178,8 @@ def linear_custom_solve(
                 maxiter=maxiter,
                 precondition_side=precondition_side,
             ).x
-        return gmres_solve(
+        solver_fn = gmres_solve_jit if use_solver_jit else gmres_solve
+        return solver_fn(
             matvec=mv_T,
             b=rhs,
             preconditioner=precond_T,

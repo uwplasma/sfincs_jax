@@ -21,6 +21,7 @@ from .solver import (
     assemble_dense_matrix_from_matvec,
     dense_solve_from_matrix,
     gmres_solve,
+    gmres_solve_jit,
     gmres_solve_with_history_scipy,
 )
 from .implicit_solve import linear_custom_solve
@@ -44,6 +45,16 @@ from .v3_system import (
     rhs_v3_full_system_jit,
     with_transport_rhs_settings,
 )
+
+
+def _use_solver_jit() -> bool:
+    env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
+    return env not in {"0", "false", "no", "off"}
+
+
+def _gmres_solve_dispatch(**kwargs):
+    solver_fn = gmres_solve_jit if _use_solver_jit() else gmres_solve
+    return solver_fn(**kwargs)
 
 
 @dataclass(frozen=True)
@@ -1283,7 +1294,7 @@ def solve_v3_full_system_linear_gmres(
                 solver=solver_kind,
                 precondition_side=precond_side,
             )
-        return gmres_solve(
+        return _gmres_solve_dispatch(
             matvec=matvec_fn,
             b=b_vec,
             preconditioner=precond_fn,
@@ -2046,7 +2057,7 @@ def solve_v3_full_system_newton_krylov(
             )
 
         # Solve J s = -r
-        lin = gmres_solve(
+        lin = _gmres_solve_dispatch(
             matvec=jvp,
             b=-r,
             tol=float(gmres_tol),
@@ -2405,7 +2416,7 @@ def solve_v3_full_system_newton_krylov_history(
             def matvec_reduced(dx_reduced: jnp.ndarray) -> jnp.ndarray:
                 return _reduce_full(matvec(_expand_reduced(dx_reduced)))
 
-            lin = gmres_solve(
+            lin = _gmres_solve_dispatch(
                 matvec=matvec_reduced,
                 b=rhs_reduced,
                 preconditioner=preconditioner,
@@ -2432,7 +2443,7 @@ def solve_v3_full_system_newton_krylov_history(
                         "newton_iter="
                         f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
                     )
-                lin = gmres_solve(
+                lin = _gmres_solve_dispatch(
                     matvec=matvec_reduced,
                     b=rhs_reduced,
                     preconditioner=None,
@@ -2455,7 +2466,7 @@ def solve_v3_full_system_newton_krylov_history(
             s = _expand_reduced(lin.x)
             linear_resid_norm = jnp.linalg.norm(matvec(s) + r)
         else:
-            lin = gmres_solve(
+            lin = _gmres_solve_dispatch(
                 matvec=matvec,
                 b=-r,
                 preconditioner=preconditioner,
@@ -2482,7 +2493,7 @@ def solve_v3_full_system_newton_krylov_history(
                         "newton_iter="
                         f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
                     )
-                lin = gmres_solve(
+                lin = _gmres_solve_dispatch(
                     matvec=matvec,
                     b=-r,
                     preconditioner=None,
@@ -2782,6 +2793,9 @@ def solve_v3_transport_matrix_linear_gmres(
     except ValueError:
         gmres_restart = min(int(restart), 40)
 
+    solver_jit_env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
+    use_solver_jit = solver_jit_env not in {"0", "false", "no", "off"}
+
     dense_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX", "").strip()
     try:
         if dense_precond_env:
@@ -2841,7 +2855,8 @@ def solve_v3_transport_matrix_linear_gmres(
                 solver=solver_kind,
                 precondition_side=precondition_side_val,
             )
-        return gmres_solve(
+        solver_fn = gmres_solve_jit if use_solver_jit else gmres_solve
+        return solver_fn(
             matvec=matvec_fn,
             b=b_vec,
             preconditioner=preconditioner_val,
@@ -2994,6 +3009,35 @@ def solve_v3_transport_matrix_linear_gmres(
         diag_op_by_index = op_rhs_by_index
     else:
         diag_op_by_index = [op0 for _ in which_rhs_values]
+
+    matvec_full_cache: dict[tuple[object, ...], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    matvec_reduced_cache: dict[tuple[object, ...], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+
+    def _get_full_matvec(op_matvec: V3FullSystemOperator) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        sig = _operator_signature_cached(op_matvec)
+        fn = matvec_full_cache.get(sig)
+        if fn is None:
+            def mv(x: jnp.ndarray, op=op_matvec) -> jnp.ndarray:
+                return apply_v3_full_system_operator_cached(op, x)
+
+            matvec_full_cache[sig] = mv
+            fn = mv
+        return fn
+
+    def _get_reduced_matvec(op_matvec: V3FullSystemOperator) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        if not use_active_dof_mode or reduce_full is None or expand_reduced is None:
+            return _get_full_matvec(op_matvec)
+        sig = _operator_signature_cached(op_matvec)
+        key = (sig, int(active_size))
+        fn = matvec_reduced_cache.get(key)
+        if fn is None:
+            def mv(x_reduced: jnp.ndarray, op=op_matvec) -> jnp.ndarray:
+                y_full = apply_v3_full_system_operator_cached(op, expand_reduced(x_reduced))
+                return reduce_full(y_full)
+
+            matvec_reduced_cache[key] = mv
+            fn = mv
+        return fn
 
     recycle_k_env = os.environ.get("SFINCS_JAX_TRANSPORT_RECYCLE_K", "").strip()
     try:
@@ -3156,10 +3200,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 assert full_to_active_jnp is not None
                 assert reduce_full is not None
                 assert expand_reduced is not None
-
-                def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
-                    y_full = apply_v3_full_system_operator_cached(op_matvec, expand_reduced(x_reduced))
-                    return reduce_full(y_full)
+                mv_reduced = _get_reduced_matvec(op_matvec)
 
                 rhs_reduced = reduce_full(rhs)
                 preconditioner_use = preconditioner_reduced
@@ -3292,8 +3333,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         recycle_basis_full = recycle_basis_full[-recycle_k:]
                         recycle_basis_full_au = recycle_basis_full_au[-recycle_k:]
             else:
-                def mv(x: jnp.ndarray) -> jnp.ndarray:
-                    return apply_v3_full_system_operator_cached(op_matvec, x)
+                mv = _get_full_matvec(op_matvec)
 
                 preconditioner_use = preconditioner_full
                 if dense_precond_enabled:

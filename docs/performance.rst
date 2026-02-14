@@ -77,6 +77,8 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Persistent cache in reduced-suite automation**: ``scripts/run_reduced_upstream_suite.py``
   now runs `sfincs_jax` subprocesses with a persistent JAX compilation cache, reducing
   repeated-iteration benchmarking overhead.
+- **Warm runtime reporting**: use ``--jax-repeats 2`` (or higher) in the reduced-suite runner
+  to record steady-state `sfincs_jax` runtime from repeats after the first (cold-compile) run.
 - **Remove dead Jacobian work in hot matvec paths**: direct-Phi1 ``factorJ`` kinetic-row terms
   that are absent in v3 ``whichMatrix=3`` are not assembled, improving parity and avoiding
   unnecessary FLOPs in includePhi1-in-kinetic matrix applications.
@@ -87,6 +89,8 @@ JAX-native performance patterns used in `sfincs_jax`
   is therefore far more memory efficient for large systems. GMRES remains available and is used as a
   fallback when BiCGStab stagnates; transport-matrix solves now default to BiCGStab with the collision
   diagonal preconditioner for speed and memory efficiency. [#petsc-bcgs]_
+- **JIT-compiled Krylov solves (default)**: `sfincs_jax` now JIT-compiles the GMRES/BiCGStab wrappers
+  to reduce Python overhead for iterative solves; set ``SFINCS_JAX_SOLVER_JIT=0`` to disable.
 
 Krylov solver strategy (memory + recycling)
 -------------------------------------------
