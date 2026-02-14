@@ -883,6 +883,15 @@ def solve_v3_full_system_linear_gmres(
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
     rhs1_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECONDITIONER", "").strip().lower()
+    precond_opts = nml.group("preconditionerOptions")
+    try:
+        pre_theta = int(precond_opts.get("PRECONDITIONER_THETA", 0) or 0)
+    except (TypeError, ValueError):
+        pre_theta = 0
+    try:
+        pre_zeta = int(precond_opts.get("PRECONDITIONER_ZETA", 0) or 0)
+    except (TypeError, ValueError):
+        pre_zeta = 0
     rhs1_precond_kind: str | None
     if rhs1_precond_env:
         if rhs1_precond_env in {"0", "false", "no", "off"}:
@@ -898,14 +907,16 @@ def solve_v3_full_system_linear_gmres(
         else:
             rhs1_precond_kind = None
     else:
-        # Default to a PETSc-like fast path: precondition RHSMode=1 linear solves without Phi1.
-        # Many upstream v3 examples rely on a strong preconditioner (whichMatrix=0) for convergence.
+        # Default to v3-like preconditioner options: when preconditioner_theta/zeta are 0,
+        # use point-block Jacobi. Enable line preconditioning only when explicitly requested.
         if int(op.rhs_mode) == 1 and (not bool(op.include_phi1)):
-            if int(op.n_theta) > 1 and int(op.n_zeta) > 1:
+            if pre_theta == 0 and pre_zeta == 0:
+                rhs1_precond_kind = "point"
+            elif pre_theta > 0 and pre_zeta > 0:
                 rhs1_precond_kind = "adi"
-            elif int(op.n_theta) > 1:
+            elif pre_theta > 0:
                 rhs1_precond_kind = "theta_line"
-            elif int(op.n_zeta) > 1:
+            elif pre_zeta > 0:
                 rhs1_precond_kind = "zeta_line"
             else:
                 rhs1_precond_kind = "point"
@@ -1071,7 +1082,8 @@ def solve_v3_full_system_linear_gmres(
             elif x0_arr.shape == (op.total_size,):
                 x0_reduced = reduce_full(x0_arr)
         preconditioner_reduced = None
-        if rhs1_precond_enabled:
+
+        def _build_rhs1_preconditioner_reduced():
             if emit is not None:
                 emit(
                     1,
@@ -1079,14 +1091,14 @@ def solve_v3_full_system_linear_gmres(
                     f"{rhs1_precond_kind} (active-DOF)",
                 )
             if rhs1_precond_kind == "theta_line":
-                preconditioner_reduced = _build_rhsmode1_theta_line_preconditioner(
+                return _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
-            elif rhs1_precond_kind == "zeta_line":
-                preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
+            if rhs1_precond_kind == "zeta_line":
+                return _build_rhsmode1_zeta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
-            elif rhs1_precond_kind == "adi":
+            if rhs1_precond_kind == "adi":
                 pre_theta = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
@@ -1106,10 +1118,14 @@ def solve_v3_full_system_linear_gmres(
                     for _ in range(sweeps):
                         out = pre_zeta(pre_theta(out))
                     return out
-            else:
-                preconditioner_reduced = _build_rhsmode1_block_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
+
+                return preconditioner_reduced
+            return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+        if rhs1_precond_enabled:
+            solver_kind = _solver_kind(solve_method)[0]
+            if solver_kind != "bicgstab" and solve_method_kind != "dense":
+                preconditioner_reduced = _build_rhs1_preconditioner_reduced()
         if solve_method_kind == "dense_ksp":
             if int(op.phi1_size) != 0:
                 raise NotImplementedError("dense_ksp is only supported for includePhi1=false RHSMode=1 solves.")
@@ -1237,6 +1253,8 @@ def solve_v3_full_system_linear_gmres(
                     "solve_v3_full_system_linear_gmres: BiCGStab fallback to GMRES "
                     f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
                 )
+            if preconditioner_reduced is None and rhs1_precond_enabled:
+                preconditioner_reduced = _build_rhs1_preconditioner_reduced()
             res_reduced = _solve_linear(
                 matvec_fn=mv_reduced,
                 b_vec=rhs_reduced,
@@ -1256,6 +1274,8 @@ def solve_v3_full_system_linear_gmres(
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = "gmres"
         if float(res_reduced.residual_norm) > target_reduced and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+            if preconditioner_reduced is None and rhs1_precond_enabled:
+                preconditioner_reduced = _build_rhs1_preconditioner_reduced()
             stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
             stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
             stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
@@ -1292,19 +1312,22 @@ def solve_v3_full_system_linear_gmres(
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
         dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
         try:
-            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
+            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 0
         except ValueError:
-            dense_fallback_max = 2500
-        dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
-        try:
-            dense_fallback_max_huge = int(dense_fallback_max_huge_env) if dense_fallback_max_huge_env else 6000
-        except ValueError:
-            dense_fallback_max_huge = 6000
-        dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
-        try:
-            dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e8
-        except ValueError:
-            dense_fallback_ratio = 1.0e8
+            dense_fallback_max = 0
+        dense_fallback_max_huge = 0
+        dense_fallback_ratio = 1.0e8
+        if dense_fallback_max > 0:
+            dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
+            try:
+                dense_fallback_max_huge = int(dense_fallback_max_huge_env) if dense_fallback_max_huge_env else 6000
+            except ValueError:
+                dense_fallback_max_huge = 6000
+            dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
+            try:
+                dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e8
+            except ValueError:
+                dense_fallback_ratio = 1.0e8
         res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
         dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
         if (
@@ -1423,14 +1446,15 @@ def solve_v3_full_system_linear_gmres(
             result = GMRESSolveResult(x=res_pc.x, residual_norm=residual_norm_full)
         else:
             preconditioner_full = None
-            if rhs1_precond_enabled:
+
+            def _build_rhs1_preconditioner_full():
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner={rhs1_precond_kind}")
                 if rhs1_precond_kind == "theta_line":
-                    preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
-                elif rhs1_precond_kind == "zeta_line":
-                    preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
-                elif rhs1_precond_kind == "adi":
+                    return _build_rhsmode1_theta_line_preconditioner(op=op)
+                if rhs1_precond_kind == "zeta_line":
+                    return _build_rhsmode1_zeta_line_preconditioner(op=op)
+                if rhs1_precond_kind == "adi":
                     pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
                     pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
 
@@ -1446,8 +1470,14 @@ def solve_v3_full_system_linear_gmres(
                         for _ in range(sweeps):
                             out = pre_zeta(pre_theta(out))
                         return out
-                else:
-                    preconditioner_full = _build_rhsmode1_block_preconditioner(op=op)
+
+                    return preconditioner_full
+                return _build_rhsmode1_block_preconditioner(op=op)
+
+            if rhs1_precond_enabled:
+                solver_kind = _solver_kind(solve_method)[0]
+                if solver_kind != "bicgstab" and solve_method_kind != "dense":
+                    preconditioner_full = _build_rhs1_preconditioner_full()
             result = _solve_linear(
                 matvec_fn=mv,
                 b_vec=rhs,
@@ -1498,6 +1528,8 @@ def solve_v3_full_system_linear_gmres(
                         "solve_v3_full_system_linear_gmres: BiCGStab fallback to GMRES "
                         f"(residual={float(result.residual_norm):.3e} > target={target:.3e})",
                     )
+                if preconditioner_full is None and rhs1_precond_enabled:
+                    preconditioner_full = _build_rhs1_preconditioner_full()
                 result = _solve_linear(
                     matvec_fn=mv,
                     b_vec=rhs,
@@ -1517,6 +1549,8 @@ def solve_v3_full_system_linear_gmres(
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = "gmres"
             if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+                if preconditioner_full is None and rhs1_precond_enabled:
+                    preconditioner_full = _build_rhs1_preconditioner_full()
                 stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
                 stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
                 stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
@@ -2342,22 +2376,30 @@ def solve_v3_transport_matrix_linear_gmres(
     if emit is not None:
         emit(1, f"solve_v3_transport_matrix_linear_gmres: rhs_mode={rhs_mode} whichRHS_count={n} total_size={int(op0.total_size)}")
 
-    # JAX's built-in GMRES stagnates at ~1e-6 residual on some small RHSMode=2 parity fixtures,
-    # which prevents end-to-end transport-matrix parity. For small systems, fall back to a dense
-    # JAX solve (still differentiable) by assembling the matrix from matvecs.
     solve_method_use = solve_method
-    if str(solve_method).strip().lower() in {"auto", "default"}:
-        solve_method_use = "incremental"
     force_krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_FORCE_KRYLOV", "").strip().lower()
     force_krylov = force_krylov_env in {"1", "true", "yes", "on"}
-    if (not force_krylov) and int(op0.total_size) <= 5000 and str(solve_method_use).lower() in {"batched", "incremental"}:
-        # On some JAX versions/platforms, `jax.scipy.sparse.linalg.gmres` can return NaNs for
-        # small ill-conditioned problems (observed in CI for RHSMode=3 scheme12 fixtures).
-        # Dense assembly is cheap at these sizes and improves robustness.
-        if int(rhs_mode) in {2, 3}:
+    force_dense_env = os.environ.get("SFINCS_JAX_TRANSPORT_FORCE_DENSE", "").strip().lower()
+    force_dense = force_dense_env in {"1", "true", "yes", "on"}
+    dense_fallback_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_FALLBACK", "").strip().lower()
+    dense_fallback = dense_fallback_env in {"1", "true", "yes", "on"}
+    if int(rhs_mode) in {2, 3}:
+        if force_dense:
             solve_method_use = "dense"
             if emit is not None:
-                emit(0, f"solve_v3_transport_matrix_linear_gmres: using dense solve for RHSMode={rhs_mode} (n={int(op0.total_size)})")
+                emit(0, f"solve_v3_transport_matrix_linear_gmres: forced dense solve for RHSMode={rhs_mode} (n={int(op0.total_size)})")
+        elif (
+            dense_fallback
+            and (not force_krylov)
+            and int(op0.total_size) <= 5000
+            and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
+        ):
+            # On some JAX versions/platforms, `jax.scipy.sparse.linalg.gmres` can return NaNs for
+            # small ill-conditioned problems (observed in CI for RHSMode=3 scheme12 fixtures).
+            # Enable a dense fallback only when explicitly requested.
+            solve_method_use = "dense"
+            if emit is not None:
+                emit(0, f"solve_v3_transport_matrix_linear_gmres: dense fallback enabled for RHSMode={rhs_mode} (n={int(op0.total_size)})")
 
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}

@@ -118,8 +118,10 @@ Solving a supported v3 linear run (matrix-free)
 .. note::
 
    The default ``--solve-method auto`` uses BiCGStab for RHSMode=1 and RHSMode=2/3 (short recurrence,
-   low memory), with GMRES fallback on stagnation. Transport solves also apply a cheap collision-diagonal
-   preconditioner by default. For strict PETSc-style iteration histories, use ``--solve-method incremental``.
+   low memory), with GMRES fallback on stagnation. Transport solves apply a cheap collision-diagonal
+   preconditioner by default, while RHSMode=1 preconditioning follows the v3 namelist defaults
+   (point-block Jacobi unless line preconditioners are requested). For strict PETSc-style iteration
+   histories, use ``--solve-method incremental``.
 
 Solver controls (environment variables)
 ---------------------------------------
@@ -161,6 +163,11 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_TRANSPORT_GMRES_RESTART``: GMRES restart length for transport fallback (default: 40).
 
+- ``SFINCS_JAX_TRANSPORT_FORCE_DENSE``: force dense transport solves (debugging only; quadratic cost).
+
+- ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK``: allow dense transport fallback for small ill-conditioned
+  cases (disabled by default).
+
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE``: side for applying the preconditioner in GMRES.
 
   - ``left`` (default): solve :math:`P^{-1} A x = P^{-1} b`.
@@ -186,7 +193,7 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``: enable a dense fallback solve for RHSMode=1
   when GMRES stagnates. This is only applied when the active system size is below the
-  specified threshold (default: ``2500``). Set to ``0`` to disable.
+  specified threshold (default: ``0``, disabled).
 
 - ``SFINCS_JAX_GMRES_MAX_MB``: memory cap for GMRES basis storage; used to auto-limit the
   restart value when ``SFINCS_JAX_GMRES_AUTO_RESTART`` is enabled (default: ``2048``).

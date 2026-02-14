@@ -3,8 +3,8 @@
 `sfincs_jax` is a JAX implementation of the SFINCS Fortran v3 workflow, with matrix-free operators,
 JIT acceleration, and end-to-end differentiable components for sensitivity and optimization studies.
 Default RHSMode=1 linear solves use a short-recurrence Krylov method (BiCGStab) with GMRES fallback,
-while RHSMode=2/3 transport solves default to GMRES for robustness. Implicit differentiation is
-enabled by default for linear solves.
+while RHSMode=2/3 transport solves also default to BiCGStab with a collision-diagonal preconditioner
+and GMRES fallback. Implicit differentiation is enabled by default for linear solves.
 
 ![SFINCS vs sfincs_jax L11 parity and runtime](docs/_static/figures/sfincs_vs_sfincs_jax_l11_runtime_2x2.png)
 
@@ -89,7 +89,7 @@ pip install -e ".[opt]"    # optax / jaxopt workflows
 - Geometry pipelines for `geometryScheme in {1,2,4,5,11,12}`
 - Matrix-free v3 full-system operator, RHS, and residual assembly in JAX
 - Linear solves via BiCGStab (default for RHSMode=1) with GMRES fallback; transport-matrix
-  (`RHSMode=2/3`) loops default to GMRES
+  (`RHSMode=2/3`) loops default to BiCGStab with collision-diagonal preconditioning
 - Implicit-diff linear solves via `jax.lax.custom_linear_solve` (default for RHSMode=1 + transport)
 - Transport-matrix recycling warm starts (optional, `SFINCS_JAX_TRANSPORT_RECYCLE_K`)
 - `sfincsOutput.h5` writing from Python and CLI
@@ -277,7 +277,7 @@ python scripts/generate_readme_reduced_suite_table.py
 | tokamak_1species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.079 | 2.992 | 0/130 (strict 0/130) | 7/7 |
 | tokamak_2species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.090 | 2.358 | 0/130 (strict 0/130) | 7/7 |
 | tokamak_2species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.087 | 15.266 | 0/130 (strict 0/130) | 7/7 |
-| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.092 | 5.927 | 0/123 (strict 0/123) | 7/7 |
+| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | - | 6.232 | 0/123 (strict 0/123) | 7/7 |
 | transportMatrix_geometryScheme2 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.087 | 1.718 | 0/123 (strict 0/123) | 7/7 |
 <!-- END REDUCED_SUITE_TABLE -->
 
