@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import os
-import hashlib
 import weakref
 from functools import lru_cache
 from pathlib import Path
@@ -779,13 +778,7 @@ apply_v3_full_system_operator_jit = jax.jit(
 apply_v3_full_system_jacobian_jit = jax.jit(apply_v3_full_system_jacobian)
 
 
-def _fingerprint_array(arr: jnp.ndarray | np.ndarray) -> str:
-    arr_np = np.asarray(arr, dtype=np.float64)
-    return hashlib.blake2b(arr_np.tobytes(), digest_size=8).hexdigest()
-
-
 def _operator_signature(op: V3FullSystemOperator) -> tuple[object, ...]:
-    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
     return (
         int(op.rhs_mode),
         int(op.n_species),
@@ -797,23 +790,8 @@ def _operator_signature(op: V3FullSystemOperator) -> tuple[object, ...]:
         int(op.quasineutrality_option),
         bool(op.include_phi1),
         bool(op.include_phi1_in_kinetic),
-        float(op.dphi_hat_dpsi_hat),
-        float(op.e_parallel_hat),
-        _fingerprint_array(op.z_s),
-        _fingerprint_array(op.m_hat),
-        _fingerprint_array(op.t_hat),
-        _fingerprint_array(op.n_hat),
-        _fingerprint_array(op.dn_hat_dpsi_hat),
-        _fingerprint_array(op.dt_hat_dpsi_hat),
-        _fingerprint_array(op.theta_weights),
-        _fingerprint_array(op.zeta_weights),
-        _fingerprint_array(op.b_hat),
-        _fingerprint_array(op.d_hat),
-        _fingerprint_array(op.b_hat_sub_theta),
-        _fingerprint_array(op.b_hat_sub_zeta),
-        _fingerprint_array(op.x),
-        _fingerprint_array(op.x_weights),
-        tuple(nxi_for_x.tolist()),
+        bool(op.with_adiabatic),
+        bool(op.point_at_x0),
     )
 
 

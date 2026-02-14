@@ -13,7 +13,7 @@ def test_output_scheme11_matches_fortran_fixture(tmp_path: Path) -> None:
     assert fortran_path.exists(), f"Missing Fortran fixture: {fortran_path}"
 
     out_path = tmp_path / "sfincsOutput.h5"
-    write_sfincs_jax_output_h5(input_namelist=input_path, output_path=out_path)
+    write_sfincs_jax_output_h5(input_namelist=input_path, output_path=out_path, compute_solution=True)
 
     # Compare the embedded input file text exactly.
     a = read_sfincs_h5(out_path)
@@ -150,4 +150,3 @@ def test_output_scheme11_matches_fortran_fixture(tmp_path: Path) -> None:
     uhat = compare_sfincs_outputs(a_path=out_path, b_path=fortran_path, keys=["uHat"], rtol=0, atol=1e-8)
     bad_uhat = [r for r in uhat if not r.ok]
     assert not bad_uhat, f"Mismatched keys (uHat): {[b.key for b in bad_uhat]}"
-

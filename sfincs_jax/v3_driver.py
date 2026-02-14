@@ -64,6 +64,8 @@ class _TransportPrecondCache:
 
 
 _TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
+_RHSMODE1_DIAG_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
+_RHSMODE23_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 
 
 def _precond_chunk_cols(total_size: int, n_cols: int) -> int:
@@ -157,7 +159,25 @@ def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[ob
 
 
 def _transport_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[object, ...]:
-    return (kind, _operator_signature_cached(op))
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    pas = op.fblock.pas
+    fp = op.fblock.fp
+    return (
+        kind,
+        int(op.n_species),
+        int(op.n_x),
+        int(op.n_xi),
+        int(op.n_theta),
+        int(op.n_zeta),
+        float(op.fblock.identity_shift),
+        bool(pas is not None),
+        float(pas.nu_n) if pas is not None else None,
+        float(pas.krook) if pas is not None else None,
+        _hash_array(pas.nu_d_hat) if pas is not None else None,
+        bool(fp is not None),
+        _hash_array(fp.mat) if fp is not None else None,
+        tuple(nxi_for_x.tolist()),
+    )
 
 
 def _build_rhsmode23_collision_preconditioner(
@@ -231,6 +251,69 @@ def _build_rhsmode23_collision_preconditioner(
     return _apply_reduced
 
 
+def _build_rhsmode1_collision_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Cheap diagonal preconditioner for RHSMode=1 solves (BiCGStab-friendly)."""
+    cache_key = _transport_precond_cache_key(op, "rhs1_collision_diag")
+    cached = _RHSMODE1_DIAG_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+        diag = jnp.zeros(f_shape, dtype=jnp.float64)
+
+        if float(op.fblock.identity_shift) != 0.0:
+            diag = diag + jnp.asarray(op.fblock.identity_shift, dtype=jnp.float64)
+
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l = jnp.arange(n_l, dtype=jnp.float64)
+            factor_l = 0.5 * (l * (l + 1.0) + 2.0 * pas.krook)
+            pas_diag = pas.nu_n * pas.nu_d_hat[:, :, None] * factor_l[None, None, :]
+            diag = diag + pas_diag[:, :, :, None, None]
+
+        if op.fblock.fp is not None:
+            mat = op.fblock.fp.mat  # (S,S,L,X,X)
+            diag_x = jnp.diagonal(mat, axis1=3, axis2=4)  # (S,S,L,X)
+            diag_self = jnp.diagonal(diag_x, axis1=0, axis2=1)  # (L,X,S)
+            diag_self = jnp.transpose(diag_self, (2, 1, 0))  # (S,X,L)
+            diag = diag + diag_self[:, :, :, None, None]
+
+        nxi_for_x = op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)
+        mask = jnp.arange(n_l, dtype=jnp.int32)[None, :] < nxi_for_x[:, None]  # (X,L)
+        mask = mask[None, :, :, None, None]
+        diag = jnp.where(mask, diag, jnp.asarray(1.0, dtype=jnp.float64))
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-10
+        except ValueError:
+            reg = 1e-10
+        inv_diag_f = 1.0 / (diag + float(reg))
+        cached = _TransportPrecondCache(inv_diag_f=inv_diag_f)
+        _RHSMODE1_DIAG_PRECOND_CACHE[cache_key] = cached
+
+    inv_diag_f = cached.inv_diag_f
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        f = r_full[: op.f_size].reshape(op.fblock.f_shape)
+        z_f = f * inv_diag_f
+        tail = r_full[op.f_size :]
+        return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 @jtu.register_pytree_node_class
 @dataclass(frozen=True)
 class V3LinearSolveResult:
@@ -281,6 +364,46 @@ def _build_rhsmode1_preconditioner_operator_point(op: V3FullSystemOperator) -> V
     if int(op.rhs_mode) != 1:
         return op
 
+    fblock = op.fblock
+    coll = replace(
+        fblock.collisionless,
+        ddtheta=_diag_only(fblock.collisionless.ddtheta),
+        ddzeta=_diag_only(fblock.collisionless.ddzeta),
+    )
+    exb_theta = replace(fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta))
+    exb_zeta = replace(fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta))
+    mag_theta = None
+    if fblock.magdrift_theta is not None:
+        mag_theta = replace(
+            fblock.magdrift_theta,
+            ddtheta_plus=_diag_only(fblock.magdrift_theta.ddtheta_plus),
+            ddtheta_minus=_diag_only(fblock.magdrift_theta.ddtheta_minus),
+        )
+    mag_zeta = None
+    if fblock.magdrift_zeta is not None:
+        mag_zeta = replace(
+            fblock.magdrift_zeta,
+            ddzeta_plus=_diag_only(fblock.magdrift_zeta.ddzeta_plus),
+            ddzeta_minus=_diag_only(fblock.magdrift_zeta.ddzeta_minus),
+        )
+    fblock_pc = replace(
+        fblock,
+        collisionless=coll,
+        exb_theta=exb_theta,
+        exb_zeta=exb_zeta,
+        magdrift_theta=mag_theta,
+        magdrift_zeta=mag_zeta,
+    )
+    return replace(op, fblock=fblock_pc)
+
+
+def _build_transport_preconditioner_operator_point(op: V3FullSystemOperator) -> V3FullSystemOperator:
+    """Return a simplified transport operator for point-block preconditioning.
+
+    This mirrors `_build_rhsmode1_preconditioner_operator_point` but does not
+    require RHSMode=1, since RHSMode=2/3 transport solves reuse the same operator
+    structure with different right-hand sides.
+    """
     fblock = op.fblock
     coll = replace(
         fblock.collisionless,
@@ -507,6 +630,153 @@ def _build_rhsmode1_block_preconditioner(
     block_inv_jnp = cached.block_inv_jnp
     extra_idx_jnp = cached.extra_idx_jnp
     extra_inv_jnp = cached.extra_inv_jnp
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_loc = r_full[flat_idx_jnp].reshape((n_s, n_t, n_z, local_per_species))
+        z_loc = jnp.einsum("sab,stzb->stza", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return z_full
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode23_block_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a block-Jacobi preconditioner for RHSMode=2/3 transport solves.
+
+    Uses the same local x/L block structure as RHSMode=1 preconditioning, but
+    applies it to the transport operator (RHSMode=2/3) using a simplified
+    operator with diagonalized theta/zeta derivatives.
+    """
+    cache_key = _transport_precond_cache_key(op, "block")
+    cached = _RHSMODE23_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = _build_transport_preconditioner_operator_point(op)
+        n_s = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_t = int(op.n_theta)
+        n_z = int(op.n_zeta)
+        total = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+
+        rep_indices_by_species: list[np.ndarray] = []
+        for s in range(n_s):
+            idx: list[int] = []
+            for ix in range(n_x):
+                max_l = int(nxi_for_x[ix])
+                for il in range(max_l):
+                    f_idx = ((((s * n_x + ix) * n_l + il) * n_t + 0) * n_z + 0)
+                    idx.append(int(f_idx))
+            rep_indices_by_species.append(np.asarray(idx, dtype=np.int32))
+
+        reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_REG", "").strip()
+        if not reg_env:
+            reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-10
+        except ValueError:
+            reg = 1e-10
+
+        block_inv = np.zeros((n_s, local_per_species, local_per_species), dtype=np.float64)
+        for s in range(n_s):
+            rep_idx = rep_indices_by_species[s]
+            chunk_cols = _precond_chunk_cols(total, int(np.asarray(rep_idx).shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=rep_idx,
+                row_idx=rep_idx,
+                total_size=total,
+                chunk_cols=chunk_cols,
+            )
+            a = np.asarray(y_sub.T, dtype=np.float64)
+            a = a + reg * np.eye(local_per_species, dtype=np.float64)
+            try:
+                inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(inv)):
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            block_inv[s, :, :] = inv
+
+        idx_map = np.zeros((n_s, n_t, n_z, local_per_species), dtype=np.int32)
+        for s in range(n_s):
+            for it in range(n_t):
+                for iz in range(n_z):
+                    k = 0
+                    for ix in range(n_x):
+                        max_l = int(nxi_for_x[ix])
+                        for il in range(max_l):
+                            idx_map[s, it, iz, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_t + it) * n_z + iz)
+                            )
+                            k += 1
+
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
+        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total,
+                chunk_cols=chunk_cols,
+            )
+            a = np.asarray(y_sub.T, dtype=np.float64)
+            a = a + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                extra_inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                extra_inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(extra_inv)):
+                extra_inv = np.linalg.pinv(a, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(extra_inv, dtype=jnp.float64)
+
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE23_PRECOND_CACHE[cache_key] = cached
+
+    idx_map_jnp = cached.idx_map_jnp
+    flat_idx_jnp = cached.flat_idx_jnp
+    block_inv_jnp = cached.block_inv_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+    n_s = int(op.n_species)
+    n_t = int(op.n_theta)
+    n_z = int(op.n_zeta)
+    local_per_species = int(idx_map_jnp.shape[-1])
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -883,6 +1153,7 @@ def solve_v3_full_system_linear_gmres(
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
     rhs1_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECONDITIONER", "").strip().lower()
+    rhs1_bicgstab_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND", "").strip().lower()
     precond_opts = nml.group("preconditionerOptions")
     try:
         pre_theta = int(precond_opts.get("PRECONDITIONER_THETA", 0) or 0)
@@ -927,6 +1198,12 @@ def solve_v3_full_system_linear_gmres(
         and int(op.rhs_mode) == 1
         and (not bool(op.include_phi1))
     )
+    if rhs1_bicgstab_env in {"0", "false", "no", "off"}:
+        rhs1_bicgstab_kind = None
+    elif rhs1_bicgstab_env in {"", "1", "true", "yes", "on", "collision", "diag"}:
+        rhs1_bicgstab_kind = "collision"
+    else:
+        rhs1_bicgstab_kind = None
     solve_method_kind = str(solve_method).strip().lower()
     if solve_method_kind == "dense_ksp":
         # `dense_ksp` uses its own PETSc-like block preconditioner on the assembled dense system.
@@ -937,6 +1214,12 @@ def solve_v3_full_system_linear_gmres(
     # Upstream SFINCS v3 reports KSP residual norms for the *preconditioned* residual, matching
     # a left-preconditioned solve. Default to left to align solver-branch parity.
     gmres_precond_side = gmres_precond_side_env or "left"
+
+    bicgstab_fallback_env = os.environ.get("SFINCS_JAX_BICGSTAB_FALLBACK", "").strip().lower()
+    if bicgstab_fallback_env in {"1", "true", "yes", "on", "strict"}:
+        bicgstab_fallback_strict = True
+    else:
+        bicgstab_fallback_strict = False
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
 
@@ -1087,6 +1370,13 @@ def solve_v3_full_system_linear_gmres(
             elif x0_arr.shape == (op.total_size,):
                 x0_reduced = reduce_full(x0_arr)
         preconditioner_reduced = None
+        bicgstab_preconditioner_reduced = None
+        if rhs1_bicgstab_kind is not None:
+            if emit is not None:
+                emit(1, "solve_v3_full_system_linear_gmres: RHSMode=1 BiCGStab preconditioner=collision")
+            bicgstab_preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
+                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+            )
 
         def _build_rhs1_preconditioner_reduced():
             if emit is not None:
@@ -1131,6 +1421,8 @@ def solve_v3_full_system_linear_gmres(
             solver_kind = _solver_kind(solve_method)[0]
             if solver_kind != "bicgstab" and solve_method_kind != "dense":
                 preconditioner_reduced = _build_rhs1_preconditioner_reduced()
+        if preconditioner_reduced is None and bicgstab_preconditioner_reduced is not None:
+            preconditioner_reduced = bicgstab_preconditioner_reduced
         if solve_method_kind == "dense_ksp":
             if int(op.phi1_size) != 0:
                 raise NotImplementedError("dense_ksp is only supported for includePhi1=false RHSMode=1 solves.")
@@ -1251,7 +1543,10 @@ def solve_v3_full_system_linear_gmres(
             ksp_solver_kind = _solver_kind(solve_method)[0]
         target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
         solver_kind = _solver_kind(solve_method)[0]
-        if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res_reduced) or float(res_reduced.residual_norm) > target_reduced):
+        if solver_kind == "bicgstab" and (
+            (not _gmres_result_is_finite(res_reduced))
+            or (bicgstab_fallback_strict and float(res_reduced.residual_norm) > target_reduced)
+        ):
             if emit is not None:
                 emit(
                     0,
@@ -1451,6 +1746,12 @@ def solve_v3_full_system_linear_gmres(
             result = GMRESSolveResult(x=res_pc.x, residual_norm=residual_norm_full)
         else:
             preconditioner_full = None
+            bicgstab_preconditioner_full = None
+
+            if rhs1_bicgstab_kind is not None:
+                if emit is not None:
+                    emit(1, "solve_v3_full_system_linear_gmres: RHSMode=1 BiCGStab preconditioner=collision")
+                bicgstab_preconditioner_full = _build_rhsmode1_collision_preconditioner(op=op)
 
             def _build_rhs1_preconditioner_full():
                 if emit is not None:
@@ -1483,6 +1784,8 @@ def solve_v3_full_system_linear_gmres(
                 solver_kind = _solver_kind(solve_method)[0]
                 if solver_kind != "bicgstab" and solve_method_kind != "dense":
                     preconditioner_full = _build_rhs1_preconditioner_full()
+            if preconditioner_full is None and bicgstab_preconditioner_full is not None:
+                preconditioner_full = bicgstab_preconditioner_full
             result = _solve_linear(
                 matvec_fn=mv,
                 b_vec=rhs,
@@ -1526,7 +1829,10 @@ def solve_v3_full_system_linear_gmres(
             # retry with a larger iteration budget and the more robust incremental mode.
             target = max(float(atol), float(tol) * float(rhs_norm))
             solver_kind = _solver_kind(solve_method)[0]
-            if solver_kind == "bicgstab" and (not _gmres_result_is_finite(result) or float(result.residual_norm) > target):
+            if solver_kind == "bicgstab" and (
+                (not _gmres_result_is_finite(result))
+                or (bicgstab_fallback_strict and float(result.residual_norm) > target)
+            ):
                 if emit is not None:
                     emit(
                         0,
@@ -1833,11 +2139,9 @@ def solve_v3_full_system_newton_krylov_history(
         use_active_dof_mode = False
     else:
         # Auto mode: for includePhi1 nonlinear RHSMode=1 solves with a truncated pitch grid,
-        # solve only active DOFs to avoid singular dense solves on inactive rows and to better
-        # match Fortran's PETSc solve space.
+        # solve only active DOFs to avoid singular inactive rows and reduce Krylov cost.
         use_active_dof_mode = bool(
-            use_frozen_linearization
-            and int(op.rhs_mode) == 1
+            int(op.rhs_mode) == 1
             and bool(op.include_phi1)
             and has_reduced_modes
         )
@@ -1879,18 +2183,50 @@ def solve_v3_full_system_newton_krylov_history(
     pc_env = os.environ.get("SFINCS_JAX_PHI1_USE_PRECONDITIONER", "").strip().lower()
     use_preconditioner = pc_env not in {"0", "false", "no", "off"}
     if use_preconditioner and use_frozen_linearization and int(op.rhs_mode) == 1:
-        if emit is not None:
-            emit(1, "solve_v3_full_system_newton_krylov_history: building RHSMode=1 block preconditioner")
-        if use_active_dof_mode:
-            preconditioner = _build_rhsmode1_block_preconditioner(
-                op=op, reduce_full=_reduce_full, expand_reduced=_expand_reduced
-            )
+        precond_kind_env = os.environ.get("SFINCS_JAX_PHI1_PRECOND_KIND", "").strip().lower()
+        if not precond_kind_env:
+            precond_kind = "collision" if bool(op.include_phi1) else "block"
+        elif precond_kind_env in {"collision", "diag"}:
+            precond_kind = "collision"
+        elif precond_kind_env in {"block", "block_jacobi", "point"}:
+            precond_kind = "block"
         else:
-            preconditioner = _build_rhsmode1_block_preconditioner(op=op)
+            precond_kind = "block"
+        if emit is not None:
+            emit(1, f"solve_v3_full_system_newton_krylov_history: preconditioner={precond_kind}")
+        if precond_kind == "collision":
+            if use_active_dof_mode:
+                preconditioner = _build_rhsmode1_collision_preconditioner(
+                    op=op, reduce_full=_reduce_full, expand_reduced=_expand_reduced
+                )
+            else:
+                preconditioner = _build_rhsmode1_collision_preconditioner(op=op)
+        else:
+            if use_active_dof_mode:
+                preconditioner = _build_rhsmode1_block_preconditioner(
+                    op=op, reduce_full=_reduce_full, expand_reduced=_expand_reduced
+                )
+            else:
+                preconditioner = _build_rhsmode1_block_preconditioner(op=op)
 
     last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
     accepted: list[jnp.ndarray] = []
     rnorm_initial: float | None = None
+    cached_jvp = None
+    cached_jvp_iter = -1
+    frozen_jac_cache_env = os.environ.get("SFINCS_JAX_PHI1_FROZEN_JAC_CACHE", "").strip().lower()
+    if frozen_jac_cache_env in {"0", "false", "no", "off"}:
+        use_frozen_jac_cache = False
+    elif frozen_jac_cache_env in {"1", "true", "yes", "on"}:
+        use_frozen_jac_cache = True
+    else:
+        use_frozen_jac_cache = True
+    frozen_jac_every_env = os.environ.get("SFINCS_JAX_PHI1_FROZEN_JAC_CACHE_EVERY", "").strip()
+    try:
+        frozen_jac_every = int(frozen_jac_every_env) if frozen_jac_every_env else 1
+    except ValueError:
+        frozen_jac_every = 1
+    frozen_jac_every = max(1, frozen_jac_every)
 
     def _emit_ksp_history_nk(
         *,
@@ -2001,10 +2337,23 @@ def solve_v3_full_system_newton_krylov_history(
                         - rhs_v3_full_system_jit(op_rhs_x)
                     )
 
-                _r_lin, jvp = jax.linearize(residual_for_jac, x)
-                matvec = jvp
-                if emit is not None:
-                    emit(1, f"newton_iter={k}: evaluateJacobian called (frozen operator + dynamic RHS)")
+                reuse_cached = (
+                    use_frozen_jac_cache
+                    and cached_jvp is not None
+                    and (k - cached_jvp_iter) < frozen_jac_every
+                )
+                if reuse_cached:
+                    matvec = cached_jvp
+                    if emit is not None:
+                        emit(1, f"newton_iter={k}: evaluateJacobian reused (frozen_rhs cache)")
+                else:
+                    _r_lin, jvp = jax.linearize(residual_for_jac, x)
+                    matvec = jvp
+                    if use_frozen_jac_cache:
+                        cached_jvp = jvp
+                        cached_jvp_iter = k
+                    if emit is not None:
+                        emit(1, f"newton_iter={k}: evaluateJacobian called (frozen operator + dynamic RHS)")
             elif jac_mode == "frozen_op":
                 # Keep RHS frozen at the current iterate, but let the operator
                 # carry the Phi1 dependence. This emulates partial Jacobian updates
@@ -2387,7 +2736,17 @@ def solve_v3_transport_matrix_linear_gmres(
     force_dense_env = os.environ.get("SFINCS_JAX_TRANSPORT_FORCE_DENSE", "").strip().lower()
     force_dense = force_dense_env in {"1", "true", "yes", "on"}
     dense_fallback_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_FALLBACK", "").strip().lower()
-    dense_fallback = dense_fallback_env in {"1", "true", "yes", "on"}
+    dense_fallback_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX", "").strip()
+    try:
+        dense_fallback_max = int(dense_fallback_max_env) if dense_fallback_max_env else 1600
+    except ValueError:
+        dense_fallback_max = 1600
+    if dense_fallback_env in {"1", "true", "yes", "on"}:
+        dense_fallback = True
+    elif dense_fallback_env in {"0", "false", "no", "off"}:
+        dense_fallback = False
+    else:
+        dense_fallback = int(op0.total_size) <= dense_fallback_max
     if int(rhs_mode) in {2, 3}:
         if force_dense:
             solve_method_use = "dense"
@@ -2396,7 +2755,7 @@ def solve_v3_transport_matrix_linear_gmres(
         elif (
             dense_fallback
             and (not force_krylov)
-            and int(op0.total_size) <= 5000
+            and int(op0.total_size) <= dense_fallback_max
             and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
         ):
             # On some JAX versions/platforms, `jax.scipy.sparse.linalg.gmres` can return NaNs for
@@ -2417,12 +2776,15 @@ def solve_v3_transport_matrix_linear_gmres(
 
     dense_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX", "").strip()
     try:
-        dense_precond_max = int(dense_precond_env) if dense_precond_env else 600
+        if dense_precond_env:
+            dense_precond_max = int(dense_precond_env)
+        else:
+            dense_precond_max = 1600 if int(rhs_mode) == 2 else 600
     except ValueError:
-        dense_precond_max = 600
+        dense_precond_max = 1600 if int(rhs_mode) == 2 else 600
     dense_precond_enabled = (
         dense_precond_max > 0
-        and int(rhs_mode) == 3
+        and int(rhs_mode) in {2, 3}
         and int(op0.total_size) <= dense_precond_max
         and str(solve_method_use).lower() != "dense"
     )
@@ -2433,8 +2795,8 @@ def solve_v3_transport_matrix_linear_gmres(
         method_l = str(method).strip().lower()
         if method_l in {"auto", "default"}:
             if int(rhs_mode) in {2, 3}:
-                # Prefer short-recurrence Krylov for transport solves to reduce memory.
-                return "bicgstab", "batched"
+                # Match v3 transport-matrix solves: GMRES with a stable incremental update.
+                return "gmres", "incremental"
             return "bicgstab", "batched"
         if method_l in {"bicgstab", "bicgstab_jax"}:
             return "bicgstab", "batched"
@@ -2546,17 +2908,34 @@ def solve_v3_transport_matrix_linear_gmres(
     transport_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND", "").strip().lower()
     if transport_precond_env in {"0", "none", "off", "false", "no"}:
         transport_precond_kind = None
+    elif transport_precond_env in {"collision", "block", "block_jacobi"}:
+        transport_precond_kind = transport_precond_env
     else:
-        transport_precond_kind = "collision"
+        transport_precond_kind = "auto"
 
     preconditioner_full = None
     preconditioner_reduced = None
     if transport_precond_kind is not None and int(rhs_mode) in {2, 3}:
-        preconditioner_full = _build_rhsmode23_collision_preconditioner(op=op0)
-        if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
-            preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
-                op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
-            )
+        precond_kind = transport_precond_kind
+        if precond_kind == "auto":
+            block_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_MAX", "").strip()
+            try:
+                block_max = int(block_max_env) if block_max_env else 5000
+            except ValueError:
+                block_max = 5000
+            precond_kind = "block" if int(op0.total_size) <= block_max else "collision"
+        if precond_kind in {"block", "block_jacobi"}:
+            preconditioner_full = _build_rhsmode23_block_preconditioner(op=op0)
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_block_preconditioner(
+                    op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+        else:
+            preconditioner_full = _build_rhsmode23_collision_preconditioner(op=op0)
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
+                    op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
 
     def _dense_preconditioner_for_matvec(
         *,
@@ -2588,9 +2967,9 @@ def solve_v3_transport_matrix_linear_gmres(
     elapsed_s: list[jnp.ndarray] = []
     which_rhs_values = list(range(1, n + 1))
     op_rhs_by_index = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in which_rhs_values]
-    rhs_by_index = [rhs_v3_full_system(op_rhs) for op_rhs in op_rhs_by_index]
+    rhs_by_index = [rhs_v3_full_system_jit(op_rhs) for op_rhs in op_rhs_by_index]
 
-    use_op_rhs_in_matvec = op0.fblock.pas is not None
+    use_op_rhs_in_matvec = bool(op0.include_phi1_in_kinetic)
     env_transport_matvec = os.environ.get("SFINCS_JAX_TRANSPORT_MATVEC_MODE", "").strip().lower()
     if env_transport_matvec == "rhs":
         use_op_rhs_in_matvec = True
@@ -2610,14 +2989,29 @@ def solve_v3_transport_matrix_linear_gmres(
     except ValueError:
         recycle_k = 4
     recycle_k = max(0, recycle_k)
-    recycle_basis_full: list[jnp.ndarray] = []
-    recycle_basis_reduced: list[jnp.ndarray] = []
+    if recycle_k > 0:
+        sig_ref = _operator_signature_cached(op_matvec_by_index[0])
+        for op_probe in op_matvec_by_index[1:]:
+            if _operator_signature_cached(op_probe) != sig_ref:
+                recycle_k = 0
+                if emit is not None:
+                    emit(1, "solve_v3_transport_matrix_linear_gmres: recycle disabled (matvec operator varies across whichRHS)")
+                break
 
-    def _recycled_initial_guess(matvec_fn, rhs_vec: jnp.ndarray, basis: list[jnp.ndarray]) -> jnp.ndarray | None:
-        if not basis:
+    recycle_basis_full: list[jnp.ndarray] = []
+    recycle_basis_full_au: list[jnp.ndarray] = []
+    recycle_basis_reduced: list[jnp.ndarray] = []
+    recycle_basis_reduced_au: list[jnp.ndarray] = []
+
+    def _recycled_initial_guess(
+        rhs_vec: jnp.ndarray,
+        basis: list[jnp.ndarray],
+        basis_au: list[jnp.ndarray],
+    ) -> jnp.ndarray | None:
+        if not basis or not basis_au:
             return None
         u = jnp.stack(basis, axis=1)  # (N, k)
-        au = jax.vmap(matvec_fn, in_axes=1, out_axes=1)(u)  # (N, k)
+        au = jnp.stack(basis_au, axis=1)  # (N, k)
         coeff, *_ = jnp.linalg.lstsq(au, rhs_vec, rcond=None)
         x0 = u @ coeff
         if not jnp.all(jnp.isfinite(x0)):
@@ -2767,7 +3161,11 @@ def solve_v3_transport_matrix_linear_gmres(
                     elif x0_arr.shape == (op0.total_size,):
                         x0_reduced = reduce_full(x0_arr)
                 if recycle_k > 0:
-                    x0_recycled = _recycled_initial_guess(mv_reduced, rhs_reduced, recycle_basis_reduced[-recycle_k:])
+                    x0_recycled = _recycled_initial_guess(
+                        rhs_reduced,
+                        recycle_basis_reduced[-recycle_k:],
+                        recycle_basis_reduced_au[-recycle_k:],
+                    )
                     if x0_reduced is None and x0_recycled is not None:
                         x0_reduced = x0_recycled
 
@@ -2808,13 +3206,21 @@ def solve_v3_transport_matrix_linear_gmres(
                 x_full = _maybe_project_constraint_nullspace(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
                 )
-                res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator_cached(op_matvec, x_full) - rhs)
+                ax_full = apply_v3_full_system_operator_cached(op_matvec, x_full)
+                res_norm_full = jnp.linalg.norm(ax_full - rhs)
                 state_vectors[which_rhs] = x_full
                 residual_norms[which_rhs] = res_norm_full
                 if recycle_k > 0:
                     recycle_basis_reduced.append(res_reduced.x)
+                    recycle_basis_reduced_au.append(reduce_full(ax_full))
                     if len(recycle_basis_reduced) > recycle_k:
                         recycle_basis_reduced = recycle_basis_reduced[-recycle_k:]
+                        recycle_basis_reduced_au = recycle_basis_reduced_au[-recycle_k:]
+                    recycle_basis_full.append(x_full)
+                    recycle_basis_full_au.append(ax_full)
+                    if len(recycle_basis_full) > recycle_k:
+                        recycle_basis_full = recycle_basis_full[-recycle_k:]
+                        recycle_basis_full_au = recycle_basis_full_au[-recycle_k:]
             else:
                 def mv(x: jnp.ndarray) -> jnp.ndarray:
                     return apply_v3_full_system_operator_cached(op_matvec, x)
@@ -2831,7 +3237,11 @@ def solve_v3_transport_matrix_linear_gmres(
                     )
                 x0_full = x0
                 if recycle_k > 0:
-                    x0_recycled = _recycled_initial_guess(mv, rhs, recycle_basis_full[-recycle_k:])
+                    x0_recycled = _recycled_initial_guess(
+                        rhs,
+                        recycle_basis_full[-recycle_k:],
+                        recycle_basis_full_au[-recycle_k:],
+                    )
                     if x0_full is None and x0_recycled is not None:
                         x0_full = x0_recycled
                 res = _solve_linear(
@@ -2872,11 +3282,14 @@ def solve_v3_transport_matrix_linear_gmres(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
                 )
                 state_vectors[which_rhs] = x_full
-                residual_norms[which_rhs] = jnp.linalg.norm(apply_v3_full_system_operator_cached(op_matvec, x_full) - rhs)
+                ax_full = apply_v3_full_system_operator_cached(op_matvec, x_full)
+                residual_norms[which_rhs] = jnp.linalg.norm(ax_full - rhs)
                 if recycle_k > 0:
                     recycle_basis_full.append(x_full)
+                    recycle_basis_full_au.append(ax_full)
                     if len(recycle_basis_full) > recycle_k:
                         recycle_basis_full = recycle_basis_full[-recycle_k:]
+                        recycle_basis_full_au = recycle_basis_full_au[-recycle_k:]
             if emit is not None:
                 emit(
                     0,

@@ -156,10 +156,29 @@ performance without changing the input file:
     but also the most expensive).
   - ``0``: disable.
 
-- ``SFINCS_JAX_TRANSPORT_PRECOND``: RHSMode=2/3 transport preconditioner.
+- ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND``: optional RHSMode=1 BiCGStab preconditioning.
 
   - ``collision`` (default): collision-diagonal preconditioner (PAS/FP + identity shift).
+  - ``0``: disable.
+
+- ``SFINCS_JAX_BICGSTAB_FALLBACK``: control when BiCGStab falls back to GMRES.
+
+  - ``strict``/``1``: fallback if the residual exceeds tolerance (parity-first).
+  - ``0``/``loose`` (default): fallback only on non-finite residuals (performance-first).
+
+- ``SFINCS_JAX_TRANSPORT_PRECOND``: RHSMode=2/3 transport preconditioner.
+
+  - ``auto`` (default): use block-Jacobi for small systems, collision-diagonal otherwise.
+  - ``block``/``block_jacobi``: local (x,L) block-Jacobi preconditioner built from a
+    simplified transport operator (stronger, higher setup cost).
+  - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
   - ``0``/``none``: disable.
+
+- ``SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_MAX``: size threshold for ``auto`` to select
+  block-Jacobi preconditioning (default: ``5000``).
+
+- ``SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_REG``: regularization added to transport block
+  preconditioner diagonal blocks (default: ``1e-10``).
 
 - ``SFINCS_JAX_TRANSPORT_GMRES_RESTART``: GMRES restart length for transport fallback (default: 40).
 
@@ -198,6 +217,18 @@ performance without changing the input file:
   when GMRES stagnates. This is only applied when the active system size is below the
   specified threshold (default: ``0``, disabled).
 
+- ``SFINCS_JAX_PHI1_PRECOND_KIND``: Newton–Krylov preconditioner for includePhi1 solves
+  (active when ``SFINCS_JAX_PHI1_USE_PRECONDITIONER`` is enabled and frozen linearization is used).
+
+  - ``collision`` (default for includePhi1): collision-diagonal preconditioner.
+  - ``block``/``block_jacobi``: RHSMode=1 block-Jacobi preconditioner (stronger).
+
+- ``SFINCS_JAX_PHI1_FROZEN_JAC_CACHE``: reuse the frozen-RHS linearized Jacobian across
+  Newton steps (default: enabled).
+
+- ``SFINCS_JAX_PHI1_FROZEN_JAC_CACHE_EVERY``: rebuild the frozen-RHS linearized Jacobian
+  every ``k`` Newton steps (default: ``1``).
+
 - ``SFINCS_JAX_GMRES_MAX_MB``: memory cap for GMRES basis storage; used to auto-limit the
   restart value when ``SFINCS_JAX_GMRES_AUTO_RESTART`` is enabled (default: ``2048``).
 
@@ -210,6 +241,9 @@ performance without changing the input file:
   (overrides ``SFINCS_JAX_PRECOND_MAX_MB`` when set).
 
 - ``SFINCS_JAX_FORTRAN_STDOUT``: control strict Fortran-style stdout mirroring.
+
+- ``SFINCS_JAX_FORTRAN_PETSC_OPTIONS_FALLBACK``: PETSc options string used when the
+  Fortran binary aborts with MPICH MPI-init errors in reduced-suite runs.
 
   - ``1``/``true``: emit PETSc-like SNES/KSP iteration lines in addition to the standard v3 text.
   - ``0``/``false``: skip the extra iteration logs (useful for speed in tests).

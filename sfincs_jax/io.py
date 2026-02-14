@@ -1436,11 +1436,16 @@ def write_sfincs_jax_output_h5(
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: solve method forced by env -> {solve_method}")
         elif include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
-            # For includePhi1 + linear kinetic equation runs, `incremental` GMRES is
-            # more robust than dense-regularized solves on tiny reduced fixtures.
-            solve_method = "incremental"
-            if emit is not None:
-                emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
+            # For includePhi1 + linear kinetic equation runs, use a dense solve for
+            # small systems to preserve fixture parity, otherwise fall back to GMRES.
+            if active_total_size <= dense_active_cutoff:
+                solve_method = "dense"
+                if emit is not None:
+                    emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using dense solve")
+            else:
+                solve_method = "incremental"
+                if emit is not None:
+                    emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
         elif os.environ.get("SFINCS_JAX_RHSMODE1_FORCE_KRYLOV", "").strip().lower() in {"1", "true", "yes", "on"}:
             solve_method = "incremental"
             if emit is not None:
@@ -1549,9 +1554,8 @@ def write_sfincs_jax_output_h5(
         _mark("rhs1_diagnostics_start")
 
         n_iter = int(len(xs))
-        # Upstream v3 leaves NIterations at 0 for these linearized runs, even when
-        # diagnostics are written for multiple iterates. Mirror that behavior for parity.
-        data["NIterations"] = np.asarray(0, dtype=np.int32)
+        # Match v3 fixtures: record the number of diagnostic iterations written.
+        data["NIterations"] = np.asarray(n_iter, dtype=np.int32)
         # Parity fixtures freeze elapsed times as 0.
         data["elapsed time (s)"] = np.zeros((n_iter,), dtype=np.float64)
         if include_phi1:
@@ -2136,14 +2140,18 @@ def write_sfincs_jax_output_h5(
             # (moments, momentum flux, and NTV) for each whichRHS solve. Populate these
             # additional datasets in the same Python-read axis order as Fortran output.
             op0 = result.op0
-            n_rhs = int(np.asarray(data["NIterations"]))
+            n_rhs = len(result.state_vectors_by_rhs)
             z = int(op0.n_zeta)
             t = int(op0.n_theta)
             s = int(op0.n_species)
-            # NIterations should match transport-matrix size for RHSMode=2/3.
-            if n_rhs != len(result.state_vectors_by_rhs):
-                n_rhs = len(result.state_vectors_by_rhs)
-            data["NIterations"] = np.asarray(n_rhs, dtype=np.int32)
+            # v3 leaves NIterations at 0 for RHSMode=2/3 transport-matrix runs unless
+            # binary matrix/vector outputs are enabled.
+            general = nml.group("general")
+            save_binary = bool(
+                general.get("SAVEMATRICESANDVECTORSINBINARY", general.get("saveMatricesAndVectorsInBinary", False))
+            )
+            if save_binary:
+                data["NIterations"] = np.asarray(n_rhs, dtype=np.int32)
 
             def _alloc_ztsn() -> "jnp.ndarray":
                 return jnp.zeros((z, t, s, n_rhs), dtype=jnp.float64)
