@@ -1680,7 +1680,9 @@ def solve_v3_full_system_linear_gmres(
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
         x_full = expand_reduced(res_reduced.x)
-        residual_norm_full = jnp.linalg.norm(mv(x_full) - rhs)
+        # Residuals in active-DOF mode are computed on the reduced system to avoid an
+        # extra full matvec; this matches the reduced KSP system used upstream.
+        residual_norm_full = res_reduced.residual_norm
         result = GMRESSolveResult(x=x_full, residual_norm=residual_norm_full)
     else:
         if solve_method_kind == "dense_ksp":
