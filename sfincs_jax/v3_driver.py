@@ -2410,6 +2410,20 @@ def solve_v3_transport_matrix_linear_gmres(
     except ValueError:
         gmres_restart = min(int(restart), 40)
 
+    dense_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX", "").strip()
+    try:
+        dense_precond_max = int(dense_precond_env) if dense_precond_env else 600
+    except ValueError:
+        dense_precond_max = 600
+    dense_precond_enabled = (
+        dense_precond_max > 0
+        and int(rhs_mode) == 3
+        and int(op0.total_size) <= dense_precond_max
+        and str(solve_method_use).lower() != "dense"
+    )
+    dense_precond_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    dense_precond_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
         if method_l in {"auto", "default"}:
@@ -2538,6 +2552,27 @@ def solve_v3_transport_matrix_linear_gmres(
             preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
                 op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
             )
+
+    def _dense_preconditioner_for_matvec(
+        *,
+        matvec_fn,
+        n: int,
+        dtype: jnp.dtype,
+        cache: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]],
+        key: tuple[object, int],
+    ) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        if key in cache:
+            return cache[key]
+        import jax.scipy.linalg as jla  # noqa: PLC0415
+
+        a_dense = assemble_dense_matrix_from_matvec(matvec=matvec_fn, n=n, dtype=dtype)
+        lu, piv = jla.lu_factor(a_dense)
+
+        def precond(v: jnp.ndarray) -> jnp.ndarray:
+            return jla.lu_solve((lu, piv), v)
+
+        cache[key] = precond
+        return precond
 
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
@@ -2709,6 +2744,16 @@ def solve_v3_transport_matrix_linear_gmres(
                     return reduce_full(y_full)
 
                 rhs_reduced = reduce_full(rhs)
+                preconditioner_use = preconditioner_reduced
+                if dense_precond_enabled:
+                    sig = _operator_signature_cached(op_matvec)
+                    preconditioner_use = _dense_preconditioner_for_matvec(
+                        matvec_fn=mv_reduced,
+                        n=active_size,
+                        dtype=rhs_reduced.dtype,
+                        cache=dense_precond_cache_reduced,
+                        key=(sig, int(active_size)),
+                    )
                 x0_reduced = None
                 if x0 is not None:
                     x0_arr = jnp.asarray(x0)
@@ -2730,7 +2775,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     restart_val=_restart_for_method(solve_method_rhs),
                     maxiter_val=maxiter,
                     solve_method_val=solve_method_rhs,
-                    preconditioner_val=preconditioner_reduced,
+                    preconditioner_val=preconditioner_use,
                     precondition_side_val="left",
                 )
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs_reduced)))
@@ -2751,7 +2796,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         restart_val=gmres_restart,
                         maxiter_val=maxiter,
                         solve_method_val="incremental",
-                        preconditioner_val=preconditioner_reduced,
+                        preconditioner_val=preconditioner_use,
                         precondition_side_val="left",
                     )
                 x_full = expand_reduced(res_reduced.x)
@@ -2769,6 +2814,16 @@ def solve_v3_transport_matrix_linear_gmres(
                 def mv(x: jnp.ndarray) -> jnp.ndarray:
                     return apply_v3_full_system_operator_cached(op_matvec, x)
 
+                preconditioner_use = preconditioner_full
+                if dense_precond_enabled:
+                    sig = _operator_signature_cached(op_matvec)
+                    preconditioner_use = _dense_preconditioner_for_matvec(
+                        matvec_fn=mv,
+                        n=int(op0.total_size),
+                        dtype=rhs.dtype,
+                        cache=dense_precond_cache_full,
+                        key=(sig, int(op0.total_size)),
+                    )
                 x0_full = x0
                 if recycle_k > 0:
                     x0_recycled = _recycled_initial_guess(mv, rhs, recycle_basis_full[-recycle_k:])
@@ -2783,7 +2838,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     restart_val=_restart_for_method(solve_method_rhs),
                     maxiter_val=maxiter,
                     solve_method_val=solve_method_rhs,
-                    preconditioner_val=preconditioner_full,
+                    preconditioner_val=preconditioner_use,
                     precondition_side_val="left",
                 )
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs)))
@@ -2804,7 +2859,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         restart_val=gmres_restart,
                         maxiter_val=maxiter,
                         solve_method_val="incremental",
-                        preconditioner_val=preconditioner_full,
+                        preconditioner_val=preconditioner_use,
                         precondition_side_val="left",
                     )
                 x_full = res.x

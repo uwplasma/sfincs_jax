@@ -2356,8 +2356,8 @@ def write_sfincs_jax_output_h5(
                 data[k] = _fortran_h5_layout(v)
             _mark("transport_diagnostics_done")
 
-    if int(rhs_mode) in {2, 3}:
-        # v3 leaves NIterations at 0 for transport runs as well.
+    if int(rhs_mode) in {2, 3} and not bool(compute_transport_matrix):
+        # v3 leaves NIterations at 0 for RHSMode=2/3 runs that do not execute transport solves.
         data["NIterations"] = np.asarray(0, dtype=np.int32)
 
     data["input.namelist"] = input_namelist.read_text()

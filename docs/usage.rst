@@ -168,6 +168,9 @@ performance without changing the input file:
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK``: allow dense transport fallback for small ill-conditioned
   cases (disabled by default).
 
+- ``SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX``: enable a dense LU preconditioner for RHSMode=3
+  transport solves when the system size is below the specified threshold (default: ``600``).
+
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE``: side for applying the preconditioner in GMRES.
 
   - ``left`` (default): solve :math:`P^{-1} A x = P^{-1} b`.
