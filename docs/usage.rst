@@ -117,9 +117,9 @@ Solving a supported v3 linear run (matrix-free)
 
 .. note::
 
-   The default ``--solve-method auto`` uses BiCGStab for RHSMode=1 (memory efficiency) and GMRES
-   for RHSMode=2/3 transport solves, with GMRES fallback on BiCGStab stagnation. For strict
-   PETSc-style iteration histories, use ``--solve-method incremental``.
+   The default ``--solve-method auto`` uses BiCGStab for RHSMode=1 and RHSMode=2/3 (short recurrence,
+   low memory), with GMRES fallback on stagnation. Transport solves also apply a cheap collision-diagonal
+   preconditioner by default. For strict PETSc-style iteration histories, use ``--solve-method incremental``.
 
 Solver controls (environment variables)
 ---------------------------------------
@@ -153,6 +153,13 @@ performance without changing the input file:
   - ``adi``: apply the theta-line and zeta-line preconditioners sequentially (strongest of the built-ins,
     but also the most expensive).
   - ``0``: disable.
+
+- ``SFINCS_JAX_TRANSPORT_PRECOND``: RHSMode=2/3 transport preconditioner.
+
+  - ``collision`` (default): collision-diagonal preconditioner (PAS/FP + identity shift).
+  - ``0``/``none``: disable.
+
+- ``SFINCS_JAX_TRANSPORT_GMRES_RESTART``: GMRES restart length for transport fallback (default: 40).
 
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE``: side for applying the preconditioner in GMRES.
 

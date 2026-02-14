@@ -63,6 +63,9 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Recycled transport solves**: optional warm-start recycling keeps a small number of
   recent solution vectors across ``whichRHS`` iterations (``SFINCS_JAX_TRANSPORT_RECYCLE_K``),
   reducing Krylov iterations on sequential RHS solves.
+- **Transport collision-diagonal preconditioner (default)**: RHSMode=2/3 transport solves use
+  a cheap JAX-native diagonal preconditioner built from the collision operator and identity shift.
+  This cuts iterations without matrix assembly and preserves parity on the reduced suite.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.
@@ -81,17 +84,17 @@ JAX-native performance patterns used in `sfincs_jax`
   a linear system `A(p) x = b(p)`, prefer `jax.lax.custom_linear_solve` (adjoint solve) over
   differentiating through Krylov iterations.
 - **Default to short-recurrence Krylov when possible**: BiCGStab avoids storing a full GMRES basis and
-  is therefore far more memory efficient for large RHSMode=1 systems. GMRES remains available and is
-  used as a fallback when BiCGStab stagnates; transport-matrix solves default to GMRES for robustness.
-  [#petsc-bcgs]_
+  is therefore far more memory efficient for large systems. GMRES remains available and is used as a
+  fallback when BiCGStab stagnates; transport-matrix solves now default to BiCGStab with the collision
+  diagonal preconditioner for speed and memory efficiency. [#petsc-bcgs]_
 
 Krylov solver strategy (memory + recycling)
 -------------------------------------------
 
 `sfincs_jax` now defaults RHSMode=1 linear solves to BiCGStab (short recurrence, O(n) memory) and
-falls back to GMRES when BiCGStab stagnates. For RHSMode=2/3 transport-matrix solves we default to
-GMRES for robustness. This keeps memory usage low on large RHSMode=1 systems while preserving
-parity on transport cases. [#petsc-bcgs]_
+falls back to GMRES when BiCGStab stagnates. For RHSMode=2/3 transport-matrix solves we also default
+to BiCGStab and apply the collision-diagonal preconditioner by default, with GMRES as the fallback.
+This keeps memory usage low while preserving reduced-suite parity. [#petsc-bcgs]_
 
 For RHSMode=2/3 transport matrices, the ``whichRHS`` loop solves a sequence of linear systems with
 nearly identical operators. We prototype a lightweight recycling hook that reuses the last ``k``

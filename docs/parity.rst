@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode matches the same 38/38 split. For cases that emit stdout signals, print parity is 7/7.
+     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode is ``36/38 parity_ok`` (HSX FPCollisions cases differ without tolerance overrides). For cases that emit stdout signals, print parity is 7/7.
 
 Implemented (parity-tested)
 ---------------------------
@@ -95,10 +95,9 @@ Implemented (parity-tested)
 Current scope limits
 --------------------
 
-- Reduced-suite parity (``docs/_generated/reduced_upstream_suite_status*.rst``) currently reports
-  35/38 parity_ok, with remaining blockers in ``monoenergetic_geometryScheme1``,
-  ``transportMatrix_geometryScheme11``, and ``filteredW7XNetCDF_2species_noEr``
-  (see the generated tables for details).
+- Reduced-suite parity (``docs/_generated/reduced_upstream_suite_status*.rst``) reports
+  38/38 parity_ok in practical mode and 36/38 parity_ok in strict mode (strict ignores
+  per-case tolerance overrides for HSX FPCollisions).
 - The unconstrained ``constraintScheme=0`` branch is rank-deficient, so different solvers can select different nullspace
   components. For comparisons, sfincs_jax treats a small set of density/pressure-like outputs as gauge-dependent and
   skips them when ``constraintScheme=0`` (see ``sfincs_jax/compare.py``).
