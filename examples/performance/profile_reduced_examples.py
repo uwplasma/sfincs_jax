@@ -112,6 +112,16 @@ def main() -> int:
         help="Directory for output sfincsOutput.h5 files.",
     )
     parser.add_argument("--timeout-s", type=float, default=None, help="Optional per-case timeout in seconds.")
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Append/update an existing JSON file instead of overwriting.",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip inputs already present in the output JSON (implies --append).",
+    )
     args = parser.parse_args()
 
     os.environ["SFINCS_JAX_PROFILE"] = "1"
@@ -126,10 +136,25 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    results: list[dict[str, object]] = []
+    existing: dict[str, dict[str, object]] = {}
+    if args.append or args.skip_existing:
+        out_json = Path(args.out_json)
+        if out_json.exists():
+            try:
+                prev = json.loads(out_json.read_text())
+                if isinstance(prev, list):
+                    for entry in prev:
+                        if isinstance(entry, dict) and "input" in entry:
+                            existing[str(entry["input"])] = entry
+            except Exception:
+                existing = {}
+
+    results: list[dict[str, object]] = list(existing.values())
     for idx, input_path in enumerate(inputs, start=1):
         print(f"[{idx}/{len(inputs)}] {input_path.name}")
         out_path = out_dir / f"{input_path.stem}.sfincsOutput.h5"
+        if args.skip_existing and str(input_path) in existing:
+            continue
         try:
             results.append(_collect_profiles(input_path, out_path, timeout_s=args.timeout_s))
         except Exception as exc:  # noqa: BLE001
@@ -143,7 +168,12 @@ def main() -> int:
 
     out_json = Path(args.out_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_json.write_text(json.dumps(results, indent=2))
+    # Deduplicate by input path to keep the latest result.
+    merged: dict[str, dict[str, object]] = {}
+    for entry in results:
+        if isinstance(entry, dict) and "input" in entry:
+            merged[str(entry["input"])] = entry
+    out_json.write_text(json.dumps(list(merged.values()), indent=2))
     print(f"Wrote {out_json}")
     return 0
 

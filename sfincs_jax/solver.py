@@ -32,7 +32,34 @@ class GMRESSolveResult:
     def tree_unflatten(cls, aux, children):
         del aux
         x, residual_norm = children
-        return cls(x=x, residual_norm=residual_norm)
+    return cls(x=x, residual_norm=residual_norm)
+
+
+def _maybe_limit_restart(n: int, restart: int, dtype: jnp.dtype) -> int:
+    if n <= 0 or restart <= 1:
+        return restart
+    auto_env = os.environ.get("SFINCS_JAX_GMRES_AUTO_RESTART", "").strip().lower()
+    if auto_env in {"0", "false", "no", "off"}:
+        return restart
+    max_mb_env = os.environ.get("SFINCS_JAX_GMRES_MAX_MB", "").strip()
+    if max_mb_env:
+        try:
+            max_mb = float(max_mb_env)
+        except ValueError:
+            max_mb = 2048.0
+    else:
+        max_mb = 2048.0
+    if max_mb <= 0:
+        return restart
+    bytes_per_elem = int(np.dtype(dtype).itemsize)
+    if bytes_per_elem <= 0:
+        return restart
+    max_bytes = max_mb * 1e6
+    # Estimate Krylov basis storage ~ (restart+1) * n * bytes_per_elem.
+    max_restart = int(max_bytes // (bytes_per_elem * n)) - 1
+    if max_restart < 1:
+        max_restart = 1
+    return min(int(restart), int(max_restart))
 
 
 def gmres_solve_with_history_scipy(
@@ -51,6 +78,7 @@ def gmres_solve_with_history_scipy(
     b_np = np.asarray(b, dtype=np.float64).reshape((-1,))
     n = int(b_np.size)
     x0_np = np.asarray(x0, dtype=np.float64).reshape((-1,)) if x0 is not None else None
+    restart_use = _maybe_limit_restart(n, int(restart), np.dtype(np.float64))
 
     def _mv(x_np: np.ndarray) -> np.ndarray:
         return np.asarray(matvec(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64)
@@ -59,6 +87,8 @@ def gmres_solve_with_history_scipy(
         if preconditioner is None:
             return x_np
         return np.asarray(preconditioner(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64)
+
+    restart_use = _maybe_limit_restart(int(b.size), int(restart), b.dtype)
 
     side = str(precondition_side).strip().lower()
     if side not in {"left", "right", "none"}:
@@ -89,7 +119,7 @@ def gmres_solve_with_history_scipy(
         x0=x0_np,
         rtol=float(tol),
         atol=float(atol),
-        restart=int(restart),
+        restart=int(restart_use),
         maxiter=int(maxiter) if maxiter is not None else None,
         M=M,
         callback=_cb,
@@ -218,7 +248,7 @@ def gmres_solve(
             x0=None,
             tol=float(tol),
             atol=float(atol),
-            restart=int(restart),
+            restart=int(restart_use),
             maxiter=maxiter,
             M=None,
             solve_method=solve_method,
@@ -233,7 +263,7 @@ def gmres_solve(
             x0=x0,
             tol=float(tol),
             atol=float(atol),
-            restart=int(restart),
+            restart=int(restart_use),
             maxiter=maxiter,
             M=M,
             solve_method=solve_method,
