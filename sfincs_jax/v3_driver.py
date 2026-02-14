@@ -19,12 +19,16 @@ from .namelist import Namelist
 from .solver import (
     GMRESSolveResult,
     assemble_dense_matrix_from_matvec,
+    bicgstab_solve_with_residual,
+    bicgstab_solve_with_residual_jit,
     dense_solve_from_matrix,
     gmres_solve,
     gmres_solve_jit,
+    gmres_solve_with_residual,
+    gmres_solve_with_residual_jit,
     gmres_solve_with_history_scipy,
 )
-from .implicit_solve import linear_custom_solve
+from .implicit_solve import linear_custom_solve, linear_custom_solve_with_residual
 from .transport_matrix import (
     transport_matrix_size_from_rhs_mode,
     v3_transport_diagnostics_vm_only_batch_jit,
@@ -2869,6 +2873,60 @@ def solve_v3_transport_matrix_linear_gmres(
             precondition_side=precondition_side_val,
         )
 
+    def _solve_linear_with_residual(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        solve_method_val: str,
+        preconditioner_val=None,
+        precondition_side_val: str = "left",
+    ) -> tuple[GMRESSolveResult, jnp.ndarray]:
+        solver_kind, gmres_method = _solver_kind(solve_method_val)
+        if use_implicit:
+            return linear_custom_solve_with_residual(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=preconditioner_val,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+                solve_method=gmres_method,
+                solver=solver_kind,
+                precondition_side=precondition_side_val,
+            )
+        if solver_kind == "bicgstab":
+            solver_fn = bicgstab_solve_with_residual_jit if use_solver_jit else bicgstab_solve_with_residual
+            return solver_fn(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=preconditioner_val,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                maxiter=maxiter_val,
+                precondition_side=precondition_side_val,
+            )
+        solver_fn = gmres_solve_with_residual_jit if use_solver_jit else gmres_solve_with_residual
+        return solver_fn(
+            matvec=matvec_fn,
+            b=b_vec,
+            preconditioner=preconditioner_val,
+            x0=x0_vec,
+            tol=tol_val,
+            atol=atol_val,
+            restart=restart_val,
+            maxiter=maxiter_val,
+            solve_method=gmres_method,
+            precondition_side=precondition_side_val,
+        )
+
     active_dof_env = os.environ.get("SFINCS_JAX_TRANSPORT_ACTIVE_DOF", "").strip().lower()
     active_dof_reason: str | None = None
     if active_dof_env in {"0", "false", "no", "off"}:
@@ -3098,6 +3156,22 @@ def solve_v3_transport_matrix_linear_gmres(
             and int(op0.constraint_scheme) == 1
         )
         return use_loose, force_k
+
+    project_env = os.environ.get("SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE", "").strip().lower()
+    project_nullspace_enabled = (
+        int(op0.constraint_scheme) == 1
+        and int(op0.phi1_size) == 0
+        and int(op0.extra_size) > 0
+        and project_env not in {"0", "false", "no", "off"}
+    )
+
+    def _projection_needed(which_rhs: int) -> bool:
+        if not project_nullspace_enabled:
+            return False
+        return (
+            (int(rhs_mode) == 2 and int(which_rhs) == 3)
+            or (int(rhs_mode) == 3 and int(which_rhs) == 2)
+        )
 
     def _maybe_project_constraint_nullspace(
         x_vec: jnp.ndarray,
@@ -3354,7 +3428,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     )
                     if x0_full is None and x0_recycled is not None:
                         x0_full = x0_recycled
-                res = _solve_linear(
+                res, residual_vec = _solve_linear_with_residual(
                     matvec_fn=mv,
                     b_vec=rhs,
                     x0_vec=x0_full,
@@ -3375,7 +3449,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             "solve_v3_transport_matrix_linear_gmres: BiCGStab fallback to GMRES "
                             f"(residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
                         )
-                    res = _solve_linear(
+                    res, residual_vec = _solve_linear_with_residual(
                         matvec_fn=mv,
                         b_vec=rhs,
                         x0_vec=x0_full,
@@ -3394,7 +3468,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             "solve_v3_transport_matrix_linear_gmres: retry without preconditioner "
                             f"(residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
                         )
-                    res_retry = _solve_linear(
+                    res_retry, residual_retry = _solve_linear_with_residual(
                         matvec_fn=mv,
                         b_vec=rhs,
                         x0_vec=x0_full,
@@ -3408,6 +3482,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     )
                     if _residual_value(res_retry) < _residual_value(res):
                         res = res_retry
+                        residual_vec = residual_retry
                         preconditioner_use = None
                 if _needs_retry(res, target_rhs) and dense_retry_max > 0 and int(op0.total_size) <= int(dense_retry_max):
                     if emit is not None:
@@ -3417,7 +3492,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             f"(size={int(op0.total_size)} residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
                         )
                     try:
-                        res_dense = _solve_linear(
+                        res_dense, residual_dense = _solve_linear_with_residual(
                             matvec_fn=mv,
                             b_vec=rhs,
                             x0_vec=None,
@@ -3431,6 +3506,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         )
                         if _residual_value(res_dense) < _residual_value(res):
                             res = res_dense
+                            residual_vec = residual_dense
                     except Exception as exc:  # noqa: BLE001
                         if emit is not None:
                             emit(
@@ -3439,12 +3515,19 @@ def solve_v3_transport_matrix_linear_gmres(
                                 f"({type(exc).__name__}: {exc})",
                             )
                 x_full = res.x
-                x_full = _maybe_project_constraint_nullspace(
-                    x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
-                )
+                projection_needed = _projection_needed(which_rhs)
+                if projection_needed:
+                    x_full = _maybe_project_constraint_nullspace(
+                        x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
+                    )
                 state_vectors[which_rhs] = x_full
-                ax_full = apply_v3_full_system_operator_cached(op_matvec, x_full)
-                residual_norms[which_rhs] = jnp.linalg.norm(ax_full - rhs)
+                if (not projection_needed) and residual_vec is not None and residual_vec.shape == rhs.shape:
+                    ax_full = rhs - residual_vec
+                    residual_norms[which_rhs] = res.residual_norm
+                else:
+                    ax_full = apply_v3_full_system_operator_cached(op_matvec, x_full)
+                    residual_vec = ax_full - rhs
+                    residual_norms[which_rhs] = jnp.linalg.norm(residual_vec)
                 if recycle_k > 0:
                     recycle_basis_full.append(x_full)
                     recycle_basis_full_au.append(ax_full)

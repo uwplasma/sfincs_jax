@@ -132,7 +132,7 @@ def gmres_solve_with_history_scipy(
     return x_np, rn, history
 
 
-def bicgstab_solve(
+def _bicgstab_solve_core(
     *,
     matvec,
     b: jnp.ndarray,
@@ -142,8 +142,7 @@ def bicgstab_solve(
     atol: float = 0.0,
     maxiter: int | None = None,
     precondition_side: str = "left",
-) -> GMRESSolveResult:
-    """Solve `A x = b` using JAX's BiCGStab (short-recurrence Krylov, O(n) memory)."""
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     b = jnp.asarray(b)
     if x0 is not None:
         x0 = jnp.asarray(x0)
@@ -179,11 +178,66 @@ def bicgstab_solve(
         )
 
     r = b - matvec(x)
+    return x, r
+
+
+def bicgstab_solve(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    maxiter: int | None = None,
+    precondition_side: str = "left",
+) -> GMRESSolveResult:
+    """Solve `A x = b` using JAX's BiCGStab (short-recurrence Krylov, O(n) memory)."""
+    x, r = _bicgstab_solve_core(
+        matvec=matvec,
+        b=b,
+        preconditioner=preconditioner,
+        x0=x0,
+        tol=tol,
+        atol=atol,
+        maxiter=maxiter,
+        precondition_side=precondition_side,
+    )
     return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
+
+
+def bicgstab_solve_with_residual(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    maxiter: int | None = None,
+    precondition_side: str = "left",
+) -> tuple[GMRESSolveResult, jnp.ndarray]:
+    """Solve `A x = b` and return both the GMRES-style result and residual vector."""
+    x, r = _bicgstab_solve_core(
+        matvec=matvec,
+        b=b,
+        preconditioner=preconditioner,
+        x0=x0,
+        tol=tol,
+        atol=atol,
+        maxiter=maxiter,
+        precondition_side=precondition_side,
+    )
+    return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r)), r
 
 
 bicgstab_solve_jit = jax.jit(
     bicgstab_solve,
+    static_argnames=("matvec", "preconditioner", "tol", "atol", "maxiter", "precondition_side"),
+)
+
+bicgstab_solve_with_residual_jit = jax.jit(
+    bicgstab_solve_with_residual,
     static_argnames=("matvec", "preconditioner", "tol", "atol", "maxiter", "precondition_side"),
 )
 
@@ -249,7 +303,7 @@ def dense_solve_from_matrix(*, a: jnp.ndarray, b: jnp.ndarray) -> tuple[jnp.ndar
     return x2, rn
 
 
-def gmres_solve(
+def _gmres_solve_core(
     *,
     matvec,
     b: jnp.ndarray,
@@ -261,7 +315,7 @@ def gmres_solve(
     maxiter: int | None = None,
     solve_method: str = "batched",
     precondition_side: str = "left",
-) -> GMRESSolveResult:
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Solve `A x = b` using JAX's GMRES.
 
     Notes
@@ -277,7 +331,7 @@ def gmres_solve(
     if method in {"auto", "default"}:
         method = "bicgstab"
     if method in {"bicgstab", "bicgstab_jax"}:
-        res = bicgstab_solve(
+        res, r = bicgstab_solve_with_residual(
             matvec=matvec,
             b=b,
             preconditioner=preconditioner,
@@ -290,7 +344,7 @@ def gmres_solve(
         target = max(float(atol), float(tol) * float(jnp.linalg.norm(b)))
         if not bool(jnp.isfinite(res.residual_norm)) or float(res.residual_norm) > target:
             # Fallback to GMRES when BiCGStab stagnates or returns non-finite residuals.
-            return gmres_solve(
+            return _gmres_solve_core(
                 matvec=matvec,
                 b=b,
                 preconditioner=preconditioner,
@@ -302,7 +356,7 @@ def gmres_solve(
                 solve_method="incremental",
                 precondition_side=precondition_side,
             )
-        return res
+        return res.x, r
     if method == "dense":
         n = int(b.size)
         if b.ndim != 1:
@@ -312,8 +366,9 @@ def gmres_solve(
             raise ValueError(f"dense solve is disabled for n={n} (too large). Use GMRES.")
 
         a = assemble_dense_matrix_from_matvec(matvec=matvec, n=n, dtype=b.dtype)
-        x, residual_norm = dense_solve_from_matrix(a=a, b=b)
-        return GMRESSolveResult(x=x, residual_norm=residual_norm)
+        x, _residual_norm = dense_solve_from_matrix(a=a, b=b)
+        r = b - a @ x
+        return x, r
 
     restart_use = _maybe_limit_restart(int(b.size), int(restart), b.dtype)
 
@@ -355,10 +410,71 @@ def gmres_solve(
         )
 
     r = b - matvec(x)
+    return x, r
+
+
+def gmres_solve(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 50,
+    maxiter: int | None = None,
+    solve_method: str = "batched",
+    precondition_side: str = "left",
+) -> GMRESSolveResult:
+    x, r = _gmres_solve_core(
+        matvec=matvec,
+        b=b,
+        preconditioner=preconditioner,
+        x0=x0,
+        tol=tol,
+        atol=atol,
+        restart=restart,
+        maxiter=maxiter,
+        solve_method=solve_method,
+        precondition_side=precondition_side,
+    )
     return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
+
+
+def gmres_solve_with_residual(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 50,
+    maxiter: int | None = None,
+    solve_method: str = "batched",
+    precondition_side: str = "left",
+) -> tuple[GMRESSolveResult, jnp.ndarray]:
+    x, r = _gmres_solve_core(
+        matvec=matvec,
+        b=b,
+        preconditioner=preconditioner,
+        x0=x0,
+        tol=tol,
+        atol=atol,
+        restart=restart,
+        maxiter=maxiter,
+        solve_method=solve_method,
+        precondition_side=precondition_side,
+    )
+    return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r)), r
 
 
 gmres_solve_jit = jax.jit(
     gmres_solve,
+    static_argnames=("matvec", "preconditioner", "tol", "atol", "restart", "maxiter", "solve_method", "precondition_side"),
+)
+
+gmres_solve_with_residual_jit = jax.jit(
+    gmres_solve_with_residual,
     static_argnames=("matvec", "preconditioner", "tol", "atol", "restart", "maxiter", "solve_method", "precondition_side"),
 )

@@ -1,7 +1,7 @@
 [
   {
     "case": "HSX_FPCollisions_DKESTrajectories",
-    "status": "parity_ok",
+    "status": "parity_mismatch",
     "blocker_type": "none",
     "message": "All common numeric datasets matched tolerance. strict=2/124",
     "attempts": 1,
@@ -14,13 +14,19 @@
     "print_parity_total": 7,
     "print_missing_signals": [],
     "n_common_keys": 124,
-    "n_mismatch_common": 0,
-    "mismatch_keys_sample": [],
-    "n_mismatch_solver": 0,
+    "n_mismatch_common": 2,
+    "mismatch_keys_sample": [
+      "NIterations",
+      "VPrimeHat"
+    ],
+    "n_mismatch_solver": 2,
     "n_mismatch_physics": 0,
-    "mismatch_solver_sample": [],
+    "mismatch_solver_sample": [
+      "NIterations",
+      "VPrimeHat"
+    ],
     "mismatch_physics_sample": [],
-    "max_abs_mismatch": null,
+    "max_abs_mismatch": 170.32501038131946,
     "strict_n_common_keys": 124,
     "strict_n_mismatch_common": 2,
     "strict_mismatch_keys_sample": [
@@ -44,11 +50,12 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_DKESTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/HSX_FPCollisions_DKESTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_DKESTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_DKESTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_DKESTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "HSX_FPCollisions_fullTrajectories",
-    "status": "parity_ok",
+    "status": "parity_mismatch",
     "blocker_type": "none",
     "message": "All common numeric datasets matched tolerance. strict=2/124",
     "attempts": 1,
@@ -61,13 +68,19 @@
     "print_parity_total": 7,
     "print_missing_signals": [],
     "n_common_keys": 124,
-    "n_mismatch_common": 0,
-    "mismatch_keys_sample": [],
-    "n_mismatch_solver": 0,
+    "n_mismatch_common": 2,
+    "mismatch_keys_sample": [
+      "NIterations",
+      "VPrimeHat"
+    ],
+    "n_mismatch_solver": 2,
     "n_mismatch_physics": 0,
-    "mismatch_solver_sample": [],
+    "mismatch_solver_sample": [
+      "NIterations",
+      "VPrimeHat"
+    ],
     "mismatch_physics_sample": [],
-    "max_abs_mismatch": null,
+    "max_abs_mismatch": 170.32501038131946,
     "strict_n_common_keys": 124,
     "strict_n_mismatch_common": 2,
     "strict_mismatch_keys_sample": [
@@ -91,7 +104,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/HSX_FPCollisions_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "HSX_PASCollisions_DKESTrajectories",
@@ -132,7 +146,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_DKESTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/HSX_PASCollisions_DKESTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_DKESTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_DKESTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_DKESTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "HSX_PASCollisions_fullTrajectories",
@@ -173,7 +188,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/HSX_PASCollisions_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "filteredW7XNetCDF_2species_magneticDrifts_noEr",
@@ -214,7 +230,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "filteredW7XNetCDF_2species_magneticDrifts_withEr",
@@ -255,7 +272,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_withEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/filteredW7XNetCDF_2species_magneticDrifts_withEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_withEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_withEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_withEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "filteredW7XNetCDF_2species_noEr",
@@ -296,7 +314,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/filteredW7XNetCDF_2species_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme4_1species_PAS_withEr_DKESTrajectories",
@@ -337,7 +356,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_1species_PAS_withEr_DKESTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_1species_PAS_withEr_DKESTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_1species_PAS_withEr_DKESTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_1species_PAS_withEr_DKESTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_1species_PAS_withEr_DKESTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme4_2species_PAS_noEr",
@@ -378,7 +398,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_PAS_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_2species_PAS_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_PAS_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_PAS_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_PAS_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme4_2species_noEr",
@@ -419,7 +440,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_2species_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme4_2species_noEr_withPhi1InDKE",
@@ -460,7 +482,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withPhi1InDKE/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_2species_noEr_withPhi1InDKE.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withPhi1InDKE/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withPhi1InDKE/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withPhi1InDKE/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme4_2species_noEr_withQN",
@@ -501,7 +524,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withQN/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_2species_noEr_withQN.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withQN/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withQN/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr_withQN/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme4_2species_withEr_fullTrajectories",
@@ -542,7 +566,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_2species_withEr_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme4_2species_withEr_fullTrajectories_withQN",
@@ -583,7 +608,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories_withQN/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_2species_withEr_fullTrajectories_withQN.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories_withQN/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories_withQN/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories_withQN/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "geometryScheme5_3species_loRes",
@@ -624,7 +650,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme5_3species_loRes/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme5_3species_loRes.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme5_3species_loRes/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme5_3species_loRes/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme5_3species_loRes/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "inductiveE_noEr",
@@ -665,7 +692,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/inductiveE_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/inductiveE_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/inductiveE_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/inductiveE_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/inductiveE_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "monoenergetic_geometryScheme1",
@@ -706,7 +734,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme1/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/monoenergetic_geometryScheme1.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme1/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme1/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme1/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "monoenergetic_geometryScheme11",
@@ -747,7 +776,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme11/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/monoenergetic_geometryScheme11.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme11/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme11/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme11/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "monoenergetic_geometryScheme5_ASCII",
@@ -763,7 +793,7 @@
     "print_parity_signals": 9,
     "print_parity_total": 9,
     "print_missing_signals": [],
-    "n_common_keys": 195,
+    "n_common_keys": 196,
     "n_mismatch_common": 0,
     "mismatch_keys_sample": [],
     "n_mismatch_solver": 0,
@@ -788,7 +818,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_ASCII/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/monoenergetic_geometryScheme5_ASCII.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_ASCII/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_ASCII/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_ASCII/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "monoenergetic_geometryScheme5_netCDF",
@@ -804,7 +835,7 @@
     "print_parity_signals": 9,
     "print_parity_total": 9,
     "print_missing_signals": [],
-    "n_common_keys": 195,
+    "n_common_keys": 196,
     "n_mismatch_common": 0,
     "mismatch_keys_sample": [],
     "n_mismatch_solver": 0,
@@ -829,7 +860,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_netCDF/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/monoenergetic_geometryScheme5_netCDF.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_netCDF/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_netCDF/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/monoenergetic_geometryScheme5_netCDF/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "quick_2species_FPCollisions_noEr",
@@ -870,7 +902,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/quick_2species_FPCollisions_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/quick_2species_FPCollisions_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/quick_2species_FPCollisions_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/quick_2species_FPCollisions_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/quick_2species_FPCollisions_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories",
@@ -911,7 +944,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories",
@@ -952,7 +986,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories",
@@ -993,7 +1028,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories",
@@ -1034,7 +1070,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_FPCollisions_noEr",
@@ -1075,7 +1112,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_FPCollisions_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_FPCollisions_noEr_withPhi1InDKE",
@@ -1116,7 +1154,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withPhi1InDKE/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_FPCollisions_noEr_withPhi1InDKE.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withPhi1InDKE/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withPhi1InDKE/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withPhi1InDKE/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_FPCollisions_noEr_withQN",
@@ -1157,7 +1196,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withQN/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_FPCollisions_noEr_withQN.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withQN/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withQN/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr_withQN/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_FPCollisions_withEr_DKESTrajectories",
@@ -1198,7 +1238,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_DKESTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_FPCollisions_withEr_DKESTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_DKESTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_DKESTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_DKESTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_FPCollisions_withEr_fullTrajectories",
@@ -1239,7 +1280,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_FPCollisions_withEr_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_PASCollisions_noEr",
@@ -1280,7 +1322,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_PASCollisions_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_PASCollisions_noEr_Nx1",
@@ -1321,7 +1364,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_Nx1/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_PASCollisions_noEr_Nx1.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_Nx1/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_Nx1/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_Nx1/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_PASCollisions_noEr_withQN",
@@ -1362,7 +1406,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_withQN/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_PASCollisions_noEr_withQN.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_withQN/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_withQN/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_withQN/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_1species_PASCollisions_withEr_fullTrajectories",
@@ -1403,7 +1448,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_withEr_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_PASCollisions_withEr_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_withEr_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_2species_PASCollisions_noEr",
@@ -1444,7 +1490,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_noEr/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_2species_PASCollisions_noEr.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_noEr/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_noEr/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_noEr/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "tokamak_2species_PASCollisions_withEr_fullTrajectories",
@@ -1485,7 +1532,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_withEr_fullTrajectories/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_2species_PASCollisions_withEr_fullTrajectories.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_withEr_fullTrajectories/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "transportMatrix_geometryScheme11",
@@ -1526,7 +1574,8 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme11/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/transportMatrix_geometryScheme11.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme11/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme11/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme11/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   },
   {
     "case": "transportMatrix_geometryScheme2",
@@ -1567,6 +1616,7 @@
     "input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme2/input.namelist",
     "promoted_input_path": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/transportMatrix_geometryScheme2.input.namelist",
     "fortran_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme2/fortran_run/sfincsOutput.h5",
-    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme2/sfincsOutput_jax.h5"
+    "jax_h5": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/transportMatrix_geometryScheme2/sfincsOutput_jax.h5",
+    "compare_mode": "strict"
   }
 ]

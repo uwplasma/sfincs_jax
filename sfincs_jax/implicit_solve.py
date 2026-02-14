@@ -109,22 +109,21 @@ def gmres_custom_linear_solve(
     return ImplicitGMRESSolveResult(x=result.x, gmres=gmres)
 
 
-def linear_custom_solve(
+def _linear_custom_solve_core(
     *,
     matvec: MatVec,
     b: jnp.ndarray,
-    tol: float = 1e-10,
-    atol: float = 0.0,
-    restart: int = 80,
-    maxiter: int | None = 400,
-    solve_method: str = "batched",
-    solver: str = "auto",
-    preconditioner: MatVec | None = None,
-    preconditioner_transpose: MatVec | None = None,
-    x0: jnp.ndarray | None = None,
-    precondition_side: str = "left",
-) -> ImplicitLinearSolveResult:
-    """Implicit-diff linear solve wrapper using `jax.lax.custom_linear_solve`."""
+    tol: float,
+    atol: float,
+    restart: int,
+    maxiter: int | None,
+    solve_method: str,
+    solver: str,
+    preconditioner: MatVec | None,
+    preconditioner_transpose: MatVec | None,
+    x0: jnp.ndarray | None,
+    precondition_side: str,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
     b = jnp.asarray(b, dtype=jnp.float64)
 
     solver_kind = str(solver).lower()
@@ -194,4 +193,70 @@ def linear_custom_solve(
 
     x = jax.lax.custom_linear_solve(matvec, b, solve=solve, transpose_solve=transpose_solve, symmetric=False)
     r = b - matvec(x)
+    return x, r
+
+
+def linear_custom_solve(
+    *,
+    matvec: MatVec,
+    b: jnp.ndarray,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 80,
+    maxiter: int | None = 400,
+    solve_method: str = "batched",
+    solver: str = "auto",
+    preconditioner: MatVec | None = None,
+    preconditioner_transpose: MatVec | None = None,
+    x0: jnp.ndarray | None = None,
+    precondition_side: str = "left",
+) -> ImplicitLinearSolveResult:
+    """Implicit-diff linear solve wrapper using `jax.lax.custom_linear_solve`."""
+    x, r = _linear_custom_solve_core(
+        matvec=matvec,
+        b=b,
+        tol=tol,
+        atol=atol,
+        restart=restart,
+        maxiter=maxiter,
+        solve_method=solve_method,
+        solver=solver,
+        preconditioner=preconditioner,
+        preconditioner_transpose=preconditioner_transpose,
+        x0=x0,
+        precondition_side=precondition_side,
+    )
     return ImplicitLinearSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
+
+
+def linear_custom_solve_with_residual(
+    *,
+    matvec: MatVec,
+    b: jnp.ndarray,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 80,
+    maxiter: int | None = 400,
+    solve_method: str = "batched",
+    solver: str = "auto",
+    preconditioner: MatVec | None = None,
+    preconditioner_transpose: MatVec | None = None,
+    x0: jnp.ndarray | None = None,
+    precondition_side: str = "left",
+) -> tuple[ImplicitLinearSolveResult, jnp.ndarray]:
+    """Implicit-diff linear solve that also returns the residual vector."""
+    x, r = _linear_custom_solve_core(
+        matvec=matvec,
+        b=b,
+        tol=tol,
+        atol=atol,
+        restart=restart,
+        maxiter=maxiter,
+        solve_method=solve_method,
+        solver=solver,
+        preconditioner=preconditioner,
+        preconditioner_transpose=preconditioner_transpose,
+        x0=x0,
+        precondition_side=precondition_side,
+    )
+    return ImplicitLinearSolveResult(x=x, residual_norm=jnp.linalg.norm(r)), r
