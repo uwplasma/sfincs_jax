@@ -40,6 +40,42 @@ def test_full_system_gmres_recovers_fortran_statevector_pas_tiny() -> None:
     assert float(result.residual_norm) < 1e-9
 
 
+def test_full_system_bicgstab_satisfies_linear_system_pas_tiny() -> None:
+    """Solve A x = b with BiCGStab and verify residual is small (tiny PAS case)."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "pas_1species_PAS_noEr_tiny.input.namelist"
+    mat_path = here / "ref" / "pas_1species_PAS_noEr_tiny.whichMatrix_3.petscbin"
+    vec_path = here / "ref" / "pas_1species_PAS_noEr_tiny.stateVector.petscbin"
+
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml, identity_shift=0.0)
+
+    a = read_petsc_mat_aij(mat_path)
+    x_ref = read_petsc_vec(vec_path).values
+    assert x_ref.shape == (op.total_size,)
+    a_csr = csr_matrix((a.data, a.col_ind, a.row_ptr), shape=a.shape)
+
+    b = a_csr.dot(x_ref)
+
+    def mv(x):
+        return apply_v3_full_system_operator(op, x)
+
+    result = gmres_solve(
+        matvec=mv,
+        b=jnp.asarray(b),
+        tol=1e-12,
+        maxiter=400,
+        solve_method="bicgstab",
+    )
+    x = np.asarray(result.x)
+
+    res = a_csr.dot(x) - b
+    res_norm = np.linalg.norm(res)
+    b_norm = np.linalg.norm(b)
+    assert res_norm < 2e-8 * max(b_norm, 1e-12)
+    assert float(result.residual_norm) < 2e-8 * max(float(b_norm), 1e-12)
+
+
 def test_full_system_gmres_solves_physical_rhs_pas_tiny() -> None:
     """Solve A x = RHS assembled by sfincs_jax and recover the Fortran v3 solution (tiny PAS case)."""
     here = Path(__file__).parent

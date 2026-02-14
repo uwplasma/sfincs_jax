@@ -300,7 +300,11 @@ def main(argv: list[str] | None = None) -> int:
     p_solve.add_argument("--atol", default="0.0", help="GMRES absolute tolerance")
     p_solve.add_argument("--restart", default="80", help="GMRES restart")
     p_solve.add_argument("--maxiter", default=None, help="GMRES maxiter (default: library default)")
-    p_solve.add_argument("--solve-method", default="batched", help="JAX GMRES solve_method")
+    p_solve.add_argument(
+        "--solve-method",
+        default="auto",
+        help="Linear solver mode (auto|bicgstab|batched|incremental|dense)",
+    )
     p_solve.add_argument(
         "--which-rhs",
         default=None,
@@ -390,7 +394,11 @@ def main(argv: list[str] | None = None) -> int:
     p_tm.add_argument("--atol", default="0.0", help="GMRES absolute tolerance")
     p_tm.add_argument("--restart", default="80", help="GMRES restart")
     p_tm.add_argument("--maxiter", default=None, help="GMRES maxiter (default: library default)")
-    p_tm.add_argument("--solve-method", default="batched", help="JAX GMRES solve_method")
+    p_tm.add_argument(
+        "--solve-method",
+        default="auto",
+        help="Linear solver mode for transport matrix (auto|bicgstab|batched|incremental|dense)",
+    )
     p_tm.set_defaults(func=_cmd_transport_matrix_v3)
 
     p_dump = sub.add_parser("dump-h5", help="Dump SFINCS HDF5 output to JSON (small files only).")

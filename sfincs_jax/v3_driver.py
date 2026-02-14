@@ -23,6 +23,7 @@ from .solver import (
     gmres_solve,
     gmres_solve_with_history_scipy,
 )
+from .implicit_solve import linear_custom_solve
 from .transport_matrix import (
     transport_matrix_size_from_rhs_mode,
     v3_transport_diagnostics_vm_only_batch_jit,
@@ -725,7 +726,7 @@ def solve_v3_full_system_linear_gmres(
     atol: float = 0.0,
     restart: int = 80,
     maxiter: int | None = 400,
-    solve_method: str = "batched",
+    solve_method: str = "auto",
     identity_shift: float = 0.0,
     phi1_hat_base: jnp.ndarray | None = None,
     emit: Callable[[int, str], None] | None = None,
@@ -854,6 +855,62 @@ def solve_v3_full_system_linear_gmres(
     # while remaining bounded for interactive use and CI.
     stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "30.0"))
 
+    implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
+    use_implicit = implicit_env not in {"0", "false", "no", "off"}
+
+    def _solver_kind(method: str) -> tuple[str, str]:
+        method_l = str(method).strip().lower()
+        if method_l in {"auto", "default"}:
+            # Transport matrices involve constrained/near-singular systems; GMRES is
+            # generally more reliable for parity, while BiCGStab remains available.
+            if int(op.rhs_mode) in {2, 3}:
+                return "gmres", "incremental"
+            return "bicgstab", "batched"
+        if method_l in {"bicgstab", "bicgstab_jax"}:
+            return "bicgstab", "batched"
+        return "gmres", method_l
+
+    def _solve_linear(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        precond_fn,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        solve_method_val: str,
+        precond_side: str,
+    ):
+        if use_implicit:
+            solver_kind, gmres_method = _solver_kind(solve_method_val)
+            return linear_custom_solve(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=precond_fn,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+                solve_method=gmres_method,
+                solver=solver_kind,
+                precondition_side=precond_side,
+            )
+        return gmres_solve(
+            matvec=matvec_fn,
+            b=b_vec,
+            preconditioner=precond_fn,
+            x0=x0_vec,
+            tol=tol_val,
+            atol=atol_val,
+            restart=restart_val,
+            maxiter=maxiter_val,
+            solve_method=solve_method_val,
+            precondition_side=precond_side,
+        )
+
     fortran_stdout_env = os.environ.get("SFINCS_JAX_FORTRAN_STDOUT", "").strip().lower()
     if fortran_stdout_env in {"0", "false", "no", "off"}:
         fortran_stdout = False
@@ -868,6 +925,7 @@ def solve_v3_full_system_linear_gmres(
     ksp_restart = restart
     ksp_maxiter = maxiter
     ksp_precond_side = gmres_precond_side
+    ksp_solver_kind = "gmres"
 
     def _emit_ksp_history(
         *,
@@ -880,8 +938,11 @@ def solve_v3_full_system_linear_gmres(
         restart_val: int,
         maxiter_val: int | None,
         precond_side: str,
+        solver_kind: str,
     ) -> None:
         if emit is None or not fortran_stdout:
+            return
+        if str(solver_kind).strip().lower() != "gmres":
             return
         try:
             _x_hist, _rn, history = gmres_solve_with_history_scipy(
@@ -1026,62 +1087,91 @@ def solve_v3_full_system_linear_gmres(
             def mv_pc(x: jnp.ndarray) -> jnp.ndarray:
                 return preconditioner_dense(mv_dense(x))
 
-            res_reduced = gmres_solve(
-                matvec=mv_pc,
-                b=rhs_pc,
-                preconditioner=None,
-                x0=x0_reduced,
-                tol=tol,
-                atol=atol,
-                restart=restart,
-                maxiter=maxiter,
-                solve_method="incremental",
-                precondition_side="none",
+            res_reduced = _solve_linear(
+                matvec_fn=mv_pc,
+                b_vec=rhs_pc,
+                precond_fn=None,
+                x0_vec=x0_reduced,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=restart,
+                maxiter_val=maxiter,
+                solve_method_val="incremental",
+                precond_side="none",
             )
             ksp_matvec = mv_pc
             ksp_b = rhs_pc
             ksp_precond = None
             ksp_x0 = x0_reduced
             ksp_precond_side = "none"
+            ksp_solver_kind = _solver_kind("incremental")[0]
         else:
-            res_reduced = gmres_solve(
-                matvec=mv_reduced,
-                b=rhs_reduced,
-                preconditioner=preconditioner_reduced,
-                x0=x0_reduced,
-                tol=tol,
-                atol=atol,
-                restart=restart,
-                maxiter=maxiter,
-                solve_method=solve_method,
-                precondition_side=gmres_precond_side,
+            res_reduced = _solve_linear(
+                matvec_fn=mv_reduced,
+                b_vec=rhs_reduced,
+                precond_fn=preconditioner_reduced,
+                x0_vec=x0_reduced,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=restart,
+                maxiter_val=maxiter,
+                solve_method_val=solve_method,
+                precond_side=gmres_precond_side,
             )
             ksp_matvec = mv_reduced
             ksp_b = rhs_reduced
             ksp_precond = preconditioner_reduced
             ksp_x0 = x0_reduced
             ksp_precond_side = gmres_precond_side
+            ksp_solver_kind = _solver_kind(solve_method)[0]
         if preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
             if emit is not None:
                 emit(0, "solve_v3_full_system_linear_gmres: preconditioned reduced GMRES returned non-finite result; retrying without preconditioner")
-            res_reduced = gmres_solve(
-                matvec=mv_reduced,
-                b=rhs_reduced,
-                preconditioner=None,
-                x0=x0_reduced,
-                tol=tol,
-                atol=atol,
-                restart=restart,
-                maxiter=maxiter,
-                solve_method=solve_method,
-                precondition_side=gmres_precond_side,
+            res_reduced = _solve_linear(
+                matvec_fn=mv_reduced,
+                b_vec=rhs_reduced,
+                precond_fn=None,
+                x0_vec=x0_reduced,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=restart,
+                maxiter_val=maxiter,
+                solve_method_val=solve_method,
+                precond_side=gmres_precond_side,
             )
             ksp_matvec = mv_reduced
             ksp_b = rhs_reduced
             ksp_precond = None
             ksp_x0 = x0_reduced
             ksp_precond_side = gmres_precond_side
+            ksp_solver_kind = _solver_kind(solve_method)[0]
         target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
+        solver_kind = _solver_kind(solve_method)[0]
+        if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res_reduced) or float(res_reduced.residual_norm) > target_reduced):
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: BiCGStab fallback to GMRES "
+                    f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
+                )
+            res_reduced = _solve_linear(
+                matvec_fn=mv_reduced,
+                b_vec=rhs_reduced,
+                precond_fn=preconditioner_reduced,
+                x0_vec=x0_reduced,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=restart,
+                maxiter_val=maxiter,
+                solve_method_val="incremental",
+                precond_side=gmres_precond_side,
+            )
+            ksp_matvec = mv_reduced
+            ksp_b = rhs_reduced
+            ksp_precond = preconditioner_reduced
+            ksp_x0 = x0_reduced
+            ksp_precond_side = gmres_precond_side
+            ksp_solver_kind = "gmres"
         if float(res_reduced.residual_norm) > target_reduced and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
             stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
             stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
@@ -1095,17 +1185,17 @@ def solve_v3_full_system_linear_gmres(
                     f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e}) "
                     f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
                 )
-            res2 = gmres_solve(
-                matvec=mv_reduced,
-                b=rhs_reduced,
-                preconditioner=preconditioner_reduced,
-                x0=res_reduced.x,
-                tol=tol,
-                atol=atol,
-                restart=stage2_restart,
-                maxiter=stage2_maxiter,
-                solve_method=stage2_method,
-                precondition_side=gmres_precond_side,
+            res2 = _solve_linear(
+                matvec_fn=mv_reduced,
+                b_vec=rhs_reduced,
+                precond_fn=preconditioner_reduced,
+                x0_vec=res_reduced.x,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=stage2_restart,
+                maxiter_val=stage2_maxiter,
+                solve_method_val=stage2_method,
+                precond_side=gmres_precond_side,
             )
             if float(res2.residual_norm) < float(res_reduced.residual_norm):
                 res_reduced = res2
@@ -1116,6 +1206,7 @@ def solve_v3_full_system_linear_gmres(
                 ksp_restart = stage2_restart
                 ksp_maxiter = stage2_maxiter
                 ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = _solver_kind(stage2_method)[0]
         dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
         try:
             dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
@@ -1147,16 +1238,17 @@ def solve_v3_full_system_linear_gmres(
                     f"(size={active_size} residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
                 )
             try:
-                res_dense = gmres_solve(
-                    matvec=mv_reduced,
-                    b=rhs_reduced,
-                    preconditioner=None,
-                    tol=tol,
-                    atol=atol,
-                    restart=restart,
-                    maxiter=maxiter,
-                    solve_method="dense",
-                    precondition_side="none",
+                res_dense = _solve_linear(
+                    matvec_fn=mv_reduced,
+                    b_vec=rhs_reduced,
+                    precond_fn=None,
+                    x0_vec=None,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val="dense",
+                    precond_side="none",
                 )
                 if float(res_dense.residual_norm) < float(res_reduced.residual_norm):
                     res_reduced = res_dense
@@ -1226,23 +1318,24 @@ def solve_v3_full_system_linear_gmres(
             def mv_pc(x: jnp.ndarray) -> jnp.ndarray:
                 return preconditioner_dense(mv_dense(x))
 
-            res_pc = gmres_solve(
-                matvec=mv_pc,
-                b=rhs_pc,
-                preconditioner=None,
-                x0=x0,
-                tol=tol,
-                atol=atol,
-                restart=restart,
-                maxiter=maxiter,
-                solve_method="incremental",
-                precondition_side="none",
+            res_pc = _solve_linear(
+                matvec_fn=mv_pc,
+                b_vec=rhs_pc,
+                precond_fn=None,
+                x0_vec=x0,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=restart,
+                maxiter_val=maxiter,
+                solve_method_val="incremental",
+                precond_side="none",
             )
             ksp_matvec = mv_pc
             ksp_b = rhs_pc
             ksp_precond = None
             ksp_x0 = x0
             ksp_precond_side = "none"
+            ksp_solver_kind = _solver_kind("incremental")[0]
             residual_norm_full = jnp.linalg.norm(mv(res_pc.x) - rhs)
             result = GMRESSolveResult(x=res_pc.x, residual_norm=residual_norm_full)
         else:
@@ -1272,46 +1365,74 @@ def solve_v3_full_system_linear_gmres(
                         return out
                 else:
                     preconditioner_full = _build_rhsmode1_block_preconditioner(op=op)
-            result = gmres_solve(
-                matvec=mv,
-                b=rhs,
-                preconditioner=preconditioner_full,
-                x0=x0,
-                tol=tol,
-                atol=atol,
-                restart=restart,
-                maxiter=maxiter,
-                solve_method=solve_method,
-                precondition_side=gmres_precond_side,
+            result = _solve_linear(
+                matvec_fn=mv,
+                b_vec=rhs,
+                precond_fn=preconditioner_full,
+                x0_vec=x0,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=restart,
+                maxiter_val=maxiter,
+                solve_method_val=solve_method,
+                precond_side=gmres_precond_side,
             )
             ksp_matvec = mv
             ksp_b = rhs
             ksp_precond = preconditioner_full
             ksp_x0 = x0
             ksp_precond_side = gmres_precond_side
+            ksp_solver_kind = _solver_kind(solve_method)[0]
             if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
                 if emit is not None:
                     emit(0, "solve_v3_full_system_linear_gmres: preconditioned GMRES returned non-finite result; retrying without preconditioner")
-                result = gmres_solve(
-                    matvec=mv,
-                    b=rhs,
-                    preconditioner=None,
-                    x0=x0,
-                    tol=tol,
-                    atol=atol,
-                    restart=restart,
-                    maxiter=maxiter,
-                    solve_method=solve_method,
-                    precondition_side=gmres_precond_side,
+                result = _solve_linear(
+                    matvec_fn=mv,
+                    b_vec=rhs,
+                    precond_fn=None,
+                    x0_vec=x0,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val=solve_method,
+                    precond_side=gmres_precond_side,
                 )
                 ksp_matvec = mv
                 ksp_b = rhs
                 ksp_precond = None
                 ksp_x0 = x0
                 ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = _solver_kind(solve_method)[0]
             # If GMRES does not reach the requested tolerance (common without preconditioning),
             # retry with a larger iteration budget and the more robust incremental mode.
             target = max(float(atol), float(tol) * float(rhs_norm))
+            solver_kind = _solver_kind(solve_method)[0]
+            if solver_kind == "bicgstab" and (not _gmres_result_is_finite(result) or float(result.residual_norm) > target):
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: BiCGStab fallback to GMRES "
+                        f"(residual={float(result.residual_norm):.3e} > target={target:.3e})",
+                    )
+                result = _solve_linear(
+                    matvec_fn=mv,
+                    b_vec=rhs,
+                    precond_fn=preconditioner_full,
+                    x0_vec=x0,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val="incremental",
+                    precond_side=gmres_precond_side,
+                )
+                ksp_matvec = mv
+                ksp_b = rhs
+                ksp_precond = preconditioner_full
+                ksp_x0 = x0
+                ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = "gmres"
             if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
                 stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
                 stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
@@ -1325,17 +1446,17 @@ def solve_v3_full_system_linear_gmres(
                         f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
                         f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
                     )
-                res2 = gmres_solve(
-                    matvec=mv,
-                    b=rhs,
-                    preconditioner=preconditioner_full,
-                    x0=result.x,
-                    tol=tol,
-                    atol=atol,
-                    restart=stage2_restart,
-                    maxiter=stage2_maxiter,
-                    solve_method=stage2_method,
-                    precondition_side=gmres_precond_side,
+                res2 = _solve_linear(
+                    matvec_fn=mv,
+                    b_vec=rhs,
+                    precond_fn=preconditioner_full,
+                    x0_vec=result.x,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=stage2_restart,
+                    maxiter_val=stage2_maxiter,
+                    solve_method_val=stage2_method,
+                    precond_side=gmres_precond_side,
                 )
                 if float(res2.residual_norm) < float(result.residual_norm):
                     result = res2
@@ -1346,6 +1467,7 @@ def solve_v3_full_system_linear_gmres(
                     ksp_restart = stage2_restart
                     ksp_maxiter = stage2_maxiter
                     ksp_precond_side = gmres_precond_side
+                    ksp_solver_kind = _solver_kind(stage2_method)[0]
             dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
             try:
                 dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
@@ -1365,16 +1487,17 @@ def solve_v3_full_system_linear_gmres(
                         f"(size={int(op.total_size)} residual={float(result.residual_norm):.3e} > target={target:.3e})",
                     )
                 try:
-                    res_dense = gmres_solve(
-                        matvec=mv,
-                        b=rhs,
-                        preconditioner=None,
-                        tol=tol,
-                        atol=atol,
-                        restart=restart,
-                        maxiter=maxiter,
-                        solve_method="dense",
-                        precondition_side="none",
+                    res_dense = _solve_linear(
+                        matvec_fn=mv,
+                        b_vec=rhs,
+                        precond_fn=None,
+                        x0_vec=None,
+                        tol_val=tol,
+                        atol_val=atol,
+                        restart_val=restart,
+                        maxiter_val=maxiter,
+                        solve_method_val="dense",
+                        precond_side="none",
                     )
                     if float(res_dense.residual_norm) < float(result.residual_norm):
                         result = res_dense
@@ -1413,6 +1536,7 @@ def solve_v3_full_system_linear_gmres(
             restart_val=int(ksp_restart),
             maxiter_val=ksp_maxiter,
             precond_side=ksp_precond_side,
+            solver_kind=ksp_solver_kind,
         )
     if emit is not None:
         emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
@@ -2110,7 +2234,7 @@ def solve_v3_transport_matrix_linear_gmres(
     atol: float = 0.0,
     restart: int = 80,
     maxiter: int | None = 400,
-    solve_method: str = "batched",
+    solve_method: str = "auto",
     identity_shift: float = 0.0,
     phi1_hat_base: jnp.ndarray | None = None,
     emit: Callable[[int, str], None] | None = None,
@@ -2139,9 +2263,11 @@ def solve_v3_transport_matrix_linear_gmres(
     # which prevents end-to-end transport-matrix parity. For small systems, fall back to a dense
     # JAX solve (still differentiable) by assembling the matrix from matvecs.
     solve_method_use = solve_method
+    if str(solve_method).strip().lower() in {"auto", "default"}:
+        solve_method_use = "incremental"
     force_krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_FORCE_KRYLOV", "").strip().lower()
     force_krylov = force_krylov_env in {"1", "true", "yes", "on"}
-    if (not force_krylov) and int(op0.total_size) <= 5000 and str(solve_method).lower() in {"batched", "incremental"}:
+    if (not force_krylov) and int(op0.total_size) <= 5000 and str(solve_method_use).lower() in {"batched", "incremental"}:
         # On some JAX versions/platforms, `jax.scipy.sparse.linalg.gmres` can return NaNs for
         # small ill-conditioned problems (observed in CI for RHSMode=3 scheme12 fixtures).
         # Dense assembly is cheap at these sizes and improves robustness.
@@ -2149,6 +2275,55 @@ def solve_v3_transport_matrix_linear_gmres(
             solve_method_use = "dense"
             if emit is not None:
                 emit(0, f"solve_v3_transport_matrix_linear_gmres: using dense solve for RHSMode={rhs_mode} (n={int(op0.total_size)})")
+
+    implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
+    use_implicit = implicit_env not in {"0", "false", "no", "off"}
+
+    def _solver_kind(method: str) -> tuple[str, str]:
+        method_l = str(method).strip().lower()
+        if method_l in {"auto", "default"}:
+            if int(rhs_mode) in {2, 3}:
+                return "gmres", "incremental"
+            return "bicgstab", "batched"
+        if method_l in {"bicgstab", "bicgstab_jax"}:
+            return "bicgstab", "batched"
+        return "gmres", method_l
+
+    def _solve_linear(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        solve_method_val: str,
+    ):
+        if use_implicit:
+            solver_kind, gmres_method = _solver_kind(solve_method_val)
+            return linear_custom_solve(
+                matvec=matvec_fn,
+                b=b_vec,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+                solve_method=gmres_method,
+                solver=solver_kind,
+                precondition_side="left",
+            )
+        return gmres_solve(
+            matvec=matvec_fn,
+            b=b_vec,
+            x0=x0_vec,
+            tol=tol_val,
+            atol=atol_val,
+            restart=restart_val,
+            maxiter=maxiter_val,
+            solve_method=solve_method_val,
+        )
 
     active_dof_env = os.environ.get("SFINCS_JAX_TRANSPORT_ACTIVE_DOF", "").strip().lower()
     active_dof_reason: str | None = None
@@ -2219,6 +2394,26 @@ def solve_v3_transport_matrix_linear_gmres(
         diag_op_by_index = op_rhs_by_index
     else:
         diag_op_by_index = [op0 for _ in which_rhs_values]
+
+    recycle_k_env = os.environ.get("SFINCS_JAX_TRANSPORT_RECYCLE_K", "").strip()
+    try:
+        recycle_k = int(recycle_k_env) if recycle_k_env else 4
+    except ValueError:
+        recycle_k = 4
+    recycle_k = max(0, recycle_k)
+    recycle_basis_full: list[jnp.ndarray] = []
+    recycle_basis_reduced: list[jnp.ndarray] = []
+
+    def _recycled_initial_guess(matvec_fn, rhs_vec: jnp.ndarray, basis: list[jnp.ndarray]) -> jnp.ndarray | None:
+        if not basis:
+            return None
+        u = jnp.stack(basis, axis=1)  # (N, k)
+        au = jax.vmap(matvec_fn, in_axes=1, out_axes=1)(u)  # (N, k)
+        coeff, *_ = jnp.linalg.lstsq(au, rhs_vec, rcond=None)
+        x0 = u @ coeff
+        if not jnp.all(jnp.isfinite(x0)):
+            return None
+        return x0
 
     loose_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_LOOSE", "").strip().lower()
     krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_EPAR_KRYLOV", "").strip().lower()
@@ -2358,17 +2553,40 @@ def solve_v3_transport_matrix_linear_gmres(
                         x0_reduced = x0_arr
                     elif x0_arr.shape == (op0.total_size,):
                         x0_reduced = reduce_full(x0_arr)
+                if recycle_k > 0:
+                    x0_recycled = _recycled_initial_guess(mv_reduced, rhs_reduced, recycle_basis_reduced[-recycle_k:])
+                    if x0_reduced is None and x0_recycled is not None:
+                        x0_reduced = x0_recycled
 
-                res_reduced = gmres_solve(
-                    matvec=mv_reduced,
-                    b=rhs_reduced,
-                    x0=x0_reduced,
-                    tol=tol_rhs,
-                    atol=atol,
-                    restart=restart,
-                    maxiter=maxiter,
-                    solve_method=solve_method_rhs,
+                res_reduced = _solve_linear(
+                    matvec_fn=mv_reduced,
+                    b_vec=rhs_reduced,
+                    x0_vec=x0_reduced,
+                    tol_val=tol_rhs,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val=solve_method_rhs,
                 )
+                target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs_reduced)))
+                solver_kind = _solver_kind(solve_method_rhs)[0]
+                if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res_reduced) or float(res_reduced.residual_norm) > target_rhs):
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: BiCGStab fallback to GMRES "
+                            f"(residual={float(res_reduced.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    res_reduced = _solve_linear(
+                        matvec_fn=mv_reduced,
+                        b_vec=rhs_reduced,
+                        x0_vec=x0_reduced,
+                        tol_val=tol_rhs,
+                        atol_val=atol,
+                        restart_val=restart,
+                        maxiter_val=maxiter,
+                        solve_method_val="incremental",
+                    )
                 x_full = expand_reduced(res_reduced.x)
                 x_full = _maybe_project_constraint_nullspace(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
@@ -2376,26 +2594,58 @@ def solve_v3_transport_matrix_linear_gmres(
                 res_norm_full = jnp.linalg.norm(apply_v3_full_system_operator_cached(op_matvec, x_full) - rhs)
                 state_vectors[which_rhs] = x_full
                 residual_norms[which_rhs] = res_norm_full
+                if recycle_k > 0:
+                    recycle_basis_reduced.append(res_reduced.x)
+                    if len(recycle_basis_reduced) > recycle_k:
+                        recycle_basis_reduced = recycle_basis_reduced[-recycle_k:]
             else:
                 def mv(x: jnp.ndarray) -> jnp.ndarray:
                     return apply_v3_full_system_operator_cached(op_matvec, x)
 
-                res = gmres_solve(
-                    matvec=mv,
-                    b=rhs,
-                    x0=x0,
-                    tol=tol_rhs,
-                    atol=atol,
-                    restart=restart,
-                    maxiter=maxiter,
-                    solve_method=solve_method_rhs,
+                x0_full = x0
+                if recycle_k > 0:
+                    x0_recycled = _recycled_initial_guess(mv, rhs, recycle_basis_full[-recycle_k:])
+                    if x0_full is None and x0_recycled is not None:
+                        x0_full = x0_recycled
+                res = _solve_linear(
+                    matvec_fn=mv,
+                    b_vec=rhs,
+                    x0_vec=x0_full,
+                    tol_val=tol_rhs,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val=solve_method_rhs,
                 )
+                target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs)))
+                solver_kind = _solver_kind(solve_method_rhs)[0]
+                if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res) or float(res.residual_norm) > target_rhs):
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: BiCGStab fallback to GMRES "
+                            f"(residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    res = _solve_linear(
+                        matvec_fn=mv,
+                        b_vec=rhs,
+                        x0_vec=x0_full,
+                        tol_val=tol_rhs,
+                        atol_val=atol,
+                        restart_val=restart,
+                        maxiter_val=maxiter,
+                        solve_method_val="incremental",
+                    )
                 x_full = res.x
                 x_full = _maybe_project_constraint_nullspace(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
                 )
                 state_vectors[which_rhs] = x_full
                 residual_norms[which_rhs] = jnp.linalg.norm(apply_v3_full_system_operator_cached(op_matvec, x_full) - rhs)
+                if recycle_k > 0:
+                    recycle_basis_full.append(x_full)
+                    if len(recycle_basis_full) > recycle_k:
+                        recycle_basis_full = recycle_basis_full[-recycle_k:]
             if emit is not None:
                 emit(
                     0,

@@ -5,13 +5,15 @@ from typing import Callable
 
 import jax
 import jax.numpy as jnp
+from jax import tree_util as jtu
 
-from .solver import GMRESSolveResult, gmres_solve
+from .solver import GMRESSolveResult, bicgstab_solve, gmres_solve
 
 
 MatVec = Callable[[jnp.ndarray], jnp.ndarray]
 
 
+@jtu.register_pytree_node_class
 @dataclass(frozen=True)
 class ImplicitGMRESSolveResult:
     """Result wrapper for implicit-diff GMRES solves.
@@ -25,6 +27,37 @@ class ImplicitGMRESSolveResult:
 
     x: jnp.ndarray
     gmres: GMRESSolveResult
+
+    def tree_flatten(self):
+        children = (self.x, self.gmres)
+        aux = None
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        del aux
+        x, gmres = children
+        return cls(x=x, gmres=gmres)
+
+
+@jtu.register_pytree_node_class
+@dataclass(frozen=True)
+class ImplicitLinearSolveResult:
+    """Result wrapper for implicit-diff linear solves (GMRES/BiCGStab/dense)."""
+
+    x: jnp.ndarray
+    residual_norm: jnp.ndarray
+
+    def tree_flatten(self):
+        children = (self.x, self.residual_norm)
+        aux = None
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        del aux
+        x, residual_norm = children
+        return cls(x=x, residual_norm=residual_norm)
 
 
 def gmres_custom_linear_solve(
@@ -53,35 +86,7 @@ def gmres_custom_linear_solve(
     b:
       RHS vector.
     """
-    b = jnp.asarray(b, dtype=jnp.float64)
-
-    def solve(mv: MatVec, rhs: jnp.ndarray) -> jnp.ndarray:
-        return gmres_solve(
-            matvec=mv,
-            b=rhs,
-            tol=tol,
-            atol=atol,
-            restart=restart,
-            maxiter=maxiter,
-            solve_method=solve_method,
-        ).x
-
-    def transpose_solve(mv_T: MatVec, rhs: jnp.ndarray) -> jnp.ndarray:
-        return gmres_solve(
-            matvec=mv_T,
-            b=rhs,
-            tol=tol,
-            atol=atol,
-            restart=restart,
-            maxiter=maxiter,
-            solve_method=solve_method,
-        ).x
-
-    # Return x with a custom transpose rule (implicit differentiation).
-    x = jax.lax.custom_linear_solve(matvec, b, solve=solve, transpose_solve=transpose_solve, symmetric=False)
-
-    # Re-run GMRES once to attach residual_norm for user diagnostics (not part of the AD rule).
-    gmres = gmres_solve(
+    result = linear_custom_solve(
         matvec=matvec,
         b=b,
         tol=tol,
@@ -89,6 +94,96 @@ def gmres_custom_linear_solve(
         restart=restart,
         maxiter=maxiter,
         solve_method=solve_method,
+        solver="gmres",
     )
-    return ImplicitGMRESSolveResult(x=x, gmres=gmres)
+    gmres = gmres_solve(
+        matvec=matvec,
+        b=jnp.asarray(b, dtype=jnp.float64),
+        tol=tol,
+        atol=atol,
+        restart=restart,
+        maxiter=maxiter,
+        solve_method=solve_method,
+    )
+    return ImplicitGMRESSolveResult(x=result.x, gmres=gmres)
 
+
+def linear_custom_solve(
+    *,
+    matvec: MatVec,
+    b: jnp.ndarray,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 80,
+    maxiter: int | None = 400,
+    solve_method: str = "batched",
+    solver: str = "auto",
+    preconditioner: MatVec | None = None,
+    preconditioner_transpose: MatVec | None = None,
+    x0: jnp.ndarray | None = None,
+    precondition_side: str = "left",
+) -> ImplicitLinearSolveResult:
+    """Implicit-diff linear solve wrapper using `jax.lax.custom_linear_solve`."""
+    b = jnp.asarray(b, dtype=jnp.float64)
+
+    solver_kind = str(solver).lower()
+    if solver_kind in {"auto", "default"}:
+        solver_kind = "bicgstab"
+
+    def _solve_direct(mv: MatVec, rhs: jnp.ndarray) -> GMRESSolveResult:
+        if solver_kind in {"bicgstab", "bicgstab_jax"}:
+            return bicgstab_solve(
+                matvec=mv,
+                b=rhs,
+                preconditioner=preconditioner,
+                x0=x0,
+                tol=tol,
+                atol=atol,
+                maxiter=maxiter,
+                precondition_side=precondition_side,
+            )
+        return gmres_solve(
+            matvec=mv,
+            b=rhs,
+            preconditioner=preconditioner,
+            x0=x0,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        )
+
+    def solve(mv: MatVec, rhs: jnp.ndarray) -> jnp.ndarray:
+        return _solve_direct(mv, rhs).x
+
+    def transpose_solve(mv_T: MatVec, rhs: jnp.ndarray) -> jnp.ndarray:
+        precond_T = preconditioner_transpose if preconditioner_transpose is not None else preconditioner
+        if solver_kind in {"bicgstab", "bicgstab_jax"}:
+            return bicgstab_solve(
+                matvec=mv_T,
+                b=rhs,
+                preconditioner=precond_T,
+                x0=None,
+                tol=tol,
+                atol=atol,
+                maxiter=maxiter,
+                precondition_side=precondition_side,
+            ).x
+        return gmres_solve(
+            matvec=mv_T,
+            b=rhs,
+            preconditioner=precond_T,
+            x0=None,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        ).x
+
+    x = jax.lax.custom_linear_solve(matvec, b, solve=solve, transpose_solve=transpose_solve, symmetric=False)
+    r = b - matvec(x)
+    return ImplicitLinearSolveResult(x=x, residual_norm=jnp.linalg.norm(r))

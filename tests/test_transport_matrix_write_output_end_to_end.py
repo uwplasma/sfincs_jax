@@ -103,3 +103,32 @@ def test_write_output_compute_transport_matrix_matches_fortran_fixture(base: str
             rtol=rtol_full,
             atol=atol_full,
         )
+
+
+def test_transport_matrix_recycle_matches_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Transport-matrix parity should hold with recycle-based warm starts enabled."""
+    base = "monoenergetic_PAS_tiny_scheme11"
+    here = Path(__file__).parent
+    input_path = here / "ref" / f"{base}.input.namelist"
+    ref_path = here / "ref" / f"{base}.sfincsOutput.h5"
+    out_path = tmp_path / f"{base}.sfincsOutput_recycle.h5"
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_RECYCLE_K", "2")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_FORCE_KRYLOV", "1")
+
+    write_sfincs_jax_output_h5(
+        input_namelist=input_path,
+        output_path=out_path,
+        compute_transport_matrix=True,
+    )
+
+    out = read_sfincs_h5(out_path)
+    ref = read_sfincs_h5(ref_path)
+
+    atol = 5e-10
+    np.testing.assert_allclose(
+        np.asarray(out["transportMatrix"], dtype=np.float64),
+        np.asarray(ref["transportMatrix"], dtype=np.float64),
+        rtol=0.0,
+        atol=atol,
+    )

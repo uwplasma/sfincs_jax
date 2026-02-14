@@ -1414,8 +1414,8 @@ def write_sfincs_jax_output_h5(
         # several strict-parity fixtures (notably HSX) depend on the *approximate* PETSc
         # solution branch rather than an exact dense solve.
         #
-        # Therefore, default to Krylov GMRES unless explicitly overridden.
-        solve_method = "incremental"
+        # Therefore, default to a Krylov solver (auto → BiCGStab with GMRES fallback) unless explicitly overridden.
+        solve_method = "auto"
         op0 = full_system_operator_from_namelist(nml=nml)
         nxi_for_x = np.asarray(op0.fblock.collisionless.n_xi_for_x, dtype=np.int32)
         active_f_size = int(op0.n_species) * int(np.sum(nxi_for_x)) * int(op0.n_theta) * int(op0.n_zeta)
@@ -1432,7 +1432,7 @@ def write_sfincs_jax_output_h5(
         except ValueError:
             dense_active_cutoff = 5000
         solve_method_env = os.environ.get("SFINCS_JAX_RHSMODE1_SOLVE_METHOD", "").strip().lower()
-        if solve_method_env in {"dense", "dense_ksp", "incremental", "batched"}:
+        if solve_method_env in {"auto", "bicgstab", "dense", "dense_ksp", "incremental", "batched"}:
             solve_method = solve_method_env
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: solve method forced by env -> {solve_method}")
@@ -2144,6 +2144,7 @@ def write_sfincs_jax_output_h5(
             # NIterations should match transport-matrix size for RHSMode=2/3.
             if n_rhs != len(result.state_vectors_by_rhs):
                 n_rhs = len(result.state_vectors_by_rhs)
+            data["NIterations"] = np.asarray(n_rhs, dtype=np.int32)
 
             def _alloc_ztsn() -> "jnp.ndarray":
                 return jnp.zeros((z, t, s, n_rhs), dtype=jnp.float64)

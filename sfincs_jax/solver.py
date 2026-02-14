@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 from jax import vmap
-from jax.scipy.sparse.linalg import gmres
+from jax.scipy.sparse.linalg import bicgstab, gmres
 from scipy.sparse.linalg import LinearOperator as _LinearOperator
 from scipy.sparse.linalg import gmres as _scipy_gmres
 
@@ -32,7 +32,7 @@ class GMRESSolveResult:
     def tree_unflatten(cls, aux, children):
         del aux
         x, residual_norm = children
-    return cls(x=x, residual_norm=residual_norm)
+        return cls(x=x, residual_norm=residual_norm)
 
 
 def _maybe_limit_restart(n: int, restart: int, dtype: jnp.dtype) -> int:
@@ -88,8 +88,6 @@ def gmres_solve_with_history_scipy(
             return x_np
         return np.asarray(preconditioner(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64)
 
-    restart_use = _maybe_limit_restart(int(b.size), int(restart), b.dtype)
-
     side = str(precondition_side).strip().lower()
     if side not in {"left", "right", "none"}:
         side = "left"
@@ -132,6 +130,56 @@ def gmres_solve_with_history_scipy(
     res = b_np - _mv(x_np)
     rn = float(np.linalg.norm(res))
     return x_np, rn, history
+
+
+def bicgstab_solve(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    maxiter: int | None = None,
+    precondition_side: str = "left",
+) -> GMRESSolveResult:
+    """Solve `A x = b` using JAX's BiCGStab (short-recurrence Krylov, O(n) memory)."""
+    b = jnp.asarray(b)
+    if x0 is not None:
+        x0 = jnp.asarray(x0)
+
+    side = str(precondition_side).strip().lower()
+    if side not in {"left", "right", "none"}:
+        side = "left"
+
+    if side == "right" and preconditioner is not None:
+        def matvec_right(y):
+            return matvec(preconditioner(y))
+
+        y, _info = bicgstab(
+            matvec_right,
+            b,
+            x0=None,
+            tol=float(tol),
+            atol=float(atol),
+            maxiter=maxiter,
+            M=None,
+        )
+        x = preconditioner(y)
+    else:
+        M = preconditioner if side == "left" else None
+        x, _info = bicgstab(
+            matvec,
+            b,
+            x0=x0,
+            tol=float(tol),
+            atol=float(atol),
+            maxiter=maxiter,
+            M=M,
+        )
+
+    r = b - matvec(x)
+    return GMRESSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 
 
 def assemble_dense_matrix_from_matvec(*, matvec, n: int, dtype: jnp.dtype) -> jnp.ndarray:
@@ -220,6 +268,35 @@ def gmres_solve(
         x0 = jnp.asarray(x0)
 
     method = str(solve_method).lower()
+    if method in {"auto", "default"}:
+        method = "bicgstab"
+    if method in {"bicgstab", "bicgstab_jax"}:
+        res = bicgstab_solve(
+            matvec=matvec,
+            b=b,
+            preconditioner=preconditioner,
+            x0=x0,
+            tol=tol,
+            atol=atol,
+            maxiter=maxiter,
+            precondition_side=precondition_side,
+        )
+        target = max(float(atol), float(tol) * float(jnp.linalg.norm(b)))
+        if not bool(jnp.isfinite(res.residual_norm)) or float(res.residual_norm) > target:
+            # Fallback to GMRES when BiCGStab stagnates or returns non-finite residuals.
+            return gmres_solve(
+                matvec=matvec,
+                b=b,
+                preconditioner=preconditioner,
+                x0=x0,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method="incremental",
+                precondition_side=precondition_side,
+            )
+        return res
     if method == "dense":
         n = int(b.size)
         if b.ndim != 1:
