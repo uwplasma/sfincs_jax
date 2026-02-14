@@ -3,7 +3,13 @@ from __future__ import annotations
 import numpy as np
 import jax.numpy as jnp
 
-from sfincs_jax.solver import assemble_dense_matrix_from_matvec, dense_solve_from_matrix, gmres_solve
+from sfincs_jax.solver import (
+    assemble_dense_matrix_from_matvec,
+    bicgstab_solve_with_residual,
+    dense_solve_from_matrix,
+    gmres_solve,
+    gmres_solve_with_residual,
+)
 
 
 def test_gmres_solve_matches_numpy_for_spd_matrix() -> None:
@@ -53,3 +59,53 @@ def test_assemble_dense_matrix_from_matvec_recovers_operator() -> None:
 
     assembled = assemble_dense_matrix_from_matvec(matvec=mv, n=n, dtype=jnp.float64)
     np.testing.assert_allclose(np.asarray(assembled), a, rtol=0.0, atol=1e-12)
+
+
+def test_gmres_solve_with_residual_matches_matvec() -> None:
+    rng = np.random.default_rng(11)
+    n = 16
+    m = rng.normal(size=(n, n)).astype(np.float64)
+    a = m.T @ m + 0.4 * np.eye(n)
+    b = rng.normal(size=(n,)).astype(np.float64)
+
+    a_j = jnp.asarray(a)
+    b_j = jnp.asarray(b)
+
+    def mv(x):
+        return a_j @ x
+
+    result, residual = gmres_solve_with_residual(matvec=mv, b=b_j, tol=1e-12, restart=30, maxiter=200)
+    r_expected = b_j - mv(result.x)
+
+    np.testing.assert_allclose(np.asarray(residual), np.asarray(r_expected), rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(
+        float(result.residual_norm),
+        float(jnp.linalg.norm(residual)),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_bicgstab_solve_with_residual_matches_matvec() -> None:
+    rng = np.random.default_rng(23)
+    n = 14
+    m = rng.normal(size=(n, n)).astype(np.float64)
+    a = m.T @ m + 0.6 * np.eye(n)
+    b = rng.normal(size=(n,)).astype(np.float64)
+
+    a_j = jnp.asarray(a)
+    b_j = jnp.asarray(b)
+
+    def mv(x):
+        return a_j @ x
+
+    result, residual = bicgstab_solve_with_residual(matvec=mv, b=b_j, tol=1e-12, maxiter=400)
+    r_expected = b_j - mv(result.x)
+
+    np.testing.assert_allclose(np.asarray(residual), np.asarray(r_expected), rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(
+        float(result.residual_norm),
+        float(jnp.linalg.norm(residual)),
+        rtol=1e-12,
+        atol=1e-12,
+    )
