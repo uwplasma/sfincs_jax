@@ -47,6 +47,9 @@ def test_write_output_compute_transport_matrix_matches_fortran_fixture(base: str
     out = read_sfincs_h5(out_path)
     ref = read_sfincs_h5(ref_path)
 
+    n_rhs = int(np.asarray(out["transportMatrix"]).shape[1])
+    assert int(np.asarray(out["NIterations"])) == n_rhs
+
     # For these tiny fixtures, transport-matrix solve parity is expected to be tight.
     # The synthetic geometryScheme=12 fixture is slightly more sensitive numerically; allow a looser atol.
     atol_strict = 1e-6 if base == "monoenergetic_PAS_tiny_scheme12" else 5e-10
@@ -124,6 +127,9 @@ def test_transport_matrix_recycle_matches_fixture(tmp_path: Path, monkeypatch: p
 
     out = read_sfincs_h5(out_path)
     ref = read_sfincs_h5(ref_path)
+
+    n_rhs = int(np.asarray(out["transportMatrix"]).shape[1])
+    assert int(np.asarray(out["NIterations"])) == n_rhs
 
     atol = 5e-10
     np.testing.assert_allclose(

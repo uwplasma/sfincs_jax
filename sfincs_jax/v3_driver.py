@@ -2803,8 +2803,8 @@ def solve_v3_transport_matrix_linear_gmres(
         method_l = str(method).strip().lower()
         if method_l in {"auto", "default"}:
             if int(rhs_mode) in {2, 3}:
-                # Match v3 transport-matrix solves: GMRES with a stable incremental update.
-                return "gmres", "incremental"
+                # Favor short-recurrence Krylov for RHSMode=2/3; fall back to GMRES if needed.
+                return "bicgstab", "batched"
             return "bicgstab", "batched"
         if method_l in {"bicgstab", "bicgstab_jax"}:
             return "bicgstab", "batched"
@@ -2923,15 +2923,19 @@ def solve_v3_transport_matrix_linear_gmres(
 
     preconditioner_full = None
     preconditioner_reduced = None
+    default_solver_kind = _solver_kind(solve_method_use)[0]
     if transport_precond_kind is not None and int(rhs_mode) in {2, 3}:
         precond_kind = transport_precond_kind
         if precond_kind == "auto":
-            block_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_MAX", "").strip()
-            try:
-                block_max = int(block_max_env) if block_max_env else 5000
-            except ValueError:
-                block_max = 5000
-            precond_kind = "block" if int(op0.total_size) <= block_max else "collision"
+            if default_solver_kind == "bicgstab":
+                precond_kind = "collision"
+            else:
+                block_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_MAX", "").strip()
+                try:
+                    block_max = int(block_max_env) if block_max_env else 5000
+                except ValueError:
+                    block_max = 5000
+                precond_kind = "block" if int(op0.total_size) <= block_max else "collision"
         if precond_kind in {"block", "block_jacobi"}:
             preconditioner_full = _build_rhsmode23_block_preconditioner(op=op0)
             if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
