@@ -115,6 +115,12 @@ Solving a supported v3 linear run (matrix-free)
    In particular, VMEC ``geometryScheme=5`` is now supported for the parity-tested tiny PAS case
    (see ``tests/ref/pas_1species_PAS_noEr_tiny_scheme5.input.namelist``).
 
+.. note::
+
+   The default ``--solve-method auto`` uses BiCGStab for RHSMode=1 (memory efficiency) and GMRES
+   for RHSMode=2/3 transport solves, with GMRES fallback on BiCGStab stagnation. For strict
+   PETSc-style iteration histories, use ``--solve-method incremental``.
+
 Solver controls (environment variables)
 ---------------------------------------
 
@@ -133,9 +139,11 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_SOLVE_METHOD``: choose the RHSMode=1 linear solve backend:
 
+  - ``auto`` (default): BiCGStab (short recurrence, low memory) with GMRES fallback on stagnation.
+  - ``bicgstab``: force BiCGStab for a low-memory Krylov solve (with GMRES fallback on stagnation).
   - ``dense``: assemble the dense operator from matvecs and solve directly (fast for tiny fixtures,
     but scales poorly).
-  - ``incremental`` or ``batched``: matrix-free GMRES.
+  - ``incremental`` or ``batched``: matrix-free GMRES (higher memory, often robust).
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER`` (GMRES only): optional RHSMode=1 preconditioning.
 
@@ -155,6 +163,14 @@ performance without changing the input file:
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1).
 
+- ``SFINCS_JAX_IMPLICIT_SOLVE``: control implicit differentiation through linear solves.
+
+  - Default: enabled (implicit gradients via ``jax.lax.custom_linear_solve``).
+  - ``0``/``false``: disable (differentiate through Krylov iterations; slower / higher memory).
+
+- ``SFINCS_JAX_TRANSPORT_RECYCLE_K``: recycle up to ``k`` previous Krylov solution vectors across
+  successive ``whichRHS`` solves in transport-matrix runs. Set to ``0`` to disable.
+
 - ``SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE``: control constraintScheme=1 nullspace projection
   for linear RHSMode=1 solves.
 
@@ -165,10 +181,26 @@ performance without changing the input file:
   when GMRES stagnates. This is only applied when the active system size is below the
   specified threshold (default: ``2500``). Set to ``0`` to disable.
 
+- ``SFINCS_JAX_GMRES_MAX_MB``: memory cap for GMRES basis storage; used to auto-limit the
+  restart value when ``SFINCS_JAX_GMRES_AUTO_RESTART`` is enabled (default: ``2048``).
+
+- ``SFINCS_JAX_GMRES_AUTO_RESTART``: enable memory-aware GMRES restarts (default: enabled).
+
+- ``SFINCS_JAX_PRECOND_MAX_MB``: memory cap (in MB) for RHSMode=1 preconditioner assembly.
+  The preconditioner block assembly is chunked to keep peak memory below this target.
+
+- ``SFINCS_JAX_PRECOND_CHUNK``: explicit column chunk size for RHSMode=1 preconditioner assembly
+  (overrides ``SFINCS_JAX_PRECOND_MAX_MB`` when set).
+
 - ``SFINCS_JAX_FORTRAN_STDOUT``: control strict Fortran-style stdout mirroring.
 
   - ``1``/``true``: emit PETSc-like SNES/KSP iteration lines in addition to the standard v3 text.
   - ``0``/``false``: skip the extra iteration logs (useful for speed in tests).
+
+  .. note::
+
+     For strict KSP iteration-line parity, force a GMRES solve method (``incremental``/``batched``);
+     BiCGStab does not produce GMRES-style history lines.
 
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.

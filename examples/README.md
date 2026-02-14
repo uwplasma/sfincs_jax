@@ -50,4 +50,6 @@ Common entry points:
 - Write `sfincsOutput.h5` via CLI: `examples/getting_started/write_sfincs_output_cli.py`
 - Output parity vs Fortran fixture: `examples/parity/output_parity_vs_fortran_fixture.py`
 - Transport matrices (RHSMode 2/3): `examples/transport/transport_matrix_rhsmode2_and_rhsmode3.py`
+- Transport matrices with Krylov recycling: `examples/transport/transport_matrix_recycle_demo.py`
 - Differentiate a residual norm w.r.t. `nu_n`: `examples/autodiff/autodiff_gradient_nu_n_residual.py`
+- Implicit differentiation through BiCGStab: `examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver bicgstab`

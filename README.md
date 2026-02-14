@@ -2,6 +2,9 @@
 
 `sfincs_jax` is a JAX implementation of the SFINCS Fortran v3 workflow, with matrix-free operators,
 JIT acceleration, and end-to-end differentiable components for sensitivity and optimization studies.
+Default RHSMode=1 linear solves use a short-recurrence Krylov method (BiCGStab) with GMRES fallback,
+while RHSMode=2/3 transport solves default to GMRES for robustness. Implicit differentiation is
+enabled by default for linear solves.
 
 ![SFINCS vs sfincs_jax L11 parity and runtime](docs/_static/figures/sfincs_vs_sfincs_jax_l11_runtime_2x2.png)
 
@@ -85,7 +88,10 @@ pip install -e ".[opt]"    # optax / jaxopt workflows
 - v3 grid construction (`theta`, `zeta`, Stieltjes/polynomial `x`, monoenergetic `x=1` path)
 - Geometry pipelines for `geometryScheme in {1,2,4,5,11,12}`
 - Matrix-free v3 full-system operator, RHS, and residual assembly in JAX
-- Linear solves via GMRES and transport-matrix (`RHSMode=2/3`) loops
+- Linear solves via BiCGStab (default for RHSMode=1) with GMRES fallback; transport-matrix
+  (`RHSMode=2/3`) loops default to GMRES
+- Implicit-diff linear solves via `jax.lax.custom_linear_solve` (default for RHSMode=1 + transport)
+- Transport-matrix recycling warm starts (optional, `SFINCS_JAX_TRANSPORT_RECYCLE_K`)
 - `sfincsOutput.h5` writing from Python and CLI
 - Parity tests against frozen Fortran fixtures (PETSc binaries and `sfincsOutput.h5`)
 - Differentiable operator and solve-adjacent workflows (including implicit-diff helper APIs)
@@ -155,6 +161,8 @@ python examples/getting_started/write_sfincs_output_python.py
 python examples/parity/output_parity_vs_fortran_fixture.py
 python examples/autodiff/autodiff_er_xidot_term.py
 python examples/transport/transport_matrix_rhsmode2_and_rhsmode3.py
+python examples/transport/transport_matrix_recycle_demo.py
+python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver bicgstab
 ```
 
 ## Upstream SFINCS compatibility and parity status
@@ -204,9 +212,15 @@ And machine-readable reports are written to:
 
 Current reduced-suite snapshot (fixture baseline):
 
-- **Practical:** 38/38 parity_ok.
-- **Strict:** 38/38 parity_ok (see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
-- **Print parity:** 7/7.
+- **Practical:** 35/38 parity_ok (3 remaining mismatches).
+- **Strict:** 35/38 parity_ok (see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
+- **Print parity:** 38/38.
+
+Remaining mismatches (reduced suite, rtol=5e-4):
+
+- `monoenergetic_geometryScheme1` (solver-branch mismatch)
+- `transportMatrix_geometryScheme11` (output-field mismatch)
+- `filteredW7XNetCDF_2species_noEr` (solver-branch mismatch)
 
 ### Reduced-suite outputs and mismatches (all upstream examples, reduced resolution)
 
@@ -216,9 +230,16 @@ Each reduced-resolution upstream example produces the following outputs for the 
 - sfincs_jax: `sfincsOutput_jax.h5`, `sfincs_jax.log`
 
 The table below enumerates every upstream example in the reduced suite, the outputs produced,
-and the number of mismatches relative to Fortran output (`practical/strict`, rtol=5e-4, atol=1e-8).
-Stdout print parity is 7/7 for all reduced cases that emit signals (including monoenergetic and transport-matrix cases).
+and the number of mismatches relative to Fortran output (`bad/total`, rtol=5e-4, atol=1e-8).
+Stdout print parity signals are currently 38/38 across the reduced suite.
 
+Regenerate the README table after a new reduced-suite run:
+
+```bash
+python scripts/generate_readme_reduced_suite_table.py
+```
+
+<!-- BEGIN REDUCED_SUITE_TABLE -->
 | Case | Fortran outputs | sfincs_jax outputs | Mismatches (practical/strict) | Print parity |
 | --- | --- | --- | --- | --- |
 | HSX_FPCollisions_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
@@ -227,7 +248,7 @@ Stdout print parity is 7/7 for all reduced cases that emit signals (including mo
 | HSX_PASCollisions_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
 | filteredW7XNetCDF_2species_magneticDrifts_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
 | filteredW7XNetCDF_2species_magneticDrifts_withEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
-| filteredW7XNetCDF_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
+| filteredW7XNetCDF_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 1/193 (strict 1/193) | 9/9 |
 | geometryScheme4_1species_PAS_withEr_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
 | geometryScheme4_2species_PAS_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
 | geometryScheme4_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
@@ -237,7 +258,7 @@ Stdout print parity is 7/7 for all reduced cases that emit signals (including mo
 | geometryScheme4_2species_withEr_fullTrajectories_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/124 (strict 0/124) | 7/7 |
 | geometryScheme5_3species_loRes | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
 | inductiveE_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
-| monoenergetic_geometryScheme1 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/132 (strict 0/132) | 7/7 |
+| monoenergetic_geometryScheme1 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 39/203 (strict 39/203) | 9/9 |
 | monoenergetic_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/125 (strict 0/125) | 7/7 |
 | monoenergetic_geometryScheme5_ASCII | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/124 (strict 0/125) | 7/7 |
 | monoenergetic_geometryScheme5_netCDF | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/124 (strict 0/125) | 7/7 |
@@ -257,8 +278,9 @@ Stdout print parity is 7/7 for all reduced cases that emit signals (including mo
 | tokamak_1species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/130 (strict 0/130) | 7/7 |
 | tokamak_2species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/130 (strict 0/130) | 7/7 |
 | tokamak_2species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/130 (strict 0/130) | 7/7 |
-| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
+| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 4/194 (strict 4/194) | 9/9 |
 | transportMatrix_geometryScheme2 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0/123 (strict 0/123) | 7/7 |
+<!-- END REDUCED_SUITE_TABLE -->
 
 
 For operator-level parity diagnosis against Fortran PETSc matrices:

@@ -27,6 +27,11 @@ differentiate objectives with respect to them. For example:
 - Differentiate **through a linear solve** via implicit differentiation (see
   ``examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py``).
 
+By default, linear solves in RHSMode=1 and transport-matrix workflows use implicit
+differentiation (`jax.lax.custom_linear_solve`). You can opt out by setting
+``SFINCS_JAX_IMPLICIT_SOLVE=0`` if you need to debug or compare explicit Krylov
+iteration gradients.
+
 
 JAX-native performance patterns used in `sfincs_jax`
 ----------------------------------------------------
@@ -55,6 +60,9 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Vectorized transport-matrix assembly**: RHSMode=2/3 now builds
   ``transportMatrix`` directly from batched flux arrays, avoiding per-``whichRHS``
   Python loops and repeated diagnostic tree slicing.
+- **Recycled transport solves**: optional warm-start recycling keeps a small number of
+  recent solution vectors across ``whichRHS`` iterations (``SFINCS_JAX_TRANSPORT_RECYCLE_K``),
+  reducing Krylov iterations on sequential RHS solves.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.
@@ -72,6 +80,31 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Use implicit differentiation for solve gradients**: for objectives that depend on the solution `x(p)` of
   a linear system `A(p) x = b(p)`, prefer `jax.lax.custom_linear_solve` (adjoint solve) over
   differentiating through Krylov iterations.
+- **Default to short-recurrence Krylov when possible**: BiCGStab avoids storing a full GMRES basis and
+  is therefore far more memory efficient for large RHSMode=1 systems. GMRES remains available and is
+  used as a fallback when BiCGStab stagnates; transport-matrix solves default to GMRES for robustness.
+  [#petsc-bcgs]_
+
+Krylov solver strategy (memory + recycling)
+-------------------------------------------
+
+`sfincs_jax` now defaults RHSMode=1 linear solves to BiCGStab (short recurrence, O(n) memory) and
+falls back to GMRES when BiCGStab stagnates. For RHSMode=2/3 transport-matrix solves we default to
+GMRES for robustness. This keeps memory usage low on large RHSMode=1 systems while preserving
+parity on transport cases. [#petsc-bcgs]_
+
+For RHSMode=2/3 transport matrices, the ``whichRHS`` loop solves a sequence of linear systems with
+nearly identical operators. We prototype a lightweight recycling hook that reuses the last ``k``
+solution vectors as a warm start for the next solve. This is a small, practical approximation to
+fully recycled Krylov methods such as GCRO-DR, which are designed explicitly for sequences of systems.
+[#gcrodr]_ In practice it can reduce iterations without altering the linear operator or diagnostics.
+
+Potential next solvers to explore (for further memory reductions or faster convergence on stiff cases):
+
+- **IDR(s)**: short-recurrence, low-memory solvers for nonsymmetric systems with strong convergence
+  properties on many practical problems. [#idrs]_
+- **GCRO-DR / GMRES-DR / LGMRES**: recycled and deflated GMRES variants that explicitly reuse subspaces
+  across sequences of linear systems. [#gcrodr]_
 
 RHSMode=1 GMRES preconditioning (experimental)
 ----------------------------------------------
@@ -131,7 +164,9 @@ The next pass targets parity-preserving speedups first, then deeper solver refac
 
    - Keep matrix-free execution as default, and add a block preconditioner built from
      species-local pitch-angle/Fokker-Planck diagonals.
-   - Add a ``custom_linear_solve`` path for end-to-end differentiable solves with implicit adjoints.
+   - Extend the recycled-subspace hook toward GCRO-DR / GMRES-DR style augmentation for
+     transport-matrix sequences.
+   - Evaluate IDR(s) or other short-recurrence Krylov solvers for additional memory savings.
    - Reuse frozen linearizations in nonlinear includePhi1 solves when parity permits, to cut Newton cost.
 
 4. **Profiling + acceptance gates**
@@ -152,6 +187,15 @@ Primary references used to prioritize this plan:
   https://docs.jax.dev/en/latest/notebooks/thinking_in_jax.html
 - JAXopt status/maintenance note:
   https://jaxopt.github.io/stable/
+
+.. [#petsc-bcgs] PETSc KSPBCGS manual page (BiCGStab solver notes, including memory behavior vs GMRES),
+   https://petsc.gitlab.io/petsc/main/manualpages/KSP/KSPBCGS/
+.. [#idrs] P. Sonneveld & M. van Gijzen, “IDR(s): a family of simple and fast algorithms for solving
+   large nonsymmetric linear systems,” SIAM J. Sci. Comput. 31(2), 2008. TU Delft research portal:
+   https://research.tudelft.nl/en/publications/idrs-a-family-of-simple-and-fast-algorithms-for-solving-large-non-2
+.. [#gcrodr] E. de Sturler & M. L. Parks, “Analysis of Krylov subspace recycling for sequences of linear
+   systems,” SAND2005-2794C, OSTI 970200, 2005.
+   https://www.osti.gov/biblio/970200
 
 
 Links to the JAX ecosystem (optional)

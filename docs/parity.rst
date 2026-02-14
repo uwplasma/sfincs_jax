@@ -95,8 +95,10 @@ Implemented (parity-tested)
 Current scope limits
 --------------------
 
-- Strict parity (``docs/_generated/reduced_upstream_suite_status_strict.rst``) is currently clean on all
-  reduced cases; no Fortran-run errors remain in the reduced suite on this machine.
+- Reduced-suite parity (``docs/_generated/reduced_upstream_suite_status*.rst``) currently reports
+  35/38 parity_ok, with remaining blockers in ``monoenergetic_geometryScheme1``,
+  ``transportMatrix_geometryScheme11``, and ``filteredW7XNetCDF_2species_noEr``
+  (see the generated tables for details).
 - The unconstrained ``constraintScheme=0`` branch is rank-deficient, so different solvers can select different nullspace
   components. For comparisons, sfincs_jax treats a small set of density/pressure-like outputs as gauge-dependent and
   skips them when ``constraintScheme=0`` (see ``sfincs_jax/compare.py``).

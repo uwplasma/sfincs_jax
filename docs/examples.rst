@@ -95,7 +95,17 @@ based on `jax.lax.custom_linear_solve` and demonstrates it here:
 
 .. code-block:: bash
 
-   python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py
+   python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver gmres
+   python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver bicgstab
+
+Transport-matrix recycling warm starts
+--------------------------------------
+
+To reuse recent Krylov solutions across ``whichRHS`` solves (RHSMode=2/3), use:
+
+.. code-block:: bash
+
+   python examples/transport/transport_matrix_recycle_demo.py --recycle-k 4
 
 Upstream SFINCS example inputs
 --------------------------------
