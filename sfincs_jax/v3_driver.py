@@ -1311,6 +1311,60 @@ def solve_v3_full_system_linear_gmres(
             precondition_side=precond_side,
         )
 
+    def _solve_linear_with_residual(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        precond_fn,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        solve_method_val: str,
+        precond_side: str,
+    ) -> tuple[GMRESSolveResult, jnp.ndarray]:
+        solver_kind, gmres_method = _solver_kind(solve_method_val)
+        if use_implicit:
+            return linear_custom_solve_with_residual(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=precond_fn,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+                solve_method=gmres_method,
+                solver=solver_kind,
+                precondition_side=precond_side,
+            )
+        if solver_kind == "bicgstab":
+            solver_fn = bicgstab_solve_with_residual_jit if _use_solver_jit() else bicgstab_solve_with_residual
+            return solver_fn(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=precond_fn,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                maxiter=maxiter_val,
+                precondition_side=precond_side,
+            )
+        solver_fn = gmres_solve_with_residual_jit if _use_solver_jit() else gmres_solve_with_residual
+        return solver_fn(
+            matvec=matvec_fn,
+            b=b_vec,
+            preconditioner=precond_fn,
+            x0=x0_vec,
+            tol=tol_val,
+            atol=atol_val,
+            restart=restart_val,
+            maxiter=maxiter_val,
+            solve_method=gmres_method,
+            precondition_side=precond_side,
+        )
+
     fortran_stdout_env = os.environ.get("SFINCS_JAX_FORTRAN_STDOUT", "").strip().lower()
     if fortran_stdout_env in {"0", "false", "no", "off"}:
         fortran_stdout = False
@@ -1326,6 +1380,7 @@ def solve_v3_full_system_linear_gmres(
     ksp_maxiter = maxiter
     ksp_precond_side = gmres_precond_side
     ksp_solver_kind = "gmres"
+    residual_vec: jnp.ndarray | None = None
 
     def _emit_ksp_history(
         *,
@@ -1806,7 +1861,7 @@ def solve_v3_full_system_linear_gmres(
                     preconditioner_full = _build_rhs1_preconditioner_full()
             if preconditioner_full is None and bicgstab_preconditioner_full is not None:
                 preconditioner_full = bicgstab_preconditioner_full
-            result = _solve_linear(
+            result, residual_vec = _solve_linear_with_residual(
                 matvec_fn=mv,
                 b_vec=rhs,
                 precond_fn=preconditioner_full,
@@ -1827,7 +1882,7 @@ def solve_v3_full_system_linear_gmres(
             if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
                 if emit is not None:
                     emit(0, "solve_v3_full_system_linear_gmres: preconditioned GMRES returned non-finite result; retrying without preconditioner")
-                result = _solve_linear(
+                result, residual_vec = _solve_linear_with_residual(
                     matvec_fn=mv,
                     b_vec=rhs,
                     precond_fn=None,
@@ -1861,7 +1916,7 @@ def solve_v3_full_system_linear_gmres(
                     )
                 if preconditioner_full is None and rhs1_precond_enabled:
                     preconditioner_full = _build_rhs1_preconditioner_full()
-                result = _solve_linear(
+                result, residual_vec = _solve_linear_with_residual(
                     matvec_fn=mv,
                     b_vec=rhs,
                     precond_fn=preconditioner_full,
@@ -1894,7 +1949,7 @@ def solve_v3_full_system_linear_gmres(
                         f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
                         f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
                     )
-                res2 = _solve_linear(
+                res2, residual_vec2 = _solve_linear_with_residual(
                     matvec_fn=mv,
                     b_vec=rhs,
                     precond_fn=preconditioner_full,
@@ -1908,6 +1963,7 @@ def solve_v3_full_system_linear_gmres(
                 )
                 if float(res2.residual_norm) < float(result.residual_norm):
                     result = res2
+                    residual_vec = residual_vec2
                     ksp_matvec = mv
                     ksp_b = rhs
                     ksp_precond = preconditioner_full
@@ -1935,7 +1991,7 @@ def solve_v3_full_system_linear_gmres(
                         f"(size={int(op.total_size)} residual={float(result.residual_norm):.3e} > target={target:.3e})",
                     )
                 try:
-                    res_dense = _solve_linear(
+                    res_dense, residual_vec_dense = _solve_linear_with_residual(
                         matvec_fn=mv,
                         b_vec=rhs,
                         precond_fn=None,
@@ -1949,6 +2005,7 @@ def solve_v3_full_system_linear_gmres(
                     )
                     if float(res_dense.residual_norm) < float(result.residual_norm):
                         result = res_dense
+                        residual_vec = residual_vec_dense
                 except Exception as exc:  # noqa: BLE001
                     if emit is not None:
                         emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
@@ -1969,6 +2026,7 @@ def solve_v3_full_system_linear_gmres(
                 rhs_vec=rhs,
                 matvec_op=op,
                 enabled_env_var="SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE",
+                residual_vec=residual_vec if residual_vec is not None and residual_vec.shape == rhs.shape else None,
             )
             if not bool(jnp.allclose(x_projected, result.x)):
                 residual_norm_projected = jnp.linalg.norm(residual_projected)
@@ -2676,17 +2734,26 @@ def _project_constraint_scheme1_nullspace_solution_with_residual(
     rhs_vec: jnp.ndarray,
     matvec_op: V3FullSystemOperator,
     enabled_env_var: str,
+    residual_vec: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Project solution to constraintScheme=1 nullspace complement and return residual."""
     if int(op.constraint_scheme) != 1:
+        if residual_vec is not None and residual_vec.shape == rhs_vec.shape:
+            return x_vec, residual_vec
         return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     if int(op.phi1_size) != 0:
+        if residual_vec is not None and residual_vec.shape == rhs_vec.shape:
+            return x_vec, residual_vec
         return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     if int(op.extra_size) == 0:
+        if residual_vec is not None and residual_vec.shape == rhs_vec.shape:
+            return x_vec, residual_vec
         return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
 
     project_env = os.environ.get(enabled_env_var, "").strip().lower()
     if project_env in {"0", "false", "no", "off"}:
+        if residual_vec is not None and residual_vec.shape == rhs_vec.shape:
+            return x_vec, residual_vec
         return x_vec, apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
 
     xpart1, xpart2 = _source_basis_constraint_scheme_1(op.x)
@@ -2706,7 +2773,10 @@ def _project_constraint_scheme1_nullspace_solution_with_residual(
         basis.append(_basis(s, 0, xpart1))
         basis.append(_basis(s, 1, xpart2))
 
-    r = apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
+    if residual_vec is not None and residual_vec.shape == rhs_vec.shape:
+        r = residual_vec
+    else:
+        r = apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     r_extra = r[-op.extra_size :]
     cols_full = [apply_v3_full_system_operator_cached(matvec_op, v) for v in basis]
     cols_extra = [col[-op.extra_size :] for col in cols_full]
