@@ -32,6 +32,7 @@ from .implicit_solve import linear_custom_solve, linear_custom_solve_with_residu
 from .transport_matrix import (
     transport_matrix_size_from_rhs_mode,
     v3_transport_diagnostics_vm_only_batch_jit,
+    v3_transport_diagnostics_vm_only_batch_remat_jit,
     v3_transport_matrix_from_flux_arrays,
 )
 from .v3_system import _source_basis_constraint_scheme_1
@@ -1202,6 +1203,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "adi"
         elif rhs1_precond_env in {"1", "true", "yes", "on", "point", "point_block"}:
             rhs1_precond_kind = "point"
+        elif rhs1_precond_env in {"collision", "diag", "collision_diag"}:
+            rhs1_precond_kind = "collision"
         else:
             rhs1_precond_kind = None
     else:
@@ -1209,7 +1212,16 @@ def solve_v3_full_system_linear_gmres(
         # use point-block Jacobi. Enable line preconditioning only when explicitly requested.
         if int(op.rhs_mode) == 1 and (not bool(op.include_phi1)):
             if pre_theta == 0 and pre_zeta == 0:
-                rhs1_precond_kind = "point"
+                collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
+                try:
+                    collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 1500
+                except ValueError:
+                    collision_precond_min = 1500
+                use_collision_precond = (
+                    (op.fblock.fp is not None or op.fblock.pas is not None)
+                    and int(op.total_size) >= collision_precond_min
+                )
+                rhs1_precond_kind = "collision" if use_collision_precond else "point"
             elif pre_theta > 0 and pre_zeta > 0:
                 rhs1_precond_kind = "adi"
             elif pre_theta > 0:
@@ -1476,6 +1488,10 @@ def solve_v3_full_system_linear_gmres(
                 )
             if rhs1_precond_kind == "zeta_line":
                 return _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            if rhs1_precond_kind == "collision":
+                return _build_rhsmode1_collision_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             if rhs1_precond_kind == "adi":
@@ -1847,6 +1863,8 @@ def solve_v3_full_system_linear_gmres(
                     return _build_rhsmode1_theta_line_preconditioner(op=op)
                 if rhs1_precond_kind == "zeta_line":
                     return _build_rhsmode1_zeta_line_preconditioner(op=op)
+                if rhs1_precond_kind == "collision":
+                    return _build_rhsmode1_collision_preconditioner(op=op)
                 if rhs1_precond_kind == "adi":
                     pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
                     pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
@@ -3651,7 +3669,20 @@ def solve_v3_transport_matrix_linear_gmres(
         emit(0, "solve_v3_transport_matrix_linear_gmres: computing whichRHS diagnostics (batched)")
     x_stack = jnp.stack([state_vectors[which_rhs] for which_rhs in which_rhs_values], axis=0)  # (N,total)
     diag_op_stack = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *diag_op_by_index)
-    diag_stack = v3_transport_diagnostics_vm_only_batch_jit(op_stack=diag_op_stack, x_full_stack=x_stack)
+    remat_env = os.environ.get("SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS", "").strip().lower()
+    if remat_env in {"1", "true", "yes", "on"}:
+        use_remat_diag = True
+    elif remat_env in {"0", "false", "no", "off"}:
+        use_remat_diag = False
+    else:
+        remat_min_env = os.environ.get("SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS_MIN", "").strip()
+        try:
+            remat_min = int(remat_min_env) if remat_min_env else 20000
+        except ValueError:
+            remat_min = 20000
+        use_remat_diag = int(x_stack.size) >= remat_min
+    diag_fn = v3_transport_diagnostics_vm_only_batch_remat_jit if use_remat_diag else v3_transport_diagnostics_vm_only_batch_jit
+    diag_stack = diag_fn(op_stack=diag_op_stack, x_full_stack=x_stack)
 
     diag_pf_arr = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
     diag_hf_arr = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)

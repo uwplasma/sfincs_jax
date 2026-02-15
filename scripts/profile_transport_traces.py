@@ -65,9 +65,14 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     os.environ.setdefault("JAX_ENABLE_X64", "True")
-    os.environ.setdefault("JAX_ENABLE_COMPILATION_CACHE", "1")
+    cache_dir = Path(os.environ.get("JAX_COMPILATION_CACHE_DIR", "")) if os.environ.get("JAX_COMPILATION_CACHE_DIR") else out_dir / ".jax_compilation_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(cache_dir))
     os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
     os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+    jax.config.update("jax_compilation_cache_dir", str(cache_dir))
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
 
     for case in args.cases:
         input_path = reduced_inputs / f"{case}.input.namelist"

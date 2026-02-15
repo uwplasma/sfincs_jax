@@ -35,7 +35,6 @@ from sfincs_jax.io import localize_equilibrium_file_in_place
 def _run_worker(*, script_path: Path, input_path: Path, cache_dir: Path, repeats: int) -> dict[str, object]:
     env = os.environ.copy()
     env.setdefault("JAX_ENABLE_X64", "True")
-    env["JAX_ENABLE_COMPILATION_CACHE"] = "1"
     env["JAX_COMPILATION_CACHE_DIR"] = str(cache_dir)
     env["JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS"] = "0"
     env["JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES"] = "0"

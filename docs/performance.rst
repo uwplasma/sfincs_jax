@@ -121,6 +121,8 @@ path), you can enable an optional JAX-native preconditioner via an environment v
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=point`` (or ``1``): point-block Jacobi on local (x,L) unknowns
   at each :math:`(\theta,\zeta)` (cheap, but can be too weak for stiff non-axisymmetric cases).
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision``: collision-diagonal preconditioner using the
+  analytic PAS/FP diagonal (cheap, effective for collision-dominated PAS/FP cases).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_line``: theta-line block preconditioning that couples
   all theta points (at fixed zeta) for all local (x,L) unknowns (stronger, higher setup cost).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=zeta_line``: zeta-line block preconditioning that couples
@@ -132,6 +134,8 @@ path), you can enable an optional JAX-native preconditioner via an environment v
 The regularization used when inverting preconditioner blocks can be tuned with:
 
 - ``SFINCS_JAX_RHSMODE1_PRECOND_REG`` (default: ``1e-10``).
+- ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` for default collision
+  preconditioning when preconditioner options are not set (default: 1500).
 
 These options are most useful when you also select a Krylov solve method for RHSMode=1 via:
 
@@ -271,6 +275,15 @@ opt-in environment variables:
 - ``SFINCS_JAX_STRICT_SUM_ORDER``:
   force explicit loop-order weighted sums in diagnostics (debug/parity mode); by default
   fast fused ``einsum`` reductions are used.
+- ``SFINCS_JAX_REMAT_COLLISIONS``:
+  enable gradient checkpointing (``jax.checkpoint``) around collision operators to reduce peak memory
+  during autodiff (``auto`` uses ``SFINCS_JAX_REMAT_COLLISIONS_MIN``; default 20000).
+- ``SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS``:
+  enable gradient checkpointing around transport diagnostics (``auto`` uses
+  ``SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS_MIN``; default 20000).
+- ``SFINCS_JAX_PRECOMPILE``:
+  ahead-of-time compile core kernels when JAX persistent cache is enabled (``auto`` by default when
+  ``JAX_COMPILATION_CACHE_DIR`` is set).
 
 
 Reference benchmark figure (README/index)
@@ -375,23 +388,23 @@ paths we use to guide performance work:
 - **Use ahead-of-time (AOT) compilation** for stable-shape kernels that dominate wall time;
   this reduces JIT latency during interactive or production runs. [#jax-aot]_
 - **Prefer short-recurrence Krylov methods** (e.g., BiCGStab/IDR(s)) when GMRES memory growth
-  becomes dominant, since GMRES stores all previous Krylov vectors. [#saad-gmres]_
+  becomes dominant, since GMRES stores all previous Krylov vectors. [#gmres-memory]_
 
 These sources inform our memory and compilation roadmap; any algorithmic change is still
 validated against the reduced-suite parity and physics tests before it becomes a default.
 
 .. [#jax-profiler] JAX profiling and device memory tools:
-   https://jax.readthedocs.io/en/latest/profiling.html
+   https://docs.jax.dev/en/latest/device_memory_profiling.html
 .. [#jax-checkpoint] JAX gradient checkpointing (``jax.checkpoint`` / ``jax.remat``):
-   https://jax.readthedocs.io/en/latest/gradient-checkpointing.html
+   https://docs.jax.dev/en/latest/gradient-checkpointing.html
 .. [#jax-gpu-mem] JAX GPU memory allocation and preallocation controls:
-   https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
+   https://docs.jax.dev/en/latest/gpu_memory_allocation.html
 .. [#jax-compile-cache] JAX persistent compilation cache:
-   https://jax.readthedocs.io/en/latest/persistent_compilation_cache.html
+   https://docs.jax.dev/en/latest/persistent_compilation_cache.html
 .. [#jax-aot] JAX ahead-of-time compilation:
-   https://jax.readthedocs.io/en/latest/aot.html
-.. [#saad-gmres] Iterative methods reference (GMRES memory growth vs short-recurrence methods):
-   https://www.cs.cmu.edu/~quake-papers/painless-conjugate-gradient.pdf
+   https://docs.jax.dev/en/latest/aot.html
+.. [#gmres-memory] Iterative methods reference (GMRES storage growth vs short-recurrence methods):
+   https://mathworld.wolfram.com/GeneralizedMinimalResidualMethod.html
 
 
 Connection to MONKES / adjoint methods

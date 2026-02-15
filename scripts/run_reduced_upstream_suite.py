@@ -16,6 +16,20 @@ from typing import Sequence
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_JAX_CACHE_DIR = REPO_ROOT / "tests" / "reduced_upstream_examples" / ".jax_compilation_cache"
+
+def _ensure_jax_compilation_cache() -> None:
+    disable_env = os.environ.get("SFINCS_JAX_DISABLE_COMPILATION_CACHE", "").strip().lower()
+    if disable_env in {"1", "true", "yes", "on"}:
+        return
+    if not os.environ.get("JAX_COMPILATION_CACHE_DIR", "").strip():
+        os.environ["JAX_COMPILATION_CACHE_DIR"] = str(_DEFAULT_JAX_CACHE_DIR)
+    os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+    os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+
+
+_ensure_jax_compilation_cache()
+
 from sfincs_jax.compare import compare_sfincs_outputs
 from sfincs_jax.io import localize_equilibrium_file_in_place
 from sfincs_jax.namelist import read_sfincs_input
@@ -256,7 +270,6 @@ def _run_jax_cli(
     env = dict(os.environ)
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
-        env.setdefault("JAX_ENABLE_COMPILATION_CACHE", "1")
         env.setdefault("JAX_COMPILATION_CACHE_DIR", str(cache_dir))
         env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
         env.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")

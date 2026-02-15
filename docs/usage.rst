@@ -151,11 +151,15 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER`` (GMRES only): optional RHSMode=1 preconditioning.
 
   - ``point`` (or ``1``): point-block Jacobi on local (x,L) unknowns at each :math:`(\theta,\zeta)`.
+  - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
   - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
   - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
   - ``adi``: apply the theta-line and zeta-line preconditioners sequentially (strongest of the built-ins,
     but also the most expensive).
   - ``0``: disable.
+
+- ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` before the default
+  RHSMode=1 preconditioner switches to the collision-diagonal option (default: ``1500``).
 
 - ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND``: optional RHSMode=1 BiCGStab preconditioning.
 
@@ -204,6 +208,24 @@ performance without changing the input file:
 
   - Default: enabled (implicit gradients via ``jax.lax.custom_linear_solve``).
   - ``0``/``false``: disable (differentiate through Krylov iterations; slower / higher memory).
+
+- ``SFINCS_JAX_REMAT_COLLISIONS``: enable gradient checkpointing around collision operators to
+  reduce peak memory during autodiff (default: auto, based on size threshold).
+
+- ``SFINCS_JAX_REMAT_COLLISIONS_MIN``: minimum ``f`` size before auto-remat triggers
+  (default: ``20000``).
+
+- ``SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS``: enable gradient checkpointing around transport
+  diagnostics to reduce peak memory during autodiff (default: auto, based on size threshold).
+
+- ``SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS_MIN``: minimum transport-stack size before auto-remat
+  triggers (default: ``20000``).
+
+- ``SFINCS_JAX_PRECOMPILE``: ahead-of-time compile core kernels when JAX persistent compilation
+  cache is enabled (default: auto when ``JAX_COMPILATION_CACHE_DIR`` is set).
+
+- ``JAX_COMPILATION_CACHE_DIR``: set a persistent compilation cache directory to reuse compiled
+  artifacts across runs (recommended for reduced-suite and batch runs).
 
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_K``: recycle up to ``k`` previous Krylov solution vectors across
   successive ``whichRHS`` solves in transport-matrix runs. Set to ``0`` to disable.

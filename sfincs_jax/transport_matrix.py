@@ -397,6 +397,9 @@ def v3_transport_diagnostics_vm_only_batch(
 
 
 v3_transport_diagnostics_vm_only_batch_jit = jax.jit(v3_transport_diagnostics_vm_only_batch)
+v3_transport_diagnostics_vm_only_batch_remat_jit = jax.jit(
+    jax.checkpoint(v3_transport_diagnostics_vm_only_batch)
+)
 
 
 def v3_transport_diagnostics_vm_only_batch_op0(
@@ -418,6 +421,9 @@ def v3_transport_diagnostics_vm_only_batch_op0(
 
 
 v3_transport_diagnostics_vm_only_batch_op0_jit = jax.jit(v3_transport_diagnostics_vm_only_batch_op0)
+v3_transport_diagnostics_vm_only_batch_op0_remat_jit = jax.jit(
+    jax.checkpoint(v3_transport_diagnostics_vm_only_batch_op0)
+)
 
 
 def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(

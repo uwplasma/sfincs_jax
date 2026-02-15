@@ -1392,7 +1392,7 @@ def write_sfincs_jax_output_h5(
             v3_rhsmode1_output_fields_vm_only_jit,
         )
         from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_full_system_newton_krylov_history
-        from .v3_system import full_system_operator_from_namelist
+        from .v3_system import full_system_operator_from_namelist, precompile_v3_full_system
 
         if emit is not None:
             species_params = nml.group("speciesParameters")
@@ -1416,6 +1416,12 @@ def write_sfincs_jax_output_h5(
         # Therefore, default to a Krylov solver (auto → BiCGStab with GMRES fallback) unless explicitly overridden.
         solve_method = "auto"
         op0 = full_system_operator_from_namelist(nml=nml)
+        precompile_env = os.environ.get("SFINCS_JAX_PRECOMPILE", "").strip().lower()
+        if precompile_env in {"1", "true", "yes", "on"}:
+            precompile_v3_full_system(op0, include_jacobian=bool(include_phi1))
+        elif precompile_env not in {"0", "false", "no", "off"}:
+            if os.environ.get("JAX_COMPILATION_CACHE_DIR", "").strip():
+                precompile_v3_full_system(op0, include_jacobian=bool(include_phi1))
         nxi_for_x = np.asarray(op0.fblock.collisionless.n_xi_for_x, dtype=np.int32)
         active_f_size = int(op0.n_species) * int(np.sum(nxi_for_x)) * int(op0.n_theta) * int(op0.n_zeta)
         active_total_size = active_f_size + int(op0.phi1_size) + int(op0.extra_size)

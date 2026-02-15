@@ -647,6 +647,23 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
 
 
 def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_base: jnp.ndarray | None = None) -> jnp.ndarray:
+    remat_env = os.environ.get("SFINCS_JAX_REMAT_COLLISIONS", "").strip().lower()
+    if remat_env in {"1", "true", "yes", "on"}:
+        use_remat_collisions = True
+    elif remat_env in {"0", "false", "no", "off"}:
+        use_remat_collisions = False
+    else:
+        remat_min_env = os.environ.get("SFINCS_JAX_REMAT_COLLISIONS_MIN", "").strip()
+        try:
+            remat_min = int(remat_min_env) if remat_min_env else 20000
+        except ValueError:
+            remat_min = 20000
+        f_size = int(op.n_species * op.n_x * op.n_xi * op.n_theta * op.n_zeta)
+        use_remat_collisions = f_size >= remat_min
+
+    def _maybe_remat(fn):
+        return jax.checkpoint(fn) if use_remat_collisions else fn
+
     out = op.identity_shift * f
     out = out + apply_collisionless_v3(op.collisionless, f)
     if op.exb_theta is not None:
@@ -664,13 +681,13 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_b
     if op.er_xdot is not None:
         out = out + apply_er_xdot_v3(op.er_xdot, f)
     if op.pas is not None:
-        out = out + apply_pitch_angle_scattering_v3(op.pas, f)
+        out = out + _maybe_remat(apply_pitch_angle_scattering_v3)(op.pas, f)
     if op.fp is not None:
-        out = out + apply_fokker_planck_v3(op.fp, f)
+        out = out + _maybe_remat(apply_fokker_planck_v3)(op.fp, f)
     if op.fp_phi1 is not None:
         if phi1_hat_base is None:
             raise ValueError("phi1_hat_base is required when includePhi1InCollisionOperator is enabled.")
-        out = out + apply_fokker_planck_v3_phi1(op.fp_phi1, f, phi1_hat=phi1_hat_base)
+        out = out + _maybe_remat(apply_fokker_planck_v3_phi1)(op.fp_phi1, f, phi1_hat=phi1_hat_base)
     return out
 
 

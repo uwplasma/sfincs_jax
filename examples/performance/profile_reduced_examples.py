@@ -8,9 +8,6 @@ import time
 import signal
 from pathlib import Path
 
-from sfincs_jax.io import write_sfincs_jax_output_h5
-
-
 _ROOT = Path(__file__).resolve().parents[2]
 _REDUCED_INPUTS = _ROOT / "tests" / "reduced_inputs"
 
@@ -42,7 +39,13 @@ def _parse_profile_line(line: str) -> dict[str, float | str | None]:
     return out
 
 
-def _collect_profiles(input_path: Path, out_path: Path, *, timeout_s: float | None = None) -> dict[str, object]:
+def _collect_profiles(
+    input_path: Path,
+    out_path: Path,
+    *,
+    timeout_s: float | None = None,
+    jax_cache_dir: Path | None = None,
+) -> dict[str, object]:
     logs: list[str] = []
 
     def emit(level: int, msg: str) -> None:
@@ -56,6 +59,14 @@ def _collect_profiles(input_path: Path, out_path: Path, *, timeout_s: float | No
     if timeout_s is not None and timeout_s > 0:
         old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
         signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
+
+    if jax_cache_dir is not None:
+        jax_cache_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("JAX_COMPILATION_CACHE_DIR", str(jax_cache_dir))
+        os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+        os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+
+    from sfincs_jax.io import write_sfincs_jax_output_h5  # noqa: PLC0415
 
     try:
         t0 = time.perf_counter()
@@ -113,6 +124,11 @@ def main() -> int:
     )
     parser.add_argument("--timeout-s", type=float, default=None, help="Optional per-case timeout in seconds.")
     parser.add_argument(
+        "--jax-cache-dir",
+        default=str(_ROOT / "tests" / "reduced_upstream_examples" / ".jax_compilation_cache"),
+        help="Persistent JAX compilation cache directory (default: reduced-suite cache).",
+    )
+    parser.add_argument(
         "--append",
         action="store_true",
         help="Append/update an existing JSON file instead of overwriting.",
@@ -156,7 +172,14 @@ def main() -> int:
         if args.skip_existing and str(input_path) in existing:
             continue
         try:
-            results.append(_collect_profiles(input_path, out_path, timeout_s=args.timeout_s))
+            results.append(
+                _collect_profiles(
+                    input_path,
+                    out_path,
+                    timeout_s=args.timeout_s,
+                    jax_cache_dir=Path(args.jax_cache_dir) if args.jax_cache_dir else None,
+                )
+            )
         except Exception as exc:  # noqa: BLE001
             results.append(
                 {

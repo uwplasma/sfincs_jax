@@ -944,6 +944,17 @@ def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:
 rhs_v3_full_system_jit = jax.jit(rhs_v3_full_system)
 
 
+def precompile_v3_full_system(op: V3FullSystemOperator, *, include_jacobian: bool = True) -> None:
+    """Ahead-of-time compile core v3 kernels for a given operator shape."""
+    x_full = jnp.zeros((int(op.total_size),), dtype=jnp.float64)
+    fn = _get_apply_full_system_operator_jit(_operator_signature_cached(op))
+    fn.lower(op, x_full, include_jacobian_terms=True).compile()
+    fn.lower(op, x_full, include_jacobian_terms=False).compile()
+    if include_jacobian:
+        apply_v3_full_system_jacobian_jit.lower(op, x_full, x_full).compile()
+    rhs_v3_full_system_jit.lower(op).compile()
+
+
 def with_transport_rhs_settings(op: V3FullSystemOperator, *, which_rhs: int) -> V3FullSystemOperator:
     """Return an operator with v3's internal RHSMode-dependent RHS settings applied.
 
