@@ -46,6 +46,7 @@ def test_pas_collisions_diagonal_matvec_matches_fortran_matrix() -> None:
         nu_n=nu_n,
         krook=float(phys.get("KROOK", 0.0)),
         n_xi_for_x=grids.n_xi_for_x,
+        n_xi=int(grids.n_xi),
     )
 
     a = read_petsc_mat_aij(mat_path)

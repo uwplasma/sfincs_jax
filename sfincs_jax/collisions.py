@@ -552,17 +552,26 @@ class PitchAngleScatteringV3Operator:
     krook: jnp.ndarray  # scalar
     nu_d_hat: jnp.ndarray  # (S, X)
     n_xi_for_x: jnp.ndarray  # (X,) int32
+    coef: jnp.ndarray  # (S, X, L)
+    mask_xi: jnp.ndarray  # (X, L)
 
     def tree_flatten(self):
-        children = (self.nu_n, self.krook, self.nu_d_hat, self.n_xi_for_x)
+        children = (self.nu_n, self.krook, self.nu_d_hat, self.n_xi_for_x, self.coef, self.mask_xi)
         aux = None
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
         del aux
-        nu_n, krook, nu_d_hat, n_xi_for_x = children
-        return cls(nu_n=nu_n, krook=krook, nu_d_hat=nu_d_hat, n_xi_for_x=n_xi_for_x)
+        nu_n, krook, nu_d_hat, n_xi_for_x, coef, mask_xi = children
+        return cls(
+            nu_n=nu_n,
+            krook=krook,
+            nu_d_hat=nu_d_hat,
+            n_xi_for_x=n_xi_for_x,
+            coef=coef,
+            mask_xi=mask_xi,
+        )
 
 
 def make_pitch_angle_scattering_v3_operator(
@@ -575,15 +584,23 @@ def make_pitch_angle_scattering_v3_operator(
     nu_n: float,
     krook: float = 0.0,
     n_xi_for_x: jnp.ndarray,
+    n_xi: int,
 ) -> PitchAngleScatteringV3Operator:
     nu_d_hat = nu_d_hat_pitch_angle_scattering_v3(
         x=x, z_s=z_s, m_hats=m_hats, n_hats=n_hats, t_hats=t_hats
     )
+    n_xi_int = int(n_xi)
+    l = jnp.arange(n_xi_int, dtype=jnp.float64)
+    factor_l = 0.5 * (l * (l + 1.0) + 2.0 * krook)
+    coef = jnp.asarray(nu_n, dtype=jnp.float64) * nu_d_hat[:, :, None] * factor_l[None, None, :]
+    mask = _mask_xi(jnp.asarray(n_xi_for_x, dtype=jnp.int32), n_xi_int)
     return PitchAngleScatteringV3Operator(
         nu_n=jnp.asarray(nu_n, dtype=jnp.float64),
         krook=jnp.asarray(krook, dtype=jnp.float64),
         nu_d_hat=nu_d_hat,
         n_xi_for_x=jnp.asarray(n_xi_for_x, dtype=jnp.int32),
+        coef=coef,
+        mask_xi=mask,
     )
 
 
@@ -613,13 +630,16 @@ def apply_pitch_angle_scattering_v3(op: PitchAngleScatteringV3Operator, f: jnp.n
             f"op.nu_d_hat has shape {op.nu_d_hat.shape}, expected {(n_species, n_x)}"
         )
 
-    l = jnp.arange(n_xi, dtype=jnp.float64)  # row L
-    factor_l = 0.5 * (l * (l + 1.0) + 2.0 * op.krook)  # (L,)
-    coef = op.nu_n * op.nu_d_hat[:, :, None] * factor_l[None, None, :]  # (S,X,L)
+    if op.coef.shape[-1] != n_xi:
+        l = jnp.arange(n_xi, dtype=jnp.float64)  # row L
+        factor_l = 0.5 * (l * (l + 1.0) + 2.0 * op.krook)  # (L,)
+        coef = op.nu_n * op.nu_d_hat[:, :, None] * factor_l[None, None, :]  # (S,X,L)
+        mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(coef.dtype)  # (X,L)
+    else:
+        coef = op.coef
+        mask = op.mask_xi.astype(coef.dtype)
 
     out = coef[:, :, :, None, None] * f
-
-    mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(out.dtype)  # (X,L)
     return out * mask[None, :, :, None, None]
 
 
@@ -641,17 +661,18 @@ class FokkerPlanckV3Operator:
 
     mat: jnp.ndarray  # (S,S,L,X,X) already multiplied by (-nu_n)
     n_xi_for_x: jnp.ndarray  # (X,) int32
+    mask_xi: jnp.ndarray  # (X, L)
 
     def tree_flatten(self):
-        children = (self.mat, self.n_xi_for_x)
+        children = (self.mat, self.n_xi_for_x, self.mask_xi)
         aux = None
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
         del aux
-        mat, n_xi_for_x = children
-        return cls(mat=mat, n_xi_for_x=n_xi_for_x)
+        mat, n_xi_for_x, mask_xi = children
+        return cls(mat=mat, n_xi_for_x=n_xi_for_x, mask_xi=mask_xi)
 
 
 def make_fokker_planck_v3_operator(
@@ -826,6 +847,7 @@ def make_fokker_planck_v3_operator(
     return FokkerPlanckV3Operator(
         mat=jnp.asarray(mat),
         n_xi_for_x=jnp.asarray(n_xi_for_x, dtype=jnp.int32),
+        mask_xi=_mask_xi(jnp.asarray(n_xi_for_x, dtype=jnp.int32), int(n_xi)),
     )
 
 
@@ -842,7 +864,10 @@ def apply_fokker_planck_v3(op: FokkerPlanckV3Operator, f: jnp.ndarray) -> jnp.nd
     y2 = jnp.einsum("abLij,bLjtz->aLitz", op.mat, f2)  # (S,L,X,T,Z)
     y = jnp.transpose(y2, (0, 2, 1, 3, 4))  # (S,X,L,T,Z)
 
-    mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(y.dtype)  # (X,L)
+    if op.mask_xi.shape[-1] != n_xi:
+        mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(y.dtype)  # (X,L)
+    else:
+        mask = op.mask_xi.astype(y.dtype)
     return y * mask[None, :, :, None, None]
 
 

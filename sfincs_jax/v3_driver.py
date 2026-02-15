@@ -385,8 +385,12 @@ def _build_rhsmode1_preconditioner_operator_point(op: V3FullSystemOperator) -> V
         ddtheta=_diag_only(fblock.collisionless.ddtheta),
         ddzeta=_diag_only(fblock.collisionless.ddzeta),
     )
-    exb_theta = replace(fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta))
-    exb_zeta = replace(fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta))
+    exb_theta = None if fblock.exb_theta is None else replace(
+        fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta)
+    )
+    exb_zeta = None if fblock.exb_zeta is None else replace(
+        fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta)
+    )
     mag_theta = None
     if fblock.magdrift_theta is not None:
         mag_theta = replace(
@@ -425,8 +429,12 @@ def _build_transport_preconditioner_operator_point(op: V3FullSystemOperator) -> 
         ddtheta=_diag_only(fblock.collisionless.ddtheta),
         ddzeta=_diag_only(fblock.collisionless.ddzeta),
     )
-    exb_theta = replace(fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta))
-    exb_zeta = replace(fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta))
+    exb_theta = None if fblock.exb_theta is None else replace(
+        fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta)
+    )
+    exb_zeta = None if fblock.exb_zeta is None else replace(
+        fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta)
+    )
     mag_theta = None
     if fblock.magdrift_theta is not None:
         mag_theta = replace(
@@ -468,7 +476,9 @@ def _build_rhsmode1_preconditioner_operator_theta_line(op: V3FullSystemOperator)
         ddzeta=_diag_only(fblock.collisionless.ddzeta),
     )
     exb_theta = fblock.exb_theta
-    exb_zeta = replace(fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta))
+    exb_zeta = None if fblock.exb_zeta is None else replace(
+        fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta)
+    )
     mag_theta = fblock.magdrift_theta
     mag_zeta = None
     if fblock.magdrift_zeta is not None:
@@ -502,7 +512,9 @@ def _build_rhsmode1_preconditioner_operator_zeta_line(op: V3FullSystemOperator) 
         fblock.collisionless,
         ddtheta=_diag_only(fblock.collisionless.ddtheta),
     )
-    exb_theta = replace(fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta))
+    exb_theta = None if fblock.exb_theta is None else replace(
+        fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta)
+    )
     exb_zeta = fblock.exb_zeta
     mag_theta = None
     if fblock.magdrift_theta is not None:

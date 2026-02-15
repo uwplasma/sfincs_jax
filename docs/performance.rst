@@ -286,7 +286,7 @@ comparison figure used in ``README.md`` and the docs index:
 By default this uses frozen Fortran fixtures from ``tests/ref`` (no local Fortran runtime required).
 If a local Fortran executable is available, pass ``--fortran-exe /path/to/sfincs`` for live runs.
 
-Latest live-executable snapshot (4 repeats, compile excluded for JAX):
+Latest fixture-based snapshot (4 repeats, compile excluded for JAX):
 
 .. list-table::
    :header-rows: 1
@@ -297,23 +297,25 @@ Latest live-executable snapshot (4 repeats, compile excluded for JAX):
      - sfincs_jax mean (s/run)
      - max abs(ΔL11)
    * - ``scheme1``
-     - 0.0797
-     - 0.1545
-     - 5.01e-14
+     - 0.0275
+     - 0.0984
+     - 3.10e-13
    * - ``scheme11``
-     - 0.2301
-     - 0.1839
-     - 1.46e-15
+     - 3.6393
+     - 0.1325
+     - 1.39e-15
    * - ``scheme12``
-     - 1.2328
-     - 0.1765
-     - 1.50e-07
+     - 0.00888
+     - 0.1151
+     - 8.62e-08
    * - ``scheme5_filtered``
-     - 0.1041
-     - 0.1767
-     - 7.33e-16
+     - 2.9621
+     - 0.1226
+     - 6.57e-16
 
-Live snapshot note: the local Fortran binary was built against a PETSc MPIUNI (serial, no MUMPS) configuration to avoid MPI-init errors in sandboxed environments.
+Fixture snapshot note: these values come from the frozen Fortran fixtures used by
+``examples/performance/benchmark_transport_l11_vs_fortran.py`` when no local Fortran
+executable is provided.
 
 Persistent-cache compile/runtime split
 --------------------------------------
@@ -341,17 +343,55 @@ Latest snapshot (3 repeats):
      - Compile estimate (s)
      - Warm steady solve (s/run)
    * - ``scheme1``
-     - 1.4425
-     - 0.0491
+     - 1.4704
+     - 0.0294
    * - ``scheme11``
-     - 1.2266
-     - 0.0547
+     - 1.3605
+     - 0.0357
    * - ``scheme12``
-     - 1.2046
-     - 0.0607
+     - 1.4314
+     - 0.0400
    * - ``scheme5_filtered``
-     - 1.3668
-     - 0.0632
+     - 1.4005
+     - 0.0439
+
+
+Memory footprint and compilation-time optimization (literature-backed)
+---------------------------------------------------------------------
+
+The main memory and compile-time levers for ``sfincs_jax`` map to standard JAX/XLA
+mechanisms and Krylov-solver theory. The items below are the highest-ROI, literature-backed
+paths we use to guide performance work:
+
+- **Measure device + host allocation hotspots** using the JAX device memory profiler and
+  XLA/trace timelines before changing algorithms. This pinpoints which buffers dominate the
+  memory footprint and where JIT time is spent. [#jax-profiler]_
+- **Use gradient checkpointing** (``jax.checkpoint`` / ``jax.remat``) to trade recomputation
+  for lower peak memory during autodiff, especially for long transport chains. [#jax-checkpoint]_
+- **Control GPU memory preallocation** and allocation strategy when GPU memory is the limiting
+  factor (e.g., disable full preallocation or set a memory fraction). [#jax-gpu-mem]_
+- **Persist and reuse compilation artifacts** with the JAX compilation cache to amortize
+  expensive builds across repeated runs. [#jax-compile-cache]_
+- **Use ahead-of-time (AOT) compilation** for stable-shape kernels that dominate wall time;
+  this reduces JIT latency during interactive or production runs. [#jax-aot]_
+- **Prefer short-recurrence Krylov methods** (e.g., BiCGStab/IDR(s)) when GMRES memory growth
+  becomes dominant, since GMRES stores all previous Krylov vectors. [#saad-gmres]_
+
+These sources inform our memory and compilation roadmap; any algorithmic change is still
+validated against the reduced-suite parity and physics tests before it becomes a default.
+
+.. [#jax-profiler] JAX profiling and device memory tools:
+   https://jax.readthedocs.io/en/latest/profiling.html
+.. [#jax-checkpoint] JAX gradient checkpointing (``jax.checkpoint`` / ``jax.remat``):
+   https://jax.readthedocs.io/en/latest/gradient-checkpointing.html
+.. [#jax-gpu-mem] JAX GPU memory allocation and preallocation controls:
+   https://jax.readthedocs.io/en/latest/gpu_memory_allocation.html
+.. [#jax-compile-cache] JAX persistent compilation cache:
+   https://jax.readthedocs.io/en/latest/persistent_compilation_cache.html
+.. [#jax-aot] JAX ahead-of-time compilation:
+   https://jax.readthedocs.io/en/latest/aot.html
+.. [#saad-gmres] Iterative methods reference (GMRES memory growth vs short-recurrence methods):
+   https://www.cs.cmu.edu/~quake-papers/painless-conjugate-gradient.pdf
 
 
 Connection to MONKES / adjoint methods

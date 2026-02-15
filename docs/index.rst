@@ -5,12 +5,12 @@ sfincs_jax
 output compatibility, matrix-free performance, and differentiability.
 
 .. figure:: _static/figures/sfincs_vs_sfincs_jax_l11_runtime_2x2.png
-   :alt: L11 parity and runtime comparison across four monoenergetic cases.
+   :alt: Relative L11 difference and runtime comparison across four monoenergetic cases.
    :align: center
    :width: 90%
 
-   ``L11 = transportMatrix[0,0]`` parity and runtime comparison for four
-   monoenergetic fixtures. ``sfincs_jax`` runtime excludes JIT compilation
+   Relative ``ΔL11`` (``(JAX − Fortran) / Fortran``) and runtime comparison for
+   four monoenergetic fixtures. ``sfincs_jax`` runtime excludes JIT compilation
    (warm-up not timed). Reproduce with
    ``examples/performance/benchmark_transport_l11_vs_fortran.py``.
 

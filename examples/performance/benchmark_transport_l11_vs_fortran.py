@@ -185,11 +185,14 @@ def main() -> int:
                 jax_l11.append(l11_j)
 
             x = np.arange(1, repeats + 1, dtype=np.int32)
-            ax.plot(x, fortran_l11, marker="o", lw=1.8, label="SFINCS (Fortran)")
-            ax.plot(x, jax_l11, marker="s", lw=1.8, label="sfincs_jax")
+            fortran_arr = np.asarray(fortran_l11, dtype=np.float64)
+            jax_arr = np.asarray(jax_l11, dtype=np.float64)
+            rel_diff = (jax_arr - fortran_arr) / fortran_arr
+            ax.plot(x, rel_diff, marker="o", lw=1.8, label="(JAX − Fortran) / Fortran")
+            ax.axhline(0.0, color="k", lw=1.0, alpha=0.3)
             ax.set_title(label)
             ax.set_xlabel("Run index")
-            ax.set_ylabel("L11 = transportMatrix[0,0]")
+            ax.set_ylabel("Relative ΔL11")
             ax.grid(alpha=0.3)
 
             inset = ax.inset_axes([0.57, 0.10, 0.40, 0.38])
@@ -218,7 +221,7 @@ def main() -> int:
 
     handles, labels = flat_axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False)
-    fig.suptitle("SFINCS vs sfincs_jax: L11 parity and runtime (JAX runtime excludes compilation)", y=1.02)
+    fig.suptitle("SFINCS vs sfincs_jax: relative L11 difference and runtime (JAX runtime excludes compilation)", y=1.02)
 
     png_path = out_dir / "sfincs_vs_sfincs_jax_l11_runtime_2x2.png"
     pdf_path = out_dir / "sfincs_vs_sfincs_jax_l11_runtime_2x2.pdf"

@@ -230,6 +230,7 @@ def pas_collision_operator_from_namelist(
         nu_n=nu_n,
         krook=krook,
         n_xi_for_x=grids.n_xi_for_x,
+        n_xi=int(grids.n_xi),
     )
 
 
@@ -354,8 +355,8 @@ class V3FBlockOperator:
     """
 
     collisionless: CollisionlessV3Operator
-    exb_theta: ExBThetaV3Operator
-    exb_zeta: ExBZetaV3Operator
+    exb_theta: ExBThetaV3Operator | None
+    exb_zeta: ExBZetaV3Operator | None
     magdrift_theta: MagneticDriftThetaV3Operator | None
     magdrift_zeta: MagneticDriftZetaV3Operator | None
     magdrift_xidot: MagneticDriftXiDotV3Operator | None
@@ -499,30 +500,34 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         dphi = _dphi_hat_dpsi_hat_from_er(nml=nml, er=er)
     fsab_hat2 = _fsab_hat2(grids=grids, geom=geom)
 
-    exb_theta = ExBThetaV3Operator(
-        alpha=jnp.asarray(alpha, dtype=jnp.float64),
-        delta=jnp.asarray(delta, dtype=jnp.float64),
-        dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
-        ddtheta=grids.ddtheta,
-        d_hat=geom.d_hat,
-        b_hat=geom.b_hat,
-        b_hat_sub_zeta=geom.b_hat_sub_zeta,
-        use_dkes_exb_drift=bool(use_dkes_exb),
-        fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
-        n_xi_for_x=grids.n_xi_for_x,
-    )
-    exb_zeta = ExBZetaV3Operator(
-        alpha=jnp.asarray(alpha, dtype=jnp.float64),
-        delta=jnp.asarray(delta, dtype=jnp.float64),
-        dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
-        ddzeta=grids.ddzeta,
-        d_hat=geom.d_hat,
-        b_hat=geom.b_hat,
-        b_hat_sub_theta=geom.b_hat_sub_theta,
-        use_dkes_exb_drift=bool(use_dkes_exb),
-        fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
-        n_xi_for_x=grids.n_xi_for_x,
-    )
+    dphi_is_zero = float(dphi) == 0.0
+    exb_theta = None
+    exb_zeta = None
+    if not dphi_is_zero:
+        exb_theta = ExBThetaV3Operator(
+            alpha=jnp.asarray(alpha, dtype=jnp.float64),
+            delta=jnp.asarray(delta, dtype=jnp.float64),
+            dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
+            ddtheta=grids.ddtheta,
+            d_hat=geom.d_hat,
+            b_hat=geom.b_hat,
+            b_hat_sub_zeta=geom.b_hat_sub_zeta,
+            use_dkes_exb_drift=bool(use_dkes_exb),
+            fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
+            n_xi_for_x=grids.n_xi_for_x,
+        )
+        exb_zeta = ExBZetaV3Operator(
+            alpha=jnp.asarray(alpha, dtype=jnp.float64),
+            delta=jnp.asarray(delta, dtype=jnp.float64),
+            dphi_hat_dpsi_hat=jnp.asarray(dphi, dtype=jnp.float64),
+            ddzeta=grids.ddzeta,
+            d_hat=geom.d_hat,
+            b_hat=geom.b_hat,
+            b_hat_sub_theta=geom.b_hat_sub_theta,
+            use_dkes_exb_drift=bool(use_dkes_exb),
+            fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
+            n_xi_for_x=grids.n_xi_for_x,
+        )
 
     magdrift_theta = None
     magdrift_zeta = None
@@ -586,7 +591,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         )
 
     er_xidot = None
-    if include_er_xidot:
+    if include_er_xidot and (not dphi_is_zero):
         er_xidot = ErXiDotV3Operator(
             alpha=jnp.asarray(alpha, dtype=jnp.float64),
             delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -602,7 +607,7 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         )
 
     er_xdot = None
-    if include_xdot:
+    if include_xdot and (not dphi_is_zero):
         er_xdot = ErXDotV3Operator(
             alpha=jnp.asarray(alpha, dtype=jnp.float64),
             delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -644,8 +649,10 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
 def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_base: jnp.ndarray | None = None) -> jnp.ndarray:
     out = op.identity_shift * f
     out = out + apply_collisionless_v3(op.collisionless, f)
-    out = out + apply_exb_theta_v3(op.exb_theta, f)
-    out = out + apply_exb_zeta_v3(op.exb_zeta, f)
+    if op.exb_theta is not None:
+        out = out + apply_exb_theta_v3(op.exb_theta, f)
+    if op.exb_zeta is not None:
+        out = out + apply_exb_zeta_v3(op.exb_zeta, f)
     if op.magdrift_theta is not None:
         out = out + apply_magnetic_drift_theta_v3(op.magdrift_theta, f)
     if op.magdrift_zeta is not None:

@@ -74,6 +74,7 @@ Pitch-angle scattering collisions (``collisionOperator = 1`` without Phi1):
        t_hats=t_hats,
        nu_n=nu_n,
        n_xi_for_x=grids.n_xi_for_x,
+       n_xi=int(grids.n_xi),
    )
 
    y_col = apply_pitch_angle_scattering_v3(cop, f)
