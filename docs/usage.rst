@@ -161,6 +161,15 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` before the default
   RHSMode=1 preconditioner switches to the collision-diagonal option (default: ``1500``).
 
+- ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``: choose the collision preconditioner flavor
+  when ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision`` or BiCGStab preconditioning is enabled.
+
+  - ``xblock``: invert the per-species x-block for each L using the FP self-collision matrix
+    (stronger for some FP cases, slightly higher apply cost).
+  - ``sxblock``: invert the full species×x block for each L using the FP collision matrix
+    (strongest option for FP cases; higher apply cost).
+  - ``diag``: use the collision diagonal only (PAS/FP + identity shift).
+
 - ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND``: optional RHSMode=1 BiCGStab preconditioning.
 
   - ``collision`` (default): collision-diagonal preconditioner (PAS/FP + identity shift).

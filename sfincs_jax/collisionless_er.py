@@ -104,6 +104,7 @@ def apply_er_xidot_v3(op: ErXiDotV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     """
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _, n_x, n_xi, _, _ = f.shape
     if n_x != int(op.n_xi_for_x.shape[0]):
         raise ValueError("n_x axis does not match n_xi_for_x")
@@ -314,7 +315,7 @@ def apply_er_xdot_v3(op: ErXDotV3Operator, f: jnp.ndarray) -> jnp.ndarray:
         return jnp.einsum("ij,...j->...i", x_part, g)
 
     # Apply along x for each (s,L,theta,zeta).
-    f_sxltz = f.astype(jnp.float64)
+    f_sxltz = f
 
     l = jnp.arange(n_xi, dtype=jnp.float64)
     denom = (2.0 * l + 3.0) * (2.0 * l - 1.0)
@@ -382,6 +383,7 @@ def apply_er_xdot_v3_offdiag2(op: ErXDotV3Operator, f: jnp.ndarray) -> jnp.ndarr
     """Apply only the :math:`\\Delta L = \\pm 2` couplings of the v3 Er xDot term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _, n_x, n_xi, _, _ = f.shape
     if n_x != int(op.x.shape[0]):
         raise ValueError("x axis does not match")
@@ -405,7 +407,7 @@ def apply_er_xdot_v3_offdiag2(op: ErXDotV3Operator, f: jnp.ndarray) -> jnp.ndarr
     use_plus = (xdot_factor > 0.0)  # (T,Z)
 
     out = jnp.zeros_like(f, dtype=jnp.float64)
-    f_sxltz = f.astype(jnp.float64)
+    f_sxltz = f
 
     l = jnp.arange(n_xi, dtype=jnp.float64)
 

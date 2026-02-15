@@ -154,6 +154,7 @@ def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     """
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
 
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_theta != op.ddtheta.shape[0]:
@@ -164,15 +165,15 @@ def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
         raise ValueError("f x axis does not match n_xi_for_x")
 
     if op.use_dkes_exb_drift:
-        denom = op.fsab_hat2.astype(jnp.float64)
-        coef = (op.d_hat * op.b_hat_sub_zeta / denom).astype(jnp.float64)  # (T,Z)
+        denom = op.fsab_hat2
+        coef = (op.d_hat * op.b_hat_sub_zeta / denom)  # (T,Z)
     else:
-        denom = (op.b_hat.astype(jnp.float64) ** 2)
-        coef = (op.d_hat * op.b_hat_sub_zeta / denom).astype(jnp.float64)  # (T,Z)
+        denom = (op.b_hat ** 2)
+        coef = (op.d_hat * op.b_hat_sub_zeta / denom)  # (T,Z)
 
-    factor = (op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat).astype(jnp.float64)
+    factor = (op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat)
 
-    dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta.astype(jnp.float64), f.astype(jnp.float64))
+    dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta, f)
     out = factor * dtheta_f * coef[None, None, None, :, :]
 
     mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(out.dtype)  # (X,L)
@@ -183,6 +184,7 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     """Apply the ExB `d/dzeta` term to `f`."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
 
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_zeta != op.ddzeta.shape[0]:
@@ -193,15 +195,15 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
         raise ValueError("f x axis does not match n_xi_for_x")
 
     if op.use_dkes_exb_drift:
-        denom = op.fsab_hat2.astype(jnp.float64)
-        coef = (op.d_hat * op.b_hat_sub_theta / denom).astype(jnp.float64)  # (T,Z)
+        denom = op.fsab_hat2
+        coef = (op.d_hat * op.b_hat_sub_theta / denom)  # (T,Z)
     else:
-        denom = (op.b_hat.astype(jnp.float64) ** 2)
-        coef = (op.d_hat * op.b_hat_sub_theta / denom).astype(jnp.float64)  # (T,Z)
+        denom = (op.b_hat ** 2)
+        coef = (op.d_hat * op.b_hat_sub_theta / denom)  # (T,Z)
 
-    factor = (-op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat).astype(jnp.float64)
+    factor = (-op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat)
 
-    dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta.astype(jnp.float64), f.astype(jnp.float64))
+    dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta, f)
     out = factor * dzeta_f * coef[None, None, None, :, :]
 
     mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(out.dtype)  # (X,L)

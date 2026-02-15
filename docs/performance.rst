@@ -38,6 +38,8 @@ JAX-native performance patterns used in `sfincs_jax`
 
 - **Keep arrays on-device**: build JAX arrays once and reuse them across matvec calls.
 - **Use stable dtypes**: the v3 parity target requires 64-bit floats; `sfincs_jax` enables `jax_enable_x64`.
+- **Avoid redundant dtype conversions**: collisionless and magnetic-drift operator kernels now cast
+  `f` once per application (rather than per sub-term), reducing matvec overhead in PAS/FP hot cases.
 - **Avoid Python loops in hot paths**:
 
   - For fixed-size recurrences (e.g. Legendre-coupled pitch-angle structure), prefer `jax.lax.scan` or
@@ -122,7 +124,10 @@ path), you can enable an optional JAX-native preconditioner via an environment v
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=point`` (or ``1``): point-block Jacobi on local (x,L) unknowns
   at each :math:`(\theta,\zeta)` (cheap, but can be too weak for stiff non-axisymmetric cases).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision``: collision-diagonal preconditioner using the
-  analytic PAS/FP diagonal (cheap, effective for collision-dominated PAS/FP cases).
+  analytic PAS/FP diagonal (cheap, effective for collision-dominated PAS/FP cases). For FP
+  runs you can opt in to an x-block inverse per L via
+  ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND=xblock`` or a full species×x block via
+  ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND=sxblock``.
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_line``: theta-line block preconditioning that couples
   all theta points (at fixed zeta) for all local (x,L) unknowns (stronger, higher setup cost).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=zeta_line``: zeta-line block preconditioning that couples

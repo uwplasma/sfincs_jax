@@ -81,8 +81,15 @@ class _TransportPrecondCache:
     inv_diag_f: jnp.ndarray
 
 
+@dataclass(frozen=True)
+class _TransportXBlockPrecondCache:
+    inv_xblock: jnp.ndarray
+
+
 _TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_DIAG_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
+_RHSMODE1_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
+_RHSMODE1_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _RHSMODE23_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 
 
@@ -275,52 +282,166 @@ def _build_rhsmode1_collision_preconditioner(
     reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
-    """Cheap diagonal preconditioner for RHSMode=1 solves (BiCGStab-friendly)."""
-    cache_key = _transport_precond_cache_key(op, "rhs1_collision_diag")
-    cached = _RHSMODE1_DIAG_PRECOND_CACHE.get(cache_key)
-    if cached is None:
-        f_shape = op.fblock.f_shape
-        n_species, n_x, n_l, _, _ = f_shape
-        diag = jnp.zeros(f_shape, dtype=jnp.float64)
+    """Cheap collision-based preconditioner for RHSMode=1 solves (BiCGStab-friendly)."""
+    use_xblock = False
+    use_sxblock = False
+    kind_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND", "").strip().lower()
+    if kind_env in {"xblock", "block_x", "x"}:
+        use_xblock = True
+    elif kind_env in {"sxblock", "species_block", "block"}:
+        use_sxblock = True
 
-        if float(op.fblock.identity_shift) != 0.0:
-            diag = diag + jnp.asarray(op.fblock.identity_shift, dtype=jnp.float64)
+    if use_sxblock and op.fblock.fp is not None:
+        cache_key = _transport_precond_cache_key(op, "rhs1_collision_sxblock")
+        cached = _RHSMODE1_SXBLOCK_PRECOND_CACHE.get(cache_key)
+        if cached is None:
+            f_shape = op.fblock.f_shape
+            n_species, n_x, n_l, _, _ = f_shape
+            n_block = n_species * n_x
+            inv_block = np.zeros((n_l, n_block, n_block), dtype=np.float64)
+            mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+            reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
+            try:
+                reg = float(reg_env) if reg_env else 1e-10
+            except ValueError:
+                reg = 1e-10
+            identity_shift = float(op.fblock.identity_shift)
+            pas_diag = None
+            if op.fblock.pas is not None:
+                pas = op.fblock.pas
+                l_arr = np.arange(n_l, dtype=np.float64)
+                factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+                pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
 
-        if op.fblock.pas is not None:
-            pas = op.fblock.pas
-            l = jnp.arange(n_l, dtype=jnp.float64)
-            factor_l = 0.5 * (l * (l + 1.0) + 2.0 * pas.krook)
-            pas_diag = pas.nu_n * pas.nu_d_hat[:, :, None] * factor_l[None, None, :]
-            diag = diag + pas_diag[:, :, :, None, None]
+            for l in range(n_l):
+                a = np.array(mat[:, :, l, :, :], dtype=np.float64, copy=True)  # (S,S,X,X)
+                a = a.transpose(0, 2, 1, 3).reshape((n_block, n_block))
+                if identity_shift != 0.0:
+                    a[np.arange(n_block), np.arange(n_block)] += identity_shift
+                if pas_diag is not None:
+                    diag_add = pas_diag[:, :, l].reshape((n_block,))
+                    a[np.arange(n_block), np.arange(n_block)] += diag_add
+                if reg != 0.0:
+                    a[np.arange(n_block), np.arange(n_block)] += reg
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                inv_block[l, :, :] = inv
 
-        if op.fblock.fp is not None:
-            mat = op.fblock.fp.mat  # (S,S,L,X,X)
-            diag_x = jnp.diagonal(mat, axis1=3, axis2=4)  # (S,S,L,X)
-            diag_self = jnp.diagonal(diag_x, axis1=0, axis2=1)  # (L,X,S)
-            diag_self = jnp.transpose(diag_self, (2, 1, 0))  # (S,X,L)
-            diag = diag + diag_self[:, :, :, None, None]
+            cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_block, dtype=jnp.float64))
+            _RHSMODE1_SXBLOCK_PRECOND_CACHE[cache_key] = cached
 
-        nxi_for_x = op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)
-        mask = jnp.arange(n_l, dtype=jnp.int32)[None, :] < nxi_for_x[:, None]  # (X,L)
-        mask = mask[None, :, :, None, None]
-        diag = jnp.where(mask, diag, jnp.asarray(1.0, dtype=jnp.float64))
+        inv_block = cached.inv_xblock  # (L, S*X, S*X)
 
-        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
-        try:
-            reg = float(reg_env) if reg_env else 1e-10
-        except ValueError:
-            reg = 1e-10
-        inv_diag_f = 1.0 / (diag + float(reg))
-        cached = _TransportPrecondCache(inv_diag_f=inv_diag_f)
-        _RHSMODE1_DIAG_PRECOND_CACHE[cache_key] = cached
+        def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+            f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+            f_l = jnp.transpose(f, (2, 0, 1, 3, 4))  # (L,S,X,T,Z)
+            f_l = f_l.reshape((int(op.n_xi), int(op.n_species) * int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+            z_l = jnp.einsum("lmn,lntz->lmtz", inv_block, f_l)
+            z_l = z_l.reshape((int(op.n_xi), int(op.n_species), int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+            z_f = jnp.transpose(z_l, (1, 2, 0, 3, 4))  # (S,X,L,T,Z)
+            tail = r_full[op.f_size :]
+            return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
 
-    inv_diag_f = cached.inv_diag_f
+    elif use_xblock and op.fblock.fp is not None:
+        cache_key = _transport_precond_cache_key(op, "rhs1_collision_xblock")
+        cached = _RHSMODE1_XBLOCK_PRECOND_CACHE.get(cache_key)
+        if cached is None:
+            f_shape = op.fblock.f_shape
+            n_species, n_x, n_l, _, _ = f_shape
+            inv_xblock = np.zeros((n_species, n_l, n_x, n_x), dtype=np.float64)
+            mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+            reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
+            try:
+                reg = float(reg_env) if reg_env else 1e-10
+            except ValueError:
+                reg = 1e-10
+            identity_shift = float(op.fblock.identity_shift)
+            pas_diag = None
+            if op.fblock.pas is not None:
+                pas = op.fblock.pas
+                l_arr = np.arange(n_l, dtype=np.float64)
+                factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+                pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
 
-    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
-        f = r_full[: op.f_size].reshape(op.fblock.f_shape)
-        z_f = f * inv_diag_f
-        tail = r_full[op.f_size :]
-        return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+            for s in range(n_species):
+                for l in range(n_l):
+                    a = np.array(mat[s, s, l, :, :], dtype=np.float64, copy=True)
+                    if identity_shift != 0.0:
+                        a[np.arange(n_x), np.arange(n_x)] += identity_shift
+                    if pas_diag is not None:
+                        a[np.arange(n_x), np.arange(n_x)] += pas_diag[s, :, l]
+                    if reg != 0.0:
+                        a[np.arange(n_x), np.arange(n_x)] += reg
+                    try:
+                        inv = np.linalg.inv(a)
+                    except np.linalg.LinAlgError:
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    if not np.all(np.isfinite(inv)):
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    inv_xblock[s, l, :, :] = inv
+
+            cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_xblock, dtype=jnp.float64))
+            _RHSMODE1_XBLOCK_PRECOND_CACHE[cache_key] = cached
+
+        inv_xblock = cached.inv_xblock
+
+        def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+            f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+            f_sl = jnp.transpose(f, (0, 2, 1, 3, 4))  # (S,L,X,T,Z)
+            z_sl = jnp.einsum("slij,sljtz->slitz", inv_xblock, f_sl)
+            z_f = jnp.transpose(z_sl, (0, 2, 1, 3, 4))  # (S,X,L,T,Z)
+            tail = r_full[op.f_size :]
+            return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+    else:
+        cache_key = _transport_precond_cache_key(op, "rhs1_collision_diag")
+        cached = _RHSMODE1_DIAG_PRECOND_CACHE.get(cache_key)
+        if cached is None:
+            f_shape = op.fblock.f_shape
+            n_species, n_x, n_l, _, _ = f_shape
+            diag = jnp.zeros(f_shape, dtype=jnp.float64)
+
+            if float(op.fblock.identity_shift) != 0.0:
+                diag = diag + jnp.asarray(op.fblock.identity_shift, dtype=jnp.float64)
+
+            if op.fblock.pas is not None:
+                pas = op.fblock.pas
+                l = jnp.arange(n_l, dtype=jnp.float64)
+                factor_l = 0.5 * (l * (l + 1.0) + 2.0 * pas.krook)
+                pas_diag = pas.nu_n * pas.nu_d_hat[:, :, None] * factor_l[None, None, :]
+                diag = diag + pas_diag[:, :, :, None, None]
+
+            if op.fblock.fp is not None:
+                mat = op.fblock.fp.mat  # (S,S,L,X,X)
+                diag_x = jnp.diagonal(mat, axis1=3, axis2=4)  # (S,S,L,X)
+                diag_self = jnp.diagonal(diag_x, axis1=0, axis2=1)  # (L,X,S)
+                diag_self = jnp.transpose(diag_self, (2, 1, 0))  # (S,X,L)
+                diag = diag + diag_self[:, :, :, None, None]
+
+            nxi_for_x = op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)
+            mask = jnp.arange(n_l, dtype=jnp.int32)[None, :] < nxi_for_x[:, None]  # (X,L)
+            mask = mask[None, :, :, None, None]
+            diag = jnp.where(mask, diag, jnp.asarray(1.0, dtype=jnp.float64))
+
+            reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
+            try:
+                reg = float(reg_env) if reg_env else 1e-10
+            except ValueError:
+                reg = 1e-10
+            inv_diag_f = 1.0 / (diag + float(reg))
+            cached = _TransportPrecondCache(inv_diag_f=inv_diag_f)
+            _RHSMODE1_DIAG_PRECOND_CACHE[cache_key] = cached
+
+        inv_diag_f = cached.inv_diag_f
+
+        def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+            f = r_full[: op.f_size].reshape(op.fblock.f_shape)
+            z_f = f * inv_diag_f
+            tail = r_full[op.f_size :]
+            return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full

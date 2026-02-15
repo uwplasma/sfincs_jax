@@ -313,6 +313,7 @@ def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: 
     """Apply only the :math:`\\Delta L = \\pm 2` part of the magnetic-drift d/dtheta term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_theta != op.ddtheta_plus.shape[0]:
         raise ValueError("f theta axis does not match ddtheta_plus/minus")
@@ -328,8 +329,8 @@ def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: 
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
     # d/dtheta applied to f:
-    dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f.astype(jnp.float64))
-    dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f.astype(jnp.float64))
+    dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
+    dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f)
 
     # Upwind selection matches v3 `magneticDriftDerivativeScheme != 0`:
     # ddthetaToUse depends on sign(geometricFactor1 * DHat(1,1) / Z).
@@ -369,6 +370,7 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
     """
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _n_species, n_x, n_xi, n_theta, _n_zeta = f.shape
     if n_theta != op.ddtheta_plus.shape[0]:
         raise ValueError("f theta axis does not match ddtheta_plus/minus")
@@ -383,8 +385,8 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
     base = (op.delta * op.t_hat * op.d_hat / (2.0 * op.z * (op.b_hat**3))).astype(jnp.float64)  # (T,Z)
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
-    dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f.astype(jnp.float64))
-    dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f.astype(jnp.float64))
+    dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
+    dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f)
 
     dhat11 = op.d_hat[0, 0].astype(jnp.float64)
     use_plus = (gf1 * dhat11 / op.z.astype(jnp.float64)) > 0
@@ -417,6 +419,7 @@ def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jn
     """Apply only the :math:`\\Delta L = \\pm 2` part of the magnetic-drift d/dzeta term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_zeta != op.ddzeta_plus.shape[0]:
         raise ValueError("f zeta axis does not match ddzeta_plus/minus")
@@ -431,8 +434,8 @@ def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jn
     base = (op.delta * op.t_hat * op.d_hat / (2.0 * op.z * (op.b_hat**3))).astype(jnp.float64)  # (T,Z)
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
-    dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f.astype(jnp.float64))
-    dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f.astype(jnp.float64))
+    dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
+    dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f)
 
     dhat11 = op.d_hat[0, 0].astype(jnp.float64)
     use_plus = (gf1 * dhat11 / op.z.astype(jnp.float64)) > 0  # (T,Z) bool
@@ -469,6 +472,7 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
     """
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _n_species, n_x, n_xi, _n_theta, n_zeta = f.shape
     if n_zeta != op.ddzeta_plus.shape[0]:
         raise ValueError("f zeta axis does not match ddzeta_plus/minus")
@@ -483,8 +487,8 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
     base = (op.delta * op.t_hat * op.d_hat / (2.0 * op.z * (op.b_hat**3))).astype(jnp.float64)  # (T,Z)
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
-    dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f.astype(jnp.float64))
-    dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f.astype(jnp.float64))
+    dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
+    dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f)
 
     dhat11 = op.d_hat[0, 0].astype(jnp.float64)
     use_plus = (gf1 * dhat11 / op.z.astype(jnp.float64)) > 0
@@ -516,6 +520,7 @@ def apply_magnetic_drift_xidot_v3_offdiag2(op: MagneticDriftXiDotV3Operator, f: 
     """Apply only the :math:`\\Delta L = \\pm 2` part of the non-standard magnetic-drift d/dxi term."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _n_species, n_x, n_xi, _n_theta, _n_zeta = f.shape
     if n_x != op.x.shape[0]:
         raise ValueError("f x axis does not match x")
@@ -531,10 +536,10 @@ def apply_magnetic_drift_xidot_v3_offdiag2(op: MagneticDriftXiDotV3Operator, f: 
     c_plus = _xidot_offdiag2_coupling_plus(n_xi)  # (L,)
     c_minus = _xidot_offdiag2_coupling_minus(n_xi)  # (L,)
 
-    term_plus = c_plus[None, None, :-2, None, None] * f[:, :, 2:, :, :].astype(jnp.float64)
+    term_plus = c_plus[None, None, :-2, None, None] * f[:, :, 2:, :, :]
     term_plus = jnp.pad(term_plus, ((0, 0), (0, 0), (0, 2), (0, 0), (0, 0)))
 
-    term_minus = c_minus[None, None, 2:, None, None] * f[:, :, :-2, :, :].astype(jnp.float64)
+    term_minus = c_minus[None, None, 2:, None, None] * f[:, :, :-2, :, :]
     term_minus = jnp.pad(term_minus, ((0, 0), (0, 0), (2, 0), (0, 0), (0, 0)))
 
     out = x2[None, :, None, None, None] * factor[None, None, None, :, :] * (term_plus + term_minus)
@@ -546,6 +551,7 @@ def apply_magnetic_drift_xidot_v3(op: MagneticDriftXiDotV3Operator, f: jnp.ndarr
     """Apply the full non-standard magnetic-drift d/dxi term (diag-in-L + :math:`\\Delta L = \\pm 2`)."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
+    f = jnp.asarray(f, dtype=jnp.float64)
     _n_species, n_x, n_xi, _n_theta, _n_zeta = f.shape
     if n_x != op.x.shape[0]:
         raise ValueError("f x axis does not match x")
@@ -559,15 +565,15 @@ def apply_magnetic_drift_xidot_v3(op: MagneticDriftXiDotV3Operator, f: jnp.ndarr
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
     diag_c = _diag_l_coupling(n_xi)  # (L,)
-    diag_part = diag_c[None, None, :, None, None] * f.astype(jnp.float64)
+    diag_part = diag_c[None, None, :, None, None] * f
 
     c_plus = _xidot_offdiag2_coupling_plus(n_xi)
     c_minus = _xidot_offdiag2_coupling_minus(n_xi)
 
-    term_plus = c_plus[None, None, :-2, None, None] * f[:, :, 2:, :, :].astype(jnp.float64)
+    term_plus = c_plus[None, None, :-2, None, None] * f[:, :, 2:, :, :]
     term_plus = jnp.pad(term_plus, ((0, 0), (0, 0), (0, 2), (0, 0), (0, 0)))
 
-    term_minus = c_minus[None, None, 2:, None, None] * f[:, :, :-2, :, :].astype(jnp.float64)
+    term_minus = c_minus[None, None, 2:, None, None] * f[:, :, :-2, :, :]
     term_minus = jnp.pad(term_minus, ((0, 0), (0, 0), (2, 0), (0, 0), (0, 0)))
 
     out = x2[None, :, None, None, None] * factor[None, None, None, :, :] * (diag_part + term_plus + term_minus)

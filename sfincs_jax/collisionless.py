@@ -120,6 +120,7 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
 
+    f = jnp.asarray(f, dtype=jnp.float64)
     n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_species != op.t_hats.shape[0]:
         raise ValueError("f species axis does not match t_hats")
@@ -131,25 +132,25 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
         raise ValueError("f zeta axis does not match ddzeta")
 
     l = jnp.arange(n_xi, dtype=jnp.float64)  # row L
-    x = op.x.astype(jnp.float64)
+    x = op.x
 
     # Broadcast helpers
-    sqrt_t_over_m = jnp.sqrt(op.t_hats / op.m_hats).astype(jnp.float64)  # (S,)
+    sqrt_t_over_m = jnp.sqrt(op.t_hats / op.m_hats)  # (S,)
 
     # -------------------------------------------------------------------------
     # Streaming terms (off-diagonal in L): couple L <-> L±1
     # -------------------------------------------------------------------------
-    v_theta = (op.b_hat_sup_theta / op.b_hat).astype(jnp.float64)  # (T,Z)
-    v_zeta = (op.b_hat_sup_zeta / op.b_hat).astype(jnp.float64)  # (T,Z)
+    v_theta = (op.b_hat_sup_theta / op.b_hat)  # (T,Z)
+    v_zeta = (op.b_hat_sup_zeta / op.b_hat)  # (T,Z)
     v_theta_s = sqrt_t_over_m[:, None, None] * v_theta[None, :, :]  # (S,T,Z)
     v_zeta_s = sqrt_t_over_m[:, None, None] * v_zeta[None, :, :]  # (S,T,Z)
 
     # d/dtheta applied to f at each (s,x,l,zeta): (S,X,L,T,Z)
-    dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta.astype(jnp.float64), f.astype(jnp.float64))
+    dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta, f)
     dtheta_f = dtheta_f * v_theta_s[:, None, None, :, :]  # row-scaling
 
     # d/dzeta applied to f at each (s,x,l,theta): (S,X,L,T,Z)
-    dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta.astype(jnp.float64), f.astype(jnp.float64))
+    dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta, f)
     dzeta_f = dzeta_f * v_zeta_s[:, None, None, :, :]
 
     # L-coupling coefficients for row L:
@@ -174,11 +175,9 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
     # -------------------------------------------------------------------------
     # Mirror term (off-diagonal in L): couple L <-> L±1
     # -------------------------------------------------------------------------
-    mirror_geom = (
-        op.b_hat_sup_theta * op.db_hat_dtheta + op.b_hat_sup_zeta * op.db_hat_dzeta
-    ).astype(jnp.float64)
+    mirror_geom = op.b_hat_sup_theta * op.db_hat_dtheta + op.b_hat_sup_zeta * op.db_hat_dzeta
     mirror_factor = -sqrt_t_over_m[:, None, None] * mirror_geom[None, :, :] / (
-        2.0 * (op.b_hat.astype(jnp.float64) ** 2)
+        2.0 * (op.b_hat ** 2)
     )  # (S,T,Z)
 
     coef_mirror_plus = (l + 1.0) * (l + 2.0) / (2.0 * l + 3.0)  # (L,)
