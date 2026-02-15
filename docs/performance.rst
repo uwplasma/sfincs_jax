@@ -311,20 +311,20 @@ Latest fixture-based snapshot (4 repeats, compile excluded for JAX):
      - max abs(ΔL11)
    * - ``scheme1``
      - 0.0275
-     - 0.0984
+     - 0.1035
      - 3.10e-13
    * - ``scheme11``
      - 3.6393
-     - 0.1325
-     - 1.39e-15
+     - 0.1404
+     - 1.41e-15
    * - ``scheme12``
      - 0.00888
-     - 0.1151
-     - 8.62e-08
+     - 0.1219
+     - 9.68e-08
    * - ``scheme5_filtered``
      - 2.9621
-     - 0.1226
-     - 6.57e-16
+     - 0.1326
+     - 5.82e-16
 
 Fixture snapshot note: these values come from the frozen Fortran fixtures used by
 ``examples/performance/benchmark_transport_l11_vs_fortran.py`` when no local Fortran
@@ -356,21 +356,21 @@ Latest snapshot (3 repeats):
      - Compile estimate (s)
      - Warm steady solve (s/run)
    * - ``scheme1``
-     - 1.4704
-     - 0.0294
+     - 1.6422
+     - 0.0290
    * - ``scheme11``
-     - 1.3605
-     - 0.0357
+     - 1.4366
+     - 0.0350
    * - ``scheme12``
-     - 1.4314
-     - 0.0400
+     - 1.3499
+     - 0.0407
    * - ``scheme5_filtered``
-     - 1.4005
-     - 0.0439
+     - 1.5037
+     - 0.0440
 
 
 Memory footprint and compilation-time optimization (literature-backed)
----------------------------------------------------------------------
+-----------------------------------------------------------------------
 
 The main memory and compile-time levers for ``sfincs_jax`` map to standard JAX/XLA
 mechanisms and Krylov-solver theory. The items below are the highest-ROI, literature-backed

@@ -33,6 +33,8 @@ from .transport_matrix import (
     transport_matrix_size_from_rhs_mode,
     v3_transport_diagnostics_vm_only_batch_jit,
     v3_transport_diagnostics_vm_only_batch_remat_jit,
+    v3_transport_diagnostics_vm_only_batch_op0_jit,
+    v3_transport_diagnostics_vm_only_batch_op0_remat_jit,
     v3_transport_matrix_from_flux_arrays,
 )
 from .v3_system import _source_basis_constraint_scheme_1
@@ -3186,10 +3188,8 @@ def solve_v3_transport_matrix_linear_gmres(
     op_matvec_by_index = [op_rhs if use_op_rhs_in_matvec else op0 for op_rhs in op_rhs_by_index]
 
     env_diag_op = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_OP", "").strip().lower()
-    if env_diag_op == "rhs":
-        diag_op_by_index = op_rhs_by_index
-    else:
-        diag_op_by_index = [op0 for _ in which_rhs_values]
+    use_diag_op0 = env_diag_op != "rhs"
+    diag_op_by_index = op_rhs_by_index if not use_diag_op0 else None
 
     matvec_full_cache: dict[tuple[object, ...], Callable[[jnp.ndarray], jnp.ndarray]] = {}
     matvec_reduced_cache: dict[tuple[object, ...], Callable[[jnp.ndarray], jnp.ndarray]] = {}
@@ -3668,7 +3668,6 @@ def solve_v3_transport_matrix_linear_gmres(
     if emit is not None:
         emit(0, "solve_v3_transport_matrix_linear_gmres: computing whichRHS diagnostics (batched)")
     x_stack = jnp.stack([state_vectors[which_rhs] for which_rhs in which_rhs_values], axis=0)  # (N,total)
-    diag_op_stack = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *diag_op_by_index)
     remat_env = os.environ.get("SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS", "").strip().lower()
     if remat_env in {"1", "true", "yes", "on"}:
         use_remat_diag = True
@@ -3681,8 +3680,21 @@ def solve_v3_transport_matrix_linear_gmres(
         except ValueError:
             remat_min = 20000
         use_remat_diag = int(x_stack.size) >= remat_min
-    diag_fn = v3_transport_diagnostics_vm_only_batch_remat_jit if use_remat_diag else v3_transport_diagnostics_vm_only_batch_jit
-    diag_stack = diag_fn(op_stack=diag_op_stack, x_full_stack=x_stack)
+    if use_diag_op0:
+        diag_fn = (
+            v3_transport_diagnostics_vm_only_batch_op0_remat_jit
+            if use_remat_diag
+            else v3_transport_diagnostics_vm_only_batch_op0_jit
+        )
+        diag_stack = diag_fn(op0=op0, x_full_stack=x_stack)
+    else:
+        diag_op_stack = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *diag_op_by_index)
+        diag_fn = (
+            v3_transport_diagnostics_vm_only_batch_remat_jit
+            if use_remat_diag
+            else v3_transport_diagnostics_vm_only_batch_jit
+        )
+        diag_stack = diag_fn(op_stack=diag_op_stack, x_full_stack=x_stack)
 
     diag_pf_arr = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
     diag_hf_arr = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
