@@ -1,5 +1,13 @@
 #!/usr/bin/env python
 
+"""Run sfincs_jax and write a SFINCS-style sfincsOutput.h5.
+
+This module is the shared execution backend for the utils scripts. It defaults
+to reading ``input.namelist`` in the current directory and writing a local
+``sfincsOutput.h5``. Use ``--input`` and ``--out`` to target other paths, or
+import ``run_sfincs_jax`` from Python to embed it in custom workflows.
+"""
+
 from __future__ import annotations
 
 import argparse

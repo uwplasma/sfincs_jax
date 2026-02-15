@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 
+"""Nested radial + Er scan (scanType=5).
+
+Called by ``sfincsScan`` when ``!ss scanType = 5``. Uses ``profiles`` to set
+plasma profiles, then launches an Er scan at each radius.
+"""
+
 # This script will not work if called directly.
 # From the command line, you should call sfincsScan instead.
 

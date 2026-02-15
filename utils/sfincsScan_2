@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Radial electric field scan (scanType=2).
+
+Called by ``sfincsScan`` when ``!ss scanType = 2``. Creates subdirectories for
+each Er value and runs sfincs_jax. Configure ``!ss NErs``, ``ErMin``, and
+``ErMax`` (or ``dPhiHatd*`` equivalents) in ``input.namelist``.
+"""
+
 # This script will not work if called directly.
 # From the command line, you should call sfincsScan instead.
 

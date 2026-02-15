@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Resolution convergence scan (scanType=1).
+
+Called by ``sfincsScan`` when ``!ss scanType = 1``. Reads the ``...MinFactor``,
+``...MaxFactor``, and ``...NumRuns`` directives for resolution parameters and
+launches sfincs_jax runs in subdirectories.
+"""
+
 # This script will not work if called directly.
 # From the command line, you should call sfincsScan instead.
 

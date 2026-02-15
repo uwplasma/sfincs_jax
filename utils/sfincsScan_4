@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 
+"""Radial scan using a profiles file (scanType=4).
+
+Called by ``sfincsScan`` when ``!ss scanType = 4``. Reads ``profiles`` to set
+density/temperature profiles and launches one run per radius.
+"""
+
 # This script will not work if called directly.
 # From the command line, you should call sfincsScan instead.
 

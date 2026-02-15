@@ -1,4 +1,6 @@
 #! 
+"""Utility helpers for the ModelTest_AI scripts (plotting/integration)."""
+
 # Description:
 #************* 
 # Python script containing various functions for plotting, integrating etc.

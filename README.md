@@ -178,9 +178,15 @@ Generate a small gallery:
 python examples/utils/generate_utils_gallery.py
 ```
 
-Example figure from `sfincsPlot`:
+Example figures from the ported utilities:
 
 ![sfincsPlot example](docs/_static/figures/utils/sfincsPlot_fig1.png)
+![Monoenergetic transport coefficients](docs/_static/figures/utils/monoenergetic_transport_coeffs.png)
+![Bootstrap current vs collisionality](docs/_static/figures/utils/bootstrap_current_vs_collisionality.png)
+
+The utilities honor the upstream `!ss` scan directives in `input.namelist`
+(see `docs/utils.rst`) and produce the same scan layouts as the original
+SFINCS v3 scripts.
 
 ## Upstream SFINCS compatibility and parity status
 

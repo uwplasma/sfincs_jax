@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Run-spec radial+Er scan (scanType=22).
+
+Called by ``sfincsScan`` when ``!ss scanType = 22``. Uses ``runspec.dat`` (or
+``!ss runSpecFile``) to define radial points and launches an Er scan in each
+subdirectory.
+"""
+
 # This script will not work if called directly.
 # From the command line, you should call sfincsScan instead.
 #

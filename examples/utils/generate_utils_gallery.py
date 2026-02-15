@@ -44,6 +44,7 @@ def _prepare_input(
     *,
     extra_lines: list[str] | None = None,
     resolution_overrides: list[str] | None = None,
+    group_overrides: dict[str, list[str]] | None = None,
 ) -> None:
     text = base.read_text()
     # Keep resolutions tiny for speed.
@@ -59,6 +60,9 @@ def _prepare_input(
         "resolutionParameters",
         overrides,
     )
+    if group_overrides:
+        for group, lines in group_overrides.items():
+            text = _inject_group(text, group, lines)
     if extra_lines:
         text += "\n" + "\n".join(extra_lines) + "\n"
     dest.write_text(text)
@@ -95,6 +99,8 @@ def main() -> None:
 
     base_rhs1 = REPO_ROOT / "tests" / "ref" / "pas_1species_PAS_noEr_tiny.input.namelist"
     base_scheme11 = REPO_ROOT / "tests" / "ref" / "output_scheme11_1species_tiny.input.namelist"
+    base_mono = REPO_ROOT / "tests" / "ref" / "monoenergetic_PAS_tiny_scheme11.input.namelist"
+    base_bootstrap = REPO_ROOT / "tests" / "reduced_inputs" / "geometryScheme4_2species_noEr.input.namelist"
 
     # sfincsPlot
     work = WORK_DIR / "sfincsPlot"
@@ -224,6 +230,10 @@ def main() -> None:
             "nu_n",
             "--y",
             "particleFlux_vm_psiHat_1",
+            "--xscale",
+            "linear",
+            "--yscale",
+            "linear",
         ],
         cwd=work,
     )
@@ -257,6 +267,100 @@ def main() -> None:
             str(FIG_DIR / "ModelTest_AI.png"),
         ],
         cwd=model_dir,
+    )
+
+    # Monoenergetic transport coefficients vs collisionality for multiple EStar
+    mono_dirs = []
+    for idx, estar in enumerate([-0.2, 0.0, 0.2]):
+        work = WORK_DIR / f"mono_collisionality_E{idx}"
+        work.mkdir(parents=True, exist_ok=True)
+        extra = [
+            "!ss scanType = 3",
+            "!ss scanVariable = nuPrime",
+            "!ss scanVariableMin = 0.1",
+            "!ss scanVariableMax = 1.0",
+            "!ss scanVariableN = 3",
+            "!ss scanVariableScale = log",
+        ]
+        _prepare_input(
+            base_mono,
+            work / "input.namelist",
+            extra_lines=extra,
+            group_overrides={
+                "physicsParameters": [f"  EStar = {estar}"],
+            },
+            resolution_overrides=[
+                "  Ntheta = 5",
+                "  Nzeta = 5",
+                "  Nxi = 4",
+                "  NL = 3",
+                "  Nx = 1",
+            ],
+        )
+        _copy_equilibrium(work)
+        _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
+        _run(
+            [sys.executable, str(UTILS / "sfincsScanPlot_3"), "--save", str(FIG_DIR / f"mono_collisionality_E{idx}.png")],
+            cwd=work,
+        )
+        mono_dirs.append(work)
+    _run(
+        [
+            sys.executable,
+            str(UTILS / "sfincsScanPlot_combine"),
+            *[str(d) for d in mono_dirs],
+            "--save",
+            str(FIG_DIR / "monoenergetic_transport_coeffs.png"),
+        ],
+        cwd=WORK_DIR,
+    )
+
+    # Bootstrap current vs collisionality (2-species PAS, geometryScheme=4)
+    work = WORK_DIR / "bootstrap_collisionality"
+    work.mkdir(parents=True, exist_ok=True)
+    extra = [
+        "!ss scanType = 3",
+        "!ss scanVariable = nu_n",
+        "!ss scanVariableMin = 1e-3",
+        "!ss scanVariableMax = 1e-2",
+        "!ss scanVariableN = 3",
+        "!ss scanVariableScale = log",
+    ]
+    _prepare_input(
+        base_bootstrap,
+        work / "input.namelist",
+        extra_lines=extra,
+        group_overrides={
+            "export_f": [
+                "  export_full_f = .false.",
+                "  export_delta_f = .false.",
+            ],
+        },
+        resolution_overrides=[
+            "  Ntheta = 5",
+            "  Nzeta = 5",
+            "  Nxi = 4",
+            "  NL = 3",
+            "  Nx = 3",
+        ],
+    )
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
+    _run(
+        [
+            sys.executable,
+            str(UTILS / "sfincsScanPlot_21"),
+            "--save",
+            str(FIG_DIR / "bootstrap_current_vs_collisionality.png"),
+            "--x",
+            "nu_n",
+            "--y",
+            "FSABjHat_1",
+            "--xscale",
+            "log",
+            "--yscale",
+            "linear",
+        ],
+        cwd=work,
     )
 
 

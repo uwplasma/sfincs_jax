@@ -1,5 +1,15 @@
 #!/usr/bin/env python
 
+"""Plot distribution-function slices (delta-f or full-f) from sfincs_jax.
+
+The script inspects ``sfincsOutput.h5`` and plots the two coordinates with the
+highest resolution. If the output file is missing, it runs sfincs_jax using a
+local ``input.namelist``. Enable ``export_delta_f`` or ``export_full_f`` in the
+namelist to generate the required datasets.
+
+Use ``--save /path/plot.png`` to write a PNG without opening a GUI window.
+"""
+
 # This python script plots the distribution functions from a single SFINCS run.
 # The script checks to see which dimensions have the highest resolution, and will plot contours of f versus those 2 coordinates.
 # In the other coordinates, the first index is used.
@@ -40,7 +50,7 @@ for i, arg in enumerate(args):
 if save_path:
     display_plot = False
 
-output_path = Path("sfincsOutput.h5")
+output_path = Path("sfincsOutput.h5")  # Default output name used by sfincsScan + plots.
 if not output_path.exists():
     input_path = Path("input.namelist")
     if input_path.exists():

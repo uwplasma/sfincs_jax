@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Shared helpers for sfincsScan and sfincsScanPlot.
+
+Provides functions for reading ``!ss`` scan directives and standard namelist
+entries from ``input.namelist``. The scan scripts assume the output filename is
+``sfincsOutput.h5`` (matching upstream SFINCS conventions).
+"""
+
 import os
 import sys
 import time
@@ -13,13 +20,13 @@ start_time_common = time.time()
 
 # This python file contains several subroutines that are used both in launching and processing parameter scans in sfincs.
 
-inputFilename = "input.namelist"
-outputFilename = "sfincsOutput.h5"
+inputFilename = "input.namelist"  # sfincsScan reads this file in each run directory.
+outputFilename = "sfincsOutput.h5"  # Keep this name for compatibility with scan plots.
 
 defaultVariablesFilename = "globalVariables.F90"
 
 # Code preceding instructions for sfincsScan in the input.namelist file:
-commentCode = "!ss"
+commentCode = "!ss"  # Prefix for sfincsScan directives embedded in input.namelist.
 
 import string
 

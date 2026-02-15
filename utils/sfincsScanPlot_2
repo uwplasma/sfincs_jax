@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 
+"""Plot radial-electric-field scans (scanType=2).
+
+Reads ``sfincsOutput.h5`` in each scan subdirectory and plots fluxes plus
+ambipolar solutions. Use ``--save /path.png`` or ``pdf`` for batch runs.
+"""
+
 # This python script plots the output of a SFINCS E_r scan.
 
 import time

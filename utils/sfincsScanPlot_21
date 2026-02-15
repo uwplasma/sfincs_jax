@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Plot arbitrary x/y datasets from a scan (scanType=21/22).
+
+This script is interactive by default. For batch usage, pass:
+``--x <dataset> --y <dataset> --xscale <lin/log> --yscale <lin/log> --save <png>``.
+``--x`` and ``--y`` can include array indices like ``particleFlux_vm_psiHat_1``.
+"""
+
 # This python script plots the output of a SFINCS scan for scanType = 3
 # This is a scan in which any 1 numeric input parameter is varied.
 

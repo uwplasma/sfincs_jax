@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Plot convergence-scan results (scanType=1).
+
+Expects a directory structure produced by ``sfincsScan`` with
+``!ss scanType = 1``. Use ``--save /path.png`` or ``pdf`` for non-interactive
+batch runs.
+"""
+
 # This python script plots the output of a SFINCS convergence scan.
 
 from builtins import input

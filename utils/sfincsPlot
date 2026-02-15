@@ -1,5 +1,13 @@
 #!/usr/bin/env python
 
+"""Plot geometry and core diagnostics from a single sfincsOutput.h5.
+
+If ``sfincsOutput.h5`` is missing, this script runs sfincs_jax using a local
+``input.namelist``. Use ``--save-prefix /path/prefix`` to write figures to disk
+without opening a GUI window. Update ``input.namelist`` to change the physics
+inputs, or point this script at a different directory before running.
+"""
+
 # This python script plots the output of a single SFINCS run.
 
 import sys
@@ -31,7 +39,7 @@ for i, arg in enumerate(args):
 if save_prefix:
     display_plot = False
 
-output_path = Path("sfincsOutput.h5")
+output_path = Path("sfincsOutput.h5")  # Default output name used by sfincsScan + plots.
 if not output_path.exists():
     input_path = Path("input.namelist")
     if input_path.exists():

@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Overlay multiple scan plots on a single set of axes.
+
+Call this script with a list of scan directories (each containing
+``sfincsScan.dat`` produced by sfincsScanPlot). Use ``--save /path.png`` to
+write a figure in batch runs.
+"""
+
 # This python script combines several the results of multiple sfincsScans,
 # plotting the results on the same axes.
 # You can either call this script directly, or else call sfincsScanPlot with arguments.

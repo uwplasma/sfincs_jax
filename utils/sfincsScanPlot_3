@@ -1,5 +1,12 @@
 #!/usr/bin/env python
 
+"""Plot single-parameter scans (scanType=3).
+
+The x-axis is the scanned variable (``!ss scanVariable``). For RHSMode > 1, the
+plot shows transport matrix elements L_ij versus the scan variable. Use
+``--save /path.png`` or ``pdf`` for non-interactive runs.
+"""
+
 # This python script plots the output of a SFINCS scan for scanType = 3
 # This is a scan in which any 1 numeric input parameter is varied.
 

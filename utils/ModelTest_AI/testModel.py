@@ -1,4 +1,16 @@
 #! 
+"""Compare impurity-density harmonics with an analytic model.
+
+This script reads one or more ``sfincsOutput.h5`` files (paths to directories)
+and compares the sine/cosine parts of the perturbed impurity density with the
+model formulas in the upstream SFINCS literature. It is primarily intended as a
+sanity check/visualization tool and runs directly on sfincs_jax outputs.
+
+Examples:
+  python testModel.py /path/run1,/path/run2 Lperp label1,label2
+  python testModel.py /path/run1 epsilont --save /tmp/ModelTest.png
+"""
+
 # Description:
 #************* 
 # Python script to compare output from SFINCS with theoretical model.

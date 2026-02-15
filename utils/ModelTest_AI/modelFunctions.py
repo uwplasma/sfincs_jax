@@ -1,4 +1,10 @@
 #! 
+"""Utility functions for the impurity-density model comparison.
+
+Provides the algebra used by ``testModel.py`` to compute sine/cosine harmonics
+and compare against sfincs_jax output.
+"""
+
 # Description:
 #************* 
 # Python script containing various functions used to calculate the sine and cosine parts of the perturbed 

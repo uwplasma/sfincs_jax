@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 
+"""Helper for radial scans (scanType=4/5).
+
+Builds the list of radii and interpolates density/temperature profiles from the
+``profiles`` file. Called internally by ``sfincsScan_4`` and ``sfincsScan_5``.
+"""
+
 # This script will not work if called directly.
 # From the command line, you should call sfincsScan with scanType=4, which in turn calls sfincsScan_4, which in turn calls this script.
 
@@ -754,4 +760,3 @@ else:
 print ()
 print ("Here are the directories that will be created:")
 print (directories)
-
