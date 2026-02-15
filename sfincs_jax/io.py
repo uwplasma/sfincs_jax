@@ -905,6 +905,22 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     out["export_full_f"] = _fortran_logical(bool(export_f.get("EXPORT_FULL_F", False)))
     out["export_delta_f"] = _fortran_logical(bool(export_f.get("EXPORT_DELTA_F", False)))
 
+    # Export-f grids: for now, always use the full internal grids. This matches the
+    # original utilities' expectations when export_f_*_option=0, and provides a
+    # stable target for plotting scripts even when export_f arrays are missing.
+    out["export_f_theta_option"] = np.asarray(0, dtype=np.int32)
+    out["export_f_zeta_option"] = np.asarray(0, dtype=np.int32)
+    out["export_f_x_option"] = np.asarray(0, dtype=np.int32)
+    out["export_f_xi_option"] = np.asarray(0, dtype=np.int32)
+    out["export_f_theta"] = np.asarray(grids.theta, dtype=np.float64)
+    out["export_f_zeta"] = np.asarray(grids.zeta, dtype=np.float64)
+    out["export_f_x"] = np.asarray(grids.x, dtype=np.float64)
+    out["export_f_xi"] = np.asarray(np.arange(int(grids.n_xi)), dtype=np.float64)
+    out["N_export_f_theta"] = np.asarray(int(grids.theta.shape[0]), dtype=np.int32)
+    out["N_export_f_zeta"] = np.asarray(int(grids.zeta.shape[0]), dtype=np.int32)
+    out["N_export_f_x"] = np.asarray(int(grids.x.shape[0]), dtype=np.int32)
+    out["N_export_f_xi"] = np.asarray(int(grids.n_xi), dtype=np.int32)
+
     out["force0RadialCurrentInEquilibrium"] = _fortran_logical(True)
     out["includePhi1"] = _fortran_logical(bool(phys.get("INCLUDEPHI1", False)))
     out["includePhi1InCollisionOperator"] = _fortran_logical(bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False)))
@@ -1566,6 +1582,28 @@ def write_sfincs_jax_output_h5(
         data["elapsed time (s)"] = np.zeros((n_iter,), dtype=np.float64)
         if include_phi1:
             data["didNonlinearCalculationConverge"] = _fortran_logical(True)
+
+        export_full_f = bool(np.asarray(data.get("export_full_f", 0)).reshape(()))
+        export_delta_f = bool(np.asarray(data.get("export_delta_f", 0)).reshape(()))
+        if export_full_f or export_delta_f:
+            from .transport_matrix import f0_l0_v3_from_operator  # noqa: PLC0415
+
+            op_use = result.op
+            f0_l0 = f0_l0_v3_from_operator(op_use)
+            delta_list: list[np.ndarray] = []
+            full_list: list[np.ndarray] = []
+            for x_full in xs:
+                f_delta = jnp.asarray(x_full[: op_use.f_size], dtype=jnp.float64).reshape(op_use.fblock.f_shape)
+                if export_delta_f:
+                    delta_list.append(np.asarray(jnp.transpose(f_delta, (1, 2, 4, 3, 0)), dtype=np.float64))
+                if export_full_f:
+                    f_full = f_delta.at[:, :, 0, :, :].add(f0_l0)
+                    full_list.append(np.asarray(jnp.transpose(f_full, (1, 2, 4, 3, 0)), dtype=np.float64))
+
+            if export_delta_f:
+                data["delta_f"] = _fortran_h5_layout(np.stack(delta_list, axis=-1))
+            if export_full_f:
+                data["full_f"] = _fortran_h5_layout(np.stack(full_list, axis=-1))
 
         # Layout helpers (Python-read order):
         def _stz_to_ztsN(a_list: list[np.ndarray]) -> np.ndarray:

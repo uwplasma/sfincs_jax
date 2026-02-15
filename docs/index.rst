@@ -29,6 +29,7 @@ output compatibility, matrix-free performance, and differentiability.
    upstream_docs
    fortran_examples
    examples
+   utils
    api
    parity
    references

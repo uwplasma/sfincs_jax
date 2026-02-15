@@ -165,6 +165,23 @@ python examples/transport/transport_matrix_recycle_demo.py
 python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver bicgstab
 ```
 
+## Utils (ported upstream scripts)
+
+The repository root `utils/` folder ports the full SFINCS v3 `utils` suite to
+`sfincs_jax`. Every script runs via a Python driver (`utils/sfincs_jax_driver.py`)
+and never calls the Fortran executable. Plotting and scan workflows produce the
+same figure layouts as upstream.
+
+Generate a small gallery:
+
+```bash
+python examples/utils/generate_utils_gallery.py
+```
+
+Example figure from `sfincsPlot`:
+
+![sfincsPlot example](docs/_static/figures/utils/sfincsPlot_fig1.png)
+
 ## Upstream SFINCS compatibility and parity status
 
 The repository vendors the upstream Fortran v3 example suite under `examples/sfincs_examples/`.
