@@ -35,7 +35,7 @@ Current benchmark snapshot (Fortran source: frozen fixtures, 4 repeats, JAX runt
 | scheme12 | 0.00888 | 0.1151 | 8.62e-08 |
 | scheme5_filtered | 2.9621 | 0.1226 | 6.57e-16 |
 
-Live snapshot notes: the local Fortran binary was built against a PETSc MPIUNI (serial, no MUMPS) configuration to avoid MPI init issues in sandboxed runs.
+Snapshot note: when running with a local Fortran binary, PETSc MPIUNI (serial, no MUMPS) avoids MPI init issues in sandboxed runs.
 
 Outputs are written to:
 
