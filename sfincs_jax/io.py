@@ -902,24 +902,27 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     point_at_x0 = x_grid_scheme in {2, 6}
     out["pointAtX0"] = _fortran_logical(point_at_x0)
 
-    out["export_full_f"] = _fortran_logical(bool(export_f.get("EXPORT_FULL_F", False)))
-    out["export_delta_f"] = _fortran_logical(bool(export_f.get("EXPORT_DELTA_F", False)))
+    export_full_f = bool(export_f.get("EXPORT_FULL_F", False))
+    export_delta_f = bool(export_f.get("EXPORT_DELTA_F", False))
+    out["export_full_f"] = _fortran_logical(export_full_f)
+    out["export_delta_f"] = _fortran_logical(export_delta_f)
 
-    # Export-f grids: for now, always use the full internal grids. This matches the
-    # original utilities' expectations when export_f_*_option=0, and provides a
-    # stable target for plotting scripts even when export_f arrays are missing.
-    out["export_f_theta_option"] = np.asarray(0, dtype=np.int32)
-    out["export_f_zeta_option"] = np.asarray(0, dtype=np.int32)
-    out["export_f_x_option"] = np.asarray(0, dtype=np.int32)
-    out["export_f_xi_option"] = np.asarray(0, dtype=np.int32)
-    out["export_f_theta"] = np.asarray(grids.theta, dtype=np.float64)
-    out["export_f_zeta"] = np.asarray(grids.zeta, dtype=np.float64)
-    out["export_f_x"] = np.asarray(grids.x, dtype=np.float64)
-    out["export_f_xi"] = np.asarray(np.arange(int(grids.n_xi)), dtype=np.float64)
-    out["N_export_f_theta"] = np.asarray(int(grids.theta.shape[0]), dtype=np.int32)
-    out["N_export_f_zeta"] = np.asarray(int(grids.zeta.shape[0]), dtype=np.int32)
-    out["N_export_f_x"] = np.asarray(int(grids.x.shape[0]), dtype=np.int32)
-    out["N_export_f_xi"] = np.asarray(int(grids.n_xi), dtype=np.int32)
+    # Export-f grids are only written when export_f is requested, matching v3
+    # fixtures. When enabled, default to the full internal grids so plotting
+    # utilities have a stable target.
+    if export_full_f or export_delta_f:
+        out["export_f_theta_option"] = np.asarray(_get_int(export_f, "EXPORT_F_THETA_OPTION", 0), dtype=np.int32)
+        out["export_f_zeta_option"] = np.asarray(_get_int(export_f, "EXPORT_F_ZETA_OPTION", 0), dtype=np.int32)
+        out["export_f_x_option"] = np.asarray(_get_int(export_f, "EXPORT_F_X_OPTION", 0), dtype=np.int32)
+        out["export_f_xi_option"] = np.asarray(_get_int(export_f, "EXPORT_F_XI_OPTION", 0), dtype=np.int32)
+        out["export_f_theta"] = np.asarray(grids.theta, dtype=np.float64)
+        out["export_f_zeta"] = np.asarray(grids.zeta, dtype=np.float64)
+        out["export_f_x"] = np.asarray(grids.x, dtype=np.float64)
+        out["export_f_xi"] = np.asarray(np.arange(int(grids.n_xi)), dtype=np.float64)
+        out["N_export_f_theta"] = np.asarray(int(grids.theta.shape[0]), dtype=np.int32)
+        out["N_export_f_zeta"] = np.asarray(int(grids.zeta.shape[0]), dtype=np.int32)
+        out["N_export_f_x"] = np.asarray(int(grids.x.shape[0]), dtype=np.int32)
+        out["N_export_f_xi"] = np.asarray(int(grids.n_xi), dtype=np.int32)
 
     out["force0RadialCurrentInEquilibrium"] = _fortran_logical(True)
     out["includePhi1"] = _fortran_logical(bool(phys.get("INCLUDEPHI1", False)))
@@ -1583,8 +1586,8 @@ def write_sfincs_jax_output_h5(
         if include_phi1:
             data["didNonlinearCalculationConverge"] = _fortran_logical(True)
 
-        export_full_f = bool(np.asarray(data.get("export_full_f", 0)).reshape(()))
-        export_delta_f = bool(np.asarray(data.get("export_delta_f", 0)).reshape(()))
+        export_full_f = int(np.asarray(data.get("export_full_f", 0)).reshape(())) == 1
+        export_delta_f = int(np.asarray(data.get("export_delta_f", 0)).reshape(())) == 1
         if export_full_f or export_delta_f:
             from .transport_matrix import f0_l0_v3_from_operator  # noqa: PLC0415
 

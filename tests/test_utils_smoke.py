@@ -9,11 +9,22 @@ from pathlib import Path
 def _inject_group(text: str, group: str, lines: list[str]) -> str:
     out: list[str] = []
     inserted = False
+    in_group = False
+    group_key = f"&{group.lower()}"
     for line in text.splitlines():
-        out.append(line)
-        if line.strip().lower().startswith(f"&{group.lower()}"):
+        stripped = line.strip().lower()
+        if stripped.startswith(group_key):
+            in_group = True
+            out.append(line)
+            continue
+        if in_group and stripped == "/":
+            # Insert at end of group so overrides win.
             out.extend(lines)
+            out.append(line)
             inserted = True
+            in_group = False
+            continue
+        out.append(line)
     if not inserted:
         out.append(f"&{group}")
         out.extend(lines)
