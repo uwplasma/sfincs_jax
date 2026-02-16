@@ -41,7 +41,7 @@ from .transport_matrix import (
     v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit,
     v3_transport_matrix_from_flux_arrays,
 )
-from .v3_system import _fs_average_factor, _source_basis_constraint_scheme_1
+from .v3_system import _fs_average_factor, _ix_min, _source_basis_constraint_scheme_1
 from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
@@ -1049,6 +1049,46 @@ def _build_rhsmode23_block_preconditioner(
     return _apply_reduced
 
 
+def _build_rhsmode1_schur_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Approximate Schur-complement preconditioner for constraintScheme=2 RHSMode=1 solves."""
+    base_precond = _build_rhsmode1_block_preconditioner(op=op)
+    f_size = int(op.f_size)
+    extra_size = int(op.extra_size)
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        if int(op.rhs_mode) != 1 or int(op.constraint_scheme) != 2 or int(op.phi1_size) != 0 or extra_size == 0:
+            return base_precond(r_full)
+        r_f = r_full[:f_size]
+        r_e = r_full[f_size:]
+        zeros_e = jnp.zeros((extra_size,), dtype=r_full.dtype)
+        r0 = jnp.concatenate([r_f, zeros_e], axis=0)
+        y_full = base_precond(r0)
+        y_f = y_full[:f_size]
+        f = y_f.reshape(op.fblock.f_shape)
+        c_y = _constraint_scheme2_source_from_f(op, f)
+        x_e = c_y.reshape((-1,)) - r_e
+        f_corr = _constraint_scheme2_inject_source(op, x_e.reshape((int(op.n_species), int(op.n_x))))
+        r_corr = jnp.concatenate([f_corr, zeros_e], axis=0)
+        delta_full = base_precond(r_corr)
+        x_f = y_f + delta_full[:f_size]
+        return jnp.concatenate([x_f, x_e], axis=0)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 def _build_rhsmode1_theta_line_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -1387,11 +1427,14 @@ def solve_v3_full_system_linear_gmres(
 
     pas_project_env = os.environ.get("SFINCS_JAX_PAS_PROJECT_CONSTRAINTS", "").strip().lower()
     if pas_project_env in {"1", "true", "yes", "on"}:
-        pas_project_enabled = True
+        pas_project_mode = "on"
     elif pas_project_env in {"0", "false", "no", "off"}:
-        pas_project_enabled = False
+        pas_project_mode = "off"
+    elif pas_project_env in {"", "auto"}:
+        pas_project_mode = "auto"
     else:
-        pas_project_enabled = False
+        pas_project_mode = "off"
+    pas_project_enabled = bool(pas_project_mode == "on" or (pas_project_mode == "auto" and int(op.n_zeta) == 1))
     use_pas_projection = bool(
         pas_project_enabled
         and int(op.rhs_mode) == 1
@@ -1462,6 +1505,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "adi"
         elif rhs1_precond_env in {"1", "true", "yes", "on", "point", "point_block"}:
             rhs1_precond_kind = "point"
+        elif rhs1_precond_env in {"schur", "schur_complement", "constraint_schur"}:
+            rhs1_precond_kind = "schur"
         elif rhs1_precond_env in {"collision", "diag", "collision_diag"}:
             rhs1_precond_kind = "collision"
         else:
@@ -1844,6 +1889,10 @@ def solve_v3_full_system_linear_gmres(
                 return _build_rhsmode1_zeta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+            if rhs1_precond_kind == "schur":
+                return _build_rhsmode1_schur_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
             if rhs1_precond_kind == "collision":
                 return _build_rhsmode1_collision_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
@@ -2122,13 +2171,17 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind = "zeta_line"
         elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
             strong_precond_kind = "adi"
+        elif strong_precond_env in {"schur", "schur_complement", "constraint_schur"}:
+            strong_precond_kind = "schur"
         elif strong_precond_env == "auto":
             strong_precond_kind = None
         else:
             strong_precond_kind = None
 
         if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
-            if (
+            if int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
+                strong_precond_kind = "schur"
+            elif (
                 rhs1_precond_env == ""
                 and rhs1_precond_kind == "point"
                 and int(op.rhs_mode) == 1
@@ -2153,6 +2206,10 @@ def solve_v3_full_system_linear_gmres(
                 )
             elif strong_precond_kind == "zeta_line":
                 strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "schur":
+                strong_preconditioner_reduced = _build_rhsmode1_schur_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             else:
@@ -2367,6 +2424,8 @@ def solve_v3_full_system_linear_gmres(
                     return _build_rhsmode1_theta_line_preconditioner(op=op)
                 if rhs1_precond_kind == "zeta_line":
                     return _build_rhsmode1_zeta_line_preconditioner(op=op)
+                if rhs1_precond_kind == "schur":
+                    return _build_rhsmode1_schur_preconditioner(op=op)
                 if rhs1_precond_kind == "collision":
                     return _build_rhsmode1_collision_preconditioner(op=op)
                 if rhs1_precond_kind == "adi":
@@ -2562,13 +2621,17 @@ def solve_v3_full_system_linear_gmres(
                 strong_precond_kind = "zeta_line"
             elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
                 strong_precond_kind = "adi"
+            elif strong_precond_env in {"schur", "schur_complement", "constraint_schur"}:
+                strong_precond_kind = "schur"
             elif strong_precond_env == "auto":
                 strong_precond_kind = None
             else:
                 strong_precond_kind = None
 
             if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
-                if (
+                if int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
+                    strong_precond_kind = "schur"
+                elif (
                     rhs1_precond_env == ""
                     and rhs1_precond_kind == "point"
                     and int(op.rhs_mode) == 1
@@ -2591,6 +2654,8 @@ def solve_v3_full_system_linear_gmres(
                     strong_preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
                 elif strong_precond_kind == "zeta_line":
                     strong_preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                elif strong_precond_kind == "schur":
+                    strong_preconditioner_full = _build_rhsmode1_schur_preconditioner(op=op)
                 else:
                     pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
                     pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
@@ -3416,6 +3481,14 @@ def _constraint_scheme2_source_from_f(op: V3FullSystemOperator, f: jnp.ndarray) 
     factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
     y_avg = jnp.einsum("tz,sxtz->sx", factor, f[:, :, 0, :, :])  # (S,X)
     return y_avg
+
+
+def _constraint_scheme2_inject_source(op: V3FullSystemOperator, src: jnp.ndarray) -> jnp.ndarray:
+    """Inject constraintScheme=2 source terms into the L=0 rows of the f block."""
+    f = jnp.zeros(op.fblock.f_shape, dtype=jnp.float64)
+    ix0 = _ix_min(bool(op.point_at_x0))
+    f = f.at[:, ix0:, 0, :, :].set(src[:, ix0:, None, None])
+    return f.reshape((-1,))
 
 
 def _project_constraint_scheme1_nullspace_solution_with_residual(

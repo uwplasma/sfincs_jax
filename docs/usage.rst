@@ -160,6 +160,7 @@ performance without changing the input file:
   - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
   - ``adi``: apply the theta-line and zeta-line preconditioners sequentially (strongest of the built-ins,
     but also the most expensive).
+  - ``schur``: Schur-complement preconditioner for ``constraintScheme=2`` that keeps source constraints.
   - ``0``: disable.
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` before the default
@@ -318,7 +319,11 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS``: enable PAS-specific constraint projection for
   ``constraintScheme=2`` RHSMode=1 solves (drop explicit source unknowns and enforce
-  source = flux-surface-average of ``L=0``). Default: disabled.
+  source = flux-surface-average of ``L=0``).
+
+  - ``auto`` (default): enable only for tokamak-like cases with ``N_zeta=1``.
+  - ``1``/``true``: force enable for all PAS ``constraintScheme=2`` cases.
+  - ``0``/``false``: disable.
 
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
