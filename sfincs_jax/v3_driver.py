@@ -63,6 +63,15 @@ def _use_solver_jit() -> bool:
     return env not in {"0", "false", "no", "off"}
 
 
+def _precond_dtype() -> jnp.dtype:
+    env = os.environ.get("SFINCS_JAX_PRECOND_DTYPE", "").strip().lower()
+    if env in {"float32", "fp32", "f32", "32"}:
+        return jnp.float32
+    if env in {"float64", "fp64", "f64", "64", ""}:
+        return jnp.float64
+    return jnp.float64
+
+
 def _gmres_solve_dispatch(**kwargs):
     solver_fn = gmres_solve_jit if _use_solver_jit() else gmres_solve
     return solver_fn(**kwargs)
@@ -90,9 +99,28 @@ class _TransportXBlockPrecondCache:
     inv_xblock: jnp.ndarray
 
 
+@dataclass(frozen=True)
+class _LowRankXBlockPrecondCache:
+    d_inv: jnp.ndarray
+    d_inv_u: jnp.ndarray
+    v: jnp.ndarray
+    m_inv: jnp.ndarray
+
+
+@dataclass(frozen=True)
+class _TransportXmgPrecondCache:
+    inv_diag_f: jnp.ndarray
+    coarse_inv: jnp.ndarray
+    coarse_idx: jnp.ndarray
+
+
 _TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_DIAG_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
+_RHSMODE1_SCHUR_CACHE: dict[tuple[object, ...], jnp.ndarray] = {}
+_TRANSPORT_SXBLOCK_LR_PRECOND_CACHE: dict[tuple[object, ...], _LowRankXBlockPrecondCache] = {}
+_RHSMODE1_SXBLOCK_LR_PRECOND_CACHE: dict[tuple[object, ...], _LowRankXBlockPrecondCache] = {}
+_TRANSPORT_XMG_PRECOND_CACHE: dict[tuple[object, ...], _TransportXmgPrecondCache] = {}
 _RHSMODE1_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
@@ -151,8 +179,10 @@ def _hash_array(arr: jnp.ndarray | np.ndarray) -> str:
 
 def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[object, ...]:
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    precond_dtype = str(_precond_dtype())
     return (
         kind,
+        precond_dtype,
         int(op.rhs_mode),
         int(op.n_species),
         int(op.n_x),
@@ -193,8 +223,10 @@ def _transport_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[o
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
     pas = op.fblock.pas
     fp = op.fblock.fp
+    precond_dtype = str(_precond_dtype())
     return (
         kind,
+        precond_dtype,
         int(op.n_species),
         int(op.n_x),
         int(op.n_xi),
@@ -223,6 +255,7 @@ def _build_rhsmode23_collision_preconditioner(
     the identity shift, and is diagonal in (theta, zeta).
     """
     cache_key = _transport_precond_cache_key(op, "collision_diag")
+    precond_dtype = _precond_dtype()
     cached = _TRANSPORT_PRECOND_CACHE.get(cache_key)
     if cached is None:
         f_shape = op.fblock.f_shape
@@ -261,16 +294,18 @@ def _build_rhsmode23_collision_preconditioner(
         except ValueError:
             reg = 1e-10
         inv_diag_f = 1.0 / (diag + float(reg))
-        cached = _TransportPrecondCache(inv_diag_f=inv_diag_f)
+        cached = _TransportPrecondCache(inv_diag_f=jnp.asarray(inv_diag_f, dtype=precond_dtype))
         _TRANSPORT_PRECOND_CACHE[cache_key] = cached
 
     inv_diag_f = cached.inv_diag_f
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
         f = r_full[: op.f_size].reshape(op.fblock.f_shape)
         z_f = f * inv_diag_f
         tail = r_full[op.f_size :]
-        return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        return jnp.asarray(z_full, dtype=jnp.float64)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -296,6 +331,126 @@ def _build_rhsmode23_sxblock_preconditioner(
     """
     if op.fblock.fp is None:
         return _build_rhsmode23_collision_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+    low_rank_env = os.environ.get("SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K", "").strip()
+    if not low_rank_env:
+        low_rank_env = os.environ.get("SFINCS_JAX_FP_LOW_RANK_K", "").strip()
+    try:
+        low_rank_k = int(low_rank_env) if low_rank_env else 0
+    except ValueError:
+        low_rank_k = 0
+    low_rank_k = max(0, low_rank_k)
+
+    precond_dtype = _precond_dtype()
+    if low_rank_k > 0:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+        n_block = n_species * n_x
+        rank_k = min(int(low_rank_k), int(n_block))
+        cache_key = _transport_precond_cache_key(op, f"collision_sxblock_lr_{rank_k}")
+        cached_lr = _TRANSPORT_SXBLOCK_LR_PRECOND_CACHE.get(cache_key)
+        if cached_lr is None:
+            mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+            reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_REG", "").strip()
+            try:
+                reg = float(reg_env) if reg_env else 1e-10
+            except ValueError:
+                reg = 1e-10
+            identity_shift = float(op.fblock.identity_shift)
+            pas_diag = None
+            if op.fblock.pas is not None:
+                pas = op.fblock.pas
+                l_arr = np.arange(n_l, dtype=np.float64)
+                factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+                pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+
+            nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+            d_inv = np.zeros((n_l, n_block), dtype=np.float64)
+            d_inv_u = np.zeros((n_l, n_block, rank_k), dtype=np.float64)
+            v_lr = np.zeros((n_l, rank_k, n_block), dtype=np.float64)
+            m_inv = np.zeros((n_l, rank_k, rank_k), dtype=np.float64)
+
+            for l in range(n_l):
+                a_fp = np.array(mat[:, :, l, :, :], dtype=np.float64, copy=True)  # (S,S,X,X)
+                a_fp = a_fp.transpose(0, 2, 1, 3).reshape((n_block, n_block))
+                diag = np.full((n_block,), identity_shift + reg, dtype=np.float64)
+                if pas_diag is not None:
+                    diag += pas_diag[:, :, l].reshape((n_block,))
+                inactive_x = np.where(nxi_for_x <= l)[0]
+                if inactive_x.size:
+                    for ix in inactive_x:
+                        for s in range(n_species):
+                            idx = s * n_x + int(ix)
+                            a_fp[idx, :] = 0.0
+                            a_fp[:, idx] = 0.0
+                            diag[idx] = 1.0
+                d_inv_l = 1.0 / diag
+                d_inv[l, :] = d_inv_l
+                if rank_k > 0:
+                    try:
+                        u, svals, vt = np.linalg.svd(a_fp, full_matrices=False)
+                    except np.linalg.LinAlgError:
+                        u, svals, vt = np.linalg.svd(a_fp + 1e-12 * np.eye(n_block), full_matrices=False)
+                    k_use = min(rank_k, int(svals.shape[0]))
+                    if k_use > 0:
+                        u = u[:, :k_use]
+                        svals = svals[:k_use]
+                        vt = vt[:k_use, :]
+                        s_sqrt = np.sqrt(np.maximum(svals, 0.0))
+                        u_lr = u * s_sqrt[None, :]
+                        v_lr_l = s_sqrt[:, None] * vt
+                        d_inv_u_l = d_inv_l[:, None] * u_lr
+                        m = np.eye(k_use, dtype=np.float64) + v_lr_l @ d_inv_u_l
+                        try:
+                            m_inv_l = np.linalg.inv(m)
+                        except np.linalg.LinAlgError:
+                            m_inv_l = np.linalg.pinv(m, rcond=1e-12)
+                        if not np.all(np.isfinite(m_inv_l)):
+                            m_inv_l = np.linalg.pinv(m, rcond=1e-12)
+                        d_inv_u[l, :, :k_use] = d_inv_u_l
+                        v_lr[l, :k_use, :] = v_lr_l
+                        m_inv[l, :k_use, :k_use] = m_inv_l
+
+            cached_lr = _LowRankXBlockPrecondCache(
+                d_inv=jnp.asarray(d_inv, dtype=precond_dtype),
+                d_inv_u=jnp.asarray(d_inv_u, dtype=precond_dtype),
+                v=jnp.asarray(v_lr, dtype=precond_dtype),
+                m_inv=jnp.asarray(m_inv, dtype=precond_dtype),
+            )
+            _TRANSPORT_SXBLOCK_LR_PRECOND_CACHE[cache_key] = cached_lr
+
+        d_inv = cached_lr.d_inv
+        d_inv_u = cached_lr.d_inv_u
+        v_lr = cached_lr.v
+        m_inv = cached_lr.m_inv
+
+        def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+            r_full = jnp.asarray(r_full, dtype=precond_dtype)
+            f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+            f_l = jnp.transpose(f, (2, 0, 1, 3, 4))  # (L,S,X,T,Z)
+            f_l = f_l.reshape((int(op.n_xi), int(op.n_species) * int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+            d_r = d_inv[:, :, None, None] * f_l
+            if rank_k > 0:
+                tmp = jnp.einsum("lkn,lntz->lktz", v_lr, d_r)
+                tmp2 = jnp.einsum("lkm,lmtz->lktz", m_inv, tmp)
+                corr = jnp.einsum("lnk,lktz->lntz", d_inv_u, tmp2)
+                z_l = d_r - corr
+            else:
+                z_l = d_r
+            z_l = z_l.reshape((int(op.n_xi), int(op.n_species), int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+            z_f = jnp.transpose(z_l, (1, 2, 0, 3, 4))  # (S,X,L,T,Z)
+            tail = r_full[op.f_size :]
+            z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+            return jnp.asarray(z_full, dtype=jnp.float64)
+
+        if reduce_full is None or expand_reduced is None:
+            return _apply_full
+
+        def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+            z_full = _apply_full(expand_reduced(r_reduced))
+            return reduce_full(z_full)
+
+        return _apply_reduced
 
     cache_key = _transport_precond_cache_key(op, "collision_sxblock")
     cached = _TRANSPORT_SXBLOCK_PRECOND_CACHE.get(cache_key)
@@ -349,12 +504,13 @@ def _build_rhsmode23_sxblock_preconditioner(
                 inv = np.linalg.pinv(a, rcond=1e-12)
             inv_block[l, :, :] = inv
 
-        cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_block, dtype=jnp.float64))
+        cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_block, dtype=precond_dtype))
         _TRANSPORT_SXBLOCK_PRECOND_CACHE[cache_key] = cached
 
     inv_block = cached.inv_xblock  # (L, S*X, S*X)
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
         f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
         f_l = jnp.transpose(f, (2, 0, 1, 3, 4))  # (L,S,X,T,Z)
         f_l = f_l.reshape((int(op.n_xi), int(op.n_species) * int(op.n_x), int(op.n_theta), int(op.n_zeta)))
@@ -362,7 +518,140 @@ def _build_rhsmode23_sxblock_preconditioner(
         z_l = z_l.reshape((int(op.n_xi), int(op.n_species), int(op.n_x), int(op.n_theta), int(op.n_zeta)))
         z_f = jnp.transpose(z_l, (1, 2, 0, 3, 4))  # (S,X,L,T,Z)
         tail = r_full[op.f_size :]
-        return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode23_xmg_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Two-level additive x-grid preconditioner for RHSMode=2/3 collision operators.
+
+    Applies a fine-grid diagonal inverse plus a coarse-grid correction on the speed grid.
+    The coarse solve is block-diagonal in species and L, ignoring cross-species coupling.
+    """
+    stride_env = os.environ.get("SFINCS_JAX_XMG_STRIDE", "").strip()
+    try:
+        stride = int(stride_env) if stride_env else 2
+    except ValueError:
+        stride = 2
+    stride = max(1, stride)
+    cache_key = _transport_precond_cache_key(op, f"xmg_{stride}")
+    precond_dtype = _precond_dtype()
+    cached = _TRANSPORT_XMG_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+        coarse_idx = np.arange(0, n_x, stride, dtype=np.int32)
+        n_coarse = int(coarse_idx.shape[0])
+        coarse_map = {int(ix): int(i) for i, ix in enumerate(coarse_idx)}
+
+        diag = np.zeros(f_shape, dtype=np.float64)
+        if float(op.fblock.identity_shift) != 0.0:
+            diag = diag + float(op.fblock.identity_shift)
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l_arr = np.arange(n_l, dtype=np.float64)
+            factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+            pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+            diag = diag + pas_diag[:, :, :, None, None]
+        if op.fblock.fp is not None:
+            mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+            diag_x = np.diagonal(mat, axis1=3, axis2=4)  # (S,S,L,X)
+            diag_self = np.diagonal(diag_x, axis1=0, axis2=1)  # (L,X,S)
+            diag_self = np.transpose(diag_self, (2, 1, 0))  # (S,X,L)
+            diag = diag + diag_self[:, :, :, None, None]
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        mask = np.arange(n_l, dtype=np.int32)[None, :] < nxi_for_x[:, None]  # (X,L)
+        mask = mask[None, :, :, None, None]
+        diag = np.where(mask, diag, 1.0)
+
+        reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-10
+        except ValueError:
+            reg = 1e-10
+        inv_diag_f = 1.0 / (diag + float(reg))
+
+        coarse_inv = np.zeros((n_species, n_l, n_coarse, n_coarse), dtype=np.float64)
+        mat_fp = None
+        if op.fblock.fp is not None:
+            mat_fp = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+        identity_shift = float(op.fblock.identity_shift)
+        pas_diag = None
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l_arr = np.arange(n_l, dtype=np.float64)
+            factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+            pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+
+        for s in range(n_species):
+            for l in range(n_l):
+                if mat_fp is None:
+                    a = np.zeros((n_x, n_x), dtype=np.float64)
+                else:
+                    a = np.array(mat_fp[s, s, l, :, :], dtype=np.float64, copy=True)
+                a = a[np.ix_(coarse_idx, coarse_idx)]
+                diag_vec = np.full((n_coarse,), identity_shift + reg, dtype=np.float64)
+                if pas_diag is not None:
+                    diag_vec += pas_diag[s, coarse_idx, l]
+                a[np.arange(n_coarse), np.arange(n_coarse)] += diag_vec
+
+                inactive_x = np.where(nxi_for_x <= l)[0]
+                if inactive_x.size:
+                    for ix in inactive_x:
+                        j = coarse_map.get(int(ix))
+                        if j is not None:
+                            a[j, :] = 0.0
+                            a[:, j] = 0.0
+                            a[j, j] = 1.0
+
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                coarse_inv[s, l, :, :] = inv
+
+        cached = _TransportXmgPrecondCache(
+            inv_diag_f=jnp.asarray(inv_diag_f, dtype=precond_dtype),
+            coarse_inv=jnp.asarray(coarse_inv, dtype=precond_dtype),
+            coarse_idx=jnp.asarray(coarse_idx, dtype=jnp.int32),
+        )
+        _TRANSPORT_XMG_PRECOND_CACHE[cache_key] = cached
+
+    inv_diag_f = cached.inv_diag_f
+    coarse_inv = cached.coarse_inv
+    coarse_idx = cached.coarse_idx
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+        z_f = f * inv_diag_f
+        f_sl = jnp.transpose(f, (0, 2, 1, 3, 4))  # (S,L,X,T,Z)
+        f_coarse = f_sl[:, :, coarse_idx, :, :]
+        z_coarse = jnp.einsum("slij,sljtz->slitz", coarse_inv, f_coarse)
+        corr_sl = jnp.zeros_like(f_sl)
+        corr_sl = corr_sl.at[:, :, coarse_idx, :, :].set(z_coarse)
+        corr = jnp.transpose(corr_sl, (0, 2, 1, 3, 4))
+        z_f = z_f + corr
+        tail = r_full[op.f_size :]
+        z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        return jnp.asarray(z_full, dtype=jnp.float64)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -383,6 +672,7 @@ def _build_rhsmode1_collision_preconditioner(
     """Cheap collision-based preconditioner for RHSMode=1 solves (BiCGStab-friendly)."""
     use_xblock = False
     use_sxblock = False
+    precond_dtype = _precond_dtype()
     kind_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND", "").strip().lower()
     if kind_env in {"xblock", "block_x", "x"}:
         use_xblock = True
@@ -390,59 +680,171 @@ def _build_rhsmode1_collision_preconditioner(
         use_sxblock = True
 
     if use_sxblock and op.fblock.fp is not None:
-        cache_key = _transport_precond_cache_key(op, "rhs1_collision_sxblock")
-        cached = _RHSMODE1_SXBLOCK_PRECOND_CACHE.get(cache_key)
-        if cached is None:
+        low_rank_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K", "").strip()
+        if not low_rank_env:
+            low_rank_env = os.environ.get("SFINCS_JAX_FP_LOW_RANK_K", "").strip()
+        try:
+            low_rank_k = int(low_rank_env) if low_rank_env else 0
+        except ValueError:
+            low_rank_k = 0
+        low_rank_k = max(0, low_rank_k)
+
+        if low_rank_k > 0:
             f_shape = op.fblock.f_shape
             n_species, n_x, n_l, _, _ = f_shape
             n_block = n_species * n_x
-            inv_block = np.zeros((n_l, n_block, n_block), dtype=np.float64)
-            mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
-            reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
-            try:
-                reg = float(reg_env) if reg_env else 1e-10
-            except ValueError:
-                reg = 1e-10
-            identity_shift = float(op.fblock.identity_shift)
-            pas_diag = None
-            if op.fblock.pas is not None:
-                pas = op.fblock.pas
-                l_arr = np.arange(n_l, dtype=np.float64)
-                factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
-                pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
-
-            for l in range(n_l):
-                a = np.array(mat[:, :, l, :, :], dtype=np.float64, copy=True)  # (S,S,X,X)
-                a = a.transpose(0, 2, 1, 3).reshape((n_block, n_block))
-                if identity_shift != 0.0:
-                    a[np.arange(n_block), np.arange(n_block)] += identity_shift
-                if pas_diag is not None:
-                    diag_add = pas_diag[:, :, l].reshape((n_block,))
-                    a[np.arange(n_block), np.arange(n_block)] += diag_add
-                if reg != 0.0:
-                    a[np.arange(n_block), np.arange(n_block)] += reg
+            rank_k = min(int(low_rank_k), int(n_block))
+            cache_key = _transport_precond_cache_key(op, f"rhs1_collision_sxblock_lr_{rank_k}")
+            cached_lr = _RHSMODE1_SXBLOCK_LR_PRECOND_CACHE.get(cache_key)
+            if cached_lr is None:
+                mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+                reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
                 try:
-                    inv = np.linalg.inv(a)
-                except np.linalg.LinAlgError:
-                    inv = np.linalg.pinv(a, rcond=1e-12)
-                if not np.all(np.isfinite(inv)):
-                    inv = np.linalg.pinv(a, rcond=1e-12)
-                inv_block[l, :, :] = inv
+                    reg = float(reg_env) if reg_env else 1e-10
+                except ValueError:
+                    reg = 1e-10
+                identity_shift = float(op.fblock.identity_shift)
+                pas_diag = None
+                if op.fblock.pas is not None:
+                    pas = op.fblock.pas
+                    l_arr = np.arange(n_l, dtype=np.float64)
+                    factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+                    pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
 
-            cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_block, dtype=jnp.float64))
-            _RHSMODE1_SXBLOCK_PRECOND_CACHE[cache_key] = cached
+                nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+                d_inv = np.zeros((n_l, n_block), dtype=np.float64)
+                d_inv_u = np.zeros((n_l, n_block, rank_k), dtype=np.float64)
+                v_lr = np.zeros((n_l, rank_k, n_block), dtype=np.float64)
+                m_inv = np.zeros((n_l, rank_k, rank_k), dtype=np.float64)
 
-        inv_block = cached.inv_xblock  # (L, S*X, S*X)
+                for l in range(n_l):
+                    a_fp = np.array(mat[:, :, l, :, :], dtype=np.float64, copy=True)  # (S,S,X,X)
+                    a_fp = a_fp.transpose(0, 2, 1, 3).reshape((n_block, n_block))
+                    diag = np.full((n_block,), identity_shift + reg, dtype=np.float64)
+                    if pas_diag is not None:
+                        diag += pas_diag[:, :, l].reshape((n_block,))
+                    inactive_x = np.where(nxi_for_x <= l)[0]
+                    if inactive_x.size:
+                        for ix in inactive_x:
+                            for s in range(n_species):
+                                idx = s * n_x + int(ix)
+                                a_fp[idx, :] = 0.0
+                                a_fp[:, idx] = 0.0
+                                diag[idx] = 1.0
+                    d_inv_l = 1.0 / diag
+                    d_inv[l, :] = d_inv_l
+                    if rank_k > 0:
+                        try:
+                            u, svals, vt = np.linalg.svd(a_fp, full_matrices=False)
+                        except np.linalg.LinAlgError:
+                            u, svals, vt = np.linalg.svd(a_fp + 1e-12 * np.eye(n_block), full_matrices=False)
+                        k_use = min(rank_k, int(svals.shape[0]))
+                        if k_use > 0:
+                            u = u[:, :k_use]
+                            svals = svals[:k_use]
+                            vt = vt[:k_use, :]
+                            s_sqrt = np.sqrt(np.maximum(svals, 0.0))
+                            u_lr = u * s_sqrt[None, :]
+                            v_lr_l = s_sqrt[:, None] * vt
+                            d_inv_u_l = d_inv_l[:, None] * u_lr
+                            m = np.eye(k_use, dtype=np.float64) + v_lr_l @ d_inv_u_l
+                            try:
+                                m_inv_l = np.linalg.inv(m)
+                            except np.linalg.LinAlgError:
+                                m_inv_l = np.linalg.pinv(m, rcond=1e-12)
+                            if not np.all(np.isfinite(m_inv_l)):
+                                m_inv_l = np.linalg.pinv(m, rcond=1e-12)
+                            d_inv_u[l, :, :k_use] = d_inv_u_l
+                            v_lr[l, :k_use, :] = v_lr_l
+                            m_inv[l, :k_use, :k_use] = m_inv_l
 
-        def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
-            f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
-            f_l = jnp.transpose(f, (2, 0, 1, 3, 4))  # (L,S,X,T,Z)
-            f_l = f_l.reshape((int(op.n_xi), int(op.n_species) * int(op.n_x), int(op.n_theta), int(op.n_zeta)))
-            z_l = jnp.einsum("lmn,lntz->lmtz", inv_block, f_l)
-            z_l = z_l.reshape((int(op.n_xi), int(op.n_species), int(op.n_x), int(op.n_theta), int(op.n_zeta)))
-            z_f = jnp.transpose(z_l, (1, 2, 0, 3, 4))  # (S,X,L,T,Z)
-            tail = r_full[op.f_size :]
-            return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+                cached_lr = _LowRankXBlockPrecondCache(
+                    d_inv=jnp.asarray(d_inv, dtype=precond_dtype),
+                    d_inv_u=jnp.asarray(d_inv_u, dtype=precond_dtype),
+                    v=jnp.asarray(v_lr, dtype=precond_dtype),
+                    m_inv=jnp.asarray(m_inv, dtype=precond_dtype),
+                )
+                _RHSMODE1_SXBLOCK_LR_PRECOND_CACHE[cache_key] = cached_lr
+
+            d_inv = cached_lr.d_inv
+            d_inv_u = cached_lr.d_inv_u
+            v_lr = cached_lr.v
+            m_inv = cached_lr.m_inv
+
+            def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+                r_full = jnp.asarray(r_full, dtype=precond_dtype)
+                f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+                f_l = jnp.transpose(f, (2, 0, 1, 3, 4))  # (L,S,X,T,Z)
+                f_l = f_l.reshape((int(op.n_xi), int(op.n_species) * int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+                d_r = d_inv[:, :, None, None] * f_l
+                if rank_k > 0:
+                    tmp = jnp.einsum("lkn,lntz->lktz", v_lr, d_r)
+                    tmp2 = jnp.einsum("lkm,lmtz->lktz", m_inv, tmp)
+                    corr = jnp.einsum("lnk,lktz->lntz", d_inv_u, tmp2)
+                    z_l = d_r - corr
+                else:
+                    z_l = d_r
+                z_l = z_l.reshape((int(op.n_xi), int(op.n_species), int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+                z_f = jnp.transpose(z_l, (1, 2, 0, 3, 4))  # (S,X,L,T,Z)
+                tail = r_full[op.f_size :]
+                z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+                return jnp.asarray(z_full, dtype=jnp.float64)
+        else:
+            cache_key = _transport_precond_cache_key(op, "rhs1_collision_sxblock")
+            cached = _RHSMODE1_SXBLOCK_PRECOND_CACHE.get(cache_key)
+            if cached is None:
+                f_shape = op.fblock.f_shape
+                n_species, n_x, n_l, _, _ = f_shape
+                n_block = n_species * n_x
+                inv_block = np.zeros((n_l, n_block, n_block), dtype=np.float64)
+                mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+                reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND_REG", "").strip()
+                try:
+                    reg = float(reg_env) if reg_env else 1e-10
+                except ValueError:
+                    reg = 1e-10
+                identity_shift = float(op.fblock.identity_shift)
+                pas_diag = None
+                if op.fblock.pas is not None:
+                    pas = op.fblock.pas
+                    l_arr = np.arange(n_l, dtype=np.float64)
+                    factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+                    pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+
+                for l in range(n_l):
+                    a = np.array(mat[:, :, l, :, :], dtype=np.float64, copy=True)  # (S,S,X,X)
+                    a = a.transpose(0, 2, 1, 3).reshape((n_block, n_block))
+                    if identity_shift != 0.0:
+                        a[np.arange(n_block), np.arange(n_block)] += identity_shift
+                    if pas_diag is not None:
+                        diag_add = pas_diag[:, :, l].reshape((n_block,))
+                        a[np.arange(n_block), np.arange(n_block)] += diag_add
+                    if reg != 0.0:
+                        a[np.arange(n_block), np.arange(n_block)] += reg
+                    try:
+                        inv = np.linalg.inv(a)
+                    except np.linalg.LinAlgError:
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    if not np.all(np.isfinite(inv)):
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    inv_block[l, :, :] = inv
+
+                cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_block, dtype=precond_dtype))
+                _RHSMODE1_SXBLOCK_PRECOND_CACHE[cache_key] = cached
+
+            inv_block = cached.inv_xblock  # (L, S*X, S*X)
+
+            def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+                r_full = jnp.asarray(r_full, dtype=precond_dtype)
+                f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+                f_l = jnp.transpose(f, (2, 0, 1, 3, 4))  # (L,S,X,T,Z)
+                f_l = f_l.reshape((int(op.n_xi), int(op.n_species) * int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+                z_l = jnp.einsum("lmn,lntz->lmtz", inv_block, f_l)
+                z_l = z_l.reshape((int(op.n_xi), int(op.n_species), int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+                z_f = jnp.transpose(z_l, (1, 2, 0, 3, 4))  # (S,X,L,T,Z)
+                tail = r_full[op.f_size :]
+                z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+                return jnp.asarray(z_full, dtype=jnp.float64)
 
     elif use_xblock and op.fblock.fp is not None:
         cache_key = _transport_precond_cache_key(op, "rhs1_collision_xblock")
@@ -482,18 +884,20 @@ def _build_rhsmode1_collision_preconditioner(
                         inv = np.linalg.pinv(a, rcond=1e-12)
                     inv_xblock[s, l, :, :] = inv
 
-            cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_xblock, dtype=jnp.float64))
+            cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_xblock, dtype=precond_dtype))
             _RHSMODE1_XBLOCK_PRECOND_CACHE[cache_key] = cached
 
         inv_xblock = cached.inv_xblock
 
         def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+            r_full = jnp.asarray(r_full, dtype=precond_dtype)
             f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
             f_sl = jnp.transpose(f, (0, 2, 1, 3, 4))  # (S,L,X,T,Z)
             z_sl = jnp.einsum("slij,sljtz->slitz", inv_xblock, f_sl)
             z_f = jnp.transpose(z_sl, (0, 2, 1, 3, 4))  # (S,X,L,T,Z)
             tail = r_full[op.f_size :]
-            return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+            z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+            return jnp.asarray(z_full, dtype=jnp.float64)
     else:
         cache_key = _transport_precond_cache_key(op, "rhs1_collision_diag")
         cached = _RHSMODE1_DIAG_PRECOND_CACHE.get(cache_key)
@@ -530,16 +934,18 @@ def _build_rhsmode1_collision_preconditioner(
             except ValueError:
                 reg = 1e-10
             inv_diag_f = 1.0 / (diag + float(reg))
-            cached = _TransportPrecondCache(inv_diag_f=inv_diag_f)
+            cached = _TransportPrecondCache(inv_diag_f=jnp.asarray(inv_diag_f, dtype=precond_dtype))
             _RHSMODE1_DIAG_PRECOND_CACHE[cache_key] = cached
 
         inv_diag_f = cached.inv_diag_f
 
         def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+            r_full = jnp.asarray(r_full, dtype=precond_dtype)
             f = r_full[: op.f_size].reshape(op.fblock.f_shape)
             z_f = f * inv_diag_f
             tail = r_full[op.f_size :]
-            return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+            z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+            return jnp.asarray(z_full, dtype=jnp.float64)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -771,6 +1177,7 @@ def _build_rhsmode1_block_preconditioner(
     - explicit extra/source-row solve via a dense small block.
     """
     cache_key = _rhsmode1_precond_cache_key(op, "point")
+    precond_dtype = _precond_dtype()
     cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
     if cached is None:
         op_pc = _build_rhsmode1_preconditioner_operator_point(op)
@@ -836,7 +1243,7 @@ def _build_rhsmode1_block_preconditioner(
 
         idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
         flat_idx_jnp = idx_map_jnp.reshape((-1,))
-        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
 
         extra_start = int(op.f_size + op.phi1_size)
         extra_size = int(op.extra_size)
@@ -860,7 +1267,7 @@ def _build_rhsmode1_block_preconditioner(
                 ee_inv = np.linalg.pinv(ee, rcond=1e-12)
             if not np.all(np.isfinite(ee_inv)):
                 ee_inv = np.linalg.pinv(ee, rcond=1e-12)
-            extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
 
         cached = _RHSMode1PrecondCache(
             idx_map_jnp=idx_map_jnp,
@@ -881,7 +1288,7 @@ def _build_rhsmode1_block_preconditioner(
     extra_inv_jnp = cached.extra_inv_jnp
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
-        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
         r_loc = r_full[flat_idx_jnp].reshape((n_s, n_t, n_z, local_per_species))
         z_loc = jnp.einsum("sab,stzb->stza", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
@@ -890,7 +1297,7 @@ def _build_rhsmode1_block_preconditioner(
             r_extra = r_full[extra_idx_jnp]
             z_extra = extra_inv_jnp @ r_extra
             z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
-        return z_full
+        return jnp.asarray(z_full, dtype=jnp.float64)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -915,6 +1322,7 @@ def _build_rhsmode23_block_preconditioner(
     operator with diagonalized theta/zeta derivatives.
     """
     cache_key = _transport_precond_cache_key(op, "block")
+    precond_dtype = _precond_dtype()
     cached = _RHSMODE23_PRECOND_CACHE.get(cache_key)
     if cached is None:
         op_pc = _build_transport_preconditioner_operator_point(op)
@@ -982,7 +1390,7 @@ def _build_rhsmode23_block_preconditioner(
 
         idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
         flat_idx_jnp = idx_map_jnp.reshape((-1,))
-        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
 
         extra_start = int(op.f_size + op.phi1_size)
         extra_size = int(op.extra_size)
@@ -1006,7 +1414,7 @@ def _build_rhsmode23_block_preconditioner(
                 extra_inv = np.linalg.pinv(a, rcond=1e-12)
             if not np.all(np.isfinite(extra_inv)):
                 extra_inv = np.linalg.pinv(a, rcond=1e-12)
-            extra_inv_jnp = jnp.asarray(extra_inv, dtype=jnp.float64)
+            extra_inv_jnp = jnp.asarray(extra_inv, dtype=precond_dtype)
 
         cached = _RHSMode1PrecondCache(
             idx_map_jnp=idx_map_jnp,
@@ -1028,7 +1436,7 @@ def _build_rhsmode23_block_preconditioner(
     local_per_species = int(idx_map_jnp.shape[-1])
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
-        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
         r_loc = r_full[flat_idx_jnp].reshape((n_s, n_t, n_z, local_per_species))
         z_loc = jnp.einsum("sab,stzb->stza", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
@@ -1037,7 +1445,7 @@ def _build_rhsmode23_block_preconditioner(
             r_extra = r_full[extra_idx_jnp]
             z_extra = extra_inv_jnp @ r_extra
             z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
-        return z_full
+        return jnp.asarray(z_full, dtype=jnp.float64)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -1059,6 +1467,46 @@ def _build_rhsmode1_schur_preconditioner(
     base_precond = _build_rhsmode1_block_preconditioner(op=op)
     f_size = int(op.f_size)
     extra_size = int(op.extra_size)
+    n_species = int(op.n_species)
+    n_x = int(op.n_x)
+
+    def _schur_inv_diag() -> jnp.ndarray:
+        cache_key = _rhsmode1_precond_cache_key(op, "schur_diag")
+        cached = _RHSMODE1_SCHUR_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        # Ensure base block preconditioner cache exists.
+        _build_rhsmode1_block_preconditioner(op=op)
+        block_key = _rhsmode1_precond_cache_key(op, "point")
+        block_cached = _RHSMODE1_PRECOND_CACHE.get(block_key)
+        if block_cached is None:
+            raise RuntimeError("Schur preconditioner requires block preconditioner cache.")
+        block_inv = np.asarray(block_cached.block_inv_jnp, dtype=np.float64)
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        offsets = np.concatenate([[0], np.cumsum(nxi_for_x)])
+        idx = offsets[:-1]
+        diag = np.zeros((n_species, n_x), dtype=np.float64)
+        for s in range(n_species):
+            diag[s, :] = block_inv[s, idx, idx]
+        theta_w = np.asarray(op.theta_weights, dtype=np.float64)
+        zeta_w = np.asarray(op.zeta_weights, dtype=np.float64)
+        d_hat = np.asarray(op.d_hat, dtype=np.float64)
+        fs_sum = float(np.sum((theta_w[:, None] * zeta_w[None, :]) / d_hat))
+        diag = diag * fs_sum
+        eps_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_EPS", "").strip()
+        try:
+            eps = float(eps_env) if eps_env else 1e-14
+        except ValueError:
+            eps = 1e-14
+        inv_diag = np.zeros_like(diag)
+        mask = np.abs(diag) > eps
+        inv_diag[mask] = 1.0 / diag[mask]
+        ix0 = _ix_min(bool(op.point_at_x0))
+        if ix0 > 0:
+            inv_diag[:, :ix0] = 0.0
+        inv_diag_jnp = jnp.asarray(inv_diag, dtype=jnp.float64)
+        _RHSMODE1_SCHUR_CACHE[cache_key] = inv_diag_jnp
+        return inv_diag_jnp
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -1067,16 +1515,16 @@ def _build_rhsmode1_schur_preconditioner(
         r_f = r_full[:f_size]
         r_e = r_full[f_size:]
         zeros_e = jnp.zeros((extra_size,), dtype=r_full.dtype)
-        r0 = jnp.concatenate([r_f, zeros_e], axis=0)
-        y_full = base_precond(r0)
+        y_full = base_precond(jnp.concatenate([r_f, zeros_e], axis=0))
         y_f = y_full[:f_size]
         f = y_f.reshape(op.fblock.f_shape)
-        c_y = _constraint_scheme2_source_from_f(op, f)
-        x_e = c_y.reshape((-1,)) - r_e
-        f_corr = _constraint_scheme2_inject_source(op, x_e.reshape((int(op.n_species), int(op.n_x))))
-        r_corr = jnp.concatenate([f_corr, zeros_e], axis=0)
-        delta_full = base_precond(r_corr)
-        x_f = y_f + delta_full[:f_size]
+        c_y = _constraint_scheme2_source_from_f(op, f).reshape((-1,))
+        inv_diag = _schur_inv_diag().reshape((-1,))
+        x_e = (c_y - r_e) * inv_diag
+        f_corr = _constraint_scheme2_inject_source(op, x_e.reshape((n_species, n_x)))
+        r_corr = r_f - f_corr
+        y_corr = base_precond(jnp.concatenate([r_corr, zeros_e], axis=0))
+        x_f = y_corr[:f_size]
         return jnp.concatenate([x_f, x_e], axis=0)
 
     if reduce_full is None or expand_reduced is None:
@@ -1102,6 +1550,7 @@ def _build_rhsmode1_theta_line_preconditioner(
     dominant streaming/mirror couplings along theta while ignoring zeta derivatives.
     """
     cache_key = _rhsmode1_precond_cache_key(op, "theta_line")
+    precond_dtype = _precond_dtype()
     cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
     if cached is None:
         op_pc = _build_rhsmode1_preconditioner_operator_theta_line(op)
@@ -1159,7 +1608,7 @@ def _build_rhsmode1_theta_line_preconditioner(
                 if not np.all(np.isfinite(inv)):
                     inv = np.linalg.pinv(a, rcond=1e-12)
                 block_inv[s, iz, :, :] = inv
-        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
 
         extra_start = int(op.f_size + op.phi1_size)
         extra_size = int(op.extra_size)
@@ -1183,7 +1632,7 @@ def _build_rhsmode1_theta_line_preconditioner(
                 ee_inv = np.linalg.pinv(ee, rcond=1e-12)
             if not np.all(np.isfinite(ee_inv)):
                 ee_inv = np.linalg.pinv(ee, rcond=1e-12)
-            extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
 
         cached = _RHSMode1PrecondCache(
             idx_map_jnp=idx_map_jnp,
@@ -1203,7 +1652,7 @@ def _build_rhsmode1_theta_line_preconditioner(
     extra_inv_jnp = cached.extra_inv_jnp
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
-        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
         r_loc = r_full[flat_idx_jnp].reshape((n_species, n_zeta, line_size))
         z_loc = jnp.einsum("szab,szb->sza", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
@@ -1212,7 +1661,7 @@ def _build_rhsmode1_theta_line_preconditioner(
             r_extra = r_full[extra_idx_jnp]
             z_extra = extra_inv_jnp @ r_extra
             z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
-        return z_full
+        return jnp.asarray(z_full, dtype=jnp.float64)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -1237,6 +1686,7 @@ def _build_rhsmode1_zeta_line_preconditioner(
     dominant derivative couplings along zeta while ignoring theta derivatives.
     """
     cache_key = _rhsmode1_precond_cache_key(op, "zeta_line")
+    precond_dtype = _precond_dtype()
     cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
     if cached is None:
         op_pc = _build_rhsmode1_preconditioner_operator_zeta_line(op)
@@ -1294,7 +1744,7 @@ def _build_rhsmode1_zeta_line_preconditioner(
                 if not np.all(np.isfinite(inv)):
                     inv = np.linalg.pinv(a, rcond=1e-12)
                 block_inv[s, it, :, :] = inv
-        block_inv_jnp = jnp.asarray(block_inv, dtype=jnp.float64)
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
 
         extra_start = int(op.f_size + op.phi1_size)
         extra_size = int(op.extra_size)
@@ -1318,7 +1768,7 @@ def _build_rhsmode1_zeta_line_preconditioner(
                 ee_inv = np.linalg.pinv(ee, rcond=1e-12)
             if not np.all(np.isfinite(ee_inv)):
                 ee_inv = np.linalg.pinv(ee, rcond=1e-12)
-            extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
 
         cached = _RHSMode1PrecondCache(
             idx_map_jnp=idx_map_jnp,
@@ -1338,7 +1788,7 @@ def _build_rhsmode1_zeta_line_preconditioner(
     extra_inv_jnp = cached.extra_inv_jnp
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
-        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
         r_loc = r_full[flat_idx_jnp].reshape((n_species, n_theta, line_size))
         z_loc = jnp.einsum("stab,stb->sta", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
@@ -1347,7 +1797,7 @@ def _build_rhsmode1_zeta_line_preconditioner(
             r_extra = r_full[extra_idx_jnp]
             z_extra = extra_inv_jnp @ r_extra
             z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
-        return z_full
+        return jnp.asarray(z_full, dtype=jnp.float64)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -3602,6 +4052,7 @@ def solve_v3_transport_matrix_linear_gmres(
         emit(0, "solve_v3_transport_matrix_linear_gmres: starting whichRHS loop")
     op0 = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
     state_in_env = os.environ.get("SFINCS_JAX_STATE_IN", "").strip()
+    state_x_by_rhs: dict[int, jnp.ndarray] | None = None
     if state_in_env:
         try:
             from .solver_state import load_krylov_state  # noqa: PLC0415
@@ -3610,8 +4061,9 @@ def solve_v3_transport_matrix_linear_gmres(
         except Exception:
             state = None
         if state:
+            state_x_by_rhs = state.get("x_by_rhs")
             if x0_by_rhs is None:
-                x0_by_rhs = state.get("x_by_rhs")
+                x0_by_rhs = state_x_by_rhs
             if x0 is None:
                 x0 = state.get("x_full")
     rhs_mode = int(op0.rhs_mode)
@@ -3871,7 +4323,16 @@ def solve_v3_transport_matrix_linear_gmres(
     transport_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND", "").strip().lower()
     if transport_precond_env in {"0", "none", "off", "false", "no"}:
         transport_precond_kind = None
-    elif transport_precond_env in {"collision", "block", "block_jacobi", "sxblock", "block_sx", "species_x"}:
+    elif transport_precond_env in {
+        "collision",
+        "block",
+        "block_jacobi",
+        "sxblock",
+        "block_sx",
+        "species_x",
+        "xmg",
+        "multigrid",
+    }:
         transport_precond_kind = transport_precond_env
     else:
         transport_precond_kind = "auto"
@@ -3894,7 +4355,13 @@ def solve_v3_transport_matrix_linear_gmres(
                     precond_kind = "sxblock"
                 else:
                     precond_kind = "collision"
-        if precond_kind in {"sxblock", "block_sx", "species_x"}:
+        if precond_kind in {"xmg", "multigrid"}:
+            preconditioner_full = _build_rhsmode23_xmg_preconditioner(op=op0)
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_xmg_preconditioner(
+                    op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+        elif precond_kind in {"sxblock", "block_sx", "species_x"}:
             preconditioner_full = _build_rhsmode23_sxblock_preconditioner(op=op0)
             if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
                 preconditioner_reduced = _build_rhsmode23_sxblock_preconditioner(
@@ -4005,6 +4472,29 @@ def solve_v3_transport_matrix_linear_gmres(
     recycle_basis_full_au: list[jnp.ndarray] = []
     recycle_basis_reduced: list[jnp.ndarray] = []
     recycle_basis_reduced_au: list[jnp.ndarray] = []
+    state_recycle_env = os.environ.get("SFINCS_JAX_TRANSPORT_RECYCLE_STATE", "").strip().lower()
+    state_recycle_enabled = state_recycle_env not in {"0", "false", "no", "off"}
+    if recycle_k > 0 and state_recycle_enabled and state_x_by_rhs:
+        mv_ref_full = _get_full_matvec(op_matvec_by_index[0])
+        mv_ref_reduced = _get_reduced_matvec(op_matvec_by_index[0])
+        for which_rhs in sorted(state_x_by_rhs.keys()):
+            x_full = jnp.asarray(state_x_by_rhs[int(which_rhs)])
+            if x_full.shape == (op0.total_size,):
+                recycle_basis_full.append(x_full)
+                recycle_basis_full_au.append(mv_ref_full(x_full))
+                if use_active_dof_mode and reduce_full is not None:
+                    x_red = reduce_full(x_full)
+                    recycle_basis_reduced.append(x_red)
+                    recycle_basis_reduced_au.append(mv_ref_reduced(x_red))
+            elif use_active_dof_mode and x_full.shape == (active_size,) and reduce_full is not None:
+                recycle_basis_reduced.append(x_full)
+                recycle_basis_reduced_au.append(mv_ref_reduced(x_full))
+        if len(recycle_basis_full) > recycle_k:
+            recycle_basis_full = recycle_basis_full[-recycle_k:]
+            recycle_basis_full_au = recycle_basis_full_au[-recycle_k:]
+        if len(recycle_basis_reduced) > recycle_k:
+            recycle_basis_reduced = recycle_basis_reduced[-recycle_k:]
+            recycle_basis_reduced_au = recycle_basis_reduced_au[-recycle_k:]
 
     def _residual_value(res: GMRESSolveResult) -> float:
         val = float(res.residual_norm)
