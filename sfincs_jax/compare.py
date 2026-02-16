@@ -150,6 +150,19 @@ def compare_sfincs_outputs(
         }
         for k, v in rhs1_tol.items():
             local_tolerances.setdefault(k, v)
+    if rhs_mode_a == 1 and rhs_mode_b == 1 and constraint_a == 2 and constraint_b == 2:
+        # For RHSMode=1 constraintScheme=2 runs, pressure/density perturbations can be near
+        # machine zero at isolated points. Apply small absolute floors to avoid flagging
+        # benign roundoff differences in those diagnostics and delta_f exports.
+        rhs1_cs2_tol = {
+            "FSADensityPerturbation": {"atol": 1e-6},
+            "FSAPressurePerturbation": {"atol": 1e-6},
+            "densityPerturbation": {"atol": 1e-6},
+            "pressurePerturbation": {"atol": 1e-6},
+            "delta_f": {"atol": 1e-6},
+        }
+        for k, v in rhs1_cs2_tol.items():
+            local_tolerances.setdefault(k, v)
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 

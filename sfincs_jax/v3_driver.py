@@ -1508,6 +1508,8 @@ def _build_rhsmode1_schur_preconditioner(
         _RHSMODE1_SCHUR_CACHE[cache_key] = inv_diag_jnp
         return inv_diag_jnp
 
+    inv_diag_cached = _schur_inv_diag()
+
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
         if int(op.rhs_mode) != 1 or int(op.constraint_scheme) != 2 or int(op.phi1_size) != 0 or extra_size == 0:
@@ -1519,7 +1521,7 @@ def _build_rhsmode1_schur_preconditioner(
         y_f = y_full[:f_size]
         f = y_f.reshape(op.fblock.f_shape)
         c_y = _constraint_scheme2_source_from_f(op, f).reshape((-1,))
-        inv_diag = _schur_inv_diag().reshape((-1,))
+        inv_diag = inv_diag_cached.reshape((-1,))
         x_e = (c_y - r_e) * inv_diag
         f_corr = _constraint_scheme2_inject_source(op, x_e.reshape((n_species, n_x)))
         r_corr = r_f - f_corr
