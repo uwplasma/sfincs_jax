@@ -370,7 +370,7 @@ This reduces Python overhead and improves performance, while still preserving
 Fortran parity when needed.
 
 Dense fallbacks (RHSMode=1 vs transport)
----------------------------------------
+----------------------------------------
 
 Dense fallbacks can stabilize difficult RHSMode=1 systems, and dense *retries* can
 rescue transport-matrix solves that stall.
@@ -394,7 +394,7 @@ Keeps transport runs performance-first while improving stability for parity-sens
 cases where Krylov solvers can stall.
 
 Memory reduction: remat/checkpoint + short recurrence
-----------------------------------------------------
+-----------------------------------------------------
 
 **Rematerialization.**
 
