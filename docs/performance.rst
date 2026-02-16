@@ -71,11 +71,21 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Recycled transport solves**: optional warm-start recycling keeps a small number of
   recent solution vectors across ``whichRHS`` iterations (``SFINCS_JAX_TRANSPORT_RECYCLE_K``),
   reducing Krylov iterations on sequential RHS solves.
+- **Cross-run Krylov recycling**: set ``SFINCS_JAX_STATE_OUT``/``SFINCS_JAX_STATE_IN`` (or
+  ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE=0`` to disable) to reuse transport solutions between
+  adjacent scan points with matching operators.
 - **Transport preconditioning (default)**: RHSMode=2/3 transport solves use a JAX-native
   preconditioner built analytically from the collision operator. For FP cases, the default
   is a lightweight **species×x block-Jacobi** (per-L) preconditioner; otherwise the collision
   diagonal is used. This cuts iterations without matvec-based assembly and preserves parity
   on the reduced suite.
+- **Low-rank FP preconditioning**: optional Woodbury corrections approximate the dense
+  FP species×x blocks with a low-rank update to reduce setup and apply costs.
+- **Coarse x-grid preconditioning**: ``SFINCS_JAX_TRANSPORT_PRECOND=xmg`` adds a two-level
+  x-grid correction (coarse solve + fine diagonal smoother) to reduce PAS/FP iterations.
+- **Mixed-precision preconditioners**: ``SFINCS_JAX_PRECOND_DTYPE=float32`` stores JAX
+  preconditioner blocks in float32 while keeping the Krylov solve in float64, reducing
+  memory and preconditioner cost.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.
@@ -116,6 +126,11 @@ solution vectors as a warm start for the next solve. This is a small, practical 
 fully recycled Krylov methods such as GCRO-DR, which are designed explicitly for sequences of systems.
 [#gcrodr]_ In practice it can reduce iterations without altering the linear operator or diagnostics.
 
+For scans (e.g., ``sfincsScan``), you can enable on-disk Krylov recycling by writing a state file
+after each run (``SFINCS_JAX_STATE_OUT``) and pointing the next run at it
+(``SFINCS_JAX_STATE_IN``). When enabled, the transport solver will also seed its recycling basis
+from the stored solutions to cut iterations between adjacent scan points.
+
 Potential next solvers to explore (for further memory reductions or faster convergence on stiff cases):
 
 - **IDR(s)**: short-recurrence, low-memory solvers for nonsymmetric systems with strong convergence
@@ -135,7 +150,9 @@ path), you can enable an optional JAX-native preconditioner via an environment v
   analytic PAS/FP diagonal (cheap, effective for collision-dominated PAS/FP cases). For FP
   runs you can opt in to an x-block inverse per L via
   ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND=xblock`` or a full species×x block via
-  ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND=sxblock``.
+  ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND=sxblock``. Use
+  ``SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K`` (or ``SFINCS_JAX_FP_LOW_RANK_K``) to enable
+  a low-rank Woodbury correction for the FP species×x blocks.
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_line``: theta-line block preconditioning that couples
   all theta points (at fixed zeta) for all local (x,L) unknowns (stronger, higher setup cost).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=zeta_line``: zeta-line block preconditioning that couples

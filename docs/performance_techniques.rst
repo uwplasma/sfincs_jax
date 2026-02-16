@@ -255,6 +255,25 @@ When the FP operator is available, build per-:math:`L` blocks across species and
 and invert each :math:`\mathsf{C}^{(L)}` (with identity shift + PAS diagonal).
 Inactive :math:`x` points (from `Nxi_for_x`) are masked to identity.
 
+**Low-rank Woodbury correction (optional).**
+
+For FP-heavy cases, approximate the dense species×x blocks with a low-rank update
+and apply a Woodbury inverse:
+
+.. math::
+
+   \left(D + U V^\top\right)^{-1}
+   = D^{-1} - D^{-1} U \left(I + V^\top D^{-1} U\right)^{-1} V^\top D^{-1}.
+
+This reduces both setup and apply costs for the FP preconditioner when
+``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K`` (or ``SFINCS_JAX_FP_LOW_RANK_K``) is set.
+
+**Coarse x-grid additive preconditioner (xmg).**
+
+``SFINCS_JAX_TRANSPORT_PRECOND=xmg`` adds a two-level correction:
+fine-grid collision-diagonal smoothing plus a coarse x-grid solve per species/L.
+Set ``SFINCS_JAX_XMG_STRIDE`` to control the coarsening.
+
 **Implementation.**
 
 - ``_build_rhsmode23_sxblock_preconditioner`` in ``sfincs_jax.v3_driver``.
@@ -279,12 +298,15 @@ RHSMode=1 preconditioning (matrix-free)
 - **Point-block Jacobi**: local (x,L) blocks at each :math:`(\theta,\zeta)`.
 - **Theta-line / Zeta-line / ADI**: 1D line solves across angular dimensions.
 - **Collision diagonal / xblock / sxblock**: analytic blocks from PAS/FP collisions.
+- **Constraint-aware Schur**: enforces constraintScheme=2 source constraints via a
+  diagonal Schur complement.
 
 These are cached to avoid recomputation. Controls:
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER``
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
+- ``SFINCS_JAX_PRECOND_DTYPE`` (store preconditioner blocks in float32 for speed/memory)
 
 Transport diagnostics: batched + precomputed
 --------------------------------------------

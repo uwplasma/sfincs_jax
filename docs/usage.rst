@@ -175,6 +175,14 @@ performance without changing the input file:
     (strongest option for FP cases; higher apply cost).
   - ``diag``: use the collision diagonal only (PAS/FP + identity shift).
 
+- ``SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K``: use a low-rank Woodbury correction (rank ``K``)
+  for the FP species×x collision preconditioner (``sxblock``). Set to ``0`` to disable
+  (default: ``0``). ``SFINCS_JAX_FP_LOW_RANK_K`` provides a global fallback.
+
+- ``SFINCS_JAX_RHSMODE1_SCHUR_EPS``: diagonal safeguard for the constraintScheme=2 Schur
+  complement (default: ``1e-14``). Smaller values tighten the constraint solve but can
+  amplify noise.
+
 - ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND``: optional RHSMode=1 BiCGStab preconditioning.
 
   - ``collision`` (default): collision-diagonal preconditioner (PAS/FP + identity shift).
@@ -194,6 +202,8 @@ performance without changing the input file:
     simplified transport operator (stronger, higher setup cost).
   - ``sxblock``/``block_sx``/``species_x``: lightweight species×x block-Jacobi built from
     the FP collision operator (no matvec assembly; stronger than diagonal for FP cases).
+  - ``xmg``/``multigrid``: two-level additive x-grid preconditioner (coarse x solve +
+    fine diagonal smoother).
   - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
   - ``0``/``none``: disable.
 
@@ -202,6 +212,13 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_REG``: regularization added to transport block
   preconditioner diagonal blocks (default: ``1e-10``).
+
+- ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K``: low-rank Woodbury correction (rank ``K``)
+  for the FP species×x transport preconditioner. Set to ``0`` to disable (default: ``0``).
+  ``SFINCS_JAX_FP_LOW_RANK_K`` provides a global fallback.
+
+- ``SFINCS_JAX_XMG_STRIDE``: coarse-grid stride for ``xmg`` transport preconditioning
+  (default: ``2``).
 
 - ``SFINCS_JAX_TRANSPORT_GMRES_RESTART``: GMRES restart length for transport fallback (default: 40).
 
@@ -213,6 +230,9 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX``: enable a dense LU preconditioner for RHSMode=3
   transport solves when the system size is below the specified threshold (default: ``600``).
+
+- ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE``: reuse saved Krylov recycle vectors across runs
+  when ``SFINCS_JAX_STATE_IN`` is set (default: enabled; set to ``0`` to disable).
 
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE``: side for applying the preconditioner in GMRES.
 
@@ -227,6 +247,13 @@ performance without changing the input file:
 
   - Default: enabled (implicit gradients via ``jax.lax.custom_linear_solve``).
   - ``0``/``false``: disable (differentiate through Krylov iterations; slower / higher memory).
+
+- ``SFINCS_JAX_PRECOND_DTYPE``: preconditioner storage dtype (``float64`` default).
+  Set to ``float32`` to reduce memory and speed up preconditioner application while
+  keeping the Krylov solve in float64.
+
+- ``SFINCS_JAX_STATE_IN``/``SFINCS_JAX_STATE_OUT``: path for reading/writing Krylov
+  recycle states (used for scan warm-starting and multi-RHS reuse).
 
 - ``SFINCS_JAX_REMAT_COLLISIONS``: enable gradient checkpointing around collision operators to
   reduce peak memory during autodiff (default: auto, based on size threshold).
