@@ -64,6 +64,75 @@ Code links:
 ``sfincs_jax/residual.py`` (source terms and residuals),
 ``sfincs_jax/transport_matrix.py`` (RHSMode=2/3 forcing).
 
+Single-species baseline (20131220-04)
+-------------------------------------
+
+The single-species technical note derives the normalized variables and driving terms used
+in SFINCS v3. With
+
+.. math::
+
+   v_{\mathrm{th}} = \sqrt{\frac{2 T}{m}}, \qquad
+   x = \frac{v}{v_{\mathrm{th}}}, \qquad
+   \xi = \frac{v_\parallel}{v}, \qquad
+   \mu = \frac{v_\perp^2}{2 B},
+
+the Maxwellian is written as
+
+.. math::
+
+   f_M = n \left(\frac{m}{2 \pi T}\right)^{3/2} \exp(-x^2).
+
+The normalization parameters introduced in the note are
+
+.. math::
+
+   \Delta = \frac{v_{\mathrm{th}}}{\Omega R}, \qquad
+   \alpha = \frac{e \Phi}{T}, \qquad
+   \nu_n = \frac{\nu R}{v_{\mathrm{th}}},
+
+where :math:`R` is a reference major radius and :math:`\Omega = Z e B/(m c)` is the
+gyrofrequency. These correspond to ``Delta``, ``alpha``, and ``nu_n`` in the input
+namelist and are stored in the output HDF5 file by `sfincs_jax/io.py`.
+
+The same note writes the thermodynamic drive in the compact form
+
+.. math::
+
+   (\mathbf{v}_m + \mathbf{v}_E)\cdot\nabla r
+   \left[\frac{1}{n}\frac{dn}{dr}
+   + \frac{Z e}{T}\frac{d\Phi_0}{dr}
+   + \left(x^2-\frac{3}{2}\right)\frac{1}{T}\frac{dT}{dr}\right] f_0,
+
+with additional :math:`\Phi_1`-dependent pieces if flux-surface variation is enabled.
+In `sfincs_jax`, these drive terms are assembled in
+``sfincs_jax/residual.py`` and combined with the transport-matrix forcing in
+``sfincs_jax/transport_matrix.py``.
+
+Multi-species extension (20131219-01)
+-------------------------------------
+
+The multi-species note generalizes the above to species-indexed quantities
+(:math:`m_s`, :math:`T_s`, :math:`Z_s`, :math:`n_s`) and introduces the
+linearized collision operator
+
+.. math::
+
+   C_s^{\mathrm{lin}}[f_{1}] = \sum_b C_{sb}^{\mathrm{lin}}[f_{s1}, f_{b1}],
+
+with test-particle and field-particle pieces that couple the Legendre modes across
+species. This coupling is what makes the Fokker–Planck operator dense in speed space.
+`sfincs_jax` mirrors the v3 block structure in
+``sfincs_jax/collisions.py`` and assembles multi-species blocks in
+``sfincs_jax/v3_system.py``.
+
+Numerical implications:
+
+- The dense species coupling in the full FP operator is the dominant memory and runtime
+  cost in multi-species runs.
+- The PAS operator keeps only the pitch-angle scattering term, resulting in a block-diagonal
+  coupling that can be preconditioned independently for each species.
+
 Guiding-center drifts and trajectory models
 -------------------------------------------
 
@@ -127,6 +196,12 @@ The v3 FP implementation is described in
 3. The resulting field-particle terms are mapped back to the collocation grid and
    combined with the test-particle contributions.
 
+The single- and multi-species notes emphasize that the linearized operator must conserve
+particles, momentum, and energy. In practice this means the field-particle terms are
+constructed to exactly cancel the moment losses of the test-particle operator, which is
+why the FP block is dense in :math:`x`. `sfincs_jax` mirrors the v3 moment conservation
+strategy in ``sfincs_jax/collisions.py`` (see the field-particle assembly helpers).
+
 Code links:
 ``sfincs_jax/grids.py`` (polynomial grids and quadrature),
 ``sfincs_jax/collisions.py`` (PAS and FP operators),
@@ -166,6 +241,32 @@ Code links:
 ``sfincs_jax/collisions.py`` (Phi1-in-collisions),
 ``sfincs_jax/diagnostics.py`` (Phi1 output fields).
 
+Phi1 impact on flux definitions (20150325-01)
+---------------------------------------------
+
+The Phi1 flux-impact note derives the relationship between the particle/energy fluxes
+computed with and without :math:`\Phi_1`. Denote by :math:`\tilde{f}_{s1}` the solution
+of the kinetic equation with the parallel :math:`\nabla_{||}\Phi_1` force included. The
+note shows
+
+.. math::
+
+   \tilde{f}_{s1} = f_{s1} - \frac{Z_s e}{T_s}\Phi_1 f_{sM},
+
+and derives the flux identities (schematically)
+
+.. math::
+
+   \Gamma_s^{(\mathrm{mag})} + \Gamma_s^{(E\times B)} = \tilde{\Gamma}_s,
+   \qquad
+   Q_{s,\mathrm{tot}} = Q_s + Z_s e \Phi_1 \Gamma_s,
+
+which imply that the *physically relevant* particle and total-energy fluxes are unchanged
+to leading order when :math:`\Phi_1` is included, provided the additional
+:math:`E\times B` contributions are accounted for. This is the rationale for the
+separate ``*_vm0`` and ``*_vE0`` diagnostic pieces in `sfincs_jax/diagnostics.py` and
+the combined flux outputs stored in ``sfincsOutput.h5``.
+
 Transport matrix and Beidler notation
 --------------------------------------
 
@@ -202,6 +303,29 @@ legacy single-species results and for interpreting monoenergetic (``RHSMode=3``)
 Code links:
 ``sfincs_jax/diagnostics.py`` (normalization of flux outputs),
 ``sfincs_jax/transport_matrix.py`` (multi-RHS assembly).
+
+Monoenergetic control parameters (nuPrime, EStar)
+-------------------------------------------------
+
+For ``RHSMode=3`` (monoenergetic/DKES-style runs), the SFINCS manual defines the
+dimensionless collisionality and electric field as
+
+.. math::
+
+   \nu' = \frac{(G + \iota I)\,\nu}{v B_0},
+   \qquad
+   E^\* = \frac{c G}{\iota v B_0}\frac{d\Phi}{d\psi},
+
+where :math:`G` and :math:`I` are Boozer covariant components, :math:`\iota` is the
+rotational transform, and :math:`B_0` is the :math:`(0,0)` Fourier mode of :math:`B`.
+The SFINCS manual further notes that, for these runs, the input parameters
+``nu_n`` and ``dPhiHatdpsiHat`` are ignored and replaced by ``nuPrime``/``EStar``.
+
+In `sfincs_jax`, the mapping between ``nuPrime``/``EStar`` and the internal
+``nu_n``/``dPhiHatdpsiHat`` parameters is handled in ``sfincs_jax/io.py`` and
+``sfincs_jax/v3_fblock.py``, while geometry-dependent factors
+(:math:`B_0`, :math:`G`, :math:`I`) are computed in ``sfincs_jax/transport_matrix.py``
+and ``sfincs_jax/diagnostics.py``.
 
 Constraint schemes and source terms
 -----------------------------------
@@ -268,6 +392,26 @@ Code links:
 ``sfincs_jax/v3_system.py`` (trajectory switches),
 ``sfincs_jax/transport_matrix.py`` (monoenergetic RHS construction).
 
+Equation-to-code map
+--------------------
+
+The table below summarizes where each term in the v3 drift-kinetic equation is implemented:
+
+- Parallel streaming :math:`v_\parallel \mathbf{b}\cdot\nabla f_{s1}`:
+  ``sfincs_jax/collisionless.py``.
+- :math:`E\times B` advection and associated drive terms:
+  ``sfincs_jax/collisionless_exb.py`` and ``sfincs_jax/collisionless_er.py``.
+- Magnetic drifts (:math:`\mathbf{v}_m` terms and derivative couplings):
+  ``sfincs_jax/magnetic_drifts.py``.
+- Pitch-angle and speed derivatives (:math:`\partial_\xi f`, :math:`\partial_x f`):
+  ``sfincs_jax/collisionless.py`` and ``sfincs_jax/collisionless_er.py``.
+- Collision operators (PAS and full FP):
+  ``sfincs_jax/collisions.py`` with modal transforms in ``sfincs_jax/xgrid.py``.
+- Constraint rows/columns and Phi1 blocks:
+  ``sfincs_jax/v3_system.py`` and ``sfincs_jax/v3_driver.py``.
+- Diagnostics and flux assembly:
+  ``sfincs_jax/diagnostics.py`` and ``sfincs_jax/transport_matrix.py``.
+
 Numerical implementation notes
 ------------------------------
 
@@ -280,6 +424,20 @@ In `sfincs_jax`, the main numerical strategies are:
   challenging cases.
 - **Block preconditioning** (collision-diagonal, constraint-aware Schur complements).
 - **Explicit nullspace projections** for constraintScheme=1/2 to preserve solvability.
+
+Additional implementation details relevant to stability and performance:
+
+- Angular derivatives are discretized with centered finite-difference stencils in
+  ``sfincs_jax/derivative_matrix.py`` and assembled into sparse operators.
+- Pitch-angle dependence uses Legendre modes with sparse :math:`\Delta L=\pm 1, \pm 2`
+  coupling, while the full FP operator introduces dense coupling in the speed grid.
+- Constraint schemes introduce near-nullspaces; the code therefore applies explicit
+  projection steps and (optionally) Schur-complement preconditioners to avoid solver
+  stagnation.
+
+The Krylov methods and preconditioning choices follow standard references
+(GMRES: Saad & Schultz 1986, BiCGStab: van der Vorst 1992, IDR(s): Sonneveld & van Gijzen 2008,
+preconditioning survey: Benzi 2002). See :doc:`references` for the citation list.
 
 Code links:
 ``sfincs_jax/solver.py`` (Krylov wrappers),

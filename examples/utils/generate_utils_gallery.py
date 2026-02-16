@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
+import argparse
 import os
 import time
 import shutil
@@ -15,6 +16,25 @@ FIG_DIR = REPO_ROOT / "docs" / "_static" / "figures" / "utils"
 WORK_DIR = REPO_ROOT / "examples" / "utils" / "output"
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="generate_utils_gallery",
+        description="Run a compact gallery of sfincs_jax utils figures.",
+    )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Use reduced resolutions and fewer scan points for quick runs.",
+    )
+    parser.add_argument(
+        "--timeout-s",
+        type=float,
+        default=None,
+        help="Per-step timeout in seconds (applied to each sfincsScan/sfincsPlot call).",
+    )
+    return parser.parse_args()
+
+
 def _run(
     cmd: list[str],
     *,
@@ -22,6 +42,7 @@ def _run(
     env: dict[str, str] | None = None,
     stdin: str | None = None,
     label: str | None = None,
+    timeout_s: float | None = None,
 ) -> None:
     label_text = f"[{label}] " if label else ""
     print(f"{label_text}cwd={cwd}")
@@ -32,7 +53,12 @@ def _run(
     e["MPLBACKEND"] = "Agg"
     if env:
         e.update(env)
-    subprocess.run(cmd, cwd=str(cwd), input=stdin, text=True, check=True, env=e)
+    try:
+        subprocess.run(cmd, cwd=str(cwd), input=stdin, text=True, check=True, env=e, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        print(f"{label_text}timeout after {timeout_s}s")
+        sys.stdout.flush()
+        raise
     print(f"{label_text}done={time.strftime('%Y-%m-%d %H:%M:%S')}")
     sys.stdout.flush()
 
@@ -74,6 +100,29 @@ def _prepare_input(
         "  NL = 3",
         "  Nx = 4",
     ]
+    if resolution_overrides:
+        override_vars = {
+            line.split("=", 1)[0].strip().lower()
+            for line in overrides
+            if "=" in line
+        }
+        in_resolution = False
+        filtered: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip().lower()
+            if stripped.startswith("&resolutionparameters"):
+                in_resolution = True
+                filtered.append(line)
+                continue
+            if in_resolution and stripped.startswith("/"):
+                in_resolution = False
+                filtered.append(line)
+                continue
+            if in_resolution:
+                if any(stripped.startswith(var) for var in override_vars):
+                    continue
+            filtered.append(line)
+        text = "\n".join(filtered) + "\n"
     text = _inject_group(
         text,
         "resolutionParameters",
@@ -111,6 +160,26 @@ def _copy_equilibrium(dest_dir: Path, filename: str = "w7x_standardConfig.bc") -
 
 
 def main() -> None:
+    args = _parse_args()
+    fast = bool(args.fast)
+    timeout_s = args.timeout_s
+    base_res = [
+        "  Ntheta = 7",
+        "  Nzeta = 5",
+        "  Nxi = 4",
+        "  NL = 3",
+        "  Nx = 4",
+    ]
+    fast_res = [
+        "  Ntheta = 5",
+        "  Nzeta = 3",
+        "  Nxi = 3",
+        "  NL = 2",
+        "  Nx = 2",
+        "  solverTolerance = 1e-4",
+    ]
+    res_overrides = fast_res if fast else base_res
+
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     if WORK_DIR.exists():
         shutil.rmtree(WORK_DIR)
@@ -127,11 +196,12 @@ def main() -> None:
     _stage("Running sfincsPlot")
     work = WORK_DIR / "sfincsPlot"
     work.mkdir(parents=True, exist_ok=True)
-    _prepare_input(base_rhs1, work / "input.namelist")
+    _prepare_input(base_rhs1, work / "input.namelist", resolution_overrides=res_overrides)
     _run(
         [sys.executable, str(UTILS / "sfincsPlot"), "--save-prefix", str(FIG_DIR / "sfincsPlot")],
         cwd=work,
         label="sfincsPlot",
+        timeout_s=timeout_s,
     )
 
     # sfincsPlotF (enable export_delta_f)
@@ -148,11 +218,12 @@ def main() -> None:
         "  export_f_xi_option = 0",
         "/",
     ]
-    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
+    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra, resolution_overrides=res_overrides)
     _run(
         [sys.executable, str(UTILS / "sfincsPlotF"), "--save", str(FIG_DIR / "sfincsPlotF.png")],
         cwd=work,
         label="sfincsPlotF",
+        timeout_s=timeout_s,
     )
 
     # scanType=1 (convergence)
@@ -163,25 +234,20 @@ def main() -> None:
         "!ss scanType = 1",
         "!ss NthetaMinFactor = 1.0",
         "!ss NthetaMaxFactor = 2.0",
-        "!ss NthetaNumRuns = 2",
+        f\"!ss NthetaNumRuns = {2 if fast else 3}\",
     ]
     _prepare_input(
         base_rhs1,
         work / "input.namelist",
         extra_lines=extra,
-        resolution_overrides=[
-            "  Ntheta = 7",
-            "  Nzeta = 5",
-            "  Nxi = 4",
-            "  NL = 3",
-            "  Nx = 4",
-        ],
+        resolution_overrides=res_overrides,
     )
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan1-run")
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan1-run", timeout_s=timeout_s)
     _run(
         [sys.executable, str(UTILS / "sfincsScanPlot_1"), "--save", str(FIG_DIR / "sfincsScanPlot_1.png")],
         cwd=work,
         label="scan1-plot",
+        timeout_s=timeout_s,
     )
 
     # scanType=2 (Er scan)
@@ -190,16 +256,17 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     extra = [
         "!ss scanType = 2",
-        "!ss NErs = 3",
+        f\"!ss NErs = {2 if fast else 3}\",
         "!ss ErMin = -1e-3",
         "!ss ErMax = 1e-3",
     ]
-    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan2-run")
+    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra, resolution_overrides=res_overrides)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan2-run", timeout_s=timeout_s)
     _run(
         [sys.executable, str(UTILS / "sfincsScanPlot_2"), "--save", str(FIG_DIR / "sfincsScanPlot_2.png")],
         cwd=work,
         label="scan2-plot",
+        timeout_s=timeout_s,
     )
 
     # scanType=3 (parameter scan)
@@ -211,15 +278,16 @@ def main() -> None:
         "!ss scanVariable = nu_n",
         "!ss scanVariableMin = 1e-3",
         "!ss scanVariableMax = 2e-3",
-        "!ss scanVariableN = 2",
+        f\"!ss scanVariableN = {2 if fast else 3}\",
         "!ss scanVariableScale = lin",
     ]
-    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan3-run")
+    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra, resolution_overrides=res_overrides)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan3-run", timeout_s=timeout_s)
     _run(
         [sys.executable, str(UTILS / "sfincsScanPlot_3"), "--save", str(FIG_DIR / "sfincsScanPlot_3.png")],
         cwd=work,
         label="scan3-plot",
+        timeout_s=timeout_s,
     )
 
     # scanType=4 (radial scan)
@@ -229,18 +297,19 @@ def main() -> None:
     extra = [
         "!ss scanType = 4",
         "!ss profilesScheme = 1",
-        "!ss Nradius = 2",
+        f\"!ss Nradius = {2 if fast else 3}\",
         "!ss rN_min = 0.2",
         "!ss rN_max = 0.4",
     ]
-    _prepare_input(base_scheme11, work / "input.namelist", extra_lines=extra)
+    _prepare_input(base_scheme11, work / "input.namelist", extra_lines=extra, resolution_overrides=res_overrides)
     _copy_equilibrium(work)
     _copy_profiles(work / "profiles")
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan4-run")
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan4-run", timeout_s=timeout_s)
     _run(
         [sys.executable, str(UTILS / "sfincsScanPlot_4"), "--save", str(FIG_DIR / "sfincsScanPlot_4.png")],
         cwd=work,
         label="scan4-plot",
+        timeout_s=timeout_s,
     )
 
     # scanType=5 (radial + Er)
@@ -250,18 +319,19 @@ def main() -> None:
     extra = [
         "!ss scanType = 5",
         "!ss profilesScheme = 1",
-        "!ss Nradius = 2",
+        f\"!ss Nradius = {2 if fast else 3}\",
         "!ss rN_min = 0.2",
         "!ss rN_max = 0.4",
     ]
-    _prepare_input(base_scheme11, work / "input.namelist", extra_lines=extra)
+    _prepare_input(base_scheme11, work / "input.namelist", extra_lines=extra, resolution_overrides=res_overrides)
     _copy_equilibrium(work)
     _copy_profiles(work / "profiles")
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan5-run")
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan5-run", timeout_s=timeout_s)
     _run(
         [sys.executable, str(UTILS / "sfincsScanPlot_5"), "--save", str(FIG_DIR / "sfincsScanPlot_5.png")],
         cwd=work,
         label="scan5-plot",
+        timeout_s=timeout_s,
     )
 
     # scanType=21 (runspec)
@@ -272,9 +342,9 @@ def main() -> None:
         "!ss scanType = 21",
         "!ss runSpecFile = 'runspec.dat'",
     ]
-    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
+    _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra, resolution_overrides=res_overrides)
     (work / "runspec.dat").write_text("! nu_n\n1.0e-3\n2.0e-3\n")
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan21-run")
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan21-run", timeout_s=timeout_s)
     _run(
         [
             sys.executable,
@@ -292,6 +362,7 @@ def main() -> None:
         ],
         cwd=work,
         label="scan21-plot",
+        timeout_s=timeout_s,
     )
 
     # scanType=2 combined (reuse scan_type2 twice)
@@ -310,6 +381,7 @@ def main() -> None:
         ],
         cwd=WORK_DIR,
         label="scan2-combine",
+        timeout_s=timeout_s,
     )
 
     # ModelTest_AI (uses sfincsOutput.h5 from sfincsPlotF run)
@@ -327,6 +399,7 @@ def main() -> None:
         ],
         cwd=model_dir,
         label="modeltest",
+        timeout_s=timeout_s,
     )
 
     # Monoenergetic transport coefficients vs collisionality for multiple EStar
@@ -359,11 +432,17 @@ def main() -> None:
             ],
         )
         _copy_equilibrium(work)
-        _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label=f"mono-scan{idx}-run")
+        _run(
+            [sys.executable, str(UTILS / "sfincsScan"), "--yes"],
+            cwd=work,
+            label=f\"mono-scan{idx}-run\",
+            timeout_s=timeout_s,
+        )
         _run(
             [sys.executable, str(UTILS / "sfincsScanPlot_3"), "--save", str(FIG_DIR / f"mono_collisionality_E{idx}.png")],
             cwd=work,
             label=f"mono-scan{idx}-plot",
+            timeout_s=timeout_s,
         )
         mono_dirs.append(work)
     _run(
@@ -376,6 +455,7 @@ def main() -> None:
         ],
         cwd=WORK_DIR,
         label="mono-combine",
+        timeout_s=timeout_s,
     )
 
     # Bootstrap current vs collisionality (2-species PAS, geometryScheme=4)
@@ -400,15 +480,9 @@ def main() -> None:
                 "  export_delta_f = .false.",
             ],
         },
-        resolution_overrides=[
-            "  Ntheta = 5",
-            "  Nzeta = 5",
-            "  Nxi = 4",
-            "  NL = 3",
-            "  Nx = 3",
-        ],
+        resolution_overrides=res_overrides,
     )
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="bootstrap-run")
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="bootstrap-run", timeout_s=timeout_s)
     _run(
         [
             sys.executable,
@@ -426,6 +500,7 @@ def main() -> None:
         ],
         cwd=work,
         label="bootstrap-plot",
+        timeout_s=timeout_s,
     )
     _stage("Utils gallery generation complete")
 
