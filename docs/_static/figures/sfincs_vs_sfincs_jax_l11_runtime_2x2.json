@@ -8,7 +8,7 @@
     ],
     "fortran_mean_runtime_s": 0.07966085418593138,
     "fortran_source": "live executable",
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist",
     "jax_l11_runs": [
       -0.0019465568621810211,
       -0.0019465568621810211,
@@ -28,7 +28,7 @@
     ],
     "fortran_mean_runtime_s": 0.23009681270923465,
     "fortran_source": "live executable",
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme11.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme11.input.namelist",
     "jax_l11_runs": [
       -0.002500197095462371,
       -0.002500197095462371,
@@ -48,7 +48,7 @@
     ],
     "fortran_mean_runtime_s": 1.2328228230471723,
     "fortran_source": "live executable",
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme12.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme12.input.namelist",
     "jax_l11_runs": [
       -0.042660748215590155,
       -0.042660748215590155,
@@ -68,7 +68,7 @@
     ],
     "fortran_mean_runtime_s": 0.10414540604688227,
     "fortran_source": "live executable",
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme5_filtered.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme5_filtered.input.namelist",
     "jax_l11_runs": [
       -0.002462514103577058,
       -0.002462514103577058,

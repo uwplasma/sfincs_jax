@@ -22,7 +22,7 @@ Run against a live local Fortran executable:
 
 ```bash
 python examples/performance/benchmark_transport_l11_vs_fortran.py \
-  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --fortran-exe /path/to/sfincs \
   --repeats 4
 ```
 
@@ -178,11 +178,11 @@ Generate a small gallery:
 python examples/utils/generate_utils_gallery.py
 ```
 
-Example figures from the ported utilities:
+Reproduced SFINCS paper figures (lower resolution, for quick reference):
 
-![sfincsPlot example](docs/_static/figures/utils/sfincsPlot_fig1.png)
-![Monoenergetic transport coefficients](docs/_static/figures/utils/monoenergetic_transport_coeffs.png)
-![Bootstrap current vs collisionality](docs/_static/figures/utils/bootstrap_current_vs_collisionality.png)
+![SFINCS paper Fig. 1 (LHD collisionality scan)](docs/_static/figures/paper/sfincs_paper_fig1_lhd.png)
+![SFINCS paper Fig. 2 (W7-X collisionality scan)](docs/_static/figures/paper/sfincs_paper_fig2_w7x.png)
+![SFINCS paper Fig. 3 (Simakov-Helander limits)](docs/_static/figures/paper/sfincs_paper_fig3_simakov_helander.png)
 
 The utilities honor the upstream `!ss` scan directives in `input.namelist`
 (see `docs/utils.rst`) and produce the same scan layouts as the original

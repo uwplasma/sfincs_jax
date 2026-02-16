@@ -10,7 +10,8 @@ In its most general configuration, SFINCS v3 solves a coupled system consisting 
 
 This page summarizes the block structure and the equations most relevant to the *linear system* that
 `sfincs_jax` is assembling matrix-free.
-For physics background and literature references, see :doc:`physics_models`.
+For physics background and literature references, see :doc:`physics_models`
+and :doc:`physics_reference`.
 
 For full upstream context and derivations, see the vendored v3 manual and technical docs in
 ``docs/upstream/`` (linked from :doc:`upstream_docs`).

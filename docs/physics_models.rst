@@ -4,6 +4,8 @@ Physics model and equations
 `sfincs_jax` follows the **radially local drift-kinetic formulation** used in SFINCS v3.
 This page summarizes the physics model, key terms, and how the model connects to the
 discretized operators described in :doc:`system_equations` and :doc:`method`.
+For full derivations, SFINCS v3 modeling notes, and a code-to-equation mapping, see
+:doc:`physics_reference`.
 
 Model overview
 --------------

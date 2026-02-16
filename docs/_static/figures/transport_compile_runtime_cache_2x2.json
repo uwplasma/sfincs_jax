@@ -2,7 +2,7 @@
   "scheme1": {
     "cold_first_call_s": 2.0631132922135293,
     "compile_estimate_s": 1.442549876170233,
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist",
     "warm_first_call_s": 0.6205634160432965,
     "warm_steady_mean_s": 0.04914538934826851,
     "warm_steady_runs_s": [
@@ -14,7 +14,7 @@
   "scheme11": {
     "cold_first_call_s": 2.4918427078519017,
     "compile_estimate_s": 1.2265519578941166,
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme11.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme11.input.namelist",
     "warm_first_call_s": 1.265290749957785,
     "warm_steady_mean_s": 0.05473018026289841,
     "warm_steady_runs_s": [
@@ -26,7 +26,7 @@
   "scheme12": {
     "cold_first_call_s": 1.80662304116413,
     "compile_estimate_s": 1.2045577073004097,
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme12.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme12.input.namelist",
     "warm_first_call_s": 0.6020653338637203,
     "warm_steady_mean_s": 0.060717625077813864,
     "warm_steady_runs_s": [
@@ -38,7 +38,7 @@
   "scheme5_filtered": {
     "cold_first_call_s": 1.9572249581106007,
     "compile_estimate_s": 1.3668331252411008,
-    "input": "/Users/rogeriojorge/local/tests/sfincs_jax/tests/ref/monoenergetic_PAS_tiny_scheme5_filtered.input.namelist",
+    "input": "tests/ref/monoenergetic_PAS_tiny_scheme5_filtered.input.namelist",
     "warm_first_call_s": 0.5903918328694999,
     "warm_steady_mean_s": 0.06320065275455515,
     "warm_steady_runs_s": [

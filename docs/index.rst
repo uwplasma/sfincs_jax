@@ -22,6 +22,8 @@ output compatibility, matrix-free performance, and differentiability.
    normalizations
    method
    physics_models
+   physics_reference
+   paper_figures
    system_equations
    performance_techniques
    usage

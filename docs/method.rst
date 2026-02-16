@@ -272,3 +272,23 @@ In `sfincs_jax`, the residual interface lives in `sfincs_jax.residual`:
 - For linear operators, the Jacobian matvec is identical to the operator matvec; for nonlinear
   residuals later in the port, `jax.jvp` provides an efficient Jacobian-vector product (JVP)
   without ever forming a dense or sparse Jacobian matrix.
+
+Linear solvers and preconditioning
+----------------------------------
+
+SFINCS v3 systems are large, stiff, and often ill-conditioned due to collision operators,
+constraint nullspaces, and mixed dense/sparse structure. `sfincs_jax` mirrors the v3
+iterative strategy but keeps the operator matrix-free:
+
+- **GMRES** (Saad & Schultz, 1986) is used as a robust fallback when short-recurrence
+  solvers stagnate.
+- **BiCGStab** (van der Vorst, 1992) is the default for RHSMode=1 and transport solves.
+- **IDR(s)** (Sonneveld & van Gijzen, 2008) is available for memory-efficient,
+  short-recurrence solves.
+- **Preconditioning** follows a block structure: collision-diagonal approximations,
+  constraint-aware Schur complements, and (for PAS) strong diagonal F-block preconditioners.
+
+The implementations live in:
+
+- `sfincs_jax/solver.py` (Krylov wrappers and history tracking),
+- `sfincs_jax/v3_driver.py` (preconditioners, projections, and fallback logic).

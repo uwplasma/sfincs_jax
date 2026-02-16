@@ -18,6 +18,20 @@ SFINCS (upstream v3)
 The upstream SFINCS v3 paper and technical notes are vendored in ``docs/upstream/`` and linked from
 ``docs/upstream_docs.rst``.
 
+Linear algebra and preconditioning
+----------------------------------
+
+The solver stack in `sfincs_jax` draws on standard Krylov and preconditioning references:
+
+- Y. Saad and M. Schultz, “GMRES: A generalized minimal residual algorithm for solving
+  nonsymmetric linear systems,” *SIAM J. Sci. Stat. Comput.* 7(3), 1986.
+- H. A. van der Vorst, “Bi-CGSTAB: A fast and smoothly converging variant of Bi-CG,”
+  *SIAM J. Sci. Stat. Comput.* 13(2), 1992.
+- P. Sonneveld and M. B. van Gijzen, “IDR(s): A family of simple and fast algorithms for
+  solving large nonsymmetric systems of linear equations,” *SIAM J. Sci. Comput.* 31(2), 2008.
+- M. Benzi, “Preconditioning techniques for large linear systems: a survey,” *J. Comput. Phys.*
+  182(2), 2002.
+
 MONKES and optimization-focused neoclassical workflows
 ------------------------------------------------------
 

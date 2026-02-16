@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 import shutil
 import subprocess
 import sys
@@ -14,13 +15,31 @@ FIG_DIR = REPO_ROOT / "docs" / "_static" / "figures" / "utils"
 WORK_DIR = REPO_ROOT / "examples" / "utils" / "output"
 
 
-def _run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None, stdin: str | None = None) -> None:
-    print(" ".join(cmd))
+def _run(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    stdin: str | None = None,
+    label: str | None = None,
+) -> None:
+    label_text = f"[{label}] " if label else ""
+    print(f"{label_text}cwd={cwd}")
+    print(f"{label_text}cmd={' '.join(cmd)}")
+    print(f"{label_text}start={time.strftime('%Y-%m-%d %H:%M:%S')}")
+    sys.stdout.flush()
     e = os.environ.copy()
     e["MPLBACKEND"] = "Agg"
     if env:
         e.update(env)
     subprocess.run(cmd, cwd=str(cwd), input=stdin, text=True, check=True, env=e)
+    print(f"{label_text}done={time.strftime('%Y-%m-%d %H:%M:%S')}")
+    sys.stdout.flush()
+
+
+def _stage(msg: str) -> None:
+    print(f"==> {msg}")
+    sys.stdout.flush()
 
 
 def _inject_group(text: str, group: str, lines: list[str]) -> str:
@@ -102,31 +121,42 @@ def main() -> None:
     base_mono = REPO_ROOT / "tests" / "ref" / "monoenergetic_PAS_tiny_scheme11.input.namelist"
     base_bootstrap = REPO_ROOT / "tests" / "reduced_inputs" / "geometryScheme4_2species_noEr.input.namelist"
 
+    _stage("Starting utils gallery generation")
+
     # sfincsPlot
+    _stage("Running sfincsPlot")
     work = WORK_DIR / "sfincsPlot"
     work.mkdir(parents=True, exist_ok=True)
     _prepare_input(base_rhs1, work / "input.namelist")
     _run(
         [sys.executable, str(UTILS / "sfincsPlot"), "--save-prefix", str(FIG_DIR / "sfincsPlot")],
         cwd=work,
+        label="sfincsPlot",
     )
 
     # sfincsPlotF (enable export_delta_f)
+    _stage("Running sfincsPlotF")
     work = WORK_DIR / "sfincsPlotF"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
         "&export_f",
         "  export_delta_f = .true.",
         "  export_full_f = .false.",
+        "  export_f_theta_option = 0",
+        "  export_f_zeta_option = 0",
+        "  export_f_x_option = 0",
+        "  export_f_xi_option = 0",
         "/",
     ]
     _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
     _run(
         [sys.executable, str(UTILS / "sfincsPlotF"), "--save", str(FIG_DIR / "sfincsPlotF.png")],
         cwd=work,
+        label="sfincsPlotF",
     )
 
     # scanType=1 (convergence)
+    _stage("Running scanType=1 (convergence)")
     work = WORK_DIR / "scan_type1"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
@@ -147,10 +177,15 @@ def main() -> None:
             "  Nx = 4",
         ],
     )
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
-    _run([sys.executable, str(UTILS / "sfincsScanPlot_1"), "--save", str(FIG_DIR / "sfincsScanPlot_1.png")], cwd=work)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan1-run")
+    _run(
+        [sys.executable, str(UTILS / "sfincsScanPlot_1"), "--save", str(FIG_DIR / "sfincsScanPlot_1.png")],
+        cwd=work,
+        label="scan1-plot",
+    )
 
     # scanType=2 (Er scan)
+    _stage("Running scanType=2 (Er scan)")
     work = WORK_DIR / "scan_type2"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
@@ -160,10 +195,15 @@ def main() -> None:
         "!ss ErMax = 1e-3",
     ]
     _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
-    _run([sys.executable, str(UTILS / "sfincsScanPlot_2"), "--save", str(FIG_DIR / "sfincsScanPlot_2.png")], cwd=work)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan2-run")
+    _run(
+        [sys.executable, str(UTILS / "sfincsScanPlot_2"), "--save", str(FIG_DIR / "sfincsScanPlot_2.png")],
+        cwd=work,
+        label="scan2-plot",
+    )
 
     # scanType=3 (parameter scan)
+    _stage("Running scanType=3 (parameter scan)")
     work = WORK_DIR / "scan_type3"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
@@ -175,10 +215,15 @@ def main() -> None:
         "!ss scanVariableScale = lin",
     ]
     _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
-    _run([sys.executable, str(UTILS / "sfincsScanPlot_3"), "--save", str(FIG_DIR / "sfincsScanPlot_3.png")], cwd=work)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan3-run")
+    _run(
+        [sys.executable, str(UTILS / "sfincsScanPlot_3"), "--save", str(FIG_DIR / "sfincsScanPlot_3.png")],
+        cwd=work,
+        label="scan3-plot",
+    )
 
     # scanType=4 (radial scan)
+    _stage("Running scanType=4 (radial scan)")
     work = WORK_DIR / "scan_type4"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
@@ -191,10 +236,15 @@ def main() -> None:
     _prepare_input(base_scheme11, work / "input.namelist", extra_lines=extra)
     _copy_equilibrium(work)
     _copy_profiles(work / "profiles")
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
-    _run([sys.executable, str(UTILS / "sfincsScanPlot_4"), "--save", str(FIG_DIR / "sfincsScanPlot_4.png")], cwd=work)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan4-run")
+    _run(
+        [sys.executable, str(UTILS / "sfincsScanPlot_4"), "--save", str(FIG_DIR / "sfincsScanPlot_4.png")],
+        cwd=work,
+        label="scan4-plot",
+    )
 
     # scanType=5 (radial + Er)
+    _stage("Running scanType=5 (radial + Er)")
     work = WORK_DIR / "scan_type5"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
@@ -207,10 +257,15 @@ def main() -> None:
     _prepare_input(base_scheme11, work / "input.namelist", extra_lines=extra)
     _copy_equilibrium(work)
     _copy_profiles(work / "profiles")
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
-    _run([sys.executable, str(UTILS / "sfincsScanPlot_5"), "--save", str(FIG_DIR / "sfincsScanPlot_5.png")], cwd=work)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan5-run")
+    _run(
+        [sys.executable, str(UTILS / "sfincsScanPlot_5"), "--save", str(FIG_DIR / "sfincsScanPlot_5.png")],
+        cwd=work,
+        label="scan5-plot",
+    )
 
     # scanType=21 (runspec)
+    _stage("Running scanType=21 (runspec)")
     work = WORK_DIR / "scan_type21"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
@@ -219,7 +274,7 @@ def main() -> None:
     ]
     _prepare_input(base_rhs1, work / "input.namelist", extra_lines=extra)
     (work / "runspec.dat").write_text("! nu_n\n1.0e-3\n2.0e-3\n")
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="scan21-run")
     _run(
         [
             sys.executable,
@@ -236,9 +291,11 @@ def main() -> None:
             "linear",
         ],
         cwd=work,
+        label="scan21-plot",
     )
 
     # scanType=2 combined (reuse scan_type2 twice)
+    _stage("Combining scanType=2 plots")
     work = WORK_DIR / "scan_type2b"
     work.mkdir(parents=True, exist_ok=True)
     shutil.copytree(WORK_DIR / "scan_type2", work, dirs_exist_ok=True)
@@ -252,9 +309,11 @@ def main() -> None:
             str(FIG_DIR / "sfincsScanPlot_combine.png"),
         ],
         cwd=WORK_DIR,
+        label="scan2-combine",
     )
 
     # ModelTest_AI (uses sfincsOutput.h5 from sfincsPlotF run)
+    _stage("Running ModelTest_AI")
     model_dir = WORK_DIR / "sfincsPlotF"
     _run(
         [
@@ -267,9 +326,11 @@ def main() -> None:
             str(FIG_DIR / "ModelTest_AI.png"),
         ],
         cwd=model_dir,
+        label="modeltest",
     )
 
     # Monoenergetic transport coefficients vs collisionality for multiple EStar
+    _stage("Running monoenergetic collisionality scans")
     mono_dirs = []
     for idx, estar in enumerate([-0.2, 0.0, 0.2]):
         work = WORK_DIR / f"mono_collisionality_E{idx}"
@@ -298,10 +359,11 @@ def main() -> None:
             ],
         )
         _copy_equilibrium(work)
-        _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
+        _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label=f"mono-scan{idx}-run")
         _run(
             [sys.executable, str(UTILS / "sfincsScanPlot_3"), "--save", str(FIG_DIR / f"mono_collisionality_E{idx}.png")],
             cwd=work,
+            label=f"mono-scan{idx}-plot",
         )
         mono_dirs.append(work)
     _run(
@@ -313,9 +375,11 @@ def main() -> None:
             str(FIG_DIR / "monoenergetic_transport_coeffs.png"),
         ],
         cwd=WORK_DIR,
+        label="mono-combine",
     )
 
     # Bootstrap current vs collisionality (2-species PAS, geometryScheme=4)
+    _stage("Running bootstrap current vs collisionality scan")
     work = WORK_DIR / "bootstrap_collisionality"
     work.mkdir(parents=True, exist_ok=True)
     extra = [
@@ -344,7 +408,7 @@ def main() -> None:
             "  Nx = 3",
         ],
     )
-    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work)
+    _run([sys.executable, str(UTILS / "sfincsScan"), "--yes"], cwd=work, label="bootstrap-run")
     _run(
         [
             sys.executable,
@@ -361,7 +425,9 @@ def main() -> None:
             "linear",
         ],
         cwd=work,
+        label="bootstrap-plot",
     )
+    _stage("Utils gallery generation complete")
 
 
 if __name__ == "__main__":

@@ -25,11 +25,14 @@ Technical documentation / notes
 - :download:`Effects on fluxes of including Phi_1 (PDF) <upstream/20150325-01 Effects on fluxes of including Phi_1.pdf>`
 - :download:`Relating quantities in the 1-species and multi-species SFINCS (PDF) <upstream/20131003-02 Relating quantities in the 1-species and multi-species SFINCS.pdf>`
 - :download:`Relating sfincs transport matrix to Beidler matrix (PDF) <upstream/20131206-02 Relating sfincs transport matrix to Beidler matrix.pdf>`
+- :download:`Notes on DKES (PDF) <upstream/notes_dkes_sfincs.pdf>`
+- :download:`Classical radial fluxes (PDF) <upstream/classical_radial_fluxes_2019-01-17.pdf>`
+- :download:`Collision operator comparison for tokamak (PDF) <upstream/comparisonOfCollisionOperatorsForTokamak.pdf>`
 
 Phi1 / collision-operator notes (LaTeX sources)
 -----------------------------------------------
 
+- :download:`Phi1_implementation_2016-01.pdf <upstream/Phi1_implementation_2016-01.pdf>`
 - :download:`Phi1_implementation_2016-01.tex <upstream/Phi1_implementation_2016-01.tex>`
 - :download:`poloidal_variation_in_collision_operator_2017-09-08.tex <upstream/poloidal_variation_in_collision_operator_2017-09-08.tex>`
 - :download:`PoloidalVariationInCollisionOperator_code.tex <upstream/PoloidalVariationInCollisionOperator_code.tex>`
-

@@ -18,6 +18,15 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_JAX_CACHE_DIR = REPO_ROOT / "tests" / "reduced_upstream_examples" / ".jax_compilation_cache"
 
+
+def _repo_rel(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except Exception:  # noqa: BLE001
+        return str(path)
+
 def _ensure_jax_compilation_cache() -> None:
     disable_env = os.environ.get("SFINCS_JAX_DISABLE_COMPILATION_CACHE", "").strip().lower()
     if disable_env in {"1", "true", "yes", "on"}:
@@ -1015,10 +1024,10 @@ def _run_case(
         strict_mismatch_physics_sample=strict_mismatch_physics_keys[:12],
         strict_max_abs_mismatch=strict_max_abs,
         final_resolution=final_res,
-        input_path=str(dst_input),
+        input_path=_repo_rel(dst_input),
         promoted_input_path=None,
-        fortran_h5=str(fortran_h5_path) if fortran_h5_path is not None else None,
-        jax_h5=str(jax_h5_path) if jax_h5_path is not None else None,
+        fortran_h5=_repo_rel(fortran_h5_path),
+        jax_h5=_repo_rel(jax_h5_path),
     )
 
 
@@ -1039,8 +1048,8 @@ def main() -> int:
     parser.add_argument(
         "--fortran-exe",
         type=Path,
-        default=Path("/Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs"),
-        help="Path to Fortran v3 executable.",
+        default=Path(os.environ.get("SFINCS_FORTRAN_EXE", "sfincs")),
+        help="Path to Fortran v3 executable (or set SFINCS_FORTRAN_EXE).",
     )
     parser.add_argument("--pattern", type=str, default=None, help="Regex filter on case directory path.")
     parser.add_argument("--timeout-s", type=float, default=30.0, help="Per-run timeout in seconds.")
@@ -1123,7 +1132,7 @@ def main() -> int:
             reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
             reduced_fixture.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(result.input_path), reduced_fixture)
-            result.promoted_input_path = str(reduced_fixture)
+            result.promoted_input_path = _repo_rel(reduced_fixture)
             print(f"  saved reduced input -> {reduced_fixture}")
         current_run_results.append(result)
         merged_results[result.case] = result
