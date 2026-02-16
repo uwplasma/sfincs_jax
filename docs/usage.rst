@@ -309,6 +309,13 @@ performance without changing the input file:
 - ``SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE``: skip iteration counting when the linear system size
   exceeds the provided threshold (useful when stats collection becomes too costly).
 
+- ``SFINCS_JAX_KSP_HISTORY_MAX_SIZE``: skip PETSc-style KSP residual history output when the
+  linear system size exceeds the provided threshold (default: ``800``; set to ``none`` to
+  always emit).
+
+- ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND``: opt-in strong RHSMode=1 fallback preconditioner
+  (``theta_line``, ``zeta_line``, ``adi``, or ``auto``). Default: disabled unless explicitly set.
+
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
 

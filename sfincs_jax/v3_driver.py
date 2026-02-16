@@ -1632,6 +1632,14 @@ def solve_v3_full_system_linear_gmres(
         iter_stats_max_size = int(iter_stats_max_env) if iter_stats_max_env else None
     except ValueError:
         iter_stats_max_size = None
+    ksp_history_max_env = os.environ.get("SFINCS_JAX_KSP_HISTORY_MAX_SIZE", "").strip().lower()
+    if ksp_history_max_env in {"none", "inf", "infinite", "unlimited"}:
+        ksp_history_max_size = None
+    else:
+        try:
+            ksp_history_max_size = int(ksp_history_max_env) if ksp_history_max_env else 800
+        except ValueError:
+            ksp_history_max_size = 800
 
     ksp_matvec = None
     ksp_b = None
@@ -1659,6 +1667,10 @@ def solve_v3_full_system_linear_gmres(
         if emit is None or not fortran_stdout:
             return None
         if str(solver_kind).strip().lower() != "gmres":
+            return None
+        size = int(b_vec.size)
+        if ksp_history_max_size is not None and size > int(ksp_history_max_size):
+            emit(1, f"fortran-stdout: KSP history skipped (size={size} > max={int(ksp_history_max_size)})")
             return None
         try:
             _x_hist, _rn, history = gmres_solve_with_history_scipy(
@@ -2004,6 +2016,148 @@ def solve_v3_full_system_linear_gmres(
                 ksp_maxiter = stage2_maxiter
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
+        if (
+            float(res_reduced.residual_norm) > target_reduced
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and rhs1_precond_kind == "point"
+            and (op.fblock.fp is not None or op.fblock.pas is not None)
+        ):
+            if bicgstab_preconditioner_reduced is None:
+                bicgstab_preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            if bicgstab_preconditioner_reduced is not None:
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: retry with collision preconditioner "
+                        f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
+                    )
+                res_collision = _solve_linear(
+                    matvec_fn=mv_reduced,
+                    b_vec=rhs_reduced,
+                    precond_fn=bicgstab_preconditioner_reduced,
+                    x0_vec=res_reduced.x,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val="incremental",
+                    precond_side=gmres_precond_side,
+                )
+                if float(res_collision.residual_norm) < float(res_reduced.residual_norm):
+                    res_reduced = res_collision
+                    ksp_matvec = mv_reduced
+                    ksp_b = rhs_reduced
+                    ksp_precond = bicgstab_preconditioner_reduced
+                    ksp_x0 = res_reduced.x
+                    ksp_restart = restart
+                    ksp_maxiter = maxiter
+                    ksp_precond_side = gmres_precond_side
+                    ksp_solver_kind = _solver_kind("incremental")[0]
+        strong_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN", "").strip()
+        try:
+            strong_precond_min = int(strong_precond_min_env) if strong_precond_min_env else 800
+        except ValueError:
+            strong_precond_min = 800
+        strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
+        strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
+        strong_precond_auto = strong_precond_env == "auto"
+        strong_precond_kind: str | None = None
+        if strong_precond_disabled:
+            strong_precond_kind = None
+        elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
+            strong_precond_kind = "theta_line"
+        elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
+            strong_precond_kind = "zeta_line"
+        elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
+            strong_precond_kind = "adi"
+        elif strong_precond_env == "auto":
+            strong_precond_kind = None
+        else:
+            strong_precond_kind = None
+
+        if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
+            if (
+                rhs1_precond_env == ""
+                and rhs1_precond_kind == "point"
+                and int(op.rhs_mode) == 1
+                and (not bool(op.include_phi1))
+                and op.fblock.pas is not None
+                and int(active_size) >= strong_precond_min
+                and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+            ):
+                strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+
+        if strong_precond_kind is not None and float(res_reduced.residual_norm) > target_reduced:
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: strong preconditioner fallback "
+                    f"kind={strong_precond_kind} (residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
+                )
+
+            if strong_precond_kind == "theta_line":
+                strong_preconditioner_reduced = _build_rhsmode1_theta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "zeta_line":
+                strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            else:
+                pre_theta = _build_rhsmode1_theta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                pre_zeta = _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+                try:
+                    sweeps = int(sweeps_env) if sweeps_env else 2
+                except ValueError:
+                    sweeps = 2
+                sweeps = max(1, sweeps)
+
+                def strong_preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
+                    out = v
+                    for _ in range(sweeps):
+                        out = pre_zeta(pre_theta(out))
+                    return out
+
+            strong_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RESTART", "").strip()
+            strong_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MAXITER", "").strip()
+            try:
+                strong_restart = int(strong_restart_env) if strong_restart_env else max(120, int(restart))
+            except ValueError:
+                strong_restart = max(120, int(restart))
+            try:
+                strong_maxiter = int(strong_maxiter_env) if strong_maxiter_env else max(800, int(maxiter or 400) * 2)
+            except ValueError:
+                strong_maxiter = max(800, int(maxiter or 400) * 2)
+            res_strong = _solve_linear(
+                matvec_fn=mv_reduced,
+                b_vec=rhs_reduced,
+                precond_fn=strong_preconditioner_reduced,
+                x0_vec=res_reduced.x,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=strong_restart,
+                maxiter_val=strong_maxiter,
+                solve_method_val="incremental",
+                precond_side=gmres_precond_side,
+            )
+            if float(res_strong.residual_norm) < float(res_reduced.residual_norm):
+                res_reduced = res_strong
+                ksp_matvec = mv_reduced
+                ksp_b = rhs_reduced
+                ksp_precond = strong_preconditioner_reduced
+                ksp_x0 = res_reduced.x
+                ksp_restart = strong_restart
+                ksp_maxiter = strong_maxiter
+                ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = _solver_kind("incremental")[0]
         dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
         try:
             dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
@@ -2265,44 +2419,178 @@ def solve_v3_full_system_linear_gmres(
                 ksp_x0 = x0
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = "gmres"
-            if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
-                if preconditioner_full is None and rhs1_precond_enabled:
-                    preconditioner_full = _build_rhs1_preconditioner_full()
-                stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
-                stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
-                stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
-                if stage2_method not in {"batched", "incremental", "dense"}:
-                    stage2_method = "incremental"
+        if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+            if preconditioner_full is None and rhs1_precond_enabled:
+                preconditioner_full = _build_rhs1_preconditioner_full()
+            stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
+            stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
+            stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
+            if stage2_method not in {"batched", "incremental", "dense"}:
+                stage2_method = "incremental"
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: stage2 GMRES "
+                    f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
+                    f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
+                )
+            res2, residual_vec2 = _solve_linear_with_residual(
+                matvec_fn=mv,
+                b_vec=rhs,
+                precond_fn=preconditioner_full,
+                x0_vec=result.x,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=stage2_restart,
+                maxiter_val=stage2_maxiter,
+                solve_method_val=stage2_method,
+                precond_side=gmres_precond_side,
+            )
+            if float(res2.residual_norm) < float(result.residual_norm):
+                result = res2
+                residual_vec = residual_vec2
+                ksp_matvec = mv
+                ksp_b = rhs
+                ksp_precond = preconditioner_full
+                ksp_x0 = result.x
+                ksp_restart = stage2_restart
+                ksp_maxiter = stage2_maxiter
+                ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = _solver_kind(stage2_method)[0]
+        if (
+            float(result.residual_norm) > target
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and rhs1_precond_kind == "point"
+            and (op.fblock.fp is not None or op.fblock.pas is not None)
+        ):
+            if bicgstab_preconditioner_full is None:
+                bicgstab_preconditioner_full = _build_rhsmode1_collision_preconditioner(op=op)
+            if bicgstab_preconditioner_full is not None:
                 if emit is not None:
                     emit(
                         0,
-                        "solve_v3_full_system_linear_gmres: stage2 GMRES "
-                        f"(residual={float(result.residual_norm):.3e} > target={target:.3e}) "
-                        f"restart={stage2_restart} maxiter={stage2_maxiter} method={stage2_method}",
+                        "solve_v3_full_system_linear_gmres: retry with collision preconditioner "
+                        f"(residual={float(result.residual_norm):.3e} > target={target:.3e})",
                     )
-                res2, residual_vec2 = _solve_linear_with_residual(
+                res_collision, residual_vec_collision = _solve_linear_with_residual(
                     matvec_fn=mv,
                     b_vec=rhs,
-                    precond_fn=preconditioner_full,
+                    precond_fn=bicgstab_preconditioner_full,
                     x0_vec=result.x,
                     tol_val=tol,
                     atol_val=atol,
-                    restart_val=stage2_restart,
-                    maxiter_val=stage2_maxiter,
-                    solve_method_val=stage2_method,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val="incremental",
                     precond_side=gmres_precond_side,
                 )
-                if float(res2.residual_norm) < float(result.residual_norm):
-                    result = res2
-                    residual_vec = residual_vec2
+                if float(res_collision.residual_norm) < float(result.residual_norm):
+                    result = res_collision
+                    residual_vec = residual_vec_collision
                     ksp_matvec = mv
                     ksp_b = rhs
-                    ksp_precond = preconditioner_full
+                    ksp_precond = bicgstab_preconditioner_full
                     ksp_x0 = result.x
-                    ksp_restart = stage2_restart
-                    ksp_maxiter = stage2_maxiter
+                    ksp_restart = restart
+                    ksp_maxiter = maxiter
                     ksp_precond_side = gmres_precond_side
-                    ksp_solver_kind = _solver_kind(stage2_method)[0]
+                    ksp_solver_kind = _solver_kind("incremental")[0]
+            strong_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN", "").strip()
+            try:
+                strong_precond_min = int(strong_precond_min_env) if strong_precond_min_env else 800
+            except ValueError:
+                strong_precond_min = 800
+            strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
+            strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
+            strong_precond_auto = strong_precond_env == "auto"
+            strong_precond_kind: str | None = None
+            if strong_precond_disabled:
+                strong_precond_kind = None
+            elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
+                strong_precond_kind = "theta_line"
+            elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
+                strong_precond_kind = "zeta_line"
+            elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
+                strong_precond_kind = "adi"
+            elif strong_precond_env == "auto":
+                strong_precond_kind = None
+            else:
+                strong_precond_kind = None
+
+            if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
+                if (
+                    rhs1_precond_env == ""
+                    and rhs1_precond_kind == "point"
+                    and int(op.rhs_mode) == 1
+                    and (not bool(op.include_phi1))
+                    and op.fblock.pas is not None
+                    and int(op.total_size) >= strong_precond_min
+                    and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+                ):
+                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+
+            if strong_precond_kind is not None and float(result.residual_norm) > target:
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: strong preconditioner fallback "
+                        f"kind={strong_precond_kind} (residual={float(result.residual_norm):.3e} > target={target:.3e})",
+                    )
+
+                if strong_precond_kind == "theta_line":
+                    strong_preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
+                elif strong_precond_kind == "zeta_line":
+                    strong_preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                else:
+                    pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
+                    pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                    sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+                    try:
+                        sweeps = int(sweeps_env) if sweeps_env else 2
+                    except ValueError:
+                        sweeps = 2
+                    sweeps = max(1, sweeps)
+
+                    def strong_preconditioner_full(v: jnp.ndarray) -> jnp.ndarray:
+                        out = v
+                        for _ in range(sweeps):
+                            out = pre_zeta(pre_theta(out))
+                        return out
+
+                strong_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RESTART", "").strip()
+                strong_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MAXITER", "").strip()
+                try:
+                    strong_restart = int(strong_restart_env) if strong_restart_env else max(120, int(restart))
+                except ValueError:
+                    strong_restart = max(120, int(restart))
+                try:
+                    strong_maxiter = int(strong_maxiter_env) if strong_maxiter_env else max(800, int(maxiter or 400) * 2)
+                except ValueError:
+                    strong_maxiter = max(800, int(maxiter or 400) * 2)
+                res_strong, residual_vec_strong = _solve_linear_with_residual(
+                    matvec_fn=mv,
+                    b_vec=rhs,
+                    precond_fn=strong_preconditioner_full,
+                    x0_vec=result.x,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=strong_restart,
+                    maxiter_val=strong_maxiter,
+                    solve_method_val="incremental",
+                    precond_side=gmres_precond_side,
+                )
+                if float(res_strong.residual_norm) < float(result.residual_norm):
+                    result = res_strong
+                    residual_vec = residual_vec_strong
+                    ksp_matvec = mv
+                    ksp_b = rhs
+                    ksp_precond = strong_preconditioner_full
+                    ksp_x0 = result.x
+                    ksp_restart = strong_restart
+                    ksp_maxiter = strong_maxiter
+                    ksp_precond_side = gmres_precond_side
+                    ksp_solver_kind = _solver_kind("incremental")[0]
             dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
             try:
                 dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000

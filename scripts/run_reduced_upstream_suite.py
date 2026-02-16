@@ -282,7 +282,11 @@ def _run_jax_cli(
         env.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
     env["SFINCS_JAX_SOLVER_ITER_STATS"] = "1" if collect_iterations else "0"
     if collect_iterations:
-        env.setdefault("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "2000")
+        env.setdefault("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "800")
+    env.setdefault(
+        "SFINCS_JAX_KSP_HISTORY_MAX_SIZE",
+        env.get("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "800"),
+    )
     run_times: list[float] = []
     repeat_count = max(1, int(repeats))
     for idx in range(repeat_count):
