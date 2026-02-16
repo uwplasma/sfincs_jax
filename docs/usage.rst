@@ -250,10 +250,24 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_PRECOND_DTYPE``: preconditioner storage dtype (``float64`` default).
   Set to ``float32`` to reduce memory and speed up preconditioner application while
-  keeping the Krylov solve in float64.
+  keeping the Krylov solve in float64. ``auto``/``mixed`` switches to float32 when
+  the estimated preconditioner size exceeds ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``.
+
+- ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``: minimum preconditioner size (rough scalar count)
+  before ``SFINCS_JAX_PRECOND_DTYPE=auto`` switches to float32 (default: ``20000``).
 
 - ``SFINCS_JAX_STATE_IN``/``SFINCS_JAX_STATE_OUT``: path for reading/writing Krylov
   recycle states (used for scan warm-starting and multi-RHS reuse).
+
+- ``SFINCS_JAX_SCAN_RECYCLE``: enable automatic scan-level Krylov recycling in
+  :func:`sfincs_jax.scans.run_er_scan` by wiring ``SFINCS_JAX_STATE_IN/OUT`` between
+  adjacent scan points (default: disabled).
+
+- ``SFINCS_JAX_FBLOCK_CACHE``: reuse geometry- and physics-dependent operator blocks
+  across repeated runs with the same namelist settings (default: enabled).
+
+- ``SFINCS_JAX_FBLOCK_CACHE_MAX``: maximum number of cached f-block operator entries
+  (default: ``8``).
 
 - ``SFINCS_JAX_REMAT_COLLISIONS``: enable gradient checkpointing around collision operators to
   reduce peak memory during autodiff (default: auto, based on size threshold).
@@ -292,6 +306,13 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``: enable a dense fallback solve for RHSMode=1
   when GMRES stagnates. This is only applied when the active system size is below the
   specified threshold (default: ``3000``).
+
+- ``SFINCS_JAX_RHSMODE1_SCHUR_MODE``: constraintScheme=2 Schur preconditioner mode
+  (``auto``/``diag``/``full``). ``auto`` selects a dense Schur complement when the
+  constraint size is below ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``.
+
+- ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``: max constraint size for the dense Schur
+  complement in ``auto`` mode (default: ``128``).
 
 - ``SFINCS_JAX_PHI1_PRECOND_KIND``: Newton–Krylov preconditioner for includePhi1 solves
   (active when ``SFINCS_JAX_PHI1_USE_PRECONDITIONER`` is enabled and frozen linearization is used).

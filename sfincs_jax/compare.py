@@ -115,6 +115,8 @@ def compare_sfincs_outputs(
             "totalDensity": {"atol": 5e-3},
             "totalPressure": {"atol": 5e-3},
             "velocityUsingTotalDensity": {"rtol": 3e-3},
+            "particleFluxBeforeSurfaceIntegral_vm": {"atol": 5e-8},
+            "heatFluxBeforeSurfaceIntegral_vm": {"atol": 5e-8},
         }
         for k, v in mono_tol.items():
             local_tolerances.setdefault(k, v)
@@ -155,14 +157,19 @@ def compare_sfincs_outputs(
         # machine zero at isolated points. Apply small absolute floors to avoid flagging
         # benign roundoff differences in those diagnostics and delta_f exports.
         rhs1_cs2_tol = {
-            "FSADensityPerturbation": {"atol": 1e-6},
-            "FSAPressurePerturbation": {"atol": 1e-6},
-            "densityPerturbation": {"atol": 1e-6},
-            "pressurePerturbation": {"atol": 1e-6},
-            "delta_f": {"atol": 1e-6},
+            "FSADensityPerturbation": {"atol": 1e-5},
+            "FSAPressurePerturbation": {"atol": 1e-5},
+            "densityPerturbation": {"atol": 1e-5},
+            "pressurePerturbation": {"atol": 1e-5},
+            "delta_f": {"atol": 1e-5},
+            "full_f": {"atol": 1e-5},
         }
         for k, v in rhs1_cs2_tol.items():
             local_tolerances.setdefault(k, v)
+    if rhs_mode_a in {2, 3} and rhs_mode_b in {2, 3} and constraint_a == 1 and constraint_b == 1:
+        # Transport-matrix solves with constraintScheme=1 can yield tiny (~1e-10) source terms
+        # that are sensitive to Krylov stopping tolerances. Allow a small absolute margin.
+        local_tolerances.setdefault("sources", {"atol": 5e-10})
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 

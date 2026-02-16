@@ -63,12 +63,31 @@ def _use_solver_jit() -> bool:
     return env not in {"0", "false", "no", "off"}
 
 
+_PRECOND_SIZE_HINT: int | None = None
+
+
+def _set_precond_size_hint(n: int | None) -> None:
+    global _PRECOND_SIZE_HINT
+    if n is None:
+        _PRECOND_SIZE_HINT = None
+    else:
+        _PRECOND_SIZE_HINT = int(n)
+
+
 def _precond_dtype() -> jnp.dtype:
     env = os.environ.get("SFINCS_JAX_PRECOND_DTYPE", "").strip().lower()
     if env in {"float32", "fp32", "f32", "32"}:
         return jnp.float32
     if env in {"float64", "fp64", "f64", "64", ""}:
         return jnp.float64
+    if env in {"auto", "mixed"}:
+        size_hint = _PRECOND_SIZE_HINT or 0
+        thresh_env = os.environ.get("SFINCS_JAX_PRECOND_FP32_MIN_SIZE", "").strip()
+        try:
+            thresh = int(thresh_env) if thresh_env else 20000
+        except ValueError:
+            thresh = 20000
+        return jnp.float32 if size_hint >= thresh else jnp.float64
     return jnp.float64
 
 
@@ -1464,11 +1483,13 @@ def _build_rhsmode1_schur_preconditioner(
     expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Approximate Schur-complement preconditioner for constraintScheme=2 RHSMode=1 solves."""
+    precond_dtype = _precond_dtype()
     base_precond = _build_rhsmode1_block_preconditioner(op=op)
     f_size = int(op.f_size)
     extra_size = int(op.extra_size)
     n_species = int(op.n_species)
     n_x = int(op.n_x)
+    n_constraints = int(extra_size)
 
     def _schur_inv_diag() -> jnp.ndarray:
         cache_key = _rhsmode1_precond_cache_key(op, "schur_diag")
@@ -1504,11 +1525,67 @@ def _build_rhsmode1_schur_preconditioner(
         ix0 = _ix_min(bool(op.point_at_x0))
         if ix0 > 0:
             inv_diag[:, :ix0] = 0.0
-        inv_diag_jnp = jnp.asarray(inv_diag, dtype=jnp.float64)
+        inv_diag_jnp = jnp.asarray(inv_diag, dtype=precond_dtype)
         _RHSMODE1_SCHUR_CACHE[cache_key] = inv_diag_jnp
         return inv_diag_jnp
 
+    def _schur_inv_full() -> jnp.ndarray:
+        cache_key = _rhsmode1_precond_cache_key(op, f"schur_full_{n_constraints}")
+        cached = _RHSMODE1_SCHUR_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        # Build a dense approximate Schur complement: S ~= C M^{-1} B.
+        # M^{-1} is the block preconditioner for the f-block.
+        if n_constraints <= 0:
+            inv = np.zeros((0, 0), dtype=np.float64)
+            inv_jnp = jnp.asarray(inv, dtype=jnp.float64)
+            _RHSMODE1_SCHUR_CACHE[cache_key] = inv_jnp
+            return inv_jnp
+        zeros_e = jnp.zeros((extra_size,), dtype=jnp.float64)
+        s_mat = np.zeros((n_constraints, n_constraints), dtype=np.float64)
+        # Build columns of S by applying M^{-1} to constraint injections.
+        for j in range(n_constraints):
+            basis = np.zeros((n_species, n_x), dtype=np.float64)
+            basis.reshape(-1)[j] = 1.0
+            f_src = _constraint_scheme2_inject_source(op, basis).reshape((-1,))
+            y_full = base_precond(jnp.concatenate([jnp.asarray(f_src, dtype=jnp.float64), zeros_e], axis=0))
+            y_f = np.asarray(y_full[:f_size], dtype=np.float64).reshape(op.fblock.f_shape)
+            c_y = np.asarray(_constraint_scheme2_source_from_f(op, y_f), dtype=np.float64).reshape((-1,))
+            s_mat[:, j] = c_y
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-12
+        except ValueError:
+            reg = 1e-12
+        s_mat = s_mat + reg * np.eye(n_constraints, dtype=np.float64)
+        try:
+            s_inv = np.linalg.inv(s_mat)
+        except np.linalg.LinAlgError:
+            s_inv = np.linalg.pinv(s_mat, rcond=1e-12)
+        if not np.all(np.isfinite(s_inv)):
+            s_inv = np.linalg.pinv(s_mat, rcond=1e-12)
+        s_inv_jnp = jnp.asarray(s_inv, dtype=precond_dtype)
+        _RHSMODE1_SCHUR_CACHE[cache_key] = s_inv_jnp
+        return s_inv_jnp
+
+    schur_mode_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_MODE", "").strip().lower()
+    if schur_mode_env in {"full", "dense"}:
+        schur_mode = "full"
+    elif schur_mode_env in {"diag", "diagonal"}:
+        schur_mode = "diag"
+    elif schur_mode_env in {"auto", ""}:
+        schur_mode = "auto"
+    else:
+        schur_mode = "diag"
+    schur_full_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX", "").strip()
+    try:
+        schur_full_max = int(schur_full_max_env) if schur_full_max_env else 128
+    except ValueError:
+        schur_full_max = 128
+    use_full_schur = bool(schur_mode == "full" or (schur_mode == "auto" and n_constraints <= schur_full_max))
+
     inv_diag_cached = _schur_inv_diag()
+    inv_schur_cached = _schur_inv_full() if use_full_schur else None
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -1521,8 +1598,11 @@ def _build_rhsmode1_schur_preconditioner(
         y_f = y_full[:f_size]
         f = y_f.reshape(op.fblock.f_shape)
         c_y = _constraint_scheme2_source_from_f(op, f).reshape((-1,))
-        inv_diag = inv_diag_cached.reshape((-1,))
-        x_e = (c_y - r_e) * inv_diag
+        if use_full_schur and inv_schur_cached is not None:
+            x_e = inv_schur_cached @ (c_y - r_e)
+        else:
+            inv_diag = inv_diag_cached.reshape((-1,))
+            x_e = (c_y - r_e) * inv_diag
         f_corr = _constraint_scheme2_inject_source(op, x_e.reshape((n_species, n_x)))
         r_corr = r_f - f_corr
         y_corr = base_precond(jnp.concatenate([r_corr, zeros_e], axis=0))
@@ -1837,6 +1917,7 @@ def solve_v3_full_system_linear_gmres(
     if emit is not None:
         emit(1, "solve_v3_full_system_linear_gmres: building operator")
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
+    _set_precond_size_hint(int(op.total_size))
     if int(op.rhs_mode) in {2, 3}:
         # v3 sets (dnHatdpsiHats, dTHatdpsiHats, EParallelHat) internally based on whichRHS.
         # If the input file omits gradients (common for monoenergetic runs), callers must select whichRHS.
@@ -3297,6 +3378,8 @@ def solve_v3_full_system_newton_krylov(
     yet a stable API for production runs.
     """
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift)
+    _set_precond_size_hint(int(op.total_size))
+    _set_precond_size_hint(int(op.total_size))
     if x0 is None:
         x = jnp.zeros((op.total_size,), dtype=jnp.float64)
     else:
@@ -3994,6 +4077,20 @@ def _project_constraint_scheme1_nullspace_solution_with_residual(
     else:
         r = apply_v3_full_system_operator_cached(matvec_op, x_vec) - rhs_vec
     r_extra = r[-op.extra_size :]
+    proj_atol_env = os.environ.get(f"{enabled_env_var}_ATOL", "").strip()
+    if proj_atol_env:
+        try:
+            proj_atol = float(proj_atol_env)
+        except ValueError:
+            proj_atol = 0.0
+    else:
+        # For transport-matrix solves, skip projection when the constraint residuals are
+        # already at roundoff. Keep RHSMode=1 default behavior unchanged.
+        proj_atol = 0.0 if "RHSMODE1" in enabled_env_var else 1e-9
+    if proj_atol > 0.0:
+        max_res = float(np.max(np.abs(np.asarray(r_extra, dtype=np.float64))))
+        if max_res <= proj_atol:
+            return x_vec, r
     cols_full = [apply_v3_full_system_operator_cached(matvec_op, v) for v in basis]
     cols_extra = [col[-op.extra_size :] for col in cols_full]
     m = jnp.stack(cols_extra, axis=1)
@@ -4053,6 +4150,7 @@ def solve_v3_transport_matrix_linear_gmres(
     if emit is not None:
         emit(0, "solve_v3_transport_matrix_linear_gmres: starting whichRHS loop")
     op0 = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
+    _set_precond_size_hint(int(op0.total_size))
     state_in_env = os.environ.get("SFINCS_JAX_STATE_IN", "").strip()
     state_x_by_rhs: dict[int, jnp.ndarray] | None = None
     if state_in_env:

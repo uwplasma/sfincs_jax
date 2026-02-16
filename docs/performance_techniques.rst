@@ -299,14 +299,16 @@ RHSMode=1 preconditioning (matrix-free)
 - **Theta-line / Zeta-line / ADI**: 1D line solves across angular dimensions.
 - **Collision diagonal / xblock / sxblock**: analytic blocks from PAS/FP collisions.
 - **Constraint-aware Schur**: enforces constraintScheme=2 source constraints via a
-  diagonal Schur complement.
+  diagonal or dense Schur complement.
 
 These are cached to avoid recomputation. Controls:
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER``
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``
+- ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
-- ``SFINCS_JAX_PRECOND_DTYPE`` (store preconditioner blocks in float32 for speed/memory)
+- ``SFINCS_JAX_PRECOND_DTYPE`` (``float32`` or ``auto`` for mixed-precision storage)
+- ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)
 
 Transport diagnostics: batched + precomputed
 --------------------------------------------
@@ -370,6 +372,8 @@ where :math:`U` contains recent solution vectors.
 **Implementation.**
 
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_K`` in ``sfincs_jax.v3_driver``.
+- ``SFINCS_JAX_STATE_IN``/``SFINCS_JAX_STATE_OUT`` (cross-run recycling).
+- ``SFINCS_JAX_SCAN_RECYCLE`` (auto-wires state files between scan points).
 
 **Compared to Fortran.**
 
@@ -436,6 +440,20 @@ Geometry parsing cache
 geometry scheme to avoid repeated parsing for multiple runs of the same equilibrium.
 
 Implementation: ``sfincs_jax.geometry`` and ``sfincs_jax.v3``.
+
+F-block operator cache
+----------------------
+
+`sfincs_jax` can reuse geometry- and physics-dependent operator blocks across
+repeated runs with identical inputs (e.g., scans that only change :math:`E_r`).
+This avoids rebuilding collisionless, collision, and magnetic-drift operators.
+
+Controls:
+
+- ``SFINCS_JAX_FBLOCK_CACHE`` (default: enabled)
+- ``SFINCS_JAX_FBLOCK_CACHE_MAX`` (max cached entries; default: ``8``)
+
+Implementation: ``sfincs_jax.v3_fblock``.
 
 Performance deltas (where measured)
 -----------------------------------

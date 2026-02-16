@@ -73,7 +73,8 @@ JAX-native performance patterns used in `sfincs_jax`
   reducing Krylov iterations on sequential RHS solves.
 - **Cross-run Krylov recycling**: set ``SFINCS_JAX_STATE_OUT``/``SFINCS_JAX_STATE_IN`` (or
   ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE=0`` to disable) to reuse transport solutions between
-  adjacent scan points with matching operators.
+  adjacent scan points with matching operators. For built-in scans, enable
+  ``SFINCS_JAX_SCAN_RECYCLE=1`` to wire these automatically.
 - **Transport preconditioning (default)**: RHSMode=2/3 transport solves use a JAX-native
   preconditioner built analytically from the collision operator. For FP cases, the default
   is a lightweight **species×x block-Jacobi** (per-L) preconditioner; otherwise the collision
@@ -83,12 +84,16 @@ JAX-native performance patterns used in `sfincs_jax`
   FP species×x blocks with a low-rank update to reduce setup and apply costs.
 - **Coarse x-grid preconditioning**: ``SFINCS_JAX_TRANSPORT_PRECOND=xmg`` adds a two-level
   x-grid correction (coarse solve + fine diagonal smoother) to reduce PAS/FP iterations.
-- **Mixed-precision preconditioners**: ``SFINCS_JAX_PRECOND_DTYPE=float32`` stores JAX
-  preconditioner blocks in float32 while keeping the Krylov solve in float64, reducing
-  memory and preconditioner cost.
+- **Mixed-precision preconditioners**: ``SFINCS_JAX_PRECOND_DTYPE=float32`` (or ``auto``)
+  stores JAX preconditioner blocks in float32 while keeping the Krylov solve in float64,
+  reducing memory and preconditioner cost. ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` controls
+  the auto threshold.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.
+- **Cached f-block operators**: reuse collisionless/collision/magnetic-drift operators
+  across repeated runs with identical geometry and physics settings (e.g., scans that
+  only change :math:`E_r`).
 - **Vectorized NTV accumulation across nonlinear iterates**: RHSMode=1 output writing now
   computes NTV from stacked iterates in one batched JAX call instead of Python per-iterate loops.
 - **Auto active-DOF reduction for RHSMode=1 (no Phi1)**: when ``Nxi_for_x`` truncates
@@ -298,6 +303,8 @@ opt-in environment variables:
   force Krylov (incremental GMRES) for RHSMode=2 whichRHS=3 regardless of dense fallback.
 - ``SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE``:
   apply a constraint-space nullspace projection for RHSMode=2 whichRHS=3 (default on; set to 0 to disable).
+- ``SFINCS_JAX_TRANSPORT_PROJECT_NULLSPACE_ATOL``:
+  skip the projection when the constraint residual max-norm is below this threshold (default 1e-9).
 - ``SFINCS_JAX_DENSE_REG``:
   override dense solve regularization strength for singular/near-singular systems.
 - ``SFINCS_JAX_DENSE_SINGULAR_MODE``:

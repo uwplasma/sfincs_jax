@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
+from typing import Any
 
 from jax import config as _jax_config
 
@@ -79,6 +81,90 @@ def _as_1d_float_default(group: dict, key: str, *, default: float) -> np.ndarray
 # Defaults from v3 `globalVariables.F90`, used when upstream inputs omit these values.
 _V3_DEFAULT_DELTA = 4.5694e-3
 _V3_DEFAULT_NU_N = 8.330e-3
+
+_FBLOCK_CACHE: "OrderedDict[tuple[object, ...], _FBlockCachedParts]" = OrderedDict()
+
+
+@dataclass(frozen=True)
+class _FBlockCachedParts:
+    collisionless: CollisionlessV3Operator
+    magdrift_theta: MagneticDriftThetaV3Operator | None
+    magdrift_zeta: MagneticDriftZetaV3Operator | None
+    magdrift_xidot: MagneticDriftXiDotV3Operator | None
+    pas: PitchAngleScatteringV3Operator | None
+    fp: FokkerPlanckV3Operator | None
+    fp_phi1: FokkerPlanckV3Phi1Operator | None
+    fsab_hat2: float
+
+
+def _fblock_cache_enabled() -> bool:
+    cache_env = os.environ.get("SFINCS_JAX_FBLOCK_CACHE", "").strip().lower()
+    return cache_env not in {"0", "false", "no", "off"}
+
+
+def _fblock_cache_max() -> int:
+    cache_env = os.environ.get("SFINCS_JAX_FBLOCK_CACHE_MAX", "").strip()
+    try:
+        return int(cache_env) if cache_env else 8
+    except ValueError:
+        return 8
+
+
+def _nml_value_signature(val: Any) -> Any:
+    if isinstance(val, (list, tuple)):
+        return tuple(_nml_value_signature(v) for v in val)
+    if isinstance(val, np.ndarray):
+        arr = np.asarray(val)
+        if arr.dtype.kind in {"S", "U", "O"}:
+            return tuple(str(v) for v in arr.ravel().tolist())
+        return tuple(np.asarray(arr, dtype=np.float64).ravel().tolist())
+    if isinstance(val, (np.floating, float)):
+        return float(val)
+    if isinstance(val, (np.integer, int)):
+        return int(val)
+    if isinstance(val, (bool, np.bool_)):
+        return bool(val)
+    return str(val)
+
+
+def _nml_group_signature(group: dict, exclude: set[str] | None = None) -> tuple[tuple[str, Any], ...]:
+    items: list[tuple[str, Any]] = []
+    for k, v in group.items():
+        ku = k.upper()
+        if exclude and ku in exclude:
+            continue
+        items.append((ku, _nml_value_signature(v)))
+    return tuple(sorted(items))
+
+
+def _fblock_cache_key(
+    *, nml: Namelist, grids: V3Grids, geom: BoozerGeometry, rhs_mode: int, collision_operator: int, magnetic_drift_scheme: int
+) -> tuple[object, ...]:
+    phys = nml.group("physicsParameters")
+    species = nml.group("speciesParameters")
+    exclude = {
+        "ER",
+        "DPHIHATDPSIHAT",
+        "DPHIHATDPSIN",
+        "DPHIHATDRHAT",
+        "DPHIHATDRN",
+        "ESTAR",
+        "INCLUDEXDOTTERM",
+        "INCLUDEELECTRICFIELDTERMINXIDOT",
+        "USEDKESEXBDRIFT",
+    }
+    phys_sig = _nml_group_signature(phys, exclude=exclude)
+    species_sig = _nml_group_signature(species, exclude=None)
+    return (
+        "fblock_parts",
+        id(grids),
+        id(geom),
+        int(rhs_mode),
+        int(collision_operator),
+        int(magnetic_drift_scheme),
+        phys_sig,
+        species_sig,
+    )
 
 
 def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
@@ -428,49 +514,12 @@ class V3FBlockOperator:
 def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0) -> V3FBlockOperator:
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
-    colless = collisionless_operator_from_namelist(nml=nml, grids=grids, geom=geom)
     general = nml.group("general")
     phys = nml.group("physicsParameters")
     rhs_mode = _get_int(general, "RHSMode", 1)
     collision_operator = _get_int(phys, "collisionOperator", 0)
     include_phi1 = bool(phys.get("INCLUDEPHI1", False))
     include_phi1_in_collisions = bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False))
-    if collision_operator == 1:
-        nu_n_override = None
-        if rhs_mode == 3:
-            nu_prime = _get_float(phys, "nuPrime", 1.0)
-            b0 = float(geom.b0_over_bbar)
-            g_hat = float(geom.g_hat)
-            i_hat = float(geom.i_hat)
-            denom = g_hat + float(geom.iota) * i_hat
-
-            # For VMEC geometryScheme=5, sfincs_jax stores (B0OverBBar, GHat, IHat) as placeholders in the
-            # geometry struct (matching how v3 computes/report these values later in `computeBIntegrals`).
-            # For RHSMode=3 we need the *effective* flux functions to match v3's nu_n overwrite.
-            if abs(denom) < 1e-30 or abs(b0) < 1e-30:
-                g_eff, i_eff = g_hat_i_hat_jax(grids=grids, geom=geom)
-                b0_eff = b0_over_bbar_jax(grids=grids, geom=geom)
-                g_hat = float(np.asarray(g_eff, dtype=np.float64))
-                i_hat = float(np.asarray(i_eff, dtype=np.float64))
-                b0 = float(np.asarray(b0_eff, dtype=np.float64))
-                denom = g_hat + float(geom.iota) * i_hat
-
-            nu_n_override = float(nu_prime) * b0 / float(denom)
-        pas = pas_collision_operator_from_namelist(nml=nml, grids=grids, nu_n_override=nu_n_override)
-        fp = None
-        fp_phi1 = None
-    elif collision_operator == 0:
-        pas = None
-        if include_phi1 and include_phi1_in_collisions:
-            fp = None
-            fp_phi1 = fokker_planck_collision_operator_with_phi1_from_namelist(
-                nml=nml, grids=grids, alpha=float(phys.get("ALPHA", 1.0))
-            )
-        else:
-            fp = fokker_planck_collision_operator_from_namelist(nml=nml, grids=grids)
-            fp_phi1 = None
-    else:
-        raise NotImplementedError(f"collisionOperator={collision_operator} is not supported.")
     include_xdot = bool(phys.get("INCLUDEXDOTTERM", False))
     include_er_xidot = bool(phys.get("INCLUDEELECTRICFIELDTERMINXIDOT", False))
     use_dkes_exb = bool(phys.get("USEDKESEXBDRIFT", False))
@@ -478,6 +527,148 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     er = float(phys.get("ER", 0.0))
     alpha = float(phys.get("ALPHA", 1.0))
     delta = float(phys.get("DELTA", _V3_DEFAULT_DELTA))
+
+    cached_parts: _FBlockCachedParts | None = None
+    if _fblock_cache_enabled():
+        cache_key = _fblock_cache_key(
+            nml=nml,
+            grids=grids,
+            geom=geom,
+            rhs_mode=rhs_mode,
+            collision_operator=collision_operator,
+            magnetic_drift_scheme=magnetic_drift_scheme,
+        )
+        cached_parts = _FBLOCK_CACHE.get(cache_key)
+        if cached_parts is not None:
+            _FBLOCK_CACHE.move_to_end(cache_key)
+
+    if cached_parts is None:
+        colless = collisionless_operator_from_namelist(nml=nml, grids=grids, geom=geom)
+        if collision_operator == 1:
+            nu_n_override = None
+            if rhs_mode == 3:
+                nu_prime = _get_float(phys, "nuPrime", 1.0)
+                b0 = float(geom.b0_over_bbar)
+                g_hat = float(geom.g_hat)
+                i_hat = float(geom.i_hat)
+                denom = g_hat + float(geom.iota) * i_hat
+
+                # For VMEC geometryScheme=5, sfincs_jax stores (B0OverBBar, GHat, IHat) as placeholders in the
+                # geometry struct (matching how v3 computes/report these values later in `computeBIntegrals`).
+                # For RHSMode=3 we need the *effective* flux functions to match v3's nu_n overwrite.
+                if abs(denom) < 1e-30 or abs(b0) < 1e-30:
+                    g_eff, i_eff = g_hat_i_hat_jax(grids=grids, geom=geom)
+                    b0_eff = b0_over_bbar_jax(grids=grids, geom=geom)
+                    g_hat = float(np.asarray(g_eff, dtype=np.float64))
+                    i_hat = float(np.asarray(i_eff, dtype=np.float64))
+                    b0 = float(np.asarray(b0_eff, dtype=np.float64))
+                    denom = g_hat + float(geom.iota) * i_hat
+
+                nu_n_override = float(nu_prime) * b0 / float(denom)
+            pas = pas_collision_operator_from_namelist(nml=nml, grids=grids, nu_n_override=nu_n_override)
+            fp = None
+            fp_phi1 = None
+        elif collision_operator == 0:
+            pas = None
+            if include_phi1 and include_phi1_in_collisions:
+                fp = None
+                fp_phi1 = fokker_planck_collision_operator_with_phi1_from_namelist(
+                    nml=nml, grids=grids, alpha=float(phys.get("ALPHA", 1.0))
+                )
+            else:
+                fp = fokker_planck_collision_operator_from_namelist(nml=nml, grids=grids)
+                fp_phi1 = None
+        else:
+            raise NotImplementedError(f"collisionOperator={collision_operator} is not supported.")
+
+        magdrift_theta = None
+        magdrift_zeta = None
+        magdrift_xidot = None
+        if magnetic_drift_scheme != 0:
+            if magnetic_drift_scheme != 1:
+                raise NotImplementedError("sfincs_jax currently only builds magnetic drifts for magneticDriftScheme=1.")
+
+            species = nml.group("speciesParameters")
+            t_hat = float(_as_1d_float_default(species, "THats", default=1.0)[0])
+            z = float(_as_1d_float_default(species, "Zs", default=1.0)[0])
+
+            magdrift_theta = MagneticDriftThetaV3Operator(
+                delta=jnp.asarray(delta, dtype=jnp.float64),
+                t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
+                z=jnp.asarray(z, dtype=jnp.float64),
+                x=grids.x,
+                ddtheta_plus=grids.ddtheta_magdrift_plus,
+                ddtheta_minus=grids.ddtheta_magdrift_minus,
+                d_hat=geom.d_hat,
+                b_hat=geom.b_hat,
+                b_hat_sub_zeta=geom.b_hat_sub_zeta,
+                b_hat_sub_psi=geom.b_hat_sub_psi,
+                db_hat_dzeta=geom.db_hat_dzeta,
+                db_hat_dpsi_hat=geom.db_hat_dpsi_hat,
+                db_hat_sub_psi_dzeta=geom.db_hat_sub_psi_dzeta,
+                db_hat_sub_zeta_dpsi_hat=geom.db_hat_sub_zeta_dpsi_hat,
+                n_xi_for_x=grids.n_xi_for_x,
+            )
+            magdrift_zeta = MagneticDriftZetaV3Operator(
+                delta=jnp.asarray(delta, dtype=jnp.float64),
+                t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
+                z=jnp.asarray(z, dtype=jnp.float64),
+                x=grids.x,
+                ddzeta_plus=grids.ddzeta_magdrift_plus,
+                ddzeta_minus=grids.ddzeta_magdrift_minus,
+                d_hat=geom.d_hat,
+                b_hat=geom.b_hat,
+                b_hat_sub_theta=geom.b_hat_sub_theta,
+                b_hat_sub_psi=geom.b_hat_sub_psi,
+                db_hat_dtheta=geom.db_hat_dtheta,
+                db_hat_dpsi_hat=geom.db_hat_dpsi_hat,
+                db_hat_sub_theta_dpsi_hat=geom.db_hat_sub_theta_dpsi_hat,
+                db_hat_sub_psi_dtheta=geom.db_hat_sub_psi_dtheta,
+                n_xi_for_x=grids.n_xi_for_x,
+            )
+            magdrift_xidot = MagneticDriftXiDotV3Operator(
+                delta=jnp.asarray(delta, dtype=jnp.float64),
+                t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
+                z=jnp.asarray(z, dtype=jnp.float64),
+                x=grids.x,
+                d_hat=geom.d_hat,
+                b_hat=geom.b_hat,
+                db_hat_dtheta=geom.db_hat_dtheta,
+                db_hat_dzeta=geom.db_hat_dzeta,
+                db_hat_sub_psi_dzeta=geom.db_hat_sub_psi_dzeta,
+                db_hat_sub_zeta_dpsi_hat=geom.db_hat_sub_zeta_dpsi_hat,
+                db_hat_sub_theta_dpsi_hat=geom.db_hat_sub_theta_dpsi_hat,
+                db_hat_sub_psi_dtheta=geom.db_hat_sub_psi_dtheta,
+                n_xi_for_x=grids.n_xi_for_x,
+            )
+
+        fsab_hat2 = _fsab_hat2(grids=grids, geom=geom)
+        cached_parts = _FBlockCachedParts(
+            collisionless=colless,
+            magdrift_theta=magdrift_theta,
+            magdrift_zeta=magdrift_zeta,
+            magdrift_xidot=magdrift_xidot,
+            pas=pas,
+            fp=fp,
+            fp_phi1=fp_phi1,
+            fsab_hat2=fsab_hat2,
+        )
+
+        if _fblock_cache_enabled():
+            _FBLOCK_CACHE[cache_key] = cached_parts
+            max_entries = _fblock_cache_max()
+            if max_entries >= 0:
+                while len(_FBLOCK_CACHE) > max_entries:
+                    _FBLOCK_CACHE.popitem(last=False)
+    else:
+        colless = cached_parts.collisionless
+        magdrift_theta = cached_parts.magdrift_theta
+        magdrift_zeta = cached_parts.magdrift_zeta
+        magdrift_xidot = cached_parts.magdrift_xidot
+        pas = cached_parts.pas
+        fp = cached_parts.fp
+        fp_phi1 = cached_parts.fp_phi1
+        fsab_hat2 = cached_parts.fsab_hat2
 
     if rhs_mode == 3:
         e_star = _get_float(phys, "EStar", 0.0)
@@ -498,7 +689,6 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
         )
     else:
         dphi = _dphi_hat_dpsi_hat_from_er(nml=nml, er=er)
-    fsab_hat2 = _fsab_hat2(grids=grids, geom=geom)
 
     dphi_is_zero = float(dphi) == 0.0
     exb_theta = None
@@ -526,67 +716,6 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             b_hat_sub_theta=geom.b_hat_sub_theta,
             use_dkes_exb_drift=bool(use_dkes_exb),
             fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
-            n_xi_for_x=grids.n_xi_for_x,
-        )
-
-    magdrift_theta = None
-    magdrift_zeta = None
-    magdrift_xidot = None
-    if magnetic_drift_scheme != 0:
-        if magnetic_drift_scheme != 1:
-            raise NotImplementedError("sfincs_jax currently only builds magnetic drifts for magneticDriftScheme=1.")
-
-        species = nml.group("speciesParameters")
-        t_hat = float(_as_1d_float_default(species, "THats", default=1.0)[0])
-        z = float(_as_1d_float_default(species, "Zs", default=1.0)[0])
-
-        magdrift_theta = MagneticDriftThetaV3Operator(
-            delta=jnp.asarray(delta, dtype=jnp.float64),
-            t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
-            z=jnp.asarray(z, dtype=jnp.float64),
-            x=grids.x,
-            ddtheta_plus=grids.ddtheta_magdrift_plus,
-            ddtheta_minus=grids.ddtheta_magdrift_minus,
-            d_hat=geom.d_hat,
-            b_hat=geom.b_hat,
-            b_hat_sub_zeta=geom.b_hat_sub_zeta,
-            b_hat_sub_psi=geom.b_hat_sub_psi,
-            db_hat_dzeta=geom.db_hat_dzeta,
-            db_hat_dpsi_hat=geom.db_hat_dpsi_hat,
-            db_hat_sub_psi_dzeta=geom.db_hat_sub_psi_dzeta,
-            db_hat_sub_zeta_dpsi_hat=geom.db_hat_sub_zeta_dpsi_hat,
-            n_xi_for_x=grids.n_xi_for_x,
-        )
-        magdrift_zeta = MagneticDriftZetaV3Operator(
-            delta=jnp.asarray(delta, dtype=jnp.float64),
-            t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
-            z=jnp.asarray(z, dtype=jnp.float64),
-            x=grids.x,
-            ddzeta_plus=grids.ddzeta_magdrift_plus,
-            ddzeta_minus=grids.ddzeta_magdrift_minus,
-            d_hat=geom.d_hat,
-            b_hat=geom.b_hat,
-            b_hat_sub_theta=geom.b_hat_sub_theta,
-            b_hat_sub_psi=geom.b_hat_sub_psi,
-            db_hat_dtheta=geom.db_hat_dtheta,
-            db_hat_dpsi_hat=geom.db_hat_dpsi_hat,
-            db_hat_sub_theta_dpsi_hat=geom.db_hat_sub_theta_dpsi_hat,
-            db_hat_sub_psi_dtheta=geom.db_hat_sub_psi_dtheta,
-            n_xi_for_x=grids.n_xi_for_x,
-        )
-        magdrift_xidot = MagneticDriftXiDotV3Operator(
-            delta=jnp.asarray(delta, dtype=jnp.float64),
-            t_hat=jnp.asarray(t_hat, dtype=jnp.float64),
-            z=jnp.asarray(z, dtype=jnp.float64),
-            x=grids.x,
-            d_hat=geom.d_hat,
-            b_hat=geom.b_hat,
-            db_hat_dtheta=geom.db_hat_dtheta,
-            db_hat_dzeta=geom.db_hat_dzeta,
-            db_hat_sub_psi_dzeta=geom.db_hat_sub_psi_dzeta,
-            db_hat_sub_zeta_dpsi_hat=geom.db_hat_sub_zeta_dpsi_hat,
-            db_hat_sub_theta_dpsi_hat=geom.db_hat_sub_theta_dpsi_hat,
-            db_hat_sub_psi_dtheta=geom.db_hat_sub_psi_dtheta,
             n_xi_for_x=grids.n_xi_for_x,
         )
 

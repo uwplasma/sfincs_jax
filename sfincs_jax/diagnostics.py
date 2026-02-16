@@ -79,7 +79,7 @@ def _u_hat_loop(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
     """Reference implementation of `uHat` using explicit harmonic loops (slow but transparent).
 
     This follows the cosine-only branch in v3 `geometry.F90` and is useful for validating
-    faster implementations.
+    faster implementations on stellarator-symmetric cases.
     """
     theta = jnp.asarray(grids.theta, dtype=jnp.float64)
     zeta = jnp.asarray(grids.zeta, dtype=jnp.float64)
@@ -92,14 +92,13 @@ def _u_hat_loop(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
 
     m_max = int(ntheta // 2)
     n_max = int(nzeta // 2)
-
-    theta_half = ntheta / 2.0
-    zeta_half = nzeta / 2.0
+    theta_half = float(ntheta) / 2.0
+    zeta_half = float(nzeta) / 2.0
     zeta_is_even = float(int(zeta_half)) == zeta_half
 
     for m in range(m_max + 1):
         if m == 0:
-            startn = 1  # omit (0,0) mode
+            startn = 1
         elif float(m) == theta_half:
             startn = 0
         elif zeta_is_even:
@@ -112,12 +111,12 @@ def _u_hat_loop(*, grids: V3Grids, geom: BoozerGeometry) -> jnp.ndarray:
             angle = float(m) * theta[:, None] - float(n * geom.n_periods) * zeta[None, :]
             cos_angle = jnp.cos(angle)
 
-            at_nyquist = (
+            nyquist = (
                 (m == 0 and float(n) == zeta_half)
                 or (float(m) == theta_half and n == 0)
                 or (float(m) == theta_half and float(n) == zeta_half)
             )
-            weight = (1.0 if at_nyquist else 2.0) / float(ntheta * nzeta)
+            weight = (1.0 if nyquist else 2.0) / float(ntheta * nzeta)
 
             h_amp = weight * jnp.sum(cos_angle * h_hat)
 
@@ -178,56 +177,25 @@ def u_hat_np(*, grids: V3Grids, geom: BoozerGeometry) -> np.ndarray:
     This function is intended for file-level parity against a frozen Fortran output.
     It is not differentiable.
     """
-    theta = np.asarray(grids.theta, dtype=np.float64)
-    zeta = np.asarray(grids.zeta, dtype=np.float64)
     b_hat = np.asarray(geom.b_hat, dtype=np.float64)
+    ntheta, nzeta = int(b_hat.shape[0]), int(b_hat.shape[1])
 
-    ntheta = int(theta.shape[0])
-    nzeta = int(zeta.shape[0])
+    # Work in zeta' = NPeriods*zeta, which is 2π-periodic on the v3 grids.
+    # The grid samples already correspond to zeta' = 2π*j/Nzeta, so the standard FFT basis applies.
     h_hat = 1.0 / (b_hat * b_hat)
+    f = np.fft.fft2(h_hat)
 
-    u = np.zeros_like(b_hat)
+    m = np.fft.fftfreq(ntheta, d=1.0 / ntheta)
+    k = np.fft.fftfreq(nzeta, d=1.0 / nzeta)
+    mm, kk = np.meshgrid(m, k, indexing="ij")
 
-    m_max = int(ntheta // 2)
-    n_max = int(nzeta // 2)
+    n_periods = float(geom.n_periods)
+    n_eff = (-kk) * n_periods
+    denom = n_eff - float(geom.iota) * mm
+    numer = float(geom.iota) * (float(geom.g_hat) * mm + float(geom.i_hat) * n_eff)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scale = np.where(np.abs(denom) < 1e-30, 0.0, numer / denom).astype(f.dtype)
+    scale[0, 0] = 0.0
 
-    theta_half = ntheta / 2.0
-    zeta_half = nzeta / 2.0
-    zeta_is_even = float(int(zeta_half)) == zeta_half
-
-    for m in range(m_max + 1):
-        if m == 0:
-            startn = 1
-        elif float(m) == theta_half:
-            startn = 0
-        elif zeta_is_even:
-            startn = -n_max + 1
-        else:
-            startn = -n_max
-        stopn = n_max
-
-        for n in range(startn, stopn + 1):
-            angle = float(m) * theta[:, None] - float(n * geom.n_periods) * zeta[None, :]
-            cos_angle = np.cos(angle)
-
-            at_nyquist = (
-                (m == 0 and float(n) == zeta_half)
-                or (float(m) == theta_half and n == 0)
-                or (float(m) == theta_half and float(n) == zeta_half)
-            )
-            weight = (1.0 if at_nyquist else 2.0) / float(ntheta * nzeta)
-
-            h_amp = 0.0
-            for itheta in range(ntheta):
-                row_sum = 0.0
-                for izeta in range(nzeta):
-                    row_sum += float(cos_angle[itheta, izeta] * h_hat[itheta, izeta])
-                h_amp += weight * row_sum
-
-            denom = float(n * geom.n_periods) - float(geom.iota) * float(m)
-            numer = float(geom.iota) * (float(geom.g_hat) * float(m) + float(geom.i_hat) * float(n * geom.n_periods))
-            u_amp = 0.0 if abs(denom) < 1e-30 else (numer / denom) * h_amp
-
-            u = u + u_amp * cos_angle
-
-    return u
+    u = np.fft.ifft2(scale * f).real
+    return np.asarray(u, dtype=np.float64)

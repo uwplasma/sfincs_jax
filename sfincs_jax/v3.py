@@ -282,7 +282,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         raise ValueError(f"Invalid zetaDerivativeScheme={zeta_derivative_scheme}")
     if nzeta == 1:
         zeta = jnp.asarray(np.array([0.0], dtype=np.float64))
-        zeta_weights = jnp.asarray(np.array([2 * math.pi], dtype=np.float64))
+        zeta_weights = jnp.asarray(np.array([2 * math.pi * n_periods], dtype=np.float64))
     else:
         zeta, zeta_weights, ddzeta, _ = uniform_diff_matrices(
             n=nzeta, x_min=0.0, x_max=zeta_max, scheme=zeta_scheme

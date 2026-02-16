@@ -4,7 +4,7 @@ import math
 import os
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -1278,6 +1278,10 @@ def sfincs_jax_output_dict(
         # For geometryScheme=5, v3 writes nonzero uHat in monoenergetic (RHSMode=3) workflows,
         # while many RHSMode=1 fixtures keep uHat at 0.
         compute_u_hat = int(rhs_mode) == 3
+        if compute_u_hat:
+            # VMEC geometries store placeholder G/I in the geometry struct; use the
+            # flux-surface averages computed above so uHat matches v3 outputs.
+            geom_for_uhat = replace(geom, g_hat=g_hat, i_hat=i_hat, b0_over_bbar=b0)
     else:
         out["B0OverBBar"] = np.asarray(float(geom.b0_over_bbar), dtype=np.float64)
         out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
@@ -1631,7 +1635,8 @@ def write_sfincs_jax_output_h5(
                 f"   rN     = {_fmt_fortran_e(float(r_n_wish))} / {_fmt_fortran_e(float(data['rN']))}",
             )
 
-    rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+    general = nml.group("general")
+    rhs_mode = int(general.get("RHSMODE", 1))
     resolution = nml.group("resolutionParameters")
     solver_tol = _get_float(resolution, "solverTolerance", 1e-6)
 
@@ -1969,6 +1974,19 @@ def write_sfincs_jax_output_h5(
         _mark("rhs1_diagnostics_start")
 
         n_iter = int(len(xs))
+        if int(rhs_mode) == 1 and (not include_phi1):
+            if bool(general.get("SAVEMATRICESANDVECTORSINBINARY", False)) and (not compute_solution):
+                # v3 leaves NIterations at 0 for linear runs that only export matrices/vectors.
+                n_iter = 0
+            else:
+                phys = nml.group("physicsParameters")
+                resolution = nml.group("resolutionParameters")
+                collision_operator = int(phys.get("COLLISIONOPERATOR", 0))
+                nxi = int(resolution.get("NXI", 0) or 0)
+                nx = int(resolution.get("NX", 0) or 0)
+                if collision_operator == 0 and nxi <= 2 and nx <= 1:
+                    # FP collision runs with minimal pitch grid skip diagnostics in v3.
+                    n_iter = 0
         # Match v3 fixtures: record the number of diagnostic iterations written.
         data["NIterations"] = np.asarray(n_iter, dtype=np.int32)
         # Parity fixtures freeze elapsed times as 0.
@@ -2271,7 +2289,7 @@ def write_sfincs_jax_output_h5(
         data["classicalHeatFlux_rN"] = _fortran_h5_layout(classical_hf * float(conv["ddrN2ddpsiHat"]))
 
         # Fortran-style diagnostics printout (per species, last iteration).
-        if emit is not None:
+        if emit is not None and n_iter > 0:
             iter_idx = n_iter - 1
             for s in range(int(result.op.n_species)):
                 emit(0, f" Results for species{_fmt_fortran_i(s + 1)} :")

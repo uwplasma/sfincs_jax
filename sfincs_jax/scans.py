@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 
@@ -125,6 +126,9 @@ def run_er_scan(
 
     run_dirs: list[Path] = []
     outputs: list[Path] = []
+    scan_recycle_env = os.environ.get("SFINCS_JAX_SCAN_RECYCLE", "").strip().lower()
+    scan_recycle_enabled = scan_recycle_env in {"1", "true", "yes", "on"}
+    prev_run_dir: Path | None = None
     for i, v in enumerate(vals, start=1):
         run_dir = out_dir / f"{var}{v:.4g}"
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -140,6 +144,18 @@ def run_er_scan(
         # Ensure equilibriumFile is runnable from the run dir:
         localize_equilibrium_file_in_place(input_namelist=w_input, overwrite=False)
 
+        if scan_recycle_enabled:
+            state_out = run_dir / "sfincs_jax_state.npz"
+            os.environ["SFINCS_JAX_STATE_OUT"] = str(state_out)
+            if prev_run_dir is None:
+                os.environ.pop("SFINCS_JAX_STATE_IN", None)
+            else:
+                prev_state = prev_run_dir / "sfincs_jax_state.npz"
+                if prev_state.exists():
+                    os.environ["SFINCS_JAX_STATE_IN"] = str(prev_state)
+                else:
+                    os.environ.pop("SFINCS_JAX_STATE_IN", None)
+
         out_path = run_dir / "sfincsOutput.h5"
         write_sfincs_jax_output_h5(
             input_namelist=w_input,
@@ -150,6 +166,7 @@ def run_er_scan(
             emit=emit,
         )
         outputs.append(out_path)
+        prev_run_dir = run_dir
 
     return ScanResult(
         scan_dir=out_dir,
