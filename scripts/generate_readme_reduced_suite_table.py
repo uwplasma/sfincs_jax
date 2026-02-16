@@ -45,9 +45,23 @@ def _format_row(case: str, row: dict, row_strict: dict | None) -> str:
     ft_s = "-" if ft is None else f"{float(ft):.3f}"
     jt_s = "-" if jt is None else f"{float(jt):.3f}"
 
+    iters_n = int(row.get("jax_solver_iters_n", 0) or 0)
+    iters_mean = row.get("jax_solver_iters_mean")
+    iters_min = row.get("jax_solver_iters_min")
+    iters_max = row.get("jax_solver_iters_max")
+    if iters_n > 0 and iters_mean is not None:
+        if iters_n == 1:
+            iters_s = f"{int(round(float(iters_mean)))}"
+        else:
+            min_val = int(iters_min) if iters_min is not None else 0
+            max_val = int(iters_max) if iters_max is not None else 0
+            iters_s = f"{float(iters_mean):.1f} ({min_val}-{max_val})"
+    else:
+        iters_s = "-"
+
     return (
         f"| {case} | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | "
-        f"{ft_s} | {jt_s} | {mismatch} | {pp} |"
+        f"{ft_s} | {jt_s} | {iters_s} | {mismatch} | {pp} |"
     )
 
 
@@ -58,8 +72,8 @@ def main() -> int:
     rows_strict = _load(REPORT_STRICT) if REPORT_STRICT.exists() else {}
 
     table_lines = [
-        "| Case | Fortran outputs | sfincs_jax outputs | Fortran(s) | sfincs_jax(s) | Mismatches (practical/strict) | Print parity |",
-        "| --- | --- | --- | ---: | ---: | --- | --- |",
+        "| Case | Fortran outputs | sfincs_jax outputs | Fortran(s) | sfincs_jax(s) | JAX iters | Mismatches (practical/strict) | Print parity |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- | --- |",
     ]
     for case in sorted(rows):
         table_lines.append(_format_row(case, rows[case], rows_strict.get(case)))

@@ -98,6 +98,10 @@ Current scope limits
 - Reduced-suite parity (``docs/_generated/reduced_upstream_suite_status*.rst``) reports
   38/38 parity_ok in practical mode and 36/38 parity_ok in strict mode (strict ignores
   per-case tolerance overrides for HSX FPCollisions).
+- Reduced-suite reports now include **JAX solver iteration counts** (mean/min/max when multiple
+  ``whichRHS`` solves are present). Collection is enabled by default in
+  ``scripts/run_reduced_upstream_suite.py`` and can be disabled with
+  ``--no-collect-iterations`` or ``SFINCS_JAX_SOLVER_ITER_STATS=0``.
 - The unconstrained ``constraintScheme=0`` branch is rank-deficient, so different solvers can select different nullspace
   components. For comparisons, sfincs_jax treats a small set of density/pressure-like outputs as gauge-dependent and
   skips them when ``constraintScheme=0`` (see ``sfincs_jax/compare.py``).

@@ -21,7 +21,9 @@ output compatibility, matrix-free performance, and differentiability.
    installation
    normalizations
    method
+   physics_models
    system_equations
+   performance_techniques
    usage
    inputs
    outputs

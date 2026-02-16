@@ -15,6 +15,7 @@ from jax import vmap
 from jax.scipy.sparse.linalg import bicgstab, gmres
 from scipy.sparse.linalg import LinearOperator as _LinearOperator
 from scipy.sparse.linalg import gmres as _scipy_gmres
+from scipy.sparse.linalg import bicgstab as _scipy_bicgstab
 
 
 @jtu.register_pytree_node_class
@@ -75,18 +76,18 @@ def gmres_solve_with_history_scipy(
     precondition_side: str = "left",
 ) -> tuple[np.ndarray, float, list[float]]:
     """Run SciPy GMRES to collect residual history for Fortran-style logging."""
-    b_np = np.asarray(b, dtype=np.float64).reshape((-1,))
+    b_np = np.array(b, dtype=np.float64, copy=True).reshape((-1,))
     n = int(b_np.size)
-    x0_np = np.asarray(x0, dtype=np.float64).reshape((-1,)) if x0 is not None else None
+    x0_np = np.array(x0, dtype=np.float64, copy=True).reshape((-1,)) if x0 is not None else None
     restart_use = _maybe_limit_restart(n, int(restart), np.dtype(np.float64))
 
     def _mv(x_np: np.ndarray) -> np.ndarray:
-        return np.asarray(matvec(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64)
+        return np.array(matvec(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64, copy=True)
 
     def _prec(x_np: np.ndarray) -> np.ndarray:
         if preconditioner is None:
-            return x_np
-        return np.asarray(preconditioner(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64)
+            return np.array(x_np, dtype=np.float64, copy=True)
+        return np.array(preconditioner(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64, copy=True)
 
     side = str(precondition_side).strip().lower()
     if side not in {"left", "right", "none"}:
@@ -122,6 +123,69 @@ def gmres_solve_with_history_scipy(
         M=M,
         callback=_cb,
         callback_type="pr_norm",
+    )
+
+    if side == "right" and preconditioner is not None:
+        x_np = _prec(x_np)
+
+    res = b_np - _mv(x_np)
+    rn = float(np.linalg.norm(res))
+    return x_np, rn, history
+
+
+def bicgstab_solve_with_history_scipy(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    maxiter: int | None = None,
+    precondition_side: str = "left",
+) -> tuple[np.ndarray, float, list[float]]:
+    """Run SciPy BiCGStab to collect residual history for iteration counts."""
+    b_np = np.array(b, dtype=np.float64, copy=True).reshape((-1,))
+    n = int(b_np.size)
+    x0_np = np.array(x0, dtype=np.float64, copy=True).reshape((-1,)) if x0 is not None else None
+
+    def _mv(x_np: np.ndarray) -> np.ndarray:
+        return np.array(matvec(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64, copy=True)
+
+    def _prec(x_np: np.ndarray) -> np.ndarray:
+        if preconditioner is None:
+            return np.array(x_np, dtype=np.float64, copy=True)
+        return np.array(preconditioner(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64, copy=True)
+
+    side = str(precondition_side).strip().lower()
+    if side not in {"left", "right", "none"}:
+        side = "left"
+
+    if side == "right" and preconditioner is not None:
+        def _mv_right(y_np: np.ndarray) -> np.ndarray:
+            return _mv(_prec(y_np))
+
+        A = _LinearOperator((n, n), matvec=_mv_right, dtype=np.float64)
+        M = None
+    else:
+        A = _LinearOperator((n, n), matvec=_mv, dtype=np.float64)
+        M = _LinearOperator((n, n), matvec=_prec, dtype=np.float64) if preconditioner is not None and side == "left" else None
+
+    history: list[float] = []
+
+    def _cb(xk: np.ndarray) -> None:
+        rk = b_np - _mv(xk if side != "right" else _prec(xk))
+        history.append(float(np.linalg.norm(rk)))
+
+    x_np, _info = _scipy_bicgstab(
+        A,
+        b_np,
+        x0=x0_np,
+        rtol=float(tol),
+        atol=float(atol),
+        maxiter=int(maxiter) if maxiter is not None else None,
+        M=M,
+        callback=_cb,
     )
 
     if side == "right" and preconditioner is not None:
@@ -303,6 +367,38 @@ def dense_solve_from_matrix(*, a: jnp.ndarray, b: jnp.ndarray) -> tuple[jnp.ndar
     return x2, rn
 
 
+def dense_solve_from_matrix_row_scaled(*, a: jnp.ndarray, b: jnp.ndarray, diag_floor: float = 1e-12) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Solve `A X = B` using diagonal row scaling before a direct dense solve.
+
+    This is intended for singular/near-singular systems where solver-dependent
+    pivoting choices can shift the nullspace component of the solution. Row
+    scaling by the diagonal produces a deterministic gauge that can be used
+    for parity-sensitive RHSMode=1 constraintScheme=0 solves.
+    """
+    a = jnp.asarray(a)
+    b = jnp.asarray(b)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError(f"dense_solve_from_matrix_row_scaled expects a square matrix, got shape {a.shape}")
+    if b.ndim not in (1, 2):
+        raise ValueError(f"dense_solve_from_matrix_row_scaled expects b.ndim in {{1,2}}, got {b.ndim}")
+    if b.shape[0] != a.shape[0]:
+        raise ValueError(f"dense_solve_from_matrix_row_scaled shape mismatch: a={a.shape}, b={b.shape}")
+
+    b2 = b[:, None] if b.ndim == 1 else b
+    diag = jnp.diag(a)
+    floor = jnp.asarray(diag_floor, dtype=a.dtype)
+    denom = jnp.where(jnp.abs(diag) < floor, jnp.asarray(1.0, dtype=a.dtype), diag)
+    a_scaled = a / denom[:, None]
+    b_scaled = b2 / denom[:, None]
+
+    x = jnp.linalg.solve(a_scaled, b_scaled)
+    r = b2 - a @ x
+    rn = jnp.linalg.norm(r, axis=0)
+    if b.ndim == 1:
+        return x[:, 0], rn[0]
+    return x, rn
+
+
 def _gmres_solve_core(
     *,
     matvec,
@@ -367,6 +463,18 @@ def _gmres_solve_core(
 
         a = assemble_dense_matrix_from_matvec(matvec=matvec, n=n, dtype=b.dtype)
         x, _residual_norm = dense_solve_from_matrix(a=a, b=b)
+        r = b - a @ x
+        return x, r
+    if method == "dense_row_scaled":
+        n = int(b.size)
+        if b.ndim != 1:
+            raise ValueError(f"dense solve requires a 1D vector b, got shape {b.shape}")
+        # Guardrail: dense assembly is quadratic memory/time.
+        if n > 5000:
+            raise ValueError(f"dense solve is disabled for n={n} (too large). Use GMRES.")
+
+        a = assemble_dense_matrix_from_matvec(matvec=matvec, n=n, dtype=b.dtype)
+        x, _residual_norm = dense_solve_from_matrix_row_scaled(a=a, b=b)
         r = b - a @ x
         return x, r
 

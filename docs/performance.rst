@@ -9,6 +9,9 @@ Performance and differentiability
 4) **Explicit separations of concerns**: non-differentiable I/O (reading `.bc`/`wout_*.nc`) is isolated from
    the differentiable compute graph.
 
+For a full, technique-by-technique breakdown (equations, derivations, knobs, and
+implementation notes), see :doc:`performance_techniques`.
+
 
 What is differentiable today?
 -----------------------------
@@ -62,12 +65,17 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Vectorized transport-matrix assembly**: RHSMode=2/3 now builds
   ``transportMatrix`` directly from batched flux arrays, avoiding per-``whichRHS``
   Python loops and repeated diagnostic tree slicing.
+- **Precomputed transport diagnostics**: geometry/species factors shared across ``whichRHS``
+  solves are precomputed once and reused in batched diagnostics, reducing runtime and JIT work
+  in transport-matrix modes.
 - **Recycled transport solves**: optional warm-start recycling keeps a small number of
   recent solution vectors across ``whichRHS`` iterations (``SFINCS_JAX_TRANSPORT_RECYCLE_K``),
   reducing Krylov iterations on sequential RHS solves.
-- **Transport collision-diagonal preconditioner (default)**: RHSMode=2/3 transport solves use
-  a cheap JAX-native diagonal preconditioner built from the collision operator and identity shift.
-  This cuts iterations without matrix assembly and preserves parity on the reduced suite.
+- **Transport preconditioning (default)**: RHSMode=2/3 transport solves use a JAX-native
+  preconditioner built analytically from the collision operator. For FP cases, the default
+  is a lightweight **species×x block-Jacobi** (per-L) preconditioner; otherwise the collision
+  diagonal is used. This cuts iterations without matvec-based assembly and preserves parity
+  on the reduced suite.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.

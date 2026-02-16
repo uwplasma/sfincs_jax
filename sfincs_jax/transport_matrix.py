@@ -88,6 +88,79 @@ class V3TransportDiagnostics:
         )
 
 
+@jtu.register_pytree_node_class
+@dataclass(frozen=True)
+class V3TransportDiagnosticsPrecomputed:
+    """Geometry- and species-specific factors reused across whichRHS diagnostics."""
+
+    vprime_hat: jnp.ndarray  # scalar
+    theta_w: jnp.ndarray  # (T,)
+    zeta_w: jnp.ndarray  # (Z,)
+    factor_vm: jnp.ndarray  # (T,Z)
+    wpf0: jnp.ndarray  # (X,)
+    wpf2: jnp.ndarray  # (X,)
+    whf0: jnp.ndarray  # (X,)
+    whf2: jnp.ndarray  # (X,)
+    wf1: jnp.ndarray  # (X,)
+    particle_flux_factor_vm: jnp.ndarray  # (S,)
+    heat_flux_factor_vm: jnp.ndarray  # (S,)
+    flow_factor: jnp.ndarray  # (S,)
+    b_over_d: jnp.ndarray  # (T,Z)
+
+    def tree_flatten(self):
+        children = (
+            self.vprime_hat,
+            self.theta_w,
+            self.zeta_w,
+            self.factor_vm,
+            self.wpf0,
+            self.wpf2,
+            self.whf0,
+            self.whf2,
+            self.wf1,
+            self.particle_flux_factor_vm,
+            self.heat_flux_factor_vm,
+            self.flow_factor,
+            self.b_over_d,
+        )
+        aux = None
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        del aux
+        (
+            vprime_hat,
+            theta_w,
+            zeta_w,
+            factor_vm,
+            wpf0,
+            wpf2,
+            whf0,
+            whf2,
+            wf1,
+            particle_flux_factor_vm,
+            heat_flux_factor_vm,
+            flow_factor,
+            b_over_d,
+        ) = children
+        return cls(
+            vprime_hat=vprime_hat,
+            theta_w=theta_w,
+            zeta_w=zeta_w,
+            factor_vm=factor_vm,
+            wpf0=wpf0,
+            wpf2=wpf2,
+            whf0=whf0,
+            whf2=whf2,
+            wf1=wf1,
+            particle_flux_factor_vm=particle_flux_factor_vm,
+            heat_flux_factor_vm=heat_flux_factor_vm,
+            flow_factor=flow_factor,
+            b_over_d=b_over_d,
+        )
+
+
 def _stack_full_system_operators(ops: list[V3FullSystemOperator]) -> V3FullSystemOperator:
     if not ops:
         raise ValueError("Expected a non-empty operator list.")
@@ -224,6 +297,161 @@ def f0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
     out = jnp.zeros(op.fblock.f_shape, dtype=jnp.float64)
     out = out.at[:, :, 0, :, :].set(f0_l0_v3_from_operator(op))
     return out
+
+
+def v3_transport_diagnostics_vm_only_precompute(op: V3FullSystemOperator) -> V3TransportDiagnosticsPrecomputed:
+    """Precompute geometry/species factors for RHSMode=2/3 diagnostics."""
+    vprime_hat = _vprime_hat_from_op(op)
+    theta_w = jnp.asarray(op.theta_weights, dtype=jnp.float64)
+    zeta_w = jnp.asarray(op.zeta_weights, dtype=jnp.float64)
+    factor_vm = (op.b_hat_sub_theta * op.db_hat_dzeta - op.b_hat_sub_zeta * op.db_hat_dtheta) / (
+        op.b_hat * op.b_hat * op.b_hat
+    )
+
+    x = jnp.asarray(op.x, dtype=jnp.float64)
+    xw = jnp.asarray(op.x_weights, dtype=jnp.float64)
+    w_pf = xw * (x**4)
+    w_hf = xw * (x**6)
+    w_flow = xw * (x**3)
+
+    n_xi_for_x = jnp.asarray(op.fblock.collisionless.n_xi_for_x, dtype=jnp.int32)
+    mask_l0 = (n_xi_for_x > 0).astype(jnp.float64)
+    mask_l1 = (n_xi_for_x > 1).astype(jnp.float64)
+    mask_l2 = (n_xi_for_x > 2).astype(jnp.float64)
+
+    wpf0 = w_pf * mask_l0
+    wpf2 = w_pf * mask_l2
+    whf0 = w_hf * mask_l0
+    whf2 = w_hf * mask_l2
+    wf1 = w_flow * mask_l1
+
+    z = jnp.asarray(op.z_s, dtype=jnp.float64)
+    t_hat = jnp.asarray(op.t_hat, dtype=jnp.float64)
+    m_hat = jnp.asarray(op.m_hat, dtype=jnp.float64)
+    sqrt_t = jnp.sqrt(t_hat)
+    sqrt_m = jnp.sqrt(m_hat)
+
+    particle_flux_factor_vm = jnp.pi * op.delta * (t_hat * t_hat) * sqrt_t / (z * vprime_hat * m_hat * sqrt_m)
+    heat_flux_factor_vm = (
+        jnp.pi * op.delta * (t_hat * t_hat * t_hat) * sqrt_t / (2.0 * z * vprime_hat * m_hat * sqrt_m)
+    )
+    flow_factor = 4.0 * jnp.pi * (t_hat * t_hat) / (3.0 * m_hat * m_hat)
+
+    b_over_d = jnp.asarray(op.b_hat / op.d_hat, dtype=jnp.float64)
+
+    return V3TransportDiagnosticsPrecomputed(
+        vprime_hat=vprime_hat,
+        theta_w=theta_w,
+        zeta_w=zeta_w,
+        factor_vm=factor_vm,
+        wpf0=wpf0,
+        wpf2=wpf2,
+        whf0=whf0,
+        whf2=whf2,
+        wf1=wf1,
+        particle_flux_factor_vm=particle_flux_factor_vm,
+        heat_flux_factor_vm=heat_flux_factor_vm,
+        flow_factor=flow_factor,
+        b_over_d=b_over_d,
+    )
+
+
+def _v3_transport_diagnostics_vm_only_from_precomputed(
+    pre: V3TransportDiagnosticsPrecomputed,
+    *,
+    x_full: jnp.ndarray,
+    f0_l0: jnp.ndarray,
+    n_xi: int,
+    f_shape: tuple[int, int, int, int, int],
+    f_size: int,
+) -> V3TransportDiagnostics:
+    """Core transport diagnostics with precomputed geometry factors."""
+    x_full = jnp.asarray(x_full, dtype=jnp.float64)
+    f0_l0 = jnp.asarray(f0_l0, dtype=jnp.float64)
+
+    f_delta = x_full[: int(f_size)].reshape(f_shape)  # (S,X,L,T,Z)
+    f_full_l0 = f_delta[:, :, 0, :, :] + f0_l0
+
+    f_l0 = f_full_l0
+    if n_xi > 2:
+        f_l2 = f_delta[:, :, 2, :, :]
+    else:
+        f_l2 = jnp.zeros_like(f_l0)
+
+    sum_pf_l0 = _weighted_sum_x_fortran(pre.wpf0, f_l0)
+    sum_pf_l2 = _weighted_sum_x_fortran(pre.wpf2, f_l2)
+    pf_before = pre.particle_flux_factor_vm[:, None, None] * (
+        (8.0 / 3.0) * pre.factor_vm[None, :, :] * sum_pf_l0
+        + (4.0 / 15.0) * pre.factor_vm[None, :, :] * sum_pf_l2
+    )
+    particle_flux_vm_psi_hat = _weighted_sum_tz_fortran(pre.theta_w, pre.zeta_w, pf_before)
+
+    sum_hf_l0 = _weighted_sum_x_fortran(pre.whf0, f_l0)
+    sum_hf_l2 = _weighted_sum_x_fortran(pre.whf2, f_l2)
+    hf_before = pre.heat_flux_factor_vm[:, None, None] * (
+        (8.0 / 3.0) * pre.factor_vm[None, :, :] * sum_hf_l0
+        + (4.0 / 15.0) * pre.factor_vm[None, :, :] * sum_hf_l2
+    )
+    heat_flux_vm_psi_hat = _weighted_sum_tz_fortran(pre.theta_w, pre.zeta_w, hf_before)
+
+    if n_xi > 1:
+        f_l1 = f_delta[:, :, 1, :, :]
+    else:
+        f_l1 = jnp.zeros_like(f_l0)
+
+    sum_flow = _weighted_sum_x_fortran(pre.wf1, f_l1)
+    flow = pre.flow_factor[:, None, None] * sum_flow
+    fsab_flow = _weighted_sum_tz_fortran(pre.theta_w, pre.zeta_w, flow * pre.b_over_d[None, :, :]) / pre.vprime_hat
+
+    f0_l2 = jnp.zeros_like(f0_l0)
+    sum_pf0_l0 = _weighted_sum_x_fortran(pre.wpf0, f0_l0)
+    sum_pf0_l2 = _weighted_sum_x_fortran(pre.wpf2, f0_l2)
+    pf_before_vm0 = pre.particle_flux_factor_vm[:, None, None] * (
+        (8.0 / 3.0) * pre.factor_vm[None, :, :] * sum_pf0_l0
+        + (4.0 / 15.0) * pre.factor_vm[None, :, :] * sum_pf0_l2
+    )
+
+    sum_hf0_l0 = _weighted_sum_x_fortran(pre.whf0, f0_l0)
+    sum_hf0_l2 = _weighted_sum_x_fortran(pre.whf2, f0_l2)
+    hf_before_vm0 = pre.heat_flux_factor_vm[:, None, None] * (
+        (8.0 / 3.0) * pre.factor_vm[None, :, :] * sum_hf0_l0
+        + (4.0 / 15.0) * pre.factor_vm[None, :, :] * sum_hf0_l2
+    )
+
+    pf_x_l0 = f_l0 * pre.wpf0[None, :, None, None]
+    pf_x_l2 = f_l2 * pre.wpf2[None, :, None, None]
+    pf_before_x = pre.particle_flux_factor_vm[:, None, None, None] * (
+        (8.0 / 3.0) * pre.factor_vm[None, None, :, :] * pf_x_l0
+        + (4.0 / 15.0) * pre.factor_vm[None, None, :, :] * pf_x_l2
+    )
+    pf_vs_x = _weighted_sum_tz_fortran_sx(pre.theta_w, pre.zeta_w, pf_before_x)
+
+    hf_x_l0 = f_l0 * pre.whf0[None, :, None, None]
+    hf_x_l2 = f_l2 * pre.whf2[None, :, None, None]
+    hf_before_x = pre.heat_flux_factor_vm[:, None, None, None] * (
+        (8.0 / 3.0) * pre.factor_vm[None, None, :, :] * hf_x_l0
+        + (4.0 / 15.0) * pre.factor_vm[None, None, :, :] * hf_x_l2
+    )
+    hf_vs_x = _weighted_sum_tz_fortran_sx(pre.theta_w, pre.zeta_w, hf_before_x)
+
+    flow_x = pre.flow_factor[:, None, None, None] * (f_l1 * pre.wf1[None, :, None, None])
+    fsab_flow_vs_x = _weighted_sum_tz_fortran_sx(
+        pre.theta_w, pre.zeta_w, flow_x * pre.b_over_d[None, None, :, :]
+    ) / pre.vprime_hat
+
+    return V3TransportDiagnostics(
+        vprime_hat=pre.vprime_hat,
+        particle_flux_vm_psi_hat=particle_flux_vm_psi_hat,
+        heat_flux_vm_psi_hat=heat_flux_vm_psi_hat,
+        fsab_flow=fsab_flow,
+        particle_flux_before_surface_integral_vm=pf_before,
+        heat_flux_before_surface_integral_vm=hf_before,
+        particle_flux_before_surface_integral_vm0=pf_before_vm0,
+        heat_flux_before_surface_integral_vm0=hf_before_vm0,
+        particle_flux_vm_psi_hat_vs_x=jnp.transpose(pf_vs_x, (1, 0)),
+        heat_flux_vm_psi_hat_vs_x=jnp.transpose(hf_vs_x, (1, 0)),
+        fsab_flow_vs_x=jnp.transpose(fsab_flow_vs_x, (1, 0)),
+    )
 
 
 def _v3_transport_diagnostics_vm_only_from_f0_l0(
@@ -423,6 +651,38 @@ def v3_transport_diagnostics_vm_only_batch_op0(
 v3_transport_diagnostics_vm_only_batch_op0_jit = jax.jit(v3_transport_diagnostics_vm_only_batch_op0)
 v3_transport_diagnostics_vm_only_batch_op0_remat_jit = jax.jit(
     jax.checkpoint(v3_transport_diagnostics_vm_only_batch_op0)
+)
+
+
+def v3_transport_diagnostics_vm_only_batch_op0_precomputed(
+    *,
+    op0: V3FullSystemOperator,
+    precomputed: V3TransportDiagnosticsPrecomputed,
+    x_full_stack: jnp.ndarray,
+) -> V3TransportDiagnostics:
+    """Vectorized transport diagnostics with precomputed geometry factors."""
+    x_full_stack = jnp.asarray(x_full_stack, dtype=jnp.float64)
+    if x_full_stack.ndim != 2:
+        raise ValueError(f"x_full_stack must have shape (N,total_size), got {x_full_stack.shape}")
+
+    f0_l0 = f0_l0_v3_from_operator(op0)
+    n_xi = int(op0.n_xi)
+    f_shape = op0.fblock.f_shape
+    f_size = int(op0.f_size)
+
+    def _one(x_state: jnp.ndarray) -> V3TransportDiagnostics:
+        return _v3_transport_diagnostics_vm_only_from_precomputed(
+            precomputed, x_full=x_state, f0_l0=f0_l0, n_xi=n_xi, f_shape=f_shape, f_size=f_size
+        )
+
+    return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
+
+
+v3_transport_diagnostics_vm_only_batch_op0_precomputed_jit = jax.jit(
+    v3_transport_diagnostics_vm_only_batch_op0_precomputed
+)
+v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit = jax.jit(
+    jax.checkpoint(v3_transport_diagnostics_vm_only_batch_op0_precomputed)
 )
 
 

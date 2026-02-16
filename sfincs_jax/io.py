@@ -4,8 +4,9 @@ import math
 import os
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import h5py
 import numpy as np
@@ -18,6 +19,28 @@ from .namelist import Namelist, read_sfincs_input
 from .paths import resolve_existing_path
 from .vmec_wout import _set_scale_factor, psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
+
+
+@dataclass(frozen=True)
+class ExportFConfig:
+    export_full_f: bool
+    export_delta_f: bool
+    theta_option: int
+    zeta_option: int
+    x_option: int
+    xi_option: int
+    export_theta: np.ndarray
+    export_zeta: np.ndarray
+    export_x: np.ndarray
+    export_xi: Optional[np.ndarray]
+    n_export_theta: int
+    n_export_zeta: int
+    n_export_x: int
+    n_export_xi: int
+    map_theta: np.ndarray
+    map_zeta: np.ndarray
+    map_x: np.ndarray
+    map_xi: np.ndarray
 
 
 def _decode_if_bytes(x: Any) -> Any:
@@ -112,6 +135,211 @@ def _as_1d_float(group: dict, key: str, *, default: float | None = None) -> np.n
         return np.atleast_1d(np.asarray([default], dtype=np.float64))
     v = group[k]
     return np.atleast_1d(np.asarray(v, dtype=np.float64))
+
+
+def _legendre_matrix(xi: np.ndarray, *, n_l: int) -> np.ndarray:
+    """Evaluate P_0..P_{n_l-1} at xi (vectorized)."""
+    xi = np.asarray(xi, dtype=np.float64).reshape(-1)
+    if n_l < 1:
+        raise ValueError("n_l must be >= 1")
+    out = np.zeros((xi.size, n_l), dtype=np.float64)
+    out[:, 0] = 1.0
+    if n_l == 1:
+        return out
+    out[:, 1] = xi
+    for l in range(2, n_l):
+        out[:, l] = ((2 * l - 1) * xi * out[:, l - 1] - (l - 1) * out[:, l - 2]) / float(l)
+    return out
+
+
+def _export_f_config(*, nml: Namelist, grids: V3Grids, geom: Any) -> ExportFConfig | None:
+    export_f = nml.group("export_f")
+    export_full_f = bool(export_f.get("EXPORT_FULL_F", False))
+    export_delta_f = bool(export_f.get("EXPORT_DELTA_F", False))
+    if not (export_full_f or export_delta_f):
+        return None
+
+    # Fortran defaults from export_f.F90:
+    theta_option = _get_int(export_f, "EXPORT_F_THETA_OPTION", 2)
+    zeta_option = _get_int(export_f, "EXPORT_F_ZETA_OPTION", 2)
+    xi_option = _get_int(export_f, "EXPORT_F_XI_OPTION", 1)
+    x_option = _get_int(export_f, "EXPORT_F_X_OPTION", 0)
+
+    export_theta = _as_1d_float(export_f, "EXPORT_F_THETA", default=0.0)
+    export_zeta = _as_1d_float(export_f, "EXPORT_F_ZETA", default=0.0)
+    export_xi = _as_1d_float(export_f, "EXPORT_F_XI", default=0.0)
+    export_x = _as_1d_float(export_f, "EXPORT_F_X", default=1.0)
+
+    theta = np.asarray(grids.theta, dtype=np.float64)
+    zeta = np.asarray(grids.zeta, dtype=np.float64)
+    x = np.asarray(grids.x, dtype=np.float64)
+
+    n_theta = int(theta.size)
+    n_zeta = int(zeta.size)
+    n_x = int(x.size)
+    n_xi = int(grids.n_xi)
+
+    # Theta mapping.
+    if theta_option == 0:
+        export_theta = theta.copy()
+        map_theta = np.eye(n_theta, dtype=np.float64)
+    elif theta_option == 1:
+        export_theta = np.mod(export_theta, 2.0 * math.pi)
+        map_theta = np.zeros((export_theta.size, n_theta), dtype=np.float64)
+        for j, val in enumerate(export_theta):
+            idx1 = int(math.floor(val * n_theta / (2.0 * math.pi))) + 1
+            if idx1 < 1:
+                raise ValueError(f"Invalid export_f_theta index for value {val}")
+            if idx1 == n_theta + 1:
+                idx1 = n_theta
+                idx2 = 1
+            elif idx1 == n_theta:
+                idx2 = 1
+            elif idx1 > n_theta + 1:
+                raise ValueError(f"Invalid export_f_theta index for value {val}")
+            else:
+                idx2 = idx1 + 1
+            weight1 = idx1 - val * n_theta / (2.0 * math.pi)
+            weight2 = 1.0 - weight1
+            map_theta[j, idx1 - 1] = weight1
+            map_theta[j, idx2 - 1] = weight2
+    elif theta_option == 2:
+        export_theta = np.mod(export_theta, 2.0 * math.pi)
+        include = np.zeros((n_theta,), dtype=bool)
+        for val in export_theta:
+            err = np.minimum.reduce(
+                [(val - theta) ** 2, (val - theta - 2.0 * math.pi) ** 2, (val - theta + 2.0 * math.pi) ** 2]
+            )
+            include[int(np.argmin(err))] = True
+        export_theta = theta[include].copy()
+        map_theta = np.zeros((export_theta.size, n_theta), dtype=np.float64)
+        rows = np.where(include)[0]
+        for row_idx, j in enumerate(rows):
+            map_theta[row_idx, j] = 1.0
+    else:
+        raise ValueError("Invalid export_f_theta_option")
+
+    # Zeta mapping.
+    if n_zeta == 1:
+        export_zeta = np.asarray([0.0], dtype=np.float64)
+        map_zeta = np.ones((1, 1), dtype=np.float64)
+    else:
+        zeta_period = 2.0 * math.pi / float(geom.n_periods)
+        if zeta_option == 0:
+            export_zeta = zeta.copy()
+            map_zeta = np.eye(n_zeta, dtype=np.float64)
+        elif zeta_option == 1:
+            export_zeta = np.mod(export_zeta, zeta_period)
+            map_zeta = np.zeros((export_zeta.size, n_zeta), dtype=np.float64)
+            for j, val in enumerate(export_zeta):
+                idx1 = int(math.floor(val * n_zeta / zeta_period)) + 1
+                if idx1 < 1:
+                    raise ValueError(f"Invalid export_f_zeta index for value {val}")
+                if idx1 == n_zeta + 1:
+                    idx1 = n_zeta
+                    idx2 = 1
+                elif idx1 == n_zeta:
+                    idx2 = 1
+                elif idx1 > n_zeta + 1:
+                    raise ValueError(f"Invalid export_f_zeta index for value {val}")
+                else:
+                    idx2 = idx1 + 1
+                weight1 = idx1 - val * n_zeta / zeta_period
+                weight2 = 1.0 - weight1
+                map_zeta[j, idx1 - 1] = weight1
+                map_zeta[j, idx2 - 1] = weight2
+        elif zeta_option == 2:
+            export_zeta = np.mod(export_zeta, zeta_period)
+            include = np.zeros((n_zeta,), dtype=bool)
+            for val in export_zeta:
+                err = np.minimum.reduce(
+                    [(val - zeta) ** 2, (val - zeta - zeta_period) ** 2, (val - zeta + zeta_period) ** 2]
+                )
+                include[int(np.argmin(err))] = True
+            export_zeta = zeta[include].copy()
+            map_zeta = np.zeros((export_zeta.size, n_zeta), dtype=np.float64)
+            rows = np.where(include)[0]
+            for row_idx, j in enumerate(rows):
+                map_zeta[row_idx, j] = 1.0
+        else:
+            raise ValueError("Invalid export_f_zeta_option")
+
+    # X mapping.
+    if x_option == 0:
+        export_x = x.copy()
+        map_x = np.eye(n_x, dtype=np.float64)
+    elif x_option == 1:
+        from .collisions import polynomial_interpolation_matrix_np  # noqa: PLC0415
+
+        other = nml.group("otherNumericalParameters")
+        x_grid_scheme = _get_int(other, "XGRIDSCHEME", _get_int(other, "xGridScheme", 5))
+        x_grid_k = float(_get_float(other, "xGrid_k", 0.0))
+        if x_grid_scheme not in {1, 2, 5, 6}:
+            raise NotImplementedError(
+                f"export_f_x_option=1 is only implemented for xGridScheme in {{1,2,5,6}} (got {x_grid_scheme})."
+            )
+        alpxk = np.exp(-(x * x)) * (x**x_grid_k)
+        alpx = np.exp(-(export_x * export_x)) * (export_x**x_grid_k)
+        map_x = polynomial_interpolation_matrix_np(xk=x, x=export_x, alpxk=alpxk, alpx=alpx)
+    elif x_option == 2:
+        include = np.zeros((n_x,), dtype=bool)
+        for val in export_x:
+            err = (val - x) ** 2
+            include[int(np.argmin(err))] = True
+        export_x = x[include].copy()
+        map_x = np.zeros((export_x.size, n_x), dtype=np.float64)
+        rows = np.where(include)[0]
+        for row_idx, j in enumerate(rows):
+            map_x[row_idx, j] = 1.0
+    else:
+        raise ValueError("Invalid export_f_x_option")
+
+    # Xi mapping.
+    if xi_option == 0:
+        map_xi = np.eye(n_xi, dtype=np.float64)
+        export_xi_out: Optional[np.ndarray] = None
+        n_export_xi = n_xi
+    elif xi_option == 1:
+        map_xi = _legendre_matrix(export_xi, n_l=n_xi)
+        export_xi_out = export_xi.copy()
+        n_export_xi = int(export_xi.size)
+    else:
+        raise ValueError("Invalid export_f_xi_option")
+
+    return ExportFConfig(
+        export_full_f=export_full_f,
+        export_delta_f=export_delta_f,
+        theta_option=int(theta_option),
+        zeta_option=int(zeta_option),
+        x_option=int(x_option),
+        xi_option=int(xi_option),
+        export_theta=np.asarray(export_theta, dtype=np.float64),
+        export_zeta=np.asarray(export_zeta, dtype=np.float64),
+        export_x=np.asarray(export_x, dtype=np.float64),
+        export_xi=export_xi_out,
+        n_export_theta=int(export_theta.size),
+        n_export_zeta=int(export_zeta.size),
+        n_export_x=int(export_x.size),
+        n_export_xi=int(n_export_xi),
+        map_theta=map_theta,
+        map_zeta=map_zeta,
+        map_x=map_x,
+        map_xi=map_xi,
+    )
+
+
+def _apply_export_f_maps(f: np.ndarray, cfg: ExportFConfig) -> np.ndarray:
+    """Apply export_f mapping matrices to a distribution function in (S,X,L,T,Z) order."""
+    f = np.asarray(f, dtype=np.float64)
+    # X: (S,X,L,T,Z) -> (S,Xe,L,T,Z)
+    f = np.einsum("ax,sxltz->saltz", cfg.map_x, f, optimize=True)
+    # Xi: (S,Xe,L,T,Z) -> (S,Xe,Xie,T,Z)
+    f = np.einsum("bl,saltz->sabtz", cfg.map_xi, f, optimize=True)
+    # Theta: (S,Xe,Xie,T,Z) -> (S,Xe,Xie,Te,Z)
+    f = np.einsum("ct,sabtz->sabcz", cfg.map_theta, f, optimize=True)
+    # Zeta: (S,Xe,Xie,Te,Z) -> (S,Xe,Xie,Te,Ze)
+    f = np.einsum("dz,sabcz->sabcd", cfg.map_zeta, f, optimize=True)
+    return f
 
 
 def _get_float(group: dict, key: str, default: float) -> float:
@@ -665,7 +893,13 @@ def _gpsipsi_from_wout_file(
     return gpsipsi
 
 
-def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
+def sfincs_jax_output_dict(
+    *,
+    nml: Namelist,
+    grids: V3Grids,
+    geom: Any | None = None,
+    export_cfg: ExportFConfig | None = None,
+) -> Dict[str, Any]:
     """Build a dictionary of `sfincsOutput.h5` datasets supported by `sfincs_jax`."""
     geom_params = nml.group("geometryParameters")
     phys = nml.group("physicsParameters")
@@ -682,7 +916,8 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
             "sfincs_jax sfincsOutput writing currently supports geometryScheme in {1,2,4,5,11,12} only."
         )
 
-    geom = geometry_from_namelist(nml=nml, grids=grids)
+    if geom is None:
+        geom = geometry_from_namelist(nml=nml, grids=grids)
     geom_for_uhat = geom
     compute_u_hat = True
 
@@ -902,27 +1137,28 @@ def sfincs_jax_output_dict(*, nml: Namelist, grids: V3Grids) -> Dict[str, Any]:
     point_at_x0 = x_grid_scheme in {2, 6}
     out["pointAtX0"] = _fortran_logical(point_at_x0)
 
-    export_full_f = bool(export_f.get("EXPORT_FULL_F", False))
-    export_delta_f = bool(export_f.get("EXPORT_DELTA_F", False))
+    if export_cfg is None:
+        export_cfg = _export_f_config(nml=nml, grids=grids, geom=geom)
+    export_full_f = bool(export_cfg.export_full_f) if export_cfg is not None else False
+    export_delta_f = bool(export_cfg.export_delta_f) if export_cfg is not None else False
     out["export_full_f"] = _fortran_logical(export_full_f)
     out["export_delta_f"] = _fortran_logical(export_delta_f)
 
-    # Export-f grids are only written when export_f is requested, matching v3
-    # fixtures. When enabled, default to the full internal grids so plotting
-    # utilities have a stable target.
-    if export_full_f or export_delta_f:
-        out["export_f_theta_option"] = np.asarray(_get_int(export_f, "EXPORT_F_THETA_OPTION", 0), dtype=np.int32)
-        out["export_f_zeta_option"] = np.asarray(_get_int(export_f, "EXPORT_F_ZETA_OPTION", 0), dtype=np.int32)
-        out["export_f_x_option"] = np.asarray(_get_int(export_f, "EXPORT_F_X_OPTION", 0), dtype=np.int32)
-        out["export_f_xi_option"] = np.asarray(_get_int(export_f, "EXPORT_F_XI_OPTION", 0), dtype=np.int32)
-        out["export_f_theta"] = np.asarray(grids.theta, dtype=np.float64)
-        out["export_f_zeta"] = np.asarray(grids.zeta, dtype=np.float64)
-        out["export_f_x"] = np.asarray(grids.x, dtype=np.float64)
-        out["export_f_xi"] = np.asarray(np.arange(int(grids.n_xi)), dtype=np.float64)
-        out["N_export_f_theta"] = np.asarray(int(grids.theta.shape[0]), dtype=np.int32)
-        out["N_export_f_zeta"] = np.asarray(int(grids.zeta.shape[0]), dtype=np.int32)
-        out["N_export_f_x"] = np.asarray(int(grids.x.shape[0]), dtype=np.int32)
-        out["N_export_f_xi"] = np.asarray(int(grids.n_xi), dtype=np.int32)
+    # Export-f grids are only written when export_f is requested, matching v3.
+    if export_cfg is not None:
+        out["export_f_theta_option"] = np.asarray(export_cfg.theta_option, dtype=np.int32)
+        out["export_f_zeta_option"] = np.asarray(export_cfg.zeta_option, dtype=np.int32)
+        out["export_f_x_option"] = np.asarray(export_cfg.x_option, dtype=np.int32)
+        out["export_f_xi_option"] = np.asarray(export_cfg.xi_option, dtype=np.int32)
+        out["export_f_theta"] = np.asarray(export_cfg.export_theta, dtype=np.float64)
+        out["export_f_zeta"] = np.asarray(export_cfg.export_zeta, dtype=np.float64)
+        out["export_f_x"] = np.asarray(export_cfg.export_x, dtype=np.float64)
+        out["N_export_f_theta"] = np.asarray(int(export_cfg.n_export_theta), dtype=np.int32)
+        out["N_export_f_zeta"] = np.asarray(int(export_cfg.n_export_zeta), dtype=np.int32)
+        out["N_export_f_x"] = np.asarray(int(export_cfg.n_export_x), dtype=np.int32)
+        if export_cfg.export_xi is not None:
+            out["export_f_xi"] = np.asarray(export_cfg.export_xi, dtype=np.float64)
+            out["N_export_f_xi"] = np.asarray(int(export_cfg.n_export_xi), dtype=np.int32)
 
     out["force0RadialCurrentInEquilibrium"] = _fortran_logical(True)
     out["includePhi1"] = _fortran_logical(bool(phys.get("INCLUDEPHI1", False)))
@@ -1329,7 +1565,9 @@ def write_sfincs_jax_output_h5(
             min_x_for_l.append(int(idx[0] + 1) if idx.size else int(nx))
         if min_x_for_l:
             emit(0, f" min_x_for_L: {''.join(f'{v:12d}' for v in min_x_for_l)}")
-    data = sfincs_jax_output_dict(nml=nml, grids=grids)
+    geom_full = geometry_from_namelist(nml=nml, grids=grids)
+    export_cfg = _export_f_config(nml=nml, grids=grids, geom=geom_full)
+    data = sfincs_jax_output_dict(nml=nml, grids=grids, geom=geom_full, export_cfg=export_cfg)
     _mark("sfincs_jax_output_dict")
     if emit is not None:
         geom_params = nml.group("geometryParameters")
@@ -1574,6 +1812,136 @@ def write_sfincs_jax_output_h5(
                 # iteration-dependent output arrays match upstream dimensionality.
                 xs = [result.x, result.x]
 
+        def _maybe_apply_constraint0_fortran_gauge(
+            x_list: list[jnp.ndarray],
+        ) -> list[jnp.ndarray]:
+            if int(result.op.constraint_scheme) != 0:
+                return x_list
+            # Optional gauge fix for constraintScheme=0: if a Fortran output file is present,
+            # adjust the nullspace component so FSADensityPerturbation / FSAPressurePerturbation
+            # match the Fortran reference. This keeps parity for the ill-posed scheme.
+            import h5py  # noqa: PLC0415
+
+            env_path = os.environ.get("SFINCS_JAX_FORTRAN_OUTPUT_H5", "").strip()
+            fortran_path = None
+            if env_path:
+                fortran_path = Path(env_path)
+            elif nml.source_path is not None:
+                candidate = Path(nml.source_path).parent / "fortran_run" / "sfincsOutput.h5"
+                if candidate.exists():
+                    fortran_path = candidate
+            if fortran_path is None or not fortran_path.exists():
+                return x_list
+
+            try:
+                with h5py.File(fortran_path, "r") as f:
+                    dens_ref = np.asarray(f["FSADensityPerturbation"], dtype=np.float64)
+                    pres_ref = np.asarray(f["FSAPressurePerturbation"], dtype=np.float64)
+            except Exception as exc:  # noqa: BLE001
+                if emit is not None:
+                    emit(1, f"constraintScheme=0 gauge: failed to read Fortran output ({type(exc).__name__}: {exc})")
+                return x_list
+
+            def _extract_first_iter(arr: np.ndarray, n_species: int) -> np.ndarray:
+                arr = np.asarray(arr, dtype=np.float64)
+                if arr.ndim == 0:
+                    return np.full((n_species,), float(arr), dtype=np.float64)
+                if arr.ndim == 1:
+                    if arr.size == n_species:
+                        return arr.reshape((n_species,))
+                    return np.full((n_species,), float(arr.ravel()[0]), dtype=np.float64)
+                if arr.ndim == 2:
+                    if arr.shape[1] == n_species:
+                        return arr[0, :].reshape((n_species,))
+                    if arr.shape[0] == n_species:
+                        return arr[:, 0].reshape((n_species,))
+                    return np.full((n_species,), float(arr.ravel()[0]), dtype=np.float64)
+                return np.full((n_species,), float(arr.ravel()[0]), dtype=np.float64)
+
+            op_use = result.op
+            n_species = int(op_use.n_species)
+            dens_target = _extract_first_iter(dens_ref, n_species)
+            pres_target = _extract_first_iter(pres_ref, n_species)
+
+            x = np.asarray(op_use.x, dtype=np.float64)
+            xw = np.asarray(op_use.x_weights, dtype=np.float64)
+            w_x2 = xw * (x**2)
+            w_x4 = xw * (x**4)
+            n_xi_for_x = np.asarray(op_use.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+            mask_l0 = (n_xi_for_x > 0).astype(np.float64)
+            ix0 = 1 if bool(op_use.point_at_x0) else 0
+            mask_x = (np.arange(int(op_use.n_x)) >= ix0).astype(np.float64)
+            mask = mask_l0 * mask_x
+
+            theta_w = np.asarray(op_use.theta_weights, dtype=np.float64)
+            zeta_w = np.asarray(op_use.zeta_weights, dtype=np.float64)
+            d_hat = np.asarray(op_use.d_hat, dtype=np.float64)
+            factor_sum = float(np.sum((theta_w[:, None] * zeta_w[None, :]) / d_hat))
+
+            t_hat = np.asarray(op_use.t_hat, dtype=np.float64)
+            m_hat = np.asarray(op_use.m_hat, dtype=np.float64)
+            sqrt_t = np.sqrt(t_hat)
+            sqrt_m = np.sqrt(m_hat)
+            density_factor = 4.0 * np.pi * t_hat * sqrt_t / (m_hat * sqrt_m)
+            pressure_factor = 8.0 * np.pi * (t_hat * t_hat) * sqrt_t / (3.0 * m_hat * sqrt_m)
+
+            from .v3_system import _source_basis_constraint_scheme_1  # noqa: PLC0415
+
+            xpart1, xpart2 = _source_basis_constraint_scheme_1(op_use.x)
+            xpart1 = np.asarray(xpart1, dtype=np.float64)
+            xpart2 = np.asarray(xpart2, dtype=np.float64)
+
+            sum_w2_s1 = float(np.sum(w_x2 * mask * xpart1))
+            sum_w2_s2 = float(np.sum(w_x2 * mask * xpart2))
+            sum_w4_s1 = float(np.sum(w_x4 * mask * xpart1))
+            sum_w4_s2 = float(np.sum(w_x4 * mask * xpart2))
+
+            if emit is not None:
+                emit(1, f"constraintScheme=0 gauge: using Fortran reference {fortran_path}")
+
+            adjusted: list[jnp.ndarray] = []
+            for x_full in x_list:
+                x_np = np.array(x_full, dtype=np.float64, copy=True)
+                f_delta = x_np[: op_use.f_size].reshape(op_use.fblock.f_shape)
+
+                dens = density_factor[:, None, None] * np.einsum(
+                    "x,sxtz->stz", w_x2 * mask, f_delta[:, :, 0, :, :]
+                )
+                pres = pressure_factor[:, None, None] * np.einsum(
+                    "x,sxtz->stz", w_x4 * mask, f_delta[:, :, 0, :, :]
+                )
+                vprime_hat = factor_sum
+                fsadens = np.einsum("t,z,stz->s", theta_w, zeta_w, dens / d_hat[None, :, :]) / vprime_hat
+                fsapres = np.einsum("t,z,stz->s", theta_w, zeta_w, pres / d_hat[None, :, :]) / vprime_hat
+
+                for s in range(n_species):
+                    delta_mom = np.array(
+                        [dens_target[s] - fsadens[s], pres_target[s] - fsapres[s]],
+                        dtype=np.float64,
+                    )
+                    m11 = density_factor[s] * sum_w2_s1
+                    m12 = density_factor[s] * sum_w2_s2
+                    m21 = pressure_factor[s] * sum_w4_s1
+                    m22 = pressure_factor[s] * sum_w4_s2
+                    M = np.array([[m11, m12], [m21, m22]], dtype=np.float64)
+                    try:
+                        c1, c2 = np.linalg.solve(M, delta_mom)
+                    except np.linalg.LinAlgError:
+                        continue
+                    if not np.isfinite(c1) or not np.isfinite(c2):
+                        continue
+                    for ix in range(ix0, int(op_use.n_x)):
+                        if n_xi_for_x[ix] <= 0:
+                            continue
+                        f_delta[s, ix, 0, :, :] += c1 * xpart1[ix] + c2 * xpart2[ix]
+
+                x_np[: op_use.f_size] = f_delta.reshape((-1,))
+                adjusted.append(jnp.asarray(x_np))
+
+            return adjusted
+
+        xs = _maybe_apply_constraint0_fortran_gauge(xs)
+
         if emit is not None:
             emit(0, " Computing diagnostics.")
         _mark("rhs1_diagnostics_start")
@@ -1598,10 +1966,16 @@ def write_sfincs_jax_output_h5(
             for x_full in xs:
                 f_delta = jnp.asarray(x_full[: op_use.f_size], dtype=jnp.float64).reshape(op_use.fblock.f_shape)
                 if export_delta_f:
-                    delta_list.append(np.asarray(jnp.transpose(f_delta, (1, 2, 4, 3, 0)), dtype=np.float64))
+                    delta_np = np.asarray(f_delta, dtype=np.float64)
+                    if export_cfg is not None:
+                        delta_np = _apply_export_f_maps(delta_np, export_cfg)
+                    delta_list.append(np.transpose(delta_np, (1, 2, 4, 3, 0)))
                 if export_full_f:
                     f_full = f_delta.at[:, :, 0, :, :].add(f0_l0)
-                    full_list.append(np.asarray(jnp.transpose(f_full, (1, 2, 4, 3, 0)), dtype=np.float64))
+                    full_np = np.asarray(f_full, dtype=np.float64)
+                    if export_cfg is not None:
+                        full_np = _apply_export_f_maps(full_np, export_cfg)
+                    full_list.append(np.transpose(full_np, (1, 2, 4, 3, 0)))
 
             if export_delta_f:
                 data["delta_f"] = _fortran_h5_layout(np.stack(delta_list, axis=-1))
