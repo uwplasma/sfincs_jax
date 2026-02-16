@@ -41,6 +41,7 @@ if waitBeforeSubmitting:
 print ("launching runs...")
 
 base_dir = os.getcwd()
+prev_dir = None
 
 for runNum in range(len(radii)):
     directory = directories[runNum]
@@ -54,6 +55,8 @@ for runNum in range(len(radii)):
         os.makedirs(directory)
     os.chdir(directory)
     work_dir = os.getcwd()
+    current_dir = Path(work_dir)
+    configure_krylov_recycle(prev_dir, current_dir)
 
     # Now copy the input.namelist file:
 
@@ -146,3 +149,4 @@ for runNum in range(len(radii)):
     subprocess.call(submitCommand, cwd=work_dir)
 
     os.chdir(base_dir)
+    prev_dir = current_dir

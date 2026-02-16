@@ -1673,6 +1673,17 @@ def write_sfincs_jax_output_h5(
         # Therefore, default to a Krylov solver (auto → BiCGStab with GMRES fallback) unless explicitly overridden.
         solve_method = "auto"
         op0 = full_system_operator_from_namelist(nml=nml)
+        state_in_env = os.environ.get("SFINCS_JAX_STATE_IN", "").strip()
+        x0_state = None
+        if state_in_env:
+            try:
+                from .solver_state import load_krylov_state  # noqa: PLC0415
+
+                state = load_krylov_state(path=state_in_env, op=op0)
+                if state is not None:
+                    x0_state = state.get("x_full")
+            except Exception:  # noqa: BLE001
+                x0_state = None
         precompile_env = os.environ.get("SFINCS_JAX_PRECOMPILE", "").strip().lower()
         if precompile_env in {"1", "true", "yes", "on"}:
             precompile_v3_full_system(op0, include_jacobian=bool(include_phi1))
@@ -1765,7 +1776,7 @@ def write_sfincs_jax_output_h5(
             _mark("rhs1_solve_start")
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
-                x0=None,
+                x0=x0_state,
                 tol=1e-12,
                 max_newton=12,
                 gmres_tol=1e-12,
@@ -1802,6 +1813,7 @@ def write_sfincs_jax_output_h5(
                 nml=nml,
                 tol=float(solver_tol),
                 solve_method=solve_method,
+                x0=x0_state,
                 emit=emit,
             )
             _mark("rhs1_solve_done")
@@ -1811,6 +1823,16 @@ def write_sfincs_jax_output_h5(
                 # For the current linearized parity subset, duplicate the converged state so the
                 # iteration-dependent output arrays match upstream dimensionality.
                 xs = [result.x, result.x]
+
+        state_out_env = os.environ.get("SFINCS_JAX_STATE_OUT", "").strip()
+        if state_out_env:
+            try:
+                from .solver_state import save_krylov_state  # noqa: PLC0415
+
+                save_krylov_state(path=state_out_env, op=op0, x_full=result.x)
+            except Exception:  # noqa: BLE001
+                if emit is not None:
+                    emit(1, f"write_sfincs_jax_output_h5: failed to write state {state_out_env}")
 
         def _maybe_apply_constraint0_fortran_gauge(
             x_list: list[jnp.ndarray],

@@ -39,6 +39,7 @@ if waitBeforeSubmitting:
 
 print ("launching runs...")
 
+prev_dir = None
 for runNum in range(len(radii)):
     directory = directories[runNum]
     print ("Beginning to handle job "+str(runNum+1)+" of "+str(len(radii))+": "+directory)
@@ -55,6 +56,8 @@ for runNum in range(len(radii)):
         directory = directory2
     os.makedirs(directory)
     os.chdir(directory)
+    current_dir = Path(os.getcwd())
+    configure_krylov_recycle(prev_dir, current_dir)
 
     # Now copy the input.namelist file:
 
@@ -149,3 +152,4 @@ for runNum in range(len(radii)):
     )
 
     os.chdir("..")
+    prev_dir = current_dir

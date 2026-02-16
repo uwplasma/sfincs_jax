@@ -3576,6 +3576,7 @@ def solve_v3_transport_matrix_linear_gmres(
     *,
     nml: Namelist,
     x0: jnp.ndarray | None = None,
+    x0_by_rhs: dict[int, jnp.ndarray] | None = None,
     tol: float = 1e-10,
     atol: float = 0.0,
     restart: int = 80,
@@ -3600,6 +3601,19 @@ def solve_v3_transport_matrix_linear_gmres(
     if emit is not None:
         emit(0, "solve_v3_transport_matrix_linear_gmres: starting whichRHS loop")
     op0 = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
+    state_in_env = os.environ.get("SFINCS_JAX_STATE_IN", "").strip()
+    if state_in_env:
+        try:
+            from .solver_state import load_krylov_state  # noqa: PLC0415
+
+            state = load_krylov_state(path=state_in_env, op=op0)
+        except Exception:
+            state = None
+        if state:
+            if x0_by_rhs is None:
+                x0_by_rhs = state.get("x_by_rhs")
+            if x0 is None:
+                x0 = state.get("x_full")
     rhs_mode = int(op0.rhs_mode)
     n = transport_matrix_size_from_rhs_mode(rhs_mode)
     if emit is not None:
@@ -4225,8 +4239,9 @@ def solve_v3_transport_matrix_linear_gmres(
                         key=(sig, int(active_size)),
                     )
                 x0_reduced = None
-                if x0 is not None:
-                    x0_arr = jnp.asarray(x0)
+                x0_local = x0_by_rhs.get(int(which_rhs)) if x0_by_rhs else x0
+                if x0_local is not None:
+                    x0_arr = jnp.asarray(x0_local)
                     if x0_arr.shape == (active_size,):
                         x0_reduced = x0_arr
                     elif x0_arr.shape == (op0.total_size,):
@@ -4384,7 +4399,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         cache=dense_precond_cache_full,
                         key=(sig, int(op0.total_size)),
                     )
-                x0_full = x0
+                x0_full = x0_by_rhs.get(int(which_rhs)) if x0_by_rhs else x0
                 if recycle_k > 0:
                     x0_recycled = _recycled_initial_guess(
                         rhs,
@@ -4588,6 +4603,15 @@ def solve_v3_transport_matrix_linear_gmres(
         heat_flux_vm_psi_hat=diag_hf_arr,
         fsab_flow=diag_flow_arr,
     )
+    state_out_env = os.environ.get("SFINCS_JAX_STATE_OUT", "").strip()
+    if state_out_env:
+        try:
+            from .solver_state import save_krylov_state  # noqa: PLC0415
+
+            save_krylov_state(path=state_out_env, op=op0, x_by_rhs=state_vectors)
+        except Exception:
+            if emit is not None:
+                emit(1, f"solve_v3_transport_matrix_linear_gmres: failed to write state {state_out_env}")
     if emit is not None:
         emit(0, "solve_v3_transport_matrix_linear_gmres: done")
         emit(1, f"solve_v3_transport_matrix_linear_gmres: elapsed_s={t_all.elapsed_s():.3f}")

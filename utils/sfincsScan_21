@@ -149,6 +149,7 @@ if waitBeforeSubmitting:
         exit(0)
 print ("launching runs...")
 
+prev_dir = None
 for runNum in range(numRunsInScan):
    dirNum = runNum-1
    while True:
@@ -160,6 +161,8 @@ for runNum in range(numRunsInScan):
           break
    os.mkdir(dirName)
    os.chdir(dirName)
+   current_dir = Path(os.getcwd())
+   configure_krylov_recycle(prev_dir, current_dir)
 
    jobName="Sfnx."+dirName
    print ("Beginning to handle job "+str(runNum+1)+" of "+str(numRunsInScan)+": "+dirName)
@@ -190,3 +193,4 @@ for runNum in range(numRunsInScan):
    )
 
    os.chdir("..")
+   prev_dir = current_dir

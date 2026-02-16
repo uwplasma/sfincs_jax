@@ -39,6 +39,28 @@ _DEFAULTS = {
     "rN_wish": 0.5,
 }
 
+
+def configure_krylov_recycle(prev_dir: Path | None, current_dir: Path) -> None:
+    """Configure sfincs_jax Krylov recycling between scan points.
+
+    Enable by setting `SFINCS_JAX_SCAN_RECYCLE=1` in the environment. This will
+    pass `SFINCS_JAX_STATE_IN/OUT` to sfincs_jax runs so each scan point can
+    warm-start from the previous point's saved state.
+    """
+    flag = os.environ.get("SFINCS_JAX_SCAN_RECYCLE", "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return
+    state_out = current_dir / "sfincs_jax_state.npz"
+    os.environ["SFINCS_JAX_STATE_OUT"] = str(state_out)
+    if prev_dir is None:
+        os.environ.pop("SFINCS_JAX_STATE_IN", None)
+        return
+    prev_state = prev_dir / "sfincs_jax_state.npz"
+    if prev_state.exists():
+        os.environ["SFINCS_JAX_STATE_IN"] = str(prev_state)
+    else:
+        os.environ.pop("SFINCS_JAX_STATE_IN", None)
+
 def readScanVariable(varName, intOrFloatOrString, required=True, stringValueCaseSensitive=False):
     # This subroutine reads the special scan commands in the input.namelist that are hidden from fortran:
     # It is assumed that the input.namelist file has been loaded into the variable "inputFile".
