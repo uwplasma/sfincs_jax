@@ -21,6 +21,7 @@ from .solver import (
     assemble_dense_matrix_from_matvec,
     bicgstab_solve_with_residual,
     bicgstab_solve_with_residual_jit,
+    bicgstab_solve_with_history_scipy,
     dense_solve_from_matrix,
     gmres_solve,
     gmres_solve_jit,
@@ -31,10 +32,13 @@ from .solver import (
 from .implicit_solve import linear_custom_solve, linear_custom_solve_with_residual
 from .transport_matrix import (
     transport_matrix_size_from_rhs_mode,
+    v3_transport_diagnostics_vm_only_precompute,
     v3_transport_diagnostics_vm_only_batch_jit,
     v3_transport_diagnostics_vm_only_batch_remat_jit,
     v3_transport_diagnostics_vm_only_batch_op0_jit,
     v3_transport_diagnostics_vm_only_batch_op0_remat_jit,
+    v3_transport_diagnostics_vm_only_batch_op0_precomputed_jit,
+    v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit,
     v3_transport_matrix_from_flux_arrays,
 )
 from .v3_system import _source_basis_constraint_scheme_1
@@ -90,6 +94,8 @@ _TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_DIAG_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _RHSMODE1_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
+_TRANSPORT_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
+_TRANSPORT_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _RHSMODE23_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 
 
@@ -263,6 +269,98 @@ def _build_rhsmode23_collision_preconditioner(
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         f = r_full[: op.f_size].reshape(op.fblock.f_shape)
         z_f = f * inv_diag_f
+        tail = r_full[op.f_size :]
+        return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode23_sxblock_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Lightweight block-Jacobi preconditioner for RHSMode=2/3 using species/x blocks.
+
+    Builds per-L blocks across species and x from the collision operator (PAS/FP) plus
+    identity shift. This avoids matvec-based assembly while capturing cross-species/x
+    coupling in the FP operator.
+    """
+    if op.fblock.fp is None:
+        return _build_rhsmode23_collision_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+    cache_key = _transport_precond_cache_key(op, "collision_sxblock")
+    cached = _TRANSPORT_SXBLOCK_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+        n_block = n_species * n_x
+        inv_block = np.zeros((n_l, n_block, n_block), dtype=np.float64)
+        mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+
+        reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-10
+        except ValueError:
+            reg = 1e-10
+
+        identity_shift = float(op.fblock.identity_shift)
+        pas_diag = None
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l_arr = np.arange(n_l, dtype=np.float64)
+            factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+            pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        for l in range(n_l):
+            a = np.array(mat[:, :, l, :, :], dtype=np.float64, copy=True)  # (S,S,X,X)
+            a = a.transpose(0, 2, 1, 3).reshape((n_block, n_block))
+            if identity_shift != 0.0:
+                a[np.arange(n_block), np.arange(n_block)] += identity_shift
+            if pas_diag is not None:
+                diag_add = pas_diag[:, :, l].reshape((n_block,))
+                a[np.arange(n_block), np.arange(n_block)] += diag_add
+            if reg != 0.0:
+                a[np.arange(n_block), np.arange(n_block)] += reg
+
+            inactive_x = np.where(nxi_for_x <= l)[0]
+            if inactive_x.size:
+                for ix in inactive_x:
+                    for s in range(n_species):
+                        idx = s * n_x + int(ix)
+                        a[idx, :] = 0.0
+                        a[:, idx] = 0.0
+                        a[idx, idx] = 1.0
+
+            try:
+                inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(inv)):
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            inv_block[l, :, :] = inv
+
+        cached = _TransportXBlockPrecondCache(inv_xblock=jnp.asarray(inv_block, dtype=jnp.float64))
+        _TRANSPORT_SXBLOCK_PRECOND_CACHE[cache_key] = cached
+
+    inv_block = cached.inv_xblock  # (L, S*X, S*X)
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+        f_l = jnp.transpose(f, (2, 0, 1, 3, 4))  # (L,S,X,T,Z)
+        f_l = f_l.reshape((int(op.n_xi), int(op.n_species) * int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+        z_l = jnp.einsum("lmn,lntz->lmtz", inv_block, f_l)
+        z_l = z_l.reshape((int(op.n_xi), int(op.n_species), int(op.n_x), int(op.n_theta), int(op.n_zeta)))
+        z_f = jnp.transpose(z_l, (1, 2, 0, 3, 4))  # (S,X,L,T,Z)
         tail = r_full[op.f_size :]
         return jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
 
@@ -1337,9 +1435,9 @@ def solve_v3_full_system_linear_gmres(
             if pre_theta == 0 and pre_zeta == 0:
                 collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
                 try:
-                    collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 1500
+                    collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 10**9
                 except ValueError:
-                    collision_precond_min = 1500
+                    collision_precond_min = 10**9
                 use_collision_precond = (
                     (op.fblock.fp is not None or op.fblock.pas is not None)
                     and int(op.total_size) >= collision_precond_min
@@ -1395,7 +1493,15 @@ def solve_v3_full_system_linear_gmres(
             # generally more reliable for parity, while BiCGStab remains available.
             if int(op.rhs_mode) in {2, 3}:
                 return "gmres", "incremental"
-            return "bicgstab", "batched"
+            small_gmres_env = os.environ.get("SFINCS_JAX_RHSMODE1_GMRES_SMALL_MAX", "").strip()
+            try:
+                small_gmres_max = int(small_gmres_env) if small_gmres_env else 600
+            except ValueError:
+                small_gmres_max = 600
+            if small_gmres_max > 0 and int(op.total_size) <= small_gmres_max:
+                return "gmres", "incremental"
+            # Default RHSMode=1 to GMRES to match PETSc/KSP parity.
+            return "gmres", "incremental"
         if method_l in {"bicgstab", "bicgstab_jax"}:
             return "bicgstab", "batched"
         return "gmres", method_l
@@ -1519,6 +1625,14 @@ def solve_v3_full_system_linear_gmres(
         fortran_stdout = True
     else:
         fortran_stdout = emit is not None
+    iter_stats_env = os.environ.get("SFINCS_JAX_SOLVER_ITER_STATS", "").strip().lower()
+    iter_stats_enabled = iter_stats_env in {"1", "true", "yes", "on"}
+    iter_stats_max_env = os.environ.get("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "").strip()
+    try:
+        iter_stats_max_size = int(iter_stats_max_env) if iter_stats_max_env else None
+    except ValueError:
+        iter_stats_max_size = None
+
     ksp_matvec = None
     ksp_b = None
     ksp_precond = None
@@ -1541,11 +1655,11 @@ def solve_v3_full_system_linear_gmres(
         maxiter_val: int | None,
         precond_side: str,
         solver_kind: str,
-    ) -> None:
+    ) -> list[float] | None:
         if emit is None or not fortran_stdout:
-            return
+            return None
         if str(solver_kind).strip().lower() != "gmres":
-            return
+            return None
         try:
             _x_hist, _rn, history = gmres_solve_with_history_scipy(
                 matvec=matvec_fn,
@@ -1560,12 +1674,68 @@ def solve_v3_full_system_linear_gmres(
             )
         except Exception as exc:  # noqa: BLE001
             emit(1, f"fortran-stdout: KSP history unavailable ({type(exc).__name__}: {exc})")
-            return
+            return None
         for k, rn in enumerate(history):
             emit(0, f"{k:4d} KSP Residual norm {rn: .12e} ")
         if history:
             emit(0, " Linear iteration (KSP) converged.  KSPConvergedReason =            2")
             emit(0, "   KSP_CONVERGED_RTOL: Norm decreased by rtol.")
+        return history
+
+    def _emit_ksp_iter_stats(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        precond_fn,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        precond_side: str,
+        solver_kind: str,
+        history: list[float] | None,
+    ) -> None:
+        if emit is None or not iter_stats_enabled:
+            return
+        size = int(b_vec.size)
+        if iter_stats_max_size is not None and size > int(iter_stats_max_size):
+            emit(1, f"ksp_iterations skipped (size={size} > max={int(iter_stats_max_size)})")
+            return
+        solver_kind_l = str(solver_kind).strip().lower()
+        try:
+            if solver_kind_l == "gmres":
+                if history is None:
+                    _x_hist, _rn, history = gmres_solve_with_history_scipy(
+                        matvec=matvec_fn,
+                        b=b_vec,
+                        preconditioner=precond_fn,
+                        x0=x0_vec,
+                        tol=tol_val,
+                        atol=atol_val,
+                        restart=restart_val,
+                        maxiter=maxiter_val,
+                        precondition_side=precond_side,
+                    )
+                iters = len(history or [])
+            elif solver_kind_l == "bicgstab":
+                _x_hist, _rn, history = bicgstab_solve_with_history_scipy(
+                    matvec=matvec_fn,
+                    b=b_vec,
+                    preconditioner=precond_fn,
+                    x0=x0_vec,
+                    tol=tol_val,
+                    atol=atol_val,
+                    maxiter=maxiter_val,
+                    precondition_side=precond_side,
+                )
+                iters = len(history or [])
+            else:
+                return
+        except Exception as exc:  # noqa: BLE001
+            emit(1, f"ksp_iterations unavailable ({type(exc).__name__}: {exc})")
+            return
+        emit(0, f"ksp_iterations={iters} solver={solver_kind_l}")
     if use_active_dof_mode:
         assert active_idx_jnp is not None
         assert full_to_active_jnp is not None
@@ -1836,17 +2006,17 @@ def solve_v3_full_system_linear_gmres(
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
         dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
         try:
-            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
+            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
         except ValueError:
-            dense_fallback_max = 2500
+            dense_fallback_max = 0
         dense_fallback_max_huge = 0
         dense_fallback_ratio = 1.0e8
         if dense_fallback_max > 0:
             dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
             try:
-                dense_fallback_max_huge = int(dense_fallback_max_huge_env) if dense_fallback_max_huge_env else 6000
+                dense_fallback_max_huge = int(dense_fallback_max_huge_env) if dense_fallback_max_huge_env else dense_fallback_max
             except ValueError:
-                dense_fallback_max_huge = 6000
+                dense_fallback_max_huge = dense_fallback_max
             dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
             try:
                 dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e8
@@ -1854,12 +2024,17 @@ def solve_v3_full_system_linear_gmres(
                 dense_fallback_ratio = 1.0e8
         res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
         dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
+        force_dense_cs0 = int(op.constraint_scheme) == 0
+        if force_dense_cs0:
+            # constraintScheme=0 systems are singular; keep the dense fallback
+            # available even when the residual ratio is huge.
+            dense_fallback_limit = max(dense_fallback_limit, dense_fallback_max)
         if (
             dense_fallback_limit > 0
             and int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
             and int(active_size) <= dense_fallback_limit
-            and float(res_reduced.residual_norm) > target_reduced
+            and (float(res_reduced.residual_norm) > target_reduced or force_dense_cs0)
         ):
             if emit is not None:
                 emit(
@@ -1868,6 +2043,9 @@ def solve_v3_full_system_linear_gmres(
                     f"(size={active_size} residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
                 )
             try:
+                dense_method = "dense"
+                if int(op.constraint_scheme) == 0:
+                    dense_method = "dense_row_scaled"
                 res_dense = _solve_linear(
                     matvec_fn=mv_reduced,
                     b_vec=rhs_reduced,
@@ -1877,7 +2055,7 @@ def solve_v3_full_system_linear_gmres(
                     atol_val=atol,
                     restart_val=restart,
                     maxiter_val=maxiter,
-                    solve_method_val="dense",
+                    solve_method_val=dense_method,
                     precond_side="none",
                 )
                 if float(res_dense.residual_norm) < float(res_reduced.residual_norm):
@@ -2127,9 +2305,9 @@ def solve_v3_full_system_linear_gmres(
                     ksp_solver_kind = _solver_kind(stage2_method)[0]
             dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
             try:
-                dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 2500
+                dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
             except ValueError:
-                dense_fallback_max = 2500
+                dense_fallback_max = 3000
             if (
                 dense_fallback_max > 0
                 and int(op.rhs_mode) == 1
@@ -2144,6 +2322,9 @@ def solve_v3_full_system_linear_gmres(
                         f"(size={int(op.total_size)} residual={float(result.residual_norm):.3e} > target={target:.3e})",
                     )
                 try:
+                    dense_method = "dense"
+                    if int(op.constraint_scheme) == 0:
+                        dense_method = "dense_row_scaled"
                     res_dense, residual_vec_dense = _solve_linear_with_residual(
                         matvec_fn=mv,
                         b_vec=rhs,
@@ -2153,7 +2334,7 @@ def solve_v3_full_system_linear_gmres(
                         atol_val=atol,
                         restart_val=restart,
                         maxiter_val=maxiter,
-                        solve_method_val="dense",
+                        solve_method_val=dense_method,
                         precond_side="none",
                     )
                     if float(res_dense.residual_norm) < float(result.residual_norm):
@@ -2185,7 +2366,7 @@ def solve_v3_full_system_linear_gmres(
                 residual_norm_projected = jnp.linalg.norm(residual_projected)
                 result = GMRESSolveResult(x=x_projected, residual_norm=residual_norm_projected)
     if ksp_matvec is not None and ksp_b is not None:
-        _emit_ksp_history(
+        ksp_history = _emit_ksp_history(
             matvec_fn=ksp_matvec,
             b_vec=ksp_b,
             precond_fn=ksp_precond,
@@ -2196,6 +2377,19 @@ def solve_v3_full_system_linear_gmres(
             maxiter_val=ksp_maxiter,
             precond_side=ksp_precond_side,
             solver_kind=ksp_solver_kind,
+        )
+        _emit_ksp_iter_stats(
+            matvec_fn=ksp_matvec,
+            b_vec=ksp_b,
+            precond_fn=ksp_precond,
+            x0_vec=ksp_x0,
+            tol_val=float(tol),
+            atol_val=float(atol),
+            restart_val=int(ksp_restart),
+            maxiter_val=ksp_maxiter,
+            precond_side=ksp_precond_side,
+            solver_kind=ksp_solver_kind,
+            history=ksp_history,
         )
     if emit is not None:
         emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
@@ -3002,20 +3196,31 @@ def solve_v3_transport_matrix_linear_gmres(
     dense_fallback_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_FALLBACK", "").strip().lower()
     dense_fallback_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX", "").strip()
     try:
-        dense_fallback_max = int(dense_fallback_max_env) if dense_fallback_max_env else 1600
+        dense_fallback_max = int(dense_fallback_max_env) if dense_fallback_max_env else 0
     except ValueError:
-        dense_fallback_max = 1600
+        dense_fallback_max = 0
     dense_retry_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX", "").strip()
     try:
-        dense_retry_max = int(dense_retry_env) if dense_retry_env else (3000 if int(rhs_mode) == 2 else 2500)
+        if dense_retry_env:
+            dense_retry_max = int(dense_retry_env)
+        else:
+            dense_retry_max = 3000 if int(rhs_mode) in {2, 3} else 0
     except ValueError:
-        dense_retry_max = 3000 if int(rhs_mode) == 2 else 2500
-    if dense_fallback_env in {"1", "true", "yes", "on"}:
+        dense_retry_max = 3000 if int(rhs_mode) in {2, 3} else 0
+    dense_fallback_enabled_env = dense_fallback_env in {"1", "true", "yes", "on"}
+    dense_fallback_disabled_env = dense_fallback_env in {"0", "false", "no", "off"}
+    if dense_fallback_enabled_env:
         dense_fallback = True
-    elif dense_fallback_env in {"0", "false", "no", "off"}:
+        if not dense_fallback_max_env:
+            dense_fallback_max = 1600
+    elif dense_fallback_disabled_env:
         dense_fallback = False
     else:
-        dense_fallback = int(op0.total_size) <= dense_fallback_max
+        # Default to a dense fallback for RHSMode=3 monoenergetic solves when the system is modest,
+        # since iterative Krylov often stalls for the E_parallel RHS.
+        dense_fallback = int(rhs_mode) == 3
+        if dense_fallback and not dense_fallback_max_env:
+            dense_fallback_max = 3000
     if int(rhs_mode) in {2, 3}:
         if force_dense:
             solve_method_use = "dense"
@@ -3235,7 +3440,7 @@ def solve_v3_transport_matrix_linear_gmres(
     transport_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND", "").strip().lower()
     if transport_precond_env in {"0", "none", "off", "false", "no"}:
         transport_precond_kind = None
-    elif transport_precond_env in {"collision", "block", "block_jacobi"}:
+    elif transport_precond_env in {"collision", "block", "block_jacobi", "sxblock", "block_sx", "species_x"}:
         transport_precond_kind = transport_precond_env
     else:
         transport_precond_kind = "auto"
@@ -3254,8 +3459,17 @@ def solve_v3_transport_matrix_linear_gmres(
                     block_max = int(block_max_env) if block_max_env else 5000
                 except ValueError:
                     block_max = 5000
-                precond_kind = "block" if int(op0.total_size) <= block_max else "collision"
-        if precond_kind in {"block", "block_jacobi"}:
+                if op0.fblock.fp is not None and int(op0.total_size) <= block_max:
+                    precond_kind = "sxblock"
+                else:
+                    precond_kind = "collision"
+        if precond_kind in {"sxblock", "block_sx", "species_x"}:
+            preconditioner_full = _build_rhsmode23_sxblock_preconditioner(op=op0)
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_sxblock_preconditioner(
+                    op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+        elif precond_kind in {"block", "block_jacobi"}:
             preconditioner_full = _build_rhsmode23_block_preconditioner(op=op0)
             if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
                 preconditioner_reduced = _build_rhsmode23_block_preconditioner(
@@ -3417,6 +3631,68 @@ def solve_v3_transport_matrix_linear_gmres(
             or (int(rhs_mode) == 3 and int(which_rhs) == 2)
         )
 
+    iter_stats_env = os.environ.get("SFINCS_JAX_SOLVER_ITER_STATS", "").strip().lower()
+    iter_stats_enabled = iter_stats_env in {"1", "true", "yes", "on"}
+    iter_stats_max_env = os.environ.get("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "").strip()
+    try:
+        iter_stats_max_size = int(iter_stats_max_env) if iter_stats_max_env else None
+    except ValueError:
+        iter_stats_max_size = None
+
+    def _emit_ksp_iter_stats_transport(
+        *,
+        which_rhs: int,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        precond_fn,
+        x0_vec: jnp.ndarray | None,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        precond_side: str,
+        solver_kind: str,
+    ) -> None:
+        if emit is None or not iter_stats_enabled:
+            return
+        size = int(b_vec.size)
+        if iter_stats_max_size is not None and size > int(iter_stats_max_size):
+            emit(1, f"whichRHS={which_rhs} ksp_iterations skipped (size={size} > max={int(iter_stats_max_size)})")
+            return
+        solver_kind_l = str(solver_kind).strip().lower()
+        try:
+            if solver_kind_l == "gmres":
+                _x_hist, _rn, history = gmres_solve_with_history_scipy(
+                    matvec=matvec_fn,
+                    b=b_vec,
+                    preconditioner=precond_fn,
+                    x0=x0_vec,
+                    tol=tol_val,
+                    atol=atol_val,
+                    restart=restart_val,
+                    maxiter=maxiter_val,
+                    precondition_side=precond_side,
+                )
+                iters = len(history)
+            elif solver_kind_l == "bicgstab":
+                _x_hist, _rn, history = bicgstab_solve_with_history_scipy(
+                    matvec=matvec_fn,
+                    b=b_vec,
+                    preconditioner=precond_fn,
+                    x0=x0_vec,
+                    tol=tol_val,
+                    atol=atol_val,
+                    maxiter=maxiter_val,
+                    precondition_side=precond_side,
+                )
+                iters = len(history)
+            else:
+                return
+        except Exception as exc:  # noqa: BLE001
+            emit(1, f"whichRHS={which_rhs} ksp_iterations unavailable ({type(exc).__name__}: {exc})")
+            return
+        emit(0, f"whichRHS={which_rhs} ksp_iterations={iters} solver={solver_kind_l}")
+
     def _maybe_project_constraint_nullspace(
         x_vec: jnp.ndarray,
         *,
@@ -3547,6 +3823,13 @@ def solve_v3_transport_matrix_linear_gmres(
                     if x0_reduced is None and x0_recycled is not None:
                         x0_reduced = x0_recycled
 
+                solver_kind_used = _solver_kind(solve_method_rhs)[0]
+                solve_method_used = solve_method_rhs
+                restart_used = _restart_for_method(solve_method_rhs)
+                preconditioner_used = preconditioner_use
+                x0_used = x0_reduced
+                dense_used = False
+
                 res_reduced = _solve_linear(
                     matvec_fn=mv_reduced,
                     b_vec=rhs_reduced,
@@ -3580,6 +3863,9 @@ def solve_v3_transport_matrix_linear_gmres(
                         preconditioner_val=preconditioner_use,
                         precondition_side_val="left",
                     )
+                    solver_kind_used = "gmres"
+                    solve_method_used = "incremental"
+                    restart_used = gmres_restart
                 if _needs_retry(res_reduced, target_rhs) and preconditioner_use is not None:
                     if emit is not None:
                         emit(
@@ -3602,6 +3888,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     if _residual_value(res_retry) < _residual_value(res_reduced):
                         res_reduced = res_retry
                         preconditioner_use = None
+                        preconditioner_used = None
                 if _needs_retry(res_reduced, target_rhs) and dense_retry_max > 0 and int(active_size) <= int(dense_retry_max):
                     if emit is not None:
                         emit(
@@ -3624,6 +3911,9 @@ def solve_v3_transport_matrix_linear_gmres(
                         )
                         if _residual_value(res_dense) < _residual_value(res_reduced):
                             res_reduced = res_dense
+                            dense_used = True
+                            solver_kind_used = "dense"
+                            solve_method_used = "dense"
                     except Exception as exc:  # noqa: BLE001
                         if emit is not None:
                             emit(
@@ -3650,6 +3940,20 @@ def solve_v3_transport_matrix_linear_gmres(
                     if len(recycle_basis_full) > recycle_k:
                         recycle_basis_full = recycle_basis_full[-recycle_k:]
                         recycle_basis_full_au = recycle_basis_full_au[-recycle_k:]
+                if not dense_used:
+                    _emit_ksp_iter_stats_transport(
+                        which_rhs=int(which_rhs),
+                        matvec_fn=mv_reduced,
+                        b_vec=rhs_reduced,
+                        precond_fn=preconditioner_used,
+                        x0_vec=x0_used,
+                        tol_val=float(tol_rhs),
+                        atol_val=float(atol),
+                        restart_val=int(restart_used),
+                        maxiter_val=maxiter,
+                        precond_side="left",
+                        solver_kind=solver_kind_used,
+                    )
             else:
                 mv = _get_full_matvec(op_matvec)
 
@@ -3672,6 +3976,13 @@ def solve_v3_transport_matrix_linear_gmres(
                     )
                     if x0_full is None and x0_recycled is not None:
                         x0_full = x0_recycled
+
+                solver_kind_used = _solver_kind(solve_method_rhs)[0]
+                solve_method_used = solve_method_rhs
+                restart_used = _restart_for_method(solve_method_rhs)
+                preconditioner_used = preconditioner_use
+                x0_used = x0_full
+                dense_used = False
                 res, residual_vec = _solve_linear_with_residual(
                     matvec_fn=mv,
                     b_vec=rhs,
@@ -3705,6 +4016,9 @@ def solve_v3_transport_matrix_linear_gmres(
                         preconditioner_val=preconditioner_use,
                         precondition_side_val="left",
                     )
+                    solver_kind_used = "gmres"
+                    solve_method_used = "incremental"
+                    restart_used = gmres_restart
                 if _needs_retry(res, target_rhs) and preconditioner_use is not None:
                     if emit is not None:
                         emit(
@@ -3728,6 +4042,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         res = res_retry
                         residual_vec = residual_retry
                         preconditioner_use = None
+                        preconditioner_used = None
                 if _needs_retry(res, target_rhs) and dense_retry_max > 0 and int(op0.total_size) <= int(dense_retry_max):
                     if emit is not None:
                         emit(
@@ -3751,6 +4066,9 @@ def solve_v3_transport_matrix_linear_gmres(
                         if _residual_value(res_dense) < _residual_value(res):
                             res = res_dense
                             residual_vec = residual_dense
+                            dense_used = True
+                            solver_kind_used = "dense"
+                            solve_method_used = "dense"
                     except Exception as exc:  # noqa: BLE001
                         if emit is not None:
                             emit(
@@ -3778,6 +4096,20 @@ def solve_v3_transport_matrix_linear_gmres(
                     if len(recycle_basis_full) > recycle_k:
                         recycle_basis_full = recycle_basis_full[-recycle_k:]
                         recycle_basis_full_au = recycle_basis_full_au[-recycle_k:]
+                if not dense_used:
+                    _emit_ksp_iter_stats_transport(
+                        which_rhs=int(which_rhs),
+                        matvec_fn=mv,
+                        b_vec=rhs,
+                        precond_fn=preconditioner_used,
+                        x0_vec=x0_used,
+                        tol_val=float(tol_rhs),
+                        atol_val=float(atol),
+                        restart_val=int(restart_used),
+                        maxiter_val=maxiter,
+                        precond_side="left",
+                        solver_kind=solver_kind_used,
+                    )
             if emit is not None:
                 emit(
                     0,
@@ -3802,12 +4134,23 @@ def solve_v3_transport_matrix_linear_gmres(
             remat_min = 20000
         use_remat_diag = int(x_stack.size) >= remat_min
     if use_diag_op0:
-        diag_fn = (
-            v3_transport_diagnostics_vm_only_batch_op0_remat_jit
-            if use_remat_diag
-            else v3_transport_diagnostics_vm_only_batch_op0_jit
-        )
-        diag_stack = diag_fn(op0=op0, x_full_stack=x_stack)
+        precompute_env = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_PRECOMPUTE", "").strip().lower()
+        use_precompute = precompute_env not in {"0", "false", "no", "off"}
+        if use_precompute:
+            precomputed = v3_transport_diagnostics_vm_only_precompute(op0)
+            diag_fn = (
+                v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit
+                if use_remat_diag
+                else v3_transport_diagnostics_vm_only_batch_op0_precomputed_jit
+            )
+            diag_stack = diag_fn(op0=op0, precomputed=precomputed, x_full_stack=x_stack)
+        else:
+            diag_fn = (
+                v3_transport_diagnostics_vm_only_batch_op0_remat_jit
+                if use_remat_diag
+                else v3_transport_diagnostics_vm_only_batch_op0_jit
+            )
+            diag_stack = diag_fn(op0=op0, x_full_stack=x_stack)
     else:
         diag_op_stack = jtu.tree_map(lambda *xs: jnp.stack(xs, axis=0), *diag_op_by_index)
         diag_fn = (

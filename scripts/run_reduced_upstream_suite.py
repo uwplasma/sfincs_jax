@@ -79,6 +79,12 @@ class CaseResult:
     jax_runtime_s: float | None
     jax_runtime_s_cold: float | None
     jax_runtime_s_warm: float | None
+    jax_solver_iters_mean: float | None
+    jax_solver_iters_min: int | None
+    jax_solver_iters_max: int | None
+    jax_solver_iters_n: int
+    jax_solver_iters_detail: list[int]
+    jax_solver_kinds: list[str]
     print_parity_signals: int
     print_parity_total: int
     print_missing_signals: list[str]
@@ -249,6 +255,7 @@ def _run_jax_cli(
     log_path: Path,
     compute_solution: bool,
     compute_transport_matrix: bool,
+    collect_iterations: bool = True,
     repeats: int = 1,
     cache_dir: Path | None = None,
 ) -> tuple[float, float | None]:
@@ -273,6 +280,9 @@ def _run_jax_cli(
         env.setdefault("JAX_COMPILATION_CACHE_DIR", str(cache_dir))
         env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
         env.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+    env["SFINCS_JAX_SOLVER_ITER_STATS"] = "1" if collect_iterations else "0"
+    if collect_iterations:
+        env.setdefault("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "2000")
     run_times: list[float] = []
     repeat_count = max(1, int(repeats))
     for idx in range(repeat_count):
@@ -508,6 +518,36 @@ def _compute_print_parity(*, fortran_log: Path, jax_log: Path) -> tuple[int, int
     return matched, relevant, missing
 
 
+_KSP_ITER_RE = re.compile(r"ksp_iterations=(\d+)\s+solver=([a-zA-Z0-9_]+)")
+_KSP_ITER_RHS_RE = re.compile(r"whichRHS=(\d+).*ksp_iterations=(\d+)\s+solver=([a-zA-Z0-9_]+)")
+
+
+def _parse_ksp_iterations(log_path: Path) -> tuple[list[int], list[str]]:
+    if not log_path.exists():
+        return [], []
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    iter_by_rhs: dict[int, int] = {}
+    kind_by_rhs: dict[int, str] = {}
+    iter_general: list[int] = []
+    kind_general: list[str] = []
+    for line in text.splitlines():
+        rhs_match = _KSP_ITER_RHS_RE.search(line)
+        if rhs_match:
+            rhs_idx = int(rhs_match.group(1))
+            iter_by_rhs[rhs_idx] = int(rhs_match.group(2))
+            kind_by_rhs[rhs_idx] = rhs_match.group(3).lower()
+            continue
+        match = _KSP_ITER_RE.search(line)
+        if match:
+            iter_general.append(int(match.group(1)))
+            kind_general.append(match.group(2).lower())
+    if iter_by_rhs:
+        iters = [iter_by_rhs[k] for k in sorted(iter_by_rhs)]
+        kinds = [kind_by_rhs[k] for k in sorted(iter_by_rhs)]
+        return iters, kinds
+    return iter_general, kind_general
+
+
 def _classify_blocker(*, status: str, note: str, mismatch_keys: list[str], jax_log: Path | None) -> str:
     if status == "parity_ok":
         return "none"
@@ -568,6 +608,12 @@ def _load_existing_results(report_json: Path) -> dict[str, CaseResult]:
             jax_runtime_s=item.get("jax_runtime_s"),
             jax_runtime_s_cold=item.get("jax_runtime_s_cold"),
             jax_runtime_s_warm=item.get("jax_runtime_s_warm"),
+            jax_solver_iters_mean=item.get("jax_solver_iters_mean"),
+            jax_solver_iters_min=item.get("jax_solver_iters_min"),
+            jax_solver_iters_max=item.get("jax_solver_iters_max"),
+            jax_solver_iters_n=int(item.get("jax_solver_iters_n", 0)),
+            jax_solver_iters_detail=list(item.get("jax_solver_iters_detail", [])),
+            jax_solver_kinds=list(item.get("jax_solver_kinds", [])),
             print_parity_signals=int(item.get("print_parity_signals", 0)),
             print_parity_total=int(item.get("print_parity_total", 0)),
             print_missing_signals=list(item.get("print_missing_signals", [])),
@@ -634,7 +680,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         lines.append("- Tolerances: practical mode applies per-case `*.compare_tolerances.json` when present.\n\n")
     lines.append(".. list-table:: Reduced-resolution upstream suite parity status\n")
     lines.append("   :header-rows: 1\n")
-    lines.append("   :widths: 23 9 16 10 7 7 10 10 11 13 12 16\n\n")
+    lines.append("   :widths: 23 9 16 10 7 7 10 10 10 11 13 12 16\n\n")
     lines.append("   * - Case\n")
     lines.append("     - Status\n")
     lines.append("     - Blocker\n")
@@ -643,6 +689,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
     lines.append("     - Reductions\n")
     lines.append("     - Fortran(s)\n")
     lines.append("     - JAX(s)\n")
+    lines.append("     - JAX iters\n")
     lines.append("     - Mismatches\n")
     lines.append("     - Buckets\n")
     lines.append("     - Print parity\n")
@@ -666,6 +713,14 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         mm = f"{n_bad}/{n_common}" if n_common > 0 else "-"
         buckets = f"S:{n_solver} P:{n_physics}"
         pp = f"{row.print_parity_signals}/{row.print_parity_total}" if row.print_parity_total > 0 else "-"
+        iters = "-"
+        if row.jax_solver_iters_n > 0 and row.jax_solver_iters_mean is not None:
+            if row.jax_solver_iters_n == 1:
+                iters = f"{int(round(row.jax_solver_iters_mean))}"
+            else:
+                min_iter = row.jax_solver_iters_min if row.jax_solver_iters_min is not None else 0
+                max_iter = row.jax_solver_iters_max if row.jax_solver_iters_max is not None else 0
+                iters = f"{row.jax_solver_iters_mean:.1f} ({min_iter}-{max_iter})"
         lines.append(f"   * - {row.case}\n")
         lines.append(f"     - {mode_status}\n")
         lines.append(f"     - {row.blocker_type}\n")
@@ -674,6 +729,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         lines.append(f"     - {row.reductions}\n")
         lines.append(f"     - {ft}\n")
         lines.append(f"     - {jt}\n")
+        lines.append(f"     - {iters}\n")
         lines.append(f"     - {mm}\n")
         lines.append(f"     - {buckets}\n")
         lines.append(f"     - {pp}\n")
@@ -693,6 +749,7 @@ def _run_case(
     max_attempts: int,
     use_seed_resolution: bool = False,
     reuse_fortran: bool = False,
+    collect_iterations: bool = True,
     jax_repeats: int = 1,
     jax_cache_dir: Path | None = None,
 ) -> CaseResult:
@@ -717,6 +774,12 @@ def _run_case(
     jax_runtime = None
     jax_runtime_cold = None
     jax_runtime_warm = None
+    jax_solver_iters_mean = None
+    jax_solver_iters_min = None
+    jax_solver_iters_max = None
+    jax_solver_iters_n = 0
+    jax_solver_iters_detail: list[int] = []
+    jax_solver_kinds: list[str] = []
     note = ""
     status = "error"
     blocker_type = "unsupported physics/path"
@@ -747,9 +810,13 @@ def _run_case(
         fortran_log = fortran_dir / "sfincs.log"
         fortran_h5_this_attempt: Path | None = None
         out_fortran_existing = fortran_dir / "sfincsOutput.h5"
-        if bool(reuse_fortran) and out_fortran_existing.exists():
-            fortran_h5_this_attempt = out_fortran_existing
-            fortran_log_path = fortran_log if fortran_log.exists() else None
+        # Only reuse Fortran outputs when the input resolution has not been reduced.
+        # If a reduction happened, rerun Fortran so the outputs match the new input.
+        if bool(reuse_fortran) and out_fortran_existing.exists() and attempts == 1 and reductions == 0:
+            fortran_input = fortran_dir / "input.namelist"
+            if fortran_input.exists() and fortran_input.read_text() == dst_input.read_text():
+                fortran_h5_this_attempt = out_fortran_existing
+                fortran_log_path = fortran_log if fortran_log.exists() else None
         else:
             if fortran_dir.exists():
                 shutil.rmtree(fortran_dir)
@@ -823,6 +890,7 @@ def _run_case(
                 log_path=jax_log,
                 compute_solution=compute_solution,
                 compute_transport_matrix=compute_transport_matrix,
+                collect_iterations=collect_iterations,
                 repeats=jax_repeats,
                 cache_dir=jax_cache_dir,
             )
@@ -889,6 +957,15 @@ def _run_case(
             print_signals, print_total, print_missing = _compute_print_parity(fortran_log=fortran_log_path, jax_log=jax_log_path)
             if print_total > 0 and print_signals < print_total:
                 note = f"{note} printParity={print_signals}/{print_total} missing={','.join(print_missing[:3])}"
+        if jax_log_path is not None and jax_log_path.exists():
+            iters, kinds = _parse_ksp_iterations(jax_log_path)
+            if iters:
+                jax_solver_iters_detail = iters
+                jax_solver_kinds = kinds
+                jax_solver_iters_n = len(iters)
+                jax_solver_iters_mean = float(np.mean(np.asarray(iters, dtype=np.float64)))
+                jax_solver_iters_min = int(min(iters))
+                jax_solver_iters_max = int(max(iters))
         break
 
     else:
@@ -908,6 +985,12 @@ def _run_case(
         jax_runtime_s=jax_runtime,
         jax_runtime_s_cold=jax_runtime_cold,
         jax_runtime_s_warm=jax_runtime_warm,
+        jax_solver_iters_mean=jax_solver_iters_mean,
+        jax_solver_iters_min=jax_solver_iters_min,
+        jax_solver_iters_max=jax_solver_iters_max,
+        jax_solver_iters_n=jax_solver_iters_n,
+        jax_solver_iters_detail=jax_solver_iters_detail,
+        jax_solver_kinds=jax_solver_kinds,
         print_parity_signals=print_signals,
         print_parity_total=print_total,
         print_missing_signals=print_missing,
@@ -982,6 +1065,11 @@ def main() -> int:
         default=1,
         help="Number of sfincs_jax repeats per case (>=2 records warm runtime from repeats after the first).",
     )
+    parser.add_argument(
+        "--no-collect-iterations",
+        action="store_true",
+        help="Disable solver-iteration stats collection in sfincs_jax logs.",
+    )
     args = parser.parse_args()
 
     examples_root = Path(args.examples_root)
@@ -1023,6 +1111,7 @@ def main() -> int:
             max_attempts=int(args.max_attempts),
             use_seed_resolution=use_seed_resolution,
             reuse_fortran=bool(args.reuse_fortran),
+            collect_iterations=not bool(args.no_collect_iterations),
             jax_repeats=int(args.jax_repeats),
             jax_cache_dir=(REPO_ROOT / args.jax_cache_dir),
         )

@@ -118,8 +118,9 @@ Solving a supported v3 linear run (matrix-free)
 
 .. note::
 
-   The default ``--solve-method auto`` uses BiCGStab for RHSMode=1 and RHSMode=2/3 (short recurrence,
-   low memory), with GMRES fallback on stagnation. Transport solves apply a cheap collision-diagonal
+   The default ``--solve-method auto`` uses GMRES for RHSMode=1 (parity-first) and GMRES for RHSMode=2/3
+   transport solves. BiCGStab remains available for low-memory runs via ``--solve-method bicgstab``.
+   Transport solves apply a cheap collision-diagonal
    preconditioner by default, while RHSMode=1 preconditioning follows the v3 namelist defaults
    (point-block Jacobi unless line preconditioners are requested). For strict PETSc-style iteration
    histories, use ``--solve-method incremental``.
@@ -142,11 +143,14 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_SOLVE_METHOD``: choose the RHSMode=1 linear solve backend:
 
-  - ``auto`` (default): BiCGStab (short recurrence, low memory) with GMRES fallback on stagnation.
+  - ``auto`` (default): GMRES (parity-first) with stage-2 fallback on stagnation.
   - ``bicgstab``: force BiCGStab for a low-memory Krylov solve (with GMRES fallback on stagnation).
   - ``dense``: assemble the dense operator from matvecs and solve directly (fast for tiny fixtures,
     but scales poorly).
   - ``incremental`` or ``batched``: matrix-free GMRES (higher memory, often robust).
+
+- ``SFINCS_JAX_RHSMODE1_GMRES_SMALL_MAX``: force GMRES for RHSMode=1 when the total
+  system size is below this threshold (default: ``600``). Set to ``0`` to disable.
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER`` (GMRES only): optional RHSMode=1 preconditioning.
 
@@ -159,7 +163,7 @@ performance without changing the input file:
   - ``0``: disable.
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` before the default
-  RHSMode=1 preconditioner switches to the collision-diagonal option (default: ``1500``).
+  RHSMode=1 preconditioner switches to the collision-diagonal option (default: disabled unless set).
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``: choose the collision preconditioner flavor
   when ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision`` or BiCGStab preconditioning is enabled.
@@ -182,9 +186,13 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_TRANSPORT_PRECOND``: RHSMode=2/3 transport preconditioner.
 
-  - ``auto`` (default): use block-Jacobi for small systems, collision-diagonal otherwise.
+  - ``auto`` (default): if the FP collision operator is available, use a lightweight
+    **species×x block-Jacobi** preconditioner (per-L) for small systems; otherwise fall
+    back to the collision-diagonal preconditioner.
   - ``block``/``block_jacobi``: local (x,L) block-Jacobi preconditioner built from a
     simplified transport operator (stronger, higher setup cost).
+  - ``sxblock``/``block_sx``/``species_x``: lightweight species×x block-Jacobi built from
+    the FP collision operator (no matvec assembly; stronger than diagonal for FP cases).
   - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
   - ``0``/``none``: disable.
 
@@ -199,7 +207,8 @@ performance without changing the input file:
 - ``SFINCS_JAX_TRANSPORT_FORCE_DENSE``: force dense transport solves (debugging only; quadratic cost).
 
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK``: allow dense transport fallback for small ill-conditioned
-  cases (disabled by default).
+  cases (disabled by default). When enabled, set ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX`` to
+  bound the system size.
 
 - ``SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX``: enable a dense LU preconditioner for RHSMode=3
   transport solves when the system size is below the specified threshold (default: ``600``).
@@ -230,6 +239,9 @@ performance without changing the input file:
 - ``SFINCS_JAX_REMAT_TRANSPORT_DIAGNOSTICS_MIN``: minimum transport-stack size before auto-remat
   triggers (default: ``20000``).
 
+- ``SFINCS_JAX_TRANSPORT_DIAG_PRECOMPUTE``: reuse geometry/species diagnostics factors across
+  all ``whichRHS`` solves (default: enabled). Set to ``0``/``false`` to disable.
+
 - ``SFINCS_JAX_PRECOMPILE``: ahead-of-time compile core kernels when JAX persistent compilation
   cache is enabled (default: auto when ``JAX_COMPILATION_CACHE_DIR`` is set).
 
@@ -239,6 +251,10 @@ performance without changing the input file:
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_K``: recycle up to ``k`` previous Krylov solution vectors across
   successive ``whichRHS`` solves in transport-matrix runs. Set to ``0`` to disable.
 
+- ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX``: enable a dense retry when transport-matrix Krylov
+  solves stagnate. The dense retry is applied only when the active system size is below the
+  specified threshold (default: ``3000`` for RHSMode=2/3, ``0`` otherwise).
+
 - ``SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE``: control constraintScheme=1 nullspace projection
   for linear RHSMode=1 solves.
 
@@ -247,7 +263,7 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``: enable a dense fallback solve for RHSMode=1
   when GMRES stagnates. This is only applied when the active system size is below the
-  specified threshold (default: ``0``, disabled).
+  specified threshold (default: ``3000``).
 
 - ``SFINCS_JAX_PHI1_PRECOND_KIND``: Newton–Krylov preconditioner for includePhi1 solves
   (active when ``SFINCS_JAX_PHI1_USE_PRECONDITIONER`` is enabled and frozen linearization is used).
@@ -284,6 +300,14 @@ performance without changing the input file:
 
      For strict KSP iteration-line parity, force a GMRES solve method (``incremental``/``batched``);
      BiCGStab does not produce GMRES-style history lines.
+
+- ``SFINCS_JAX_SOLVER_ITER_STATS``: emit ``ksp_iterations=...`` lines in stdout for suite reporting.
+
+  - ``1``/``true``: run a SciPy Krylov solve after the JAX solve to estimate iteration counts.
+  - ``0``/``false``: disable (default outside the reduced-suite runner).
+
+- ``SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE``: skip iteration counting when the linear system size
+  exceeds the provided threshold (useful when stats collection becomes too costly).
 
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
