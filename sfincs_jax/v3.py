@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,6 +68,43 @@ def _resolve_vmec_equilibrium_file(
         return resolve_existing_path(str(p2), base_dir=base_dir, extra_search_dirs=extra_search_dirs).path
 
 
+def _hashable_value(val) -> object:
+    if isinstance(val, list):
+        return tuple(_hashable_value(v) for v in val)
+    if isinstance(val, dict):
+        return tuple(sorted((str(k), _hashable_value(v)) for k, v in val.items()))
+    return val
+
+
+def _group_key(group: dict, keys: list[str]) -> tuple[tuple[str, object], ...]:
+    items = []
+    for key in keys:
+        items.append((key.upper(), _hashable_value(group.get(key.upper(), None))))
+    return tuple(items)
+
+
+def _equilibrium_file_key(*, nml: Namelist, geometry_scheme: int, geom_group: dict) -> tuple[str, float] | None:
+    equilibrium_file = geom_group.get("EQUILIBRIUMFILE", None)
+    if equilibrium_file is None:
+        return None
+    base_dir = nml.source_path.parent if nml.source_path is not None else None
+    repo_root = Path(__file__).resolve().parents[1]
+    extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
+    if geometry_scheme == 5:
+        path = _resolve_vmec_equilibrium_file(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra)
+    else:
+        path = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
+    try:
+        mtime = float(path.stat().st_mtime)
+    except FileNotFoundError:
+        mtime = -1.0
+    return (str(path), mtime)
+
+
+_GRIDS_CACHE: dict[tuple[object, ...], V3Grids] = {}
+_GEOMETRY_CACHE: dict[tuple[object, ...], BoozerGeometry] = {}
+
+
 @dataclass(frozen=True)
 class V3Grids:
     theta: jnp.ndarray
@@ -107,6 +145,8 @@ def _get_float(group: dict, key: str, default: float) -> float:
 
 def grids_from_namelist(nml: Namelist) -> V3Grids:
     """Construct v3 grids using the same defaults as the Fortran code (where implemented)."""
+    cache_env = os.environ.get("SFINCS_JAX_GRIDS_CACHE", "").strip().lower()
+    use_cache = cache_env not in {"0", "false", "no", "off"}
     res = nml.group("resolutionParameters")
     other = nml.group("otherNumericalParameters")
     geom = nml.group("geometryParameters")
@@ -142,6 +182,33 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         nxi_for_x_option = 0
 
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
+    if use_cache:
+        res_key = _group_key(res, ["Ntheta", "Nzeta", "Nx", "Nxi", "NL"])
+        other_key = _group_key(
+            other,
+            [
+                "thetaDerivativeScheme",
+                "zetaDerivativeScheme",
+                "magneticDriftDerivativeScheme",
+                "xGridScheme",
+                "xGrid_k",
+                "Nxi_for_x_option",
+                "xDotDerivativeScheme",
+            ],
+        )
+        general_key = _group_key(general, ["RHSMode"])
+        geom_key = _group_key(
+            geom,
+            [
+                "geometryScheme",
+                "helicity_n",
+            ],
+        )
+        eq_key = _equilibrium_file_key(nml=nml, geometry_scheme=geometry_scheme, geom_group=geom)
+        cache_key = ("grids", res_key, other_key, general_key, geom_key, eq_key)
+        cached = _GRIDS_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     if geometry_scheme == 4:
         n_periods = 5
     elif geometry_scheme == 1:
@@ -305,7 +372,7 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
     else:
         raise ValueError(f"Invalid Nxi_for_x_option={nxi_for_x_option}")
 
-    return V3Grids(
+    grids = V3Grids(
         theta=theta,
         zeta=zeta,
         x=x,
@@ -324,15 +391,51 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         n_l=nl,
         n_xi_for_x=jnp.asarray(nxi_for_x, dtype=jnp.int32),
     )
+    if use_cache:
+        _GRIDS_CACHE[cache_key] = grids
+    return grids
 
 
 def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
     geom = nml.group("geometryParameters")
     geometry_scheme = _get_int(geom, "geometryScheme", -1)
+    cache_env = os.environ.get("SFINCS_JAX_GEOMETRY_CACHE", "").strip().lower()
+    use_cache = cache_env not in {"0", "false", "no", "off"}
+    if use_cache:
+        geom_key = _group_key(
+            geom,
+            [
+                "geometryScheme",
+                "epsilon_t",
+                "epsilon_h",
+                "epsilon_antisymm",
+                "iota",
+                "GHat",
+                "IHat",
+                "B0OverBBar",
+                "helicity_l",
+                "helicity_n",
+                "helicity_antisymm_l",
+                "helicity_antisymm_n",
+                "RN_WISH",
+                "VMECRadialOption",
+                "VMEC_NYQUIST_OPTION",
+                "MIN_BMN_TO_LOAD",
+                "RIPPLESCALE",
+                "HELICITY_L",
+                "HELICITY_N",
+            ],
+        )
+        eq_key = _equilibrium_file_key(nml=nml, geometry_scheme=geometry_scheme, geom_group=geom)
+        grid_key = (int(grids.theta.size), int(grids.zeta.size))
+        cache_key = ("geometry", geometry_scheme, geom_key, eq_key, grid_key)
+        cached = _GEOMETRY_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     if geometry_scheme == 1:
         from .geometry import boozer_geometry_scheme1
 
-        return boozer_geometry_scheme1(
+        geom_out = boozer_geometry_scheme1(
             theta=grids.theta,
             zeta=grids.zeta,
             epsilon_t=_get_float(geom, "epsilon_t", -0.07053),
@@ -347,12 +450,21 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
             helicity_antisymm_l=_get_int(geom, "helicity_antisymm_l", 1),
             helicity_antisymm_n=_get_int(geom, "helicity_antisymm_n", 0),
         )
+        if use_cache:
+            _GEOMETRY_CACHE[cache_key] = geom_out
+        return geom_out
     if geometry_scheme == 2:
         from .geometry import boozer_geometry_scheme2
 
-        return boozer_geometry_scheme2(theta=grids.theta, zeta=grids.zeta)
+        geom_out = boozer_geometry_scheme2(theta=grids.theta, zeta=grids.zeta)
+        if use_cache:
+            _GEOMETRY_CACHE[cache_key] = geom_out
+        return geom_out
     if geometry_scheme == 4:
-        return boozer_geometry_scheme4(theta=grids.theta, zeta=grids.zeta)
+        geom_out = boozer_geometry_scheme4(theta=grids.theta, zeta=grids.zeta)
+        if use_cache:
+            _GEOMETRY_CACHE[cache_key] = geom_out
+        return geom_out
     if geometry_scheme in {11, 12}:
         equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
         if equilibrium_file is None:
@@ -364,7 +476,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
 
         r_n_wish = float(geom.get("RN_WISH", 0.5))
         vmecradial_option = int(_get_int(geom, "VMECRadialOption", 1))
-        return boozer_geometry_from_bc_file(
+        geom_out = boozer_geometry_from_bc_file(
             path=str(p),
             theta=grids.theta,
             zeta=grids.zeta,
@@ -372,6 +484,9 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
             vmecradial_option=vmecradial_option,
             geometry_scheme=int(geometry_scheme),
         )
+        if use_cache:
+            _GEOMETRY_CACHE[cache_key] = geom_out
+        return geom_out
     if geometry_scheme == 5:
         equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
         if equilibrium_file is None:
@@ -390,7 +505,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         helicity_n = int(geom.get("HELICITY_N", 0))
         helicity_l = int(geom.get("HELICITY_L", 0))
 
-        return vmec_geometry_from_wout_file(
+        geom_out = vmec_geometry_from_wout_file(
             path=str(p),
             theta=grids.theta,
             zeta=grids.zeta,
@@ -402,4 +517,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
             helicity_n=helicity_n,
             helicity_l=helicity_l,
         )
+        if use_cache:
+            _GEOMETRY_CACHE[cache_key] = geom_out
+        return geom_out
     raise NotImplementedError("Only geometryScheme in {1,2,4,5,11,12} is implemented so far.")
