@@ -7,7 +7,7 @@ how each change differs from (or complements) the original Fortran v3 solver.
 
 Where relevant we reference the upstream SFINCS documentation that defines the
 physics and discretization being accelerated. The primary sources are the
-vendored v3 manual and technical notes in ``docs/upstream``. [#v3manual]_ [#sfincsPaper]_
+vendored v3 manual and technical notes in ``docs/upstream`` (see references below).
 
 Baseline model and linear system (v3)
 -------------------------------------
@@ -23,12 +23,12 @@ optionally the :math:`\Phi_1(\theta,\zeta)` block (QN) and a constraint scalar
 :math:`\lambda`. The operator :math:`A` is the linearized drift-kinetic operator,
 and :math:`b` is the drive from thermodynamic gradients, inductive fields, and
 other source terms. See :doc:`system_equations` and the upstream manual for the
-full normalized expressions and parameter definitions. [#v3manual]_
+full normalized expressions and parameter definitions.
 
 For transport-matrix runs (``RHSMode=2/3``), the operator is the same **linear**
 operator, but the RHS is overwritten internally for each ``whichRHS`` (v3
 ``evaluateResidual(f=0)``), and the resulting solutions are postprocessed into
-transport coefficients (particle/heat fluxes and FSAB flow). [#v3manual]_ [#sfincsPaper]_
+transport coefficients (particle/heat fluxes and FSAB flow).
 
 `sfincs_jax` implements the same model and discretization, but replaces the
 matrix assembly with **matrix-free operator application** and JAX-based kernels.
@@ -72,7 +72,7 @@ Comparison with Fortran v3 workflow
 - Batch transport diagnostics across all ``whichRHS`` and reuse precomputed factors.
 
 These differences are purely algorithmic/performance-oriented; the physics and
-normalization remain anchored to the same v3 equations. [#v3manual]_
+normalization remain anchored to the same v3 equations.
 
 Matrix-free operator application (A·x) and caching
 --------------------------------------------------
@@ -188,7 +188,7 @@ stagnation or non-finite residuals.
 GMRES stores a full Krylov basis, with memory ~ :math:`O(n \cdot \text{restart})`.
 BiCGStab is short recurrence with memory ~ :math:`O(n)`.
 IDR(s) is another short-recurrence family used for nonsymmetric systems and is a
-candidate for future low-memory solves. [#gmres]_ [#bicgstab]_ [#idr]_
+candidate for future low-memory solves.
 
 **Implementation.**
 
@@ -477,16 +477,16 @@ performance controls are:
 References (vendored)
 ---------------------
 
-.. [#v3manual] SFINCS v3 technical manual:
-   :download:`20150507-01 Technical documentation for version 3 of SFINCS.pdf <upstream/20150507-01 Technical documentation for version 3 of SFINCS.pdf>`
-.. [#sfincsPaper] Landreman, Smith, Mollen, Helander (2014), PoP 21 042503:
-   :download:`LandremanSmithMollenHelander_2014_PoP_v21_p042503_SFINCS.pdf <upstream/LandremanSmithMollenHelander_2014_PoP_v21_p042503_SFINCS.pdf>`
-.. [#fpimpl] Technical note on the FP operator:
-   :download:`20150402-01 Implementation of the Fokker-Planck operator.pdf <upstream/20150402-01 Implementation of the Fokker-Planck operator.pdf>`
-.. [#gmres] “Generalized minimal residual method,” Wikipedia (accessed 2025), which cites the original
-   GMRES method of Saad & Schultz (1986): https://en.wikipedia.org/wiki/Generalized_minimal_residual_method
-.. [#bicgstab] H. A. van der Vorst, “Bi-CGSTAB: A fast and smoothly converging variant of Bi-CG,”
-   SIAM J. Sci. Stat. Comput. 13(2):631–644 (1992). DBLP: https://dblp.org/rec/journals/sisc/Vorst92.html
-.. [#idr] P. Sonneveld and M. B. van Gijzen, “IDR(s): A family of simple and fast algorithms for
-   solving large nonsymmetric linear systems,” SIAM J. Sci. Comput. 31(2):1035–1062 (2008).
-   DBLP: https://dblp.org/rec/journals/sisc/SonneveldG08.html
+- SFINCS v3 technical manual:
+  :download:`20150507-01 Technical documentation for version 3 of SFINCS.pdf <upstream/20150507-01 Technical documentation for version 3 of SFINCS.pdf>`
+- Landreman, Smith, Mollen, Helander (2014), PoP 21 042503:
+  :download:`LandremanSmithMollenHelander_2014_PoP_v21_p042503_SFINCS.pdf <upstream/LandremanSmithMollenHelander_2014_PoP_v21_p042503_SFINCS.pdf>`
+- Technical note on the FP operator:
+  :download:`20150402-01 Implementation of the Fokker-Planck operator.pdf <upstream/20150402-01 Implementation of the Fokker-Planck operator.pdf>`
+- “Generalized minimal residual method,” Wikipedia (accessed 2025), which cites the original
+  GMRES method of Saad & Schultz (1986): https://en.wikipedia.org/wiki/Generalized_minimal_residual_method
+- H. A. van der Vorst, “Bi-CGSTAB: A fast and smoothly converging variant of Bi-CG,”
+  SIAM J. Sci. Stat. Comput. 13(2):631–644 (1992). DBLP: https://dblp.org/rec/journals/sisc/Vorst92.html
+- P. Sonneveld and M. B. van Gijzen, “IDR(s): A family of simple and fast algorithms for
+  solving large nonsymmetric linear systems,” SIAM J. Sci. Comput. 31(2):1035–1062 (2008).
+  DBLP: https://dblp.org/rec/journals/sisc/SonneveldG08.html
