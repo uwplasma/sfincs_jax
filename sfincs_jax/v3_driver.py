@@ -41,7 +41,7 @@ from .transport_matrix import (
     v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit,
     v3_transport_matrix_from_flux_arrays,
 )
-from .v3_system import _source_basis_constraint_scheme_1
+from .v3_system import _fs_average_factor, _source_basis_constraint_scheme_1
 from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
@@ -1385,18 +1385,56 @@ def solve_v3_full_system_linear_gmres(
             int(op.rhs_mode) in {2, 3} or (int(op.rhs_mode) == 1 and (not bool(op.include_phi1)))
         )
 
+    pas_project_env = os.environ.get("SFINCS_JAX_PAS_PROJECT_CONSTRAINTS", "").strip().lower()
+    if pas_project_env in {"1", "true", "yes", "on"}:
+        pas_project_enabled = True
+    elif pas_project_env in {"0", "false", "no", "off"}:
+        pas_project_enabled = False
+    else:
+        pas_project_enabled = False
+    use_pas_projection = bool(
+        pas_project_enabled
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and int(op.constraint_scheme) == 2
+        and op.fblock.pas is not None
+        and int(op.phi1_size) == 0
+    )
+    if use_pas_projection:
+        # Force a reduced system when projecting out constraintScheme=2 sources.
+        use_active_dof_mode = True
+
     active_idx_jnp: jnp.ndarray | None = None
     full_to_active_jnp: jnp.ndarray | None = None
     active_size = int(op.total_size)
     if use_active_dof_mode:
-        active_idx_np = _transport_active_dof_indices(op)
-        active_idx_jnp = jnp.asarray(active_idx_np, dtype=jnp.int32)
-        full_to_active_np = np.zeros((int(op.total_size),), dtype=np.int32)
-        full_to_active_np[np.asarray(active_idx_np, dtype=np.int32)] = np.arange(1, int(active_idx_np.shape[0]) + 1, dtype=np.int32)
-        full_to_active_jnp = jnp.asarray(full_to_active_np, dtype=jnp.int32)
-        active_size = int(active_idx_np.shape[0])
-        if emit is not None:
-            emit(1, f"solve_v3_full_system_linear_gmres: active-DOF mode enabled (size={active_size}/{int(op.total_size)})")
+        if use_pas_projection:
+            active_idx_np = _transport_active_dof_indices(op)
+            active_idx_np = active_idx_np[active_idx_np < int(op.f_size)]
+            active_idx_jnp = jnp.asarray(active_idx_np, dtype=jnp.int32)
+            full_to_active_np = np.zeros((int(op.f_size),), dtype=np.int32)
+            full_to_active_np[np.asarray(active_idx_np, dtype=np.int32)] = np.arange(
+                1, int(active_idx_np.shape[0]) + 1, dtype=np.int32
+            )
+            full_to_active_jnp = jnp.asarray(full_to_active_np, dtype=jnp.int32)
+            active_size = int(active_idx_np.shape[0])
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: PAS constraint projection enabled "
+                    f"(size={active_size}/{int(op.total_size)})",
+                )
+        else:
+            active_idx_np = _transport_active_dof_indices(op)
+            active_idx_jnp = jnp.asarray(active_idx_np, dtype=jnp.int32)
+            full_to_active_np = np.zeros((int(op.total_size),), dtype=np.int32)
+            full_to_active_np[np.asarray(active_idx_np, dtype=np.int32)] = np.arange(
+                1, int(active_idx_np.shape[0]) + 1, dtype=np.int32
+            )
+            full_to_active_jnp = jnp.asarray(full_to_active_np, dtype=jnp.int32)
+            active_size = int(active_idx_np.shape[0])
+            if emit is not None:
+                emit(1, f"solve_v3_full_system_linear_gmres: active-DOF mode enabled (size={active_size}/{int(op.total_size)})")
 
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
@@ -1755,10 +1793,19 @@ def solve_v3_full_system_linear_gmres(
         def reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
             return v_full[active_idx_jnp]
 
-        def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
-            z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
-            padded = jnp.concatenate([z0, v_reduced], axis=0)
-            return padded[full_to_active_jnp]
+        if use_pas_projection:
+            def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+                z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
+                padded = jnp.concatenate([z0, v_reduced], axis=0)
+                f_full = padded[full_to_active_jnp]
+                f = f_full.reshape(op.fblock.f_shape)
+                src = _constraint_scheme2_source_from_f(op, f)
+                return jnp.concatenate([f_full, src.reshape((-1,))], axis=0)
+        else:
+            def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+                z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
+                padded = jnp.concatenate([z0, v_reduced], axis=0)
+                return padded[full_to_active_jnp]
 
         def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
             return reduce_full(mv(expand_reduced(x_reduced)))
@@ -1771,6 +1818,8 @@ def solve_v3_full_system_linear_gmres(
                 x0_reduced = x0_arr
             elif x0_arr.shape == (op.total_size,):
                 x0_reduced = reduce_full(x0_arr)
+            elif use_pas_projection and x0_arr.shape == (op.f_size,):
+                x0_reduced = x0_arr[active_idx_jnp]
         preconditioner_reduced = None
         bicgstab_preconditioner_reduced = None
         if rhs1_bicgstab_kind is not None:
@@ -3360,6 +3409,13 @@ def _transport_active_dof_indices(op: V3FullSystemOperator) -> np.ndarray:
 
     tail_active = np.arange(int(op.f_size), int(op.total_size), dtype=np.int32)
     return np.concatenate([f_active.astype(np.int32), tail_active], axis=0)
+
+
+def _constraint_scheme2_source_from_f(op: V3FullSystemOperator, f: jnp.ndarray) -> jnp.ndarray:
+    """Return constraintScheme=2 source terms from L=0 flux-surface averages."""
+    factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
+    y_avg = jnp.einsum("tz,sxtz->sx", factor, f[:, :, 0, :, :])  # (S,X)
+    return y_avg
 
 
 def _project_constraint_scheme1_nullspace_solution_with_residual(

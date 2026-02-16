@@ -316,6 +316,10 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND``: opt-in strong RHSMode=1 fallback preconditioner
   (``theta_line``, ``zeta_line``, ``adi``, or ``auto``). Default: disabled unless explicitly set.
 
+- ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS``: enable PAS-specific constraint projection for
+  ``constraintScheme=2`` RHSMode=1 solves (drop explicit source unknowns and enforce
+  source = flux-surface-average of ``L=0``). Default: disabled.
+
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
 
