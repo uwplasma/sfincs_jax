@@ -129,10 +129,12 @@ Solving a supported v3 linear run (matrix-free)
    RHSMode=2/3 transport solves. BiCGStab remains available for low-memory RHSMode=1 runs via
    ``--solve-method bicgstab``. Transport solves apply a cheap collision-diagonal
    preconditioner by default, while RHSMode=1 preconditioning follows the v3 namelist defaults
-   (point-block Jacobi unless line preconditioners are requested). For PAS tokamak-like
-   ``N_zeta=1`` cases with constraint projection enabled, ``sfincs_jax`` upgrades to the
-   theta-line preconditioner by default to reduce Krylov iterations. For strict PETSc-style
-   iteration histories, use ``--solve-method incremental``.
+   (point-block Jacobi unless line preconditioners are requested). For ``constraintScheme=2``,
+   ``sfincs_jax`` will auto-try a Schur-complement strong preconditioner if the initial solve
+   stalls, preserving the source constraints. For PAS tokamak-like ``N_zeta=1`` cases with
+   constraint projection enabled, ``sfincs_jax`` upgrades to the theta-line preconditioner by
+   default to reduce Krylov iterations. For strict PETSc-style iteration histories, use
+   ``--solve-method incremental``.
 
 Solver controls (environment variables)
 ---------------------------------------
@@ -326,7 +328,7 @@ performance without changing the input file:
   constraint size is below ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``.
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``: max constraint size for the dense Schur
-  complement in ``auto`` mode (default: ``128``).
+  complement in ``auto`` mode (default: ``256``).
 
 - ``SFINCS_JAX_PHI1_PRECOND_KIND``: Newton–Krylov preconditioner for includePhi1 solves
   (active when ``SFINCS_JAX_PHI1_USE_PRECONDITIONER`` is enabled and frozen linearization is used).
@@ -376,8 +378,10 @@ performance without changing the input file:
   linear system size exceeds the provided threshold (default: ``800``; set to ``none`` to
   always emit).
 
-- ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND``: opt-in strong RHSMode=1 fallback preconditioner
-  (``theta_line``, ``zeta_line``, ``adi``, or ``auto``). Default: disabled unless explicitly set.
+- ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND``: strong RHSMode=1 fallback preconditioner
+  (``theta_line``, ``zeta_line``, ``adi``, or ``auto``). Default: ``auto`` for
+  ``constraintScheme=2`` when the environment variable is unset, otherwise disabled
+  unless explicitly set.
 
 - ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS``: enable PAS-specific constraint projection for
   ``constraintScheme=2`` RHSMode=1 solves (drop explicit source unknowns and enforce the

@@ -1579,9 +1579,9 @@ def _build_rhsmode1_schur_preconditioner(
         schur_mode = "diag"
     schur_full_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX", "").strip()
     try:
-        schur_full_max = int(schur_full_max_env) if schur_full_max_env else 128
+        schur_full_max = int(schur_full_max_env) if schur_full_max_env else 256
     except ValueError:
-        schur_full_max = 128
+        schur_full_max = 256
     use_full_schur = bool(schur_mode == "full" or (schur_mode == "auto" and n_constraints <= schur_full_max))
 
     inv_diag_cached = _schur_inv_diag()
@@ -2756,6 +2756,13 @@ def solve_v3_full_system_linear_gmres(
         strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
         strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
         strong_precond_auto = strong_precond_env == "auto"
+        if (
+            strong_precond_env == ""
+            and int(op.constraint_scheme) == 2
+            and int(op.extra_size) > 0
+            and (not use_pas_projection)
+        ):
+            strong_precond_auto = True
         strong_precond_kind: str | None = None
         if strong_precond_disabled:
             strong_precond_kind = None
@@ -3222,6 +3229,12 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
             strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
             strong_precond_auto = strong_precond_env == "auto"
+            if (
+                strong_precond_env == ""
+                and int(op.constraint_scheme) == 2
+                and int(op.extra_size) > 0
+            ):
+                strong_precond_auto = True
             strong_precond_kind: str | None = None
             if strong_precond_disabled:
                 strong_precond_kind = None
