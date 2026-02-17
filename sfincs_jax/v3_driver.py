@@ -2101,6 +2101,7 @@ def _build_rhsmode1_species_block_preconditioner(
 
     return _apply_reduced
 
+
 def _build_rhsmode1_zeta_line_preconditioner(
     *,
     op: V3FullSystemOperator,
