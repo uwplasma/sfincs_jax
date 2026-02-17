@@ -2001,6 +2001,7 @@ def solve_v3_full_system_linear_gmres(
             int(op.rhs_mode) in {2, 3} or (int(op.rhs_mode) == 1 and (not bool(op.include_phi1)))
         )
 
+    precond_opts = nml.group("preconditionerOptions")
     pas_project_env = os.environ.get("SFINCS_JAX_PAS_PROJECT_CONSTRAINTS", "").strip().lower()
     if pas_project_env in {"1", "true", "yes", "on"}:
         pas_project_mode = "on"
@@ -2010,7 +2011,25 @@ def solve_v3_full_system_linear_gmres(
         pas_project_mode = "auto"
     else:
         pas_project_mode = "off"
-    pas_project_enabled = bool(pas_project_mode == "on" or (pas_project_mode == "auto" and int(op.n_zeta) == 1))
+    def _precond_opt_int(key: str, default: int) -> int:
+        val = precond_opts.get(key, None)
+        if val is None:
+            return default
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
+
+    preconditioner_species = _precond_opt_int("PRECONDITIONER_SPECIES", 1)
+    preconditioner_x = _precond_opt_int("PRECONDITIONER_X", 1)
+    preconditioner_xi = _precond_opt_int("PRECONDITIONER_XI", 1)
+    full_precond_requested = (
+        preconditioner_species == 0 and preconditioner_x == 0 and preconditioner_xi == 0
+    )
+    pas_project_enabled = bool(
+        pas_project_mode == "on"
+        or (pas_project_mode == "auto" and int(op.n_zeta) == 1 and not full_precond_requested)
+    )
     use_pas_projection = bool(
         pas_project_enabled
         and int(op.rhs_mode) == 1
@@ -2060,7 +2079,6 @@ def solve_v3_full_system_linear_gmres(
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
     rhs1_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECONDITIONER", "").strip().lower()
     rhs1_bicgstab_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND", "").strip().lower()
-    precond_opts = nml.group("preconditionerOptions")
     try:
         pre_theta = int(precond_opts.get("PRECONDITIONER_THETA", 0) or 0)
     except (TypeError, ValueError):

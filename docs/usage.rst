@@ -399,7 +399,10 @@ performance without changing the input file:
   normalized flux-surface-average constraint on ``L=0``; sources are recovered from the
   projected residual).
 
-  - ``auto`` (default): enable only for tokamak-like cases with ``N_zeta=1``.
+  - ``auto`` (default): enable only for tokamak-like cases with ``N_zeta=1`` **unless**
+    a fully coupled preconditioner is requested
+    (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``), since those
+    cases converge without projection and match Fortran more strictly.
   - ``1``/``true``: force enable for all PAS ``constraintScheme=2`` cases.
   - ``0``/``false``: disable.
 

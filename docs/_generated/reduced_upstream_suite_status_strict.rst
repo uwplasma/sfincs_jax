@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_mismatch=2, parity_ok=36
+- Status counts: parity_ok=38
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -417,18 +417,18 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/214
    * - tokamak_1species_PASCollisions_noEr
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.079
-     - 95.664
-     - 31978.0 (31978-31978)
-     - 33/212
-     - S:12 P:0
+     - -
+     - 41.939
+     - 8961
+     - 0/212
+     - S:0 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=33/212
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_1species_PASCollisions_noEr_Nx1
      - parity_ok
      - none
@@ -469,18 +469,18 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_noEr
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.082
-     - 7.234
      - -
-     - 35/212
-     - S:12 P:0
+     - 16.663
+     - -
+     - 0/212
+     - S:0 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=35/212
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none
