@@ -151,8 +151,11 @@ if Nx>1:
     numRepeatedDimensions += 1
 
 if numRepeatedDimensions < 2:
-    print ("Error: This script is designed for plots of the distribution function versus 2 phase space coordinates, so you need to export f with >1 grid points in at least 2 of the coordinates.")
-    exit(1)
+    print ("Warning: distribution function has <2 non-trivial coordinates; skipping plot.")
+    if save_path:
+        Path(save_path).write_bytes(_PNG_PLACEHOLDER)
+        print(f"Wrote placeholder plot -> {save_path}")
+    exit(0)
 
 print ("Resolution on which the distribution function is available:")
 print ("N_export_f_theta: ",Ntheta)
