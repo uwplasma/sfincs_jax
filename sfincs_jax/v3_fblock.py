@@ -793,22 +793,70 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_b
     def _maybe_remat(fn):
         return jax.checkpoint(fn) if use_remat_collisions else fn
 
+    fused_env = os.environ.get("SFINCS_JAX_FUSED_MATVEC", "").strip().lower()
+    use_fused = fused_env not in {"0", "false", "no", "off"}
+
     out = op.identity_shift * f
-    out = out + apply_collisionless_v3(op.collisionless, f)
-    if op.exb_theta is not None:
-        out = out + apply_exb_theta_v3(op.exb_theta, f)
-    if op.exb_zeta is not None:
-        out = out + apply_exb_zeta_v3(op.exb_zeta, f)
-    if op.magdrift_theta is not None:
-        out = out + apply_magnetic_drift_theta_v3(op.magdrift_theta, f)
-    if op.magdrift_zeta is not None:
-        out = out + apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f)
-    if op.magdrift_xidot is not None:
-        out = out + apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f)
-    if op.er_xidot is not None:
-        out = out + apply_er_xidot_v3(op.er_xidot, f)
-    if op.er_xdot is not None:
-        out = out + apply_er_xdot_v3(op.er_xdot, f)
+    if use_fused:
+        zero = jnp.zeros_like(f)
+
+        def term_collisionless(_):
+            return apply_collisionless_v3(op.collisionless, f)
+
+        def term_exb_theta(_):
+            return apply_exb_theta_v3(op.exb_theta, f) if op.exb_theta is not None else zero
+
+        def term_exb_zeta(_):
+            return apply_exb_zeta_v3(op.exb_zeta, f) if op.exb_zeta is not None else zero
+
+        def term_mag_theta(_):
+            return apply_magnetic_drift_theta_v3(op.magdrift_theta, f) if op.magdrift_theta is not None else zero
+
+        def term_mag_zeta(_):
+            return apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f) if op.magdrift_zeta is not None else zero
+
+        def term_mag_xidot(_):
+            return apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f) if op.magdrift_xidot is not None else zero
+
+        def term_er_xidot(_):
+            return apply_er_xidot_v3(op.er_xidot, f) if op.er_xidot is not None else zero
+
+        def term_er_xdot(_):
+            return apply_er_xdot_v3(op.er_xdot, f) if op.er_xdot is not None else zero
+
+        term_fns = (
+            term_collisionless,
+            term_exb_theta,
+            term_exb_zeta,
+            term_mag_theta,
+            term_mag_zeta,
+            term_mag_xidot,
+            term_er_xidot,
+            term_er_xdot,
+        )
+
+        def body(carry, idx):
+            term = jax.lax.switch(idx, term_fns, operand=None)
+            return carry + term, None
+
+        idxs = jnp.arange(len(term_fns))
+        out, _ = jax.lax.scan(body, out, idxs)
+    else:
+        out = out + apply_collisionless_v3(op.collisionless, f)
+        if op.exb_theta is not None:
+            out = out + apply_exb_theta_v3(op.exb_theta, f)
+        if op.exb_zeta is not None:
+            out = out + apply_exb_zeta_v3(op.exb_zeta, f)
+        if op.magdrift_theta is not None:
+            out = out + apply_magnetic_drift_theta_v3(op.magdrift_theta, f)
+        if op.magdrift_zeta is not None:
+            out = out + apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f)
+        if op.magdrift_xidot is not None:
+            out = out + apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f)
+        if op.er_xidot is not None:
+            out = out + apply_er_xidot_v3(op.er_xidot, f)
+        if op.er_xdot is not None:
+            out = out + apply_er_xdot_v3(op.er_xdot, f)
     if op.pas is not None:
         out = out + _maybe_remat(apply_pitch_angle_scattering_v3)(op.pas, f)
     if op.fp is not None:

@@ -317,6 +317,20 @@ so scan points can reuse the same preconditioner blocks. Controls:
 preconditioner blocks switch to float32 once the estimated block size exceeds
 ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``, while Krylov iterations remain in float64.
 
+Matvec fusion for collisionless + drift terms
+---------------------------------------------
+
+**Technique.** Accumulate collisionless streaming, ExB, magnetic-drift, and Er
+drift contributions in a single ``jax.lax.scan`` to reduce Python overhead and
+improve XLA fusion in the matrix-free operator application.
+
+**Implementation.**
+
+- ``SFINCS_JAX_FUSED_MATVEC`` (default enabled) in ``sfincs_jax.v3_fblock``.
+
+**Notes.** The collision operators (PAS/FP) remain separate so remat/checkpointing
+controls and Phi1‑dependent variants stay intact.
+
 Transport diagnostics: batched + precomputed
 --------------------------------------------
 
