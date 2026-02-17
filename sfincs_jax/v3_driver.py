@@ -163,7 +163,7 @@ _RHSMODE1_PRECOND_IDX_CACHE: dict[tuple[object, ...], _RHSMode1PrecondIdxCache] 
 class _SparseILUCache:
     a_csr_full: object
     a_csr_drop: object
-    ilu: object
+    ilu: object | None
     l_dense: np.ndarray | None
     u_dense: np.ndarray | None
     l_unit_diag: bool
@@ -207,6 +207,7 @@ def _build_sparse_ilu_from_matvec(
     ilu_drop_tol: float,
     fill_factor: float,
     build_dense_factors: bool,
+    build_ilu: bool,
     emit: Callable[[int, str], None] | None = None,
 ) -> tuple[object, object, object, np.ndarray | None, np.ndarray | None, bool]:
     cached = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
@@ -237,16 +238,18 @@ def _build_sparse_ilu_from_matvec(
         nnz = int(a_csr_drop.nnz)
         emit(1, f"sparse_ilu: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
 
-    ilu = spilu(
-        a_csr_drop.tocsc(),
-        drop_tol=float(ilu_drop_tol),
-        fill_factor=float(fill_factor),
-        permc_spec="COLAMD",
-    )
+    ilu = None
+    if build_ilu:
+        ilu = spilu(
+            a_csr_drop.tocsc(),
+            drop_tol=float(ilu_drop_tol),
+            fill_factor=float(fill_factor),
+            permc_spec="COLAMD",
+        )
     l_dense = None
     u_dense = None
     l_unit_diag = True
-    if build_dense_factors:
+    if build_dense_factors and ilu is not None:
         l_dense = np.asarray(ilu.L.todense(), dtype=np.float64)
         u_dense = np.asarray(ilu.U.todense(), dtype=np.float64)
         diag_l = np.diag(l_dense)
@@ -3401,6 +3404,13 @@ def solve_v3_full_system_linear_gmres(
         sparse_use_matvec = False
     else:
         sparse_use_matvec = False
+    sparse_operator_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_OPERATOR", "").strip().lower()
+    if sparse_operator_env in {"1", "true", "yes", "on"}:
+        sparse_operator_mode = "on"
+    elif sparse_operator_env in {"0", "false", "no", "off"}:
+        sparse_operator_mode = "off"
+    else:
+        sparse_operator_mode = "auto"
     sparse_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_MAX", "").strip()
     try:
         sparse_max_size = int(sparse_max_env) if sparse_max_env else 4000
@@ -3954,6 +3964,60 @@ def solve_v3_full_system_linear_gmres(
                     bicgstab_preconditioner_reduced = preconditioner_reduced
         if preconditioner_reduced is None and bicgstab_preconditioner_reduced is not None:
             preconditioner_reduced = bicgstab_preconditioner_reduced
+        sparse_operator_use = False
+        if sparse_operator_mode == "on":
+            sparse_operator_use = True
+        elif sparse_operator_mode == "auto":
+            sparse_operator_use = sparse_use_matvec and (op.fblock.fp is not None)
+        if sparse_operator_use:
+            sparse_operator_use = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
+        if sparse_operator_use:
+            if use_implicit and not sparse_allow_nondiff:
+                sparse_operator_use = False
+                if emit is not None:
+                    emit(1, "sparse_operator: disabled for implicit solves (set SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF=1 to override)")
+            elif int(active_size) > sparse_max_size:
+                sparse_operator_use = False
+                if emit is not None:
+                    emit(1, f"sparse_operator: disabled (size={int(active_size)} > max={int(sparse_max_size)})")
+        if sparse_operator_use:
+            try:
+                cache_key = _rhsmode1_sparse_cache_key(
+                    op,
+                    kind="sparse_operator",
+                    active_size=int(active_size),
+                    use_active_dof_mode=True,
+                    use_pas_projection=use_pas_projection,
+                    drop_tol=sparse_drop_tol,
+                    drop_rel=sparse_drop_rel,
+                    ilu_drop_tol=sparse_ilu_drop_tol,
+                    fill_factor=sparse_ilu_fill,
+                )
+                a_csr_full, _a_csr_drop, _ilu, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
+                    matvec=mv_reduced,
+                    n=int(active_size),
+                    dtype=rhs_reduced.dtype,
+                    cache_key=cache_key,
+                    drop_tol=sparse_drop_tol,
+                    drop_rel=sparse_drop_rel,
+                    ilu_drop_tol=sparse_ilu_drop_tol,
+                    fill_factor=sparse_ilu_fill,
+                    build_dense_factors=False,
+                    build_ilu=False,
+                    emit=emit,
+                )
+
+                def _mv_sparse(v: jnp.ndarray) -> jnp.ndarray:
+                    x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                    y_np = a_csr_full @ x_np
+                    return jnp.asarray(y_np, dtype=jnp.float64)
+
+                mv_reduced = _mv_sparse
+                if emit is not None:
+                    emit(0, "solve_v3_full_system_linear_gmres: using sparse operator matvec")
+            except Exception as exc:  # noqa: BLE001
+                if emit is not None:
+                    emit(1, f"sparse_operator: failed ({type(exc).__name__}: {exc})")
         if solve_method_kind == "dense_ksp":
             if int(op.phi1_size) != 0:
                 raise NotImplementedError("dense_ksp is only supported for includePhi1=false RHSMode=1 solves.")
@@ -4362,10 +4426,15 @@ def solve_v3_full_system_linear_gmres(
         if sparse_enabled:
             sparse_enabled = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
         if sparse_enabled:
-            if use_implicit and not sparse_allow_nondiff:
+            if use_implicit and (not sparse_allow_nondiff) and int(active_size) > int(sparse_ilu_dense_max):
                 sparse_enabled = False
                 if emit is not None:
-                    emit(1, "sparse_ilu: disabled for implicit solves (set SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF=1 to override)")
+                    emit(
+                        1,
+                        "sparse_ilu: disabled for implicit solves "
+                        f"(size={int(active_size)} > dense_max={int(sparse_ilu_dense_max)}; "
+                        "set SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF=1 to override)",
+                    )
             elif int(active_size) > sparse_max_size:
                 sparse_enabled = False
                 if emit is not None:
@@ -4396,6 +4465,7 @@ def solve_v3_full_system_linear_gmres(
                     ilu_drop_tol=sparse_ilu_drop_tol,
                     fill_factor=sparse_ilu_fill,
                     build_dense_factors=build_dense_factors,
+                    build_ilu=True,
                     emit=emit,
                 )
                 _mark("rhs1_sparse_precond_build_done")
@@ -4430,6 +4500,9 @@ def solve_v3_full_system_linear_gmres(
                             precond_side=gmres_precond_side,
                         )
                 else:
+                    if ilu is None:
+                        raise RuntimeError("sparse_ilu: ILU factors unavailable")
+
                     def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
                         x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
                         y_np = ilu.solve(x_np)
