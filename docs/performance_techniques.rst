@@ -302,7 +302,8 @@ RHSMode=1 preconditioning (matrix-free)
 - **Constraint-aware Schur**: enforces constraintScheme=2 source constraints via a
   diagonal or dense Schur complement.
 
-These are cached to avoid recomputation. Controls:
+These are cached to avoid recomputation. RHS-only gradients are excluded from the cache key
+so scan points can reuse the same preconditioner blocks. Controls:
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER``
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``

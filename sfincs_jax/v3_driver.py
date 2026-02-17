@@ -199,6 +199,8 @@ def _hash_array(arr: jnp.ndarray | np.ndarray) -> str:
 def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[object, ...]:
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
     precond_dtype = str(_precond_dtype())
+    # RHS-only gradients do not affect the operator; omit them so preconditioners
+    # can be reused across whichRHS/scan points.
     return (
         kind,
         precond_dtype,
@@ -216,7 +218,6 @@ def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[ob
         float(op.alpha),
         float(op.delta),
         float(op.dphi_hat_dpsi_hat),
-        float(op.e_parallel_hat),
         _hash_array(op.adiabatic_z),
         _hash_array(op.adiabatic_nhat),
         _hash_array(op.adiabatic_that),
@@ -224,8 +225,6 @@ def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[ob
         _hash_array(op.m_hat),
         _hash_array(op.t_hat),
         _hash_array(op.n_hat),
-        _hash_array(op.dn_hat_dpsi_hat),
-        _hash_array(op.dt_hat_dpsi_hat),
         _hash_array(op.theta_weights),
         _hash_array(op.zeta_weights),
         _hash_array(op.b_hat),
