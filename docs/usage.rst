@@ -167,6 +167,8 @@ performance without changing the input file:
 
   - ``point`` (or ``1``): point-block Jacobi on local (x,L) unknowns at each :math:`(\theta,\zeta)`.
   - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
+  - ``sxblock``: species×(x,L) block at each :math:`(\theta,\zeta)` (includes inter-species coupling).
+  - ``sxblock_tz``: per‑:math:`L` block over species×x×:math:`(\theta,\zeta)` (captures angular coupling).
   - ``xblock_tz``: PAS per‑:math:`x` block over :math:`(L,\theta,\zeta)` (captures angular coupling).
   - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
   - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
@@ -191,6 +193,14 @@ performance without changing the input file:
     (strongest option for FP cases; higher apply cost).
   - ``diag``: use the collision diagonal only (PAS/FP + identity shift).
 
+- ``SFINCS_JAX_RHSMODE1_COLLISION_SXBLOCK_MAX``: auto-select the FP species×x block
+  collision preconditioner when ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND`` is unset
+  and ``S * X`` is below this threshold (default: ``64``). Set to ``-1`` to disable.
+
+- ``SFINCS_JAX_RHSMODE1_COLLISION_XBLOCK_MAX``: if the FP species×x block is disabled,
+  auto-select the per-species x-block collision preconditioner when ``N_x`` is below
+  this threshold (default: ``256``). Set to ``-1`` to disable.
+
 - ``SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K``: use a low-rank Woodbury correction (rank ``K``)
   for the FP species×x collision preconditioner (``sxblock``). ``auto`` (default when
   unset) selects a small rank (up to 8) for larger FP blocks. Set to ``0`` to disable.
@@ -204,6 +214,14 @@ performance without changing the input file:
   are active, auto-select Schur preconditioning if ``total_size`` exceeds this threshold
   (default: ``2500``). Set to ``0`` to always allow auto Schur.
 
+- ``SFINCS_JAX_RHSMODE1_SXBLOCK_MAX``: auto-select the RHSMode=1 species×(x,L) block
+  preconditioner for FP cases when the per‑:math:`(\theta,\zeta)` block size
+  (``S * sum_x N_{\xi,x}``) is below this threshold (default: ``64``).
+
+- ``SFINCS_JAX_RHSMODE1_SXBLOCK_TZ_MAX``: auto-select the per‑:math:`L` species×x×:math:`(\theta,\zeta)`
+  block preconditioner when the block size (``S * N_x * N_\theta * N_\zeta``) is below this threshold.
+  Default ``0`` disables the auto-selection.
+
 - ``SFINCS_JAX_PRECOND_DTYPE``: dtype for preconditioner blocks (default: ``auto`` uses
   float32 for large systems and float64 otherwise). ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``
   controls the global auto threshold; ``SFINCS_JAX_PRECOND_FP32_MIN_BLOCK`` controls
@@ -212,6 +230,7 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND``: optional RHSMode=1 BiCGStab preconditioning.
 
   - ``collision`` (default): collision-diagonal preconditioner (PAS/FP + identity shift).
+  - ``rhs1``/``same``: reuse the RHSMode=1 GMRES preconditioner for BiCGStab.
   - ``0``: disable.
 
 - ``SFINCS_JAX_BICGSTAB_FALLBACK``: control when BiCGStab falls back to GMRES.

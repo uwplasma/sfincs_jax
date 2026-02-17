@@ -309,7 +309,24 @@ bicgstab_solve_with_residual_jit = jax.jit(
 def assemble_dense_matrix_from_matvec(*, matvec, n: int, dtype: jnp.dtype) -> jnp.ndarray:
     """Assemble a dense matrix from a matrix-free `matvec`."""
     eye = jnp.eye(int(n), dtype=dtype)
-    return vmap(matvec, in_axes=1, out_axes=1)(eye)
+    block_env = os.environ.get("SFINCS_JAX_DENSE_BLOCK", "").strip()
+    try:
+        block = int(block_env) if block_env else 0
+    except ValueError:
+        block = 0
+    jit_env = os.environ.get("SFINCS_JAX_DENSE_ASSEMBLE_JIT", "").strip().lower()
+    use_jit = jit_env not in {"0", "false", "no", "off"}
+
+    def _assemble(block_cols: jnp.ndarray) -> jnp.ndarray:
+        return vmap(matvec, in_axes=1, out_axes=1)(block_cols)
+
+    assemble_fn = jax.jit(_assemble) if use_jit else _assemble
+    if block > 0 and block < int(n):
+        cols = []
+        for start in range(0, int(n), int(block)):
+            cols.append(assemble_fn(eye[:, start : start + int(block)]))
+        return jnp.concatenate(cols, axis=1)
+    return assemble_fn(eye)
 
 
 def dense_solve_from_matrix(*, a: jnp.ndarray, b: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:

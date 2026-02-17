@@ -126,6 +126,40 @@ _RHSMODE1_PRECOND_LIST_CACHE: dict[tuple[object, ...], _RHSMode1PrecondListCache
 
 
 @dataclass(frozen=True)
+class _RHSMode1PrecondGlobalCache:
+    idx_map_jnp: jnp.ndarray
+    flat_idx_jnp: jnp.ndarray
+    block_inv_jnp: jnp.ndarray
+    extra_idx_jnp: jnp.ndarray
+    extra_inv_jnp: jnp.ndarray | None
+
+
+_RHSMODE1_PRECOND_GLOBAL_CACHE: dict[tuple[object, ...], _RHSMode1PrecondGlobalCache] = {}
+
+
+@dataclass(frozen=True)
+class _RHSMode1PrecondDiagXCache:
+    block_inv_list: tuple[tuple[jnp.ndarray, ...], ...]
+    idx_map_list: tuple[tuple[jnp.ndarray, ...], ...]
+    extra_idx_jnp: jnp.ndarray
+    extra_inv_jnp: jnp.ndarray | None
+
+
+_RHSMODE1_PRECOND_DIAGX_CACHE: dict[tuple[object, ...], _RHSMode1PrecondDiagXCache] = {}
+
+
+@dataclass(frozen=True)
+class _RHSMode1PrecondIdxCache:
+    block_inv_list: tuple[jnp.ndarray, ...]
+    block_idx_list: tuple[jnp.ndarray, ...]
+    extra_idx_jnp: jnp.ndarray
+    extra_inv_jnp: jnp.ndarray | None
+
+
+_RHSMODE1_PRECOND_IDX_CACHE: dict[tuple[object, ...], _RHSMode1PrecondIdxCache] = {}
+
+
+@dataclass(frozen=True)
 class _TransportPrecondCache:
     inv_diag_f: jnp.ndarray
 
@@ -720,6 +754,24 @@ def _build_rhsmode1_collision_preconditioner(
         use_xblock = True
     elif kind_env in {"sxblock", "species_block", "block"}:
         use_sxblock = True
+    elif kind_env in {"", "auto"} and op.fblock.fp is not None:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, _, _, _ = f_shape
+        n_block = int(n_species) * int(n_x)
+        sxblock_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_SXBLOCK_MAX", "").strip()
+        try:
+            sxblock_max = int(sxblock_max_env) if sxblock_max_env else 64
+        except ValueError:
+            sxblock_max = 64
+        xblock_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_XBLOCK_MAX", "").strip()
+        try:
+            xblock_max = int(xblock_max_env) if xblock_max_env else 256
+        except ValueError:
+            xblock_max = 256
+        if sxblock_max >= 0 and n_block <= sxblock_max:
+            use_sxblock = True
+        elif xblock_max >= 0 and int(n_x) <= xblock_max:
+            use_xblock = True
 
     if use_sxblock and op.fblock.fp is not None:
         low_rank_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K", "").strip()
@@ -1211,11 +1263,156 @@ def _build_rhsmode1_preconditioner_operator_zeta_line(op: V3FullSystemOperator) 
     return replace(op, fblock=fblock_pc)
 
 
+def _build_rhsmode1_block_preconditioner_xdiag(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    preconditioner_xi: int = 1,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Block preconditioner with x-diagonal blocks (per species, per x).
+
+    This matches v3's `preconditioner_x=1` behavior by dropping x-couplings while
+    retaining the requested xi coupling.
+    """
+    cache_key = _rhsmode1_precond_cache_key(op, f"point_xdiag_xi{int(preconditioner_xi)}")
+    cached = _RHSMODE1_PRECOND_DIAGX_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = _build_rhsmode1_preconditioner_operator_point(op)
+        n_s = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_t = int(op.n_theta)
+        n_z = int(op.n_zeta)
+        total = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+        precond_dtype = _precond_dtype(max_l * max_l)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        block_inv_list: list[list[jnp.ndarray]] = []
+        idx_map_list: list[list[jnp.ndarray]] = []
+        for s in range(n_s):
+            inv_row: list[jnp.ndarray] = []
+            idx_row: list[jnp.ndarray] = []
+            for ix in range(n_x):
+                max_lx = int(nxi_for_x[ix])
+                if max_lx <= 0:
+                    inv_row.append(jnp.zeros((0, 0), dtype=precond_dtype))
+                    idx_row.append(jnp.zeros((n_t, n_z, 0), dtype=jnp.int32))
+                    continue
+                rep_idx = np.zeros((max_lx,), dtype=np.int32)
+                for il in range(max_lx):
+                    rep_idx[il] = int(((((s * n_x + ix) * n_l + il) * n_t + 0) * n_z + 0))
+                chunk_cols = _precond_chunk_cols(total, int(rep_idx.shape[0]))
+                y_sub = _matvec_submatrix(
+                    op_pc,
+                    col_idx=rep_idx,
+                    row_idx=rep_idx,
+                    total_size=total,
+                    chunk_cols=chunk_cols,
+                )
+                a = np.asarray(y_sub.T, dtype=np.float64)
+                if preconditioner_xi != 0:
+                    a = np.diag(np.diag(a))
+                a = a + reg * np.eye(max_lx, dtype=np.float64)
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                inv_row.append(jnp.asarray(inv, dtype=precond_dtype))
+                idx_map = np.zeros((n_t, n_z, max_lx), dtype=np.int32)
+                for it in range(n_t):
+                    for iz in range(n_z):
+                        for il in range(max_lx):
+                            idx_map[it, iz, il] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_t + it) * n_z + iz)
+                            )
+                idx_row.append(jnp.asarray(idx_map, dtype=jnp.int32))
+            block_inv_list.append(inv_row)
+            idx_map_list.append(idx_row)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1PrecondDiagXCache(
+            block_inv_list=tuple(tuple(row) for row in block_inv_list),
+            idx_map_list=tuple(tuple(row) for row in idx_map_list),
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_DIAGX_CACHE[cache_key] = cached
+
+    block_inv_list = cached.block_inv_list
+    idx_map_list = cached.idx_map_list
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+    n_s = int(op.n_species)
+    n_x = int(op.n_x)
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=block_inv_list[0][0].dtype if n_s > 0 and n_x > 0 else _precond_dtype())
+        z_full = jnp.zeros_like(r_full)
+        for s in range(n_s):
+            for ix in range(n_x):
+                inv = block_inv_list[s][ix]
+                idx_map = idx_map_list[s][ix]
+                if idx_map.size == 0:
+                    continue
+                r_loc = r_full[idx_map].reshape((int(op.n_theta), int(op.n_zeta), int(inv.shape[0])))
+                z_loc = jnp.einsum("ij,tzj->tzi", inv, r_loc)
+                z_full = z_full.at[idx_map].set(z_loc, unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 def _build_rhsmode1_block_preconditioner(
     *,
     op: V3FullSystemOperator,
     reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    preconditioner_species: int = 1,
+    preconditioner_x: int = 1,
+    preconditioner_xi: int = 1,
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Build a PETSc-like block preconditioner for RHSMode=1 solves.
 
@@ -1224,6 +1421,12 @@ def _build_rhsmode1_block_preconditioner(
       per-species block matrix from a simplified operator.
     - explicit extra/source-row solve via a dense small block.
     """
+    if int(preconditioner_species) == 0:
+        return _build_rhsmode1_species_xblock_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+    if int(preconditioner_x) == 1:
+        return _build_rhsmode1_block_preconditioner_xdiag(
+            op=op, reduce_full=reduce_full, expand_reduced=expand_reduced, preconditioner_xi=preconditioner_xi
+        )
     cache_key = _rhsmode1_precond_cache_key(op, "point")
     precond_dtype = _precond_dtype()
     cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
@@ -1527,6 +1730,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_kind = "adi"
     elif base_kind_env in {"species", "species_block", "speciesblock"}:
         base_kind = "species_block"
+    elif base_kind_env in {"sxblock_tz", "sxblock_theta_zeta", "species_xblock_tz", "sx_tz"}:
+        base_kind = "sxblock_tz"
     elif base_kind_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
         base_kind = "xblock_tz"
     elif base_kind_env in {"point", "block", "jacobi"}:
@@ -1579,6 +1784,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_precond = _build_rhsmode1_theta_line_preconditioner(op=op)
     elif base_kind == "species_block":
         base_precond = _build_rhsmode1_species_block_preconditioner(op=op)
+    elif base_kind == "sxblock_tz":
+        base_precond = _build_rhsmode1_sxblock_tz_preconditioner(op=op)
     elif base_kind == "xblock_tz":
         base_precond = _build_rhsmode1_xblock_tz_preconditioner(op=op)
     elif base_kind == "theta_zeta":
@@ -2141,6 +2348,138 @@ def _build_rhsmode1_species_block_preconditioner(
     return _apply_reduced
 
 
+def _build_rhsmode1_species_xblock_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a RHSMode=1 preconditioner with a single species×x/L block per (theta,zeta).
+
+    This includes inter-species coupling in the local (x,L) block, which is useful for
+    FP collision cases where the field-particle terms couple species.
+    """
+    cache_key = _rhsmode1_precond_cache_key(op, "sxblock")
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    local_per_species = int(np.sum(nxi_for_x))
+    block_size = int(int(op.n_species) * local_per_species)
+    precond_dtype = _precond_dtype(block_size * block_size)
+    cached = _RHSMODE1_PRECOND_GLOBAL_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = op
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        rep_idx: list[int] = []
+        for s in range(n_species):
+            for ix in range(n_x):
+                max_l = int(nxi_for_x[ix])
+                for il in range(max_l):
+                    f_idx = ((((s * n_x + ix) * n_l + il) * n_theta + 0) * n_zeta + 0)
+                    rep_idx.append(int(f_idx))
+        rep_idx_np = np.asarray(rep_idx, dtype=np.int32)
+        chunk_cols = _precond_chunk_cols(total_size, int(rep_idx_np.shape[0]))
+        y_sub = _matvec_submatrix(
+            op_pc,
+            col_idx=rep_idx_np,
+            row_idx=rep_idx_np,
+            total_size=total_size,
+            chunk_cols=chunk_cols,
+        )
+        a = np.asarray(y_sub.T, dtype=np.float64)
+        a = a + reg * np.eye(block_size, dtype=np.float64)
+        try:
+            inv = np.linalg.inv(a)
+        except np.linalg.LinAlgError:
+            inv = np.linalg.pinv(a, rcond=1e-12)
+        if not np.all(np.isfinite(inv)):
+            inv = np.linalg.pinv(a, rcond=1e-12)
+
+        idx_map = np.zeros((n_theta, n_zeta, block_size), dtype=np.int32)
+        for it in range(n_theta):
+            for iz in range(n_zeta):
+                k = 0
+                for s in range(n_species):
+                    for ix in range(n_x):
+                        max_l = int(nxi_for_x[ix])
+                        for il in range(max_l):
+                            idx_map[it, iz, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz)
+                            )
+                            k += 1
+
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
+        block_inv_jnp = jnp.asarray(inv, dtype=precond_dtype)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1PrecondGlobalCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_GLOBAL_CACHE[cache_key] = cached
+
+    block_inv_jnp = cached.block_inv_jnp
+    flat_idx_jnp = cached.flat_idx_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        r_loc = r_full[flat_idx_jnp].reshape((int(op.n_theta), int(op.n_zeta), block_size))
+        z_loc = jnp.einsum("ij,tzj->tzi", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 def _build_rhsmode1_xblock_tz_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -2248,6 +2587,129 @@ def _build_rhsmode1_xblock_tz_preconditioner(
             r_loc = r_full[start : start + block_size]
             z_loc = inv @ r_loc
             z_full = z_full.at[start : start + block_size].set(z_loc, unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_sxblock_tz_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a RHSMode=1 preconditioner with species/x blocks over (theta,zeta) per L."""
+    cache_key = _rhsmode1_precond_cache_key(op, "sxblock_tz")
+    cached = _RHSMODE1_PRECOND_IDX_CACHE.get(cache_key)
+    if cached is None:
+        n_s = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_t = int(op.n_theta)
+        n_z = int(op.n_zeta)
+        total = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        max_block_size = 0
+        for l in range(n_l):
+            active_x = np.where(nxi_for_x > l)[0]
+            if active_x.size:
+                max_block_size = max(max_block_size, int(active_x.size) * n_s * n_t * n_z)
+        precond_dtype = _precond_dtype(max_block_size * max_block_size)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        block_inv_list: list[jnp.ndarray] = []
+        block_idx_list: list[jnp.ndarray] = []
+        for l in range(n_l):
+            active_x = np.where(nxi_for_x > l)[0]
+            if active_x.size == 0:
+                continue
+            idx: list[int] = []
+            for s in range(n_s):
+                for ix in active_x:
+                    base = int((((s * n_x + int(ix)) * n_l + l) * n_t) * n_z)
+                    for it in range(n_t):
+                        for iz in range(n_z):
+                            idx.append(base + it * n_z + iz)
+            rep_idx = np.asarray(idx, dtype=np.int32)
+            chunk_cols = _precond_chunk_cols(total, int(rep_idx.shape[0]))
+            y_sub = _matvec_submatrix(
+                op,
+                col_idx=rep_idx,
+                row_idx=rep_idx,
+                total_size=total,
+                chunk_cols=chunk_cols,
+            )
+            a = np.asarray(y_sub.T, dtype=np.float64)
+            a = a + reg * np.eye(int(rep_idx.shape[0]), dtype=np.float64)
+            try:
+                inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(inv)):
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            block_inv_list.append(jnp.asarray(inv, dtype=precond_dtype))
+            block_idx_list.append(jnp.asarray(rep_idx, dtype=jnp.int32))
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1PrecondIdxCache(
+            block_inv_list=tuple(block_inv_list),
+            block_idx_list=tuple(block_idx_list),
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_IDX_CACHE[cache_key] = cached
+
+    block_inv_list = cached.block_inv_list
+    block_idx_list = cached.block_idx_list
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+    precond_dtype = block_inv_list[0].dtype if block_inv_list else _precond_dtype()
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        z_full = jnp.zeros_like(r_full)
+        for inv, idx in zip(block_inv_list, block_idx_list, strict=True):
+            r_loc = r_full[idx]
+            z_loc = inv @ r_loc
+            z_full = z_full.at[idx].set(z_loc, unique_indices=True)
         if extra_inv_jnp is not None:
             r_extra = r_full[extra_idx_jnp]
             z_extra = extra_inv_jnp @ r_extra
@@ -2643,6 +3105,10 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "theta_line"
         elif rhs1_precond_env in {"species", "species_block", "speciesblock"}:
             rhs1_precond_kind = "species_block"
+        elif rhs1_precond_env in {"sxblock", "species_xblock", "species_x"}:
+            rhs1_precond_kind = "sxblock"
+        elif rhs1_precond_env in {"sxblock_tz", "sxblock_theta_zeta", "species_xblock_tz", "sx_tz"}:
+            rhs1_precond_kind = "sxblock_tz"
         elif rhs1_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
             rhs1_precond_kind = "xblock_tz"
         elif rhs1_precond_env in {"theta_zeta", "theta_zeta_line", "tz", "tz_line"}:
@@ -2683,6 +3149,18 @@ def solve_v3_full_system_linear_gmres(
                 max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
                 local_per_species = int(np.sum(nxi_for_x))
                 dke_size = int(local_per_species * int(op.n_theta) * int(op.n_zeta))
+                sxblock_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SXBLOCK_MAX", "").strip()
+                try:
+                    sxblock_max = int(sxblock_max_env) if sxblock_max_env else 64
+                except ValueError:
+                    sxblock_max = 64
+                sxblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SXBLOCK_TZ_MAX", "").strip()
+                try:
+                    sxblock_tz_max = int(sxblock_tz_max_env) if sxblock_tz_max_env else 0
+                except ValueError:
+                    sxblock_tz_max = 0
+                sxblock_size = int(int(op.n_species) * local_per_species)
+                sxblock_tz_size = int(int(op.n_species) * int(op.n_x) * int(op.n_theta) * int(op.n_zeta))
                 schur_auto = False
                 if (
                     int(op.constraint_scheme) == 2
@@ -2702,6 +3180,15 @@ def solve_v3_full_system_linear_gmres(
                     rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif schur_auto:
                     rhs1_precond_kind = "schur"
+                elif (
+                    op.fblock.fp is not None
+                    and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+                    and sxblock_tz_max > 0
+                    and sxblock_tz_size <= sxblock_tz_max
+                ):
+                    rhs1_precond_kind = "sxblock_tz"
+                elif op.fblock.fp is not None and sxblock_max > 0 and sxblock_size <= sxblock_max:
+                    rhs1_precond_kind = "sxblock"
                 elif (
                     op.fblock.pas is not None
                     and int(op.n_theta) > 1
@@ -2756,10 +3243,18 @@ def solve_v3_full_system_linear_gmres(
     )
     if rhs1_bicgstab_env in {"0", "false", "no", "off"}:
         rhs1_bicgstab_kind = None
+    elif rhs1_bicgstab_env in {"rhs1", "same", "preconditioner"}:
+        rhs1_bicgstab_kind = "rhs1"
     elif rhs1_bicgstab_env in {"", "1", "true", "yes", "on", "collision", "diag"}:
         rhs1_bicgstab_kind = "collision"
     else:
         rhs1_bicgstab_kind = None
+    if (
+        rhs1_bicgstab_kind == "collision"
+        and op.fblock.fp is not None
+        and rhs1_precond_kind not in {None, "collision"}
+    ):
+        rhs1_bicgstab_kind = "rhs1"
     solve_method_kind = str(solve_method).strip().lower()
     if solve_method_kind == "dense_ksp":
         # `dense_ksp` uses its own PETSc-like block preconditioner on the assembled dense system.
@@ -3206,10 +3701,11 @@ def solve_v3_full_system_linear_gmres(
         bicgstab_preconditioner_reduced = None
         if rhs1_bicgstab_kind is not None:
             if emit is not None:
-                emit(1, "solve_v3_full_system_linear_gmres: RHSMode=1 BiCGStab preconditioner=collision")
-            bicgstab_preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
-                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-            )
+                emit(1, f"solve_v3_full_system_linear_gmres: RHSMode=1 BiCGStab preconditioner={rhs1_bicgstab_kind}")
+            if rhs1_bicgstab_kind == "collision":
+                bicgstab_preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
             if use_pas_projection:
                 bicgstab_preconditioner_reduced = _wrap_pas_precond(bicgstab_preconditioner_reduced)
 
@@ -3227,6 +3723,14 @@ def solve_v3_full_system_linear_gmres(
                 )
             elif rhs1_precond_kind == "species_block":
                 precond = _build_rhsmode1_species_block_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif rhs1_precond_kind == "sxblock":
+                precond = _build_rhsmode1_species_xblock_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif rhs1_precond_kind == "sxblock_tz":
+                precond = _build_rhsmode1_sxblock_tz_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             elif rhs1_precond_kind == "xblock_tz":
@@ -3271,15 +3775,28 @@ def solve_v3_full_system_linear_gmres(
                     return out
                 precond = preconditioner_reduced
             else:
-                precond = _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+                precond = _build_rhsmode1_block_preconditioner(
+                    op=op,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
+                    preconditioner_species=preconditioner_species,
+                    preconditioner_x=preconditioner_x,
+                    preconditioner_xi=preconditioner_xi,
+                )
             precond = _wrap_pas_precond(precond) if use_pas_projection else precond
             _mark("rhs1_precond_build_done")
             return precond
 
         if rhs1_precond_enabled:
             solver_kind = _solver_kind(solve_method)[0]
-            if solver_kind != "bicgstab" and solve_method_kind != "dense":
+            build_rhs1 = (
+                (solver_kind != "bicgstab" and solve_method_kind != "dense")
+                or (rhs1_bicgstab_kind == "rhs1" and solve_method_kind != "dense")
+            )
+            if build_rhs1:
                 preconditioner_reduced = _build_rhs1_preconditioner_reduced()
+                if rhs1_bicgstab_kind == "rhs1":
+                    bicgstab_preconditioner_reduced = preconditioner_reduced
         if preconditioner_reduced is None and bicgstab_preconditioner_reduced is not None:
             preconditioner_reduced = bicgstab_preconditioner_reduced
         if solve_method_kind == "dense_ksp":
@@ -3531,6 +4048,10 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind = "theta_line"
         elif strong_precond_env in {"species", "species_block", "speciesblock"}:
             strong_precond_kind = "species_block"
+        elif strong_precond_env in {"sxblock", "species_xblock", "species_x"}:
+            strong_precond_kind = "sxblock"
+        elif strong_precond_env in {"sxblock_tz", "sxblock_theta_zeta", "species_xblock_tz", "sx_tz"}:
+            strong_precond_kind = "sxblock_tz"
         elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
             strong_precond_kind = "zeta_line"
         elif strong_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
@@ -3596,6 +4117,14 @@ def solve_v3_full_system_linear_gmres(
                 )
             elif strong_precond_kind == "species_block":
                 strong_preconditioner_reduced = _build_rhsmode1_species_block_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "sxblock":
+                strong_preconditioner_reduced = _build_rhsmode1_species_xblock_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "sxblock_tz":
+                strong_preconditioner_reduced = _build_rhsmode1_sxblock_tz_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             elif strong_precond_kind == "theta_zeta":
@@ -3669,6 +4198,16 @@ def solve_v3_full_system_linear_gmres(
                 ksp_maxiter = strong_maxiter
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind("incremental")[0]
+        residual_norm_check = float(res_reduced.residual_norm)
+        if ksp_precond is not None and ksp_precond_side == "left":
+            try:
+                r_vec = ksp_b - ksp_matvec(res_reduced.x)
+                r_pc = ksp_precond(r_vec)
+                r_pc_norm = float(jnp.linalg.norm(r_pc))
+                if np.isfinite(r_pc_norm):
+                    residual_norm_check = r_pc_norm
+            except Exception:
+                pass
         dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
         try:
             dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
@@ -3687,7 +4226,7 @@ def solve_v3_full_system_linear_gmres(
                 dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e8
             except ValueError:
                 dense_fallback_ratio = 1.0e8
-        res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
+        res_ratio = float(residual_norm_check) / max(float(target_reduced), 1e-300)
         dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
         force_dense_cs0 = int(op.constraint_scheme) == 0
         if force_dense_cs0:
@@ -3699,7 +4238,7 @@ def solve_v3_full_system_linear_gmres(
             and int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
             and int(active_size) <= dense_fallback_limit
-            and (float(res_reduced.residual_norm) > target_reduced or force_dense_cs0)
+            and (float(residual_norm_check) > target_reduced or force_dense_cs0)
         ):
             if emit is not None:
                 emit(
@@ -3833,8 +4372,9 @@ def solve_v3_full_system_linear_gmres(
 
             if rhs1_bicgstab_kind is not None:
                 if emit is not None:
-                    emit(1, "solve_v3_full_system_linear_gmres: RHSMode=1 BiCGStab preconditioner=collision")
-                bicgstab_preconditioner_full = _build_rhsmode1_collision_preconditioner(op=op)
+                    emit(1, f"solve_v3_full_system_linear_gmres: RHSMode=1 BiCGStab preconditioner={rhs1_bicgstab_kind}")
+                if rhs1_bicgstab_kind == "collision":
+                    bicgstab_preconditioner_full = _build_rhsmode1_collision_preconditioner(op=op)
 
             def _build_rhs1_preconditioner_full():
                 _mark("rhs1_precond_build_start")
@@ -3844,6 +4384,10 @@ def solve_v3_full_system_linear_gmres(
                     precond = _build_rhsmode1_theta_line_preconditioner(op=op)
                 elif rhs1_precond_kind == "species_block":
                     precond = _build_rhsmode1_species_block_preconditioner(op=op)
+                elif rhs1_precond_kind == "sxblock":
+                    precond = _build_rhsmode1_species_xblock_preconditioner(op=op)
+                elif rhs1_precond_kind == "sxblock_tz":
+                    precond = _build_rhsmode1_sxblock_tz_preconditioner(op=op)
                 elif rhs1_precond_kind == "xblock_tz":
                     precond = _build_rhsmode1_xblock_tz_preconditioner(op=op)
                 elif rhs1_precond_kind == "theta_zeta":
@@ -3872,14 +4416,25 @@ def solve_v3_full_system_linear_gmres(
                         return out
                     precond = preconditioner_full
                 else:
-                    precond = _build_rhsmode1_block_preconditioner(op=op)
+                    precond = _build_rhsmode1_block_preconditioner(
+                        op=op,
+                        preconditioner_species=preconditioner_species,
+                        preconditioner_x=preconditioner_x,
+                        preconditioner_xi=preconditioner_xi,
+                    )
                 _mark("rhs1_precond_build_done")
                 return precond
 
             if rhs1_precond_enabled:
                 solver_kind = _solver_kind(solve_method)[0]
-                if solver_kind != "bicgstab" and solve_method_kind != "dense":
+                build_rhs1 = (
+                    (solver_kind != "bicgstab" and solve_method_kind != "dense")
+                    or (rhs1_bicgstab_kind == "rhs1" and solve_method_kind != "dense")
+                )
+                if build_rhs1:
                     preconditioner_full = _build_rhs1_preconditioner_full()
+                    if rhs1_bicgstab_kind == "rhs1":
+                        bicgstab_preconditioner_full = preconditioner_full
             if preconditioner_full is None and bicgstab_preconditioner_full is not None:
                 preconditioner_full = bicgstab_preconditioner_full
             if recycle_basis_use:
@@ -4069,6 +4624,8 @@ def solve_v3_full_system_linear_gmres(
                 strong_precond_kind = "theta_line"
             elif strong_precond_env in {"species", "species_block", "speciesblock"}:
                 strong_precond_kind = "species_block"
+            elif strong_precond_env in {"sxblock_tz", "sxblock_theta_zeta", "species_xblock_tz", "sx_tz"}:
+                strong_precond_kind = "sxblock_tz"
             elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
                 strong_precond_kind = "zeta_line"
             elif strong_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
@@ -4123,6 +4680,10 @@ def solve_v3_full_system_linear_gmres(
                     strong_preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
                 elif strong_precond_kind == "species_block":
                     strong_preconditioner_full = _build_rhsmode1_species_block_preconditioner(op=op)
+                elif strong_precond_kind == "sxblock":
+                    strong_preconditioner_full = _build_rhsmode1_species_xblock_preconditioner(op=op)
+                elif strong_precond_kind == "sxblock_tz":
+                    strong_preconditioner_full = _build_rhsmode1_sxblock_tz_preconditioner(op=op)
                 elif strong_precond_kind == "xblock_tz":
                     strong_preconditioner_full = _build_rhsmode1_xblock_tz_preconditioner(op=op)
                 elif strong_precond_kind == "theta_zeta":
@@ -4181,6 +4742,17 @@ def solve_v3_full_system_linear_gmres(
                     ksp_maxiter = strong_maxiter
                     ksp_precond_side = gmres_precond_side
                     ksp_solver_kind = _solver_kind("incremental")[0]
+            residual_norm_check = float(result.residual_norm)
+            if ksp_precond is not None and ksp_precond_side == "left":
+                try:
+                    if residual_vec is None:
+                        residual_vec = rhs - mv(result.x)
+                    r_pc = ksp_precond(residual_vec)
+                    r_pc_norm = float(jnp.linalg.norm(r_pc))
+                    if np.isfinite(r_pc_norm):
+                        residual_norm_check = r_pc_norm
+                except Exception:
+                    pass
             dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
             try:
                 dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
@@ -4191,13 +4763,13 @@ def solve_v3_full_system_linear_gmres(
                 and int(op.rhs_mode) == 1
                 and (not bool(op.include_phi1))
                 and int(op.total_size) <= dense_fallback_max
-                and float(result.residual_norm) > target
+                and float(residual_norm_check) > target
             ):
                 if emit is not None:
                     emit(
                         0,
                         "solve_v3_full_system_linear_gmres: dense fallback "
-                        f"(size={int(op.total_size)} residual={float(result.residual_norm):.3e} > target={target:.3e})",
+                        f"(size={int(op.total_size)} residual={float(residual_norm_check):.3e} > target={target:.3e})",
                     )
                 try:
                     dense_method = "dense"
@@ -4489,6 +5061,20 @@ def solve_v3_full_system_newton_krylov_history(
     # histories and `sfincsOutput.h5` shape parity for linear Phi1 fixtures.
     pc_env = os.environ.get("SFINCS_JAX_PHI1_USE_PRECONDITIONER", "").strip().lower()
     use_preconditioner = pc_env not in {"0", "false", "no", "off"}
+    precond_opts = nml.group("preconditionerOptions")
+
+    def _phi1_precond_opt_int(key: str, default: int) -> int:
+        val = precond_opts.get(key, None)
+        if val is None:
+            return default
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
+
+    preconditioner_species = _phi1_precond_opt_int("PRECONDITIONER_SPECIES", 1)
+    preconditioner_x = _phi1_precond_opt_int("PRECONDITIONER_X", 1)
+    preconditioner_xi = _phi1_precond_opt_int("PRECONDITIONER_XI", 1)
     if use_preconditioner and use_frozen_linearization and int(op.rhs_mode) == 1:
         precond_kind_env = os.environ.get("SFINCS_JAX_PHI1_PRECOND_KIND", "").strip().lower()
         if not precond_kind_env:
@@ -4511,10 +5097,20 @@ def solve_v3_full_system_newton_krylov_history(
         else:
             if use_active_dof_mode:
                 preconditioner = _build_rhsmode1_block_preconditioner(
-                    op=op, reduce_full=_reduce_full, expand_reduced=_expand_reduced
+                    op=op,
+                    reduce_full=_reduce_full,
+                    expand_reduced=_expand_reduced,
+                    preconditioner_species=preconditioner_species,
+                    preconditioner_x=preconditioner_x,
+                    preconditioner_xi=preconditioner_xi,
                 )
             else:
-                preconditioner = _build_rhsmode1_block_preconditioner(op=op)
+                preconditioner = _build_rhsmode1_block_preconditioner(
+                    op=op,
+                    preconditioner_species=preconditioner_species,
+                    preconditioner_x=preconditioner_x,
+                    preconditioner_xi=preconditioner_xi,
+                )
 
     last_linear_resid = jnp.asarray(jnp.inf, dtype=jnp.float64)
     accepted: list[jnp.ndarray] = []

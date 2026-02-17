@@ -83,6 +83,10 @@ JAX-native performance patterns used in `sfincs_jax`
   ``SFINCS_JAX_TRANSPORT_PRECOND=auto`` promotes a lightweight **species×x block-Jacobi**
   (per-L) preconditioner for modest system sizes. This cuts iterations without matvec-based
   assembly and preserves parity on the reduced suite.
+- **FP collision preconditioning (RHSMode=1)**: when the collision preconditioner is active
+  and ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND`` is unset, FP cases auto-select a
+  species×x block (``sxblock``) for small ``S*X`` and fall back to per-species x-blocks
+  for larger systems. This reduces dense fallbacks in FP-heavy runs.
 - **Low-rank FP preconditioning**: optional Woodbury corrections approximate the dense
   FP species×x blocks with a low-rank update to reduce setup and apply costs.
 - **Coarse x-grid preconditioning**: ``SFINCS_JAX_TRANSPORT_PRECOND=xmg`` adds a two-level
@@ -166,6 +170,8 @@ path), you can enable an optional JAX-native preconditioner via an environment v
   ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND=sxblock``. Use
   ``SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K`` (or ``SFINCS_JAX_FP_LOW_RANK_K``) to enable
   a low-rank Woodbury correction for the FP species×x blocks.
+- ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=sxblock_tz``: per‑:math:`L` species×x block over
+  :math:`(\theta,\zeta)` (captures angular + inter-species coupling; higher setup cost).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_line``: theta-line block preconditioning that couples
   all theta points (at fixed zeta) for all local (x,L) unknowns (stronger, higher setup cost).
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=zeta_line``: zeta-line block preconditioning that couples
@@ -188,6 +194,10 @@ You can also control which side the preconditioner is applied on:
 
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE=left`` (default): left-preconditioned GMRES.
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE=right``: right-preconditioned GMRES (PETSc-like default).
+
+BiCGStab can optionally reuse the RHSMode=1 preconditioner:
+
+- ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND=rhs1`` (or ``same``).
 
 .. note::
 
