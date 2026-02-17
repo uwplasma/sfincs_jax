@@ -161,7 +161,8 @@ _RHSMODE1_PRECOND_IDX_CACHE: dict[tuple[object, ...], _RHSMode1PrecondIdxCache] 
 
 @dataclass(frozen=True)
 class _SparseILUCache:
-    a_csr: object
+    a_csr_full: object
+    a_csr_drop: object
     ilu: object
 
 
@@ -203,40 +204,47 @@ def _build_sparse_ilu_from_matvec(
     ilu_drop_tol: float,
     fill_factor: float,
     emit: Callable[[int, str], None] | None = None,
-) -> tuple[object, object]:
+) -> tuple[object, object, object]:
     cached = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
     if cached is not None:
-        return cached.a_csr, cached.ilu
+        return cached.a_csr_full, cached.a_csr_drop, cached.ilu
 
     if emit is not None:
         emit(1, f"sparse_ilu: assembling dense operator (n={n})")
     a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
-    a_np = np.array(a_dense, dtype=np.float64, copy=True)
-    max_abs = float(np.max(np.abs(a_np))) if a_np.size else 0.0
+    a_np_full = np.array(a_dense, dtype=np.float64, copy=True)
+    max_abs = float(np.max(np.abs(a_np_full))) if a_np_full.size else 0.0
     thresh = max(float(drop_tol), float(drop_rel) * max_abs)
+    a_np_drop = a_np_full
     if thresh > 0.0:
         if emit is not None:
             emit(1, f"sparse_ilu: dropping entries |a| < {thresh:.3e}")
-        a_np = a_np.copy()
-        a_np[np.abs(a_np) < thresh] = 0.0
+        a_np_drop = a_np_full.copy()
+        a_np_drop[np.abs(a_np_drop) < thresh] = 0.0
 
     import scipy.sparse as sp  # noqa: PLC0415
     from scipy.sparse.linalg import spilu  # noqa: PLC0415
 
-    a_csr = sp.csr_matrix(a_np)
-    a_csr.eliminate_zeros()
+    a_csr_full = sp.csr_matrix(a_np_full)
+    a_csr_full.eliminate_zeros()
+    a_csr_drop = sp.csr_matrix(a_np_drop)
+    a_csr_drop.eliminate_zeros()
     if emit is not None:
-        nnz = int(a_csr.nnz)
+        nnz = int(a_csr_drop.nnz)
         emit(1, f"sparse_ilu: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
 
     ilu = spilu(
-        a_csr.tocsc(),
+        a_csr_drop.tocsc(),
         drop_tol=float(ilu_drop_tol),
         fill_factor=float(fill_factor),
         permc_spec="COLAMD",
     )
-    _RHSMODE1_SPARSE_ILU_CACHE[cache_key] = _SparseILUCache(a_csr=a_csr, ilu=ilu)
-    return a_csr, ilu
+    _RHSMODE1_SPARSE_ILU_CACHE[cache_key] = _SparseILUCache(
+        a_csr_full=a_csr_full,
+        a_csr_drop=a_csr_drop,
+        ilu=ilu,
+    )
+    return a_csr_full, a_csr_drop, ilu
 
 
 @dataclass(frozen=True)
@@ -4352,7 +4360,7 @@ def solve_v3_full_system_linear_gmres(
                     ilu_drop_tol=sparse_ilu_drop_tol,
                     fill_factor=sparse_ilu_fill,
                 )
-                a_csr, ilu = _build_sparse_ilu_from_matvec(
+                a_csr_full, _a_csr_drop, ilu = _build_sparse_ilu_from_matvec(
                     matvec=mv_reduced,
                     n=int(active_size),
                     dtype=rhs_reduced.dtype,
@@ -4373,7 +4381,7 @@ def solve_v3_full_system_linear_gmres(
                 if sparse_use_matvec:
                     def _mv_sparse(v: jnp.ndarray) -> jnp.ndarray:
                         x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
-                        y_np = a_csr @ x_np
+                        y_np = a_csr_full @ x_np
                         return jnp.asarray(y_np, dtype=jnp.float64)
                 else:
                     _mv_sparse = mv_reduced
