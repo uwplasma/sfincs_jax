@@ -2392,6 +2392,11 @@ def solve_v3_full_system_linear_gmres(
             ksp_history_max_size = int(ksp_history_max_env) if ksp_history_max_env else 800
         except ValueError:
             ksp_history_max_size = 800
+    ksp_history_max_iter_env = os.environ.get("SFINCS_JAX_KSP_HISTORY_MAX_ITER", "").strip()
+    try:
+        ksp_history_max_iter = int(ksp_history_max_iter_env) if ksp_history_max_iter_env else 2000
+    except ValueError:
+        ksp_history_max_iter = 2000
 
     ksp_matvec = None
     ksp_b = None
@@ -2415,6 +2420,7 @@ def solve_v3_full_system_linear_gmres(
         maxiter_val: int | None,
         precond_side: str,
         solver_kind: str,
+        solve_method_val: str,
     ) -> list[float] | None:
         if emit is None or not fortran_stdout:
             return None
@@ -2424,6 +2430,17 @@ def solve_v3_full_system_linear_gmres(
         if ksp_history_max_size is not None and size > int(ksp_history_max_size):
             emit(1, f"fortran-stdout: KSP history skipped (size={size} > max={int(ksp_history_max_size)})")
             return None
+        if maxiter_val is not None and ksp_history_max_iter is not None:
+            est_iters = int(maxiter_val)
+            if str(solver_kind).strip().lower() == "gmres":
+                est_iters *= max(1, int(restart_val))
+            if est_iters > int(ksp_history_max_iter):
+                emit(
+                    1,
+                    "fortran-stdout: KSP history skipped "
+                    f"(estimated_iters={est_iters} > max={int(ksp_history_max_iter)})",
+                )
+                return None
         try:
             _x_hist, _rn, history = gmres_solve_with_history_scipy(
                 matvec=matvec_fn,
@@ -2459,6 +2476,7 @@ def solve_v3_full_system_linear_gmres(
         precond_side: str,
         solver_kind: str,
         history: list[float] | None,
+        solve_method_val: str,
     ) -> None:
         if emit is None or not iter_stats_enabled:
             return
@@ -2467,6 +2485,22 @@ def solve_v3_full_system_linear_gmres(
             emit(1, f"ksp_iterations skipped (size={size} > max={int(iter_stats_max_size)})")
             return
         solver_kind_l = str(solver_kind).strip().lower()
+        iter_stats_max_iter_env = os.environ.get("SFINCS_JAX_SOLVER_ITER_STATS_MAX_ITER", "").strip()
+        try:
+            iter_stats_max_iter = int(iter_stats_max_iter_env) if iter_stats_max_iter_env else 2000
+        except ValueError:
+            iter_stats_max_iter = 2000
+        if maxiter_val is not None and iter_stats_max_iter is not None:
+            est_iters = int(maxiter_val)
+            if solver_kind_l == "gmres":
+                est_iters *= max(1, int(restart_val))
+            if est_iters > int(iter_stats_max_iter):
+                emit(
+                    1,
+                    "ksp_iterations skipped "
+                    f"(estimated_iters={est_iters} > max={int(iter_stats_max_iter)})",
+                )
+                return
         try:
             if solver_kind_l == "gmres":
                 if history is None:
@@ -3586,6 +3620,7 @@ def solve_v3_full_system_linear_gmres(
             maxiter_val=ksp_maxiter,
             precond_side=ksp_precond_side,
             solver_kind=ksp_solver_kind,
+            solve_method_val=str(solve_method),
         )
         _emit_ksp_iter_stats(
             matvec_fn=ksp_matvec,
@@ -3599,6 +3634,7 @@ def solve_v3_full_system_linear_gmres(
             precond_side=ksp_precond_side,
             solver_kind=ksp_solver_kind,
             history=ksp_history,
+            solve_method_val=str(solve_method),
         )
     if emit is not None:
         emit(0, f"solve_v3_full_system_linear_gmres: residual_norm={float(result.residual_norm):.6e}")
