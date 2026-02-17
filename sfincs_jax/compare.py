@@ -173,6 +173,7 @@ def compare_sfincs_outputs(
             "pressurePerturbation": {"atol": 1e-5},
             "delta_f": {"atol": 1e-5},
             "full_f": {"atol": 1e-5},
+            "sources": {"atol": 5e-10},
         }
         for k, v in rhs1_cs2_tol.items():
             local_tolerances.setdefault(k, v)

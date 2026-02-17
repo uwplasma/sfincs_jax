@@ -1496,7 +1496,42 @@ def _build_rhsmode1_schur_preconditioner(
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Approximate Schur-complement preconditioner for constraintScheme=2 RHSMode=1 solves."""
     precond_dtype = _precond_dtype()
-    base_precond = _build_rhsmode1_block_preconditioner(op=op)
+    base_kind_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_BASE", "").strip().lower()
+    if base_kind_env in {"theta", "theta_line", "line_theta"}:
+        base_kind = "theta_line"
+    elif base_kind_env in {"zeta", "zeta_line", "line_zeta"}:
+        base_kind = "zeta_line"
+    elif base_kind_env in {"adi", "adi_line", "theta_zeta", "zeta_theta"}:
+        base_kind = "adi"
+    elif base_kind_env in {"point", "block", "jacobi"}:
+        base_kind = "point"
+    else:
+        if int(op.n_theta) > 1 or int(op.n_zeta) > 1:
+            base_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+        else:
+            base_kind = "point"
+
+    if base_kind == "theta_line":
+        base_precond = _build_rhsmode1_theta_line_preconditioner(op=op)
+    elif base_kind == "zeta_line":
+        base_precond = _build_rhsmode1_zeta_line_preconditioner(op=op)
+    elif base_kind == "adi":
+        pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
+        pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
+        sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+        try:
+            sweeps = int(sweeps_env) if sweeps_env else 2
+        except ValueError:
+            sweeps = 2
+        sweeps = max(1, sweeps)
+
+        def base_precond(v: jnp.ndarray) -> jnp.ndarray:
+            out = v
+            for _ in range(sweeps):
+                out = pre_zeta(pre_theta(out))
+            return out
+    else:
+        base_precond = _build_rhsmode1_block_preconditioner(op=op)
     f_size = int(op.f_size)
     extra_size = int(op.extra_size)
     n_species = int(op.n_species)
@@ -2074,6 +2109,38 @@ def solve_v3_full_system_linear_gmres(
             if emit is not None:
                 emit(1, f"solve_v3_full_system_linear_gmres: active-DOF mode enabled (size={active_size}/{int(op.total_size)})")
 
+    full_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_FULL_PRECOND", "").strip().lower()
+    if full_precond_env in {"0", "false", "no", "off"}:
+        full_precond_mode = "off"
+    elif full_precond_env in {"dense", "dense_ksp"}:
+        full_precond_mode = full_precond_env
+    else:
+        full_precond_mode = "auto"
+
+    full_precond_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_FULL_PRECOND_DENSE_MAX", "").strip()
+    try:
+        full_precond_dense_max = int(full_precond_max_env) if full_precond_max_env else 2500
+    except ValueError:
+        full_precond_dense_max = 2500
+
+    full_precond_size = active_size if use_active_dof_mode else int(op.total_size)
+    if (
+        full_precond_requested
+        and full_precond_mode in {"dense", "dense_ksp"}
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and full_precond_dense_max > 0
+        and int(full_precond_size) <= int(full_precond_dense_max)
+        and str(solve_method).strip().lower() in {"auto", "default"}
+    ):
+        solve_method = "dense" if (full_precond_mode != "dense_ksp" or use_active_dof_mode) else "dense_ksp"
+        if emit is not None:
+            emit(
+                0,
+                "solve_v3_full_system_linear_gmres: full preconditioner requested; "
+                f"using solve_method={solve_method} (size={int(full_precond_size)})",
+            )
+
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
@@ -2110,16 +2177,21 @@ def solve_v3_full_system_linear_gmres(
         # use point-block Jacobi. Enable line preconditioning only when explicitly requested.
         if int(op.rhs_mode) == 1 and (not bool(op.include_phi1)):
             if pre_theta == 0 and pre_zeta == 0:
-                collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
-                try:
-                    collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 600
-                except ValueError:
-                    collision_precond_min = 600
-                use_collision_precond = (
-                    (op.fblock.fp is not None or op.fblock.pas is not None)
-                    and int(op.total_size) >= collision_precond_min
-                )
-                rhs1_precond_kind = "collision" if use_collision_precond else "point"
+                if full_precond_requested and int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
+                    rhs1_precond_kind = "schur"
+                elif full_precond_requested and (int(op.n_theta) > 1 or int(op.n_zeta) > 1):
+                    rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                else:
+                    collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
+                    try:
+                        collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 600
+                    except ValueError:
+                        collision_precond_min = 600
+                    use_collision_precond = (
+                        (op.fblock.fp is not None or op.fblock.pas is not None)
+                        and int(op.total_size) >= collision_precond_min
+                    )
+                    rhs1_precond_kind = "collision" if use_collision_precond else "point"
             elif pre_theta > 0 and pre_zeta > 0:
                 rhs1_precond_kind = "adi"
             elif pre_theta > 0:
