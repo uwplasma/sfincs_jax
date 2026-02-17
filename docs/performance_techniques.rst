@@ -373,6 +373,33 @@ When the input requests a fully coupled preconditioner (``preconditioner_species
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
 preserving the constraint coupling.
 
+**Sparse ILU (FP-heavy RHSMode=1).** For FP-heavy RHSMode=1 systems, a PETSc‑like
+incomplete factorization is available to avoid dense fallback while retaining
+matrix‑free accuracy. We form a sparsified operator :math:`\tilde{A}` and build
+an ILU preconditioner :math:`M \approx \tilde{L}\tilde{U}` so that GMRES solves
+
+.. math::
+
+   M^{-1} A x = M^{-1} b,
+
+reducing iterations while keeping the exact operator :math:`A` in the matvec.
+When ``SFINCS_JAX_IMPLICIT_SOLVE=1`` (default), the ILU factors are converted to
+dense triangular factors and applied with JAX triangular solves to keep
+end‑to‑end differentiability. Explicit solves can apply SciPy’s sparse ILU and
+optionally use the sparse operator for matvecs. References: GMRES [#saad86]_,
+ILU/Preconditioning surveys [#benzi02]_.
+
+Implementation: ``sfincs_jax.v3_driver`` (``_build_sparse_ilu_from_matvec`` and
+the RHSMode=1 sparse fallback). Controls:
+
+- ``SFINCS_JAX_RHSMODE1_SPARSE_PRECOND`` (auto/on/off)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_OPERATOR`` (optional sparse matvec path)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_MATVEC`` (CSR matvec in explicit mode)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_DROP_TOL`` / ``SFINCS_JAX_RHSMODE1_SPARSE_DROP_REL``
+- ``SFINCS_JAX_RHSMODE1_SPARSE_ILU_DROP_TOL`` / ``SFINCS_JAX_RHSMODE1_SPARSE_ILU_FILL_FACTOR``
+- ``SFINCS_JAX_RHSMODE1_SPARSE_ILU_DENSE_MAX`` (max size for JAX triangular apply)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF`` (explicit-only override)
+
 **PAS x-block :math:`(\theta,\zeta)` preconditioner.** For PAS cases with
 angular grids, ``sfincs_jax`` can build per‑species, per‑:math:`x` blocks over
 the full :math:`(L,\theta,\zeta)` space. This captures angular coupling without
@@ -418,6 +445,11 @@ construction, strong-preconditioner fallback). The output looks like:
 
    profiling: operator_built dt_s=0.42 total_s=0.42 rss_mb=512.0 drss_mb=35.0 device_mb=na
    profiling: rhs_assembled dt_s=0.08 total_s=0.50 rss_mb=515.0 drss_mb=38.0 device_mb=na
+
+.. [#saad86] Y. Saad and M. Schultz, “GMRES: A generalized minimal residual algorithm for
+   solving nonsymmetric linear systems,” *SIAM J. Sci. Stat. Comput.* 7(3), 1986.
+.. [#benzi02] M. Benzi, “Preconditioning techniques for large linear systems: a survey,”
+   *J. Comput. Phys.* 182(2), 2002.
    profiling: rhs1_precond_build_start dt_s=0.00 total_s=0.50 ...
    profiling: rhs1_precond_build_done dt_s=1.25 total_s=1.75 ...
 
