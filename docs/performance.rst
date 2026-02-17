@@ -50,6 +50,8 @@ JAX-native performance patterns used in `sfincs_jax`
   - For dense transforms, prefer `einsum`/batched `@` so XLA can fuse.
   - For Fourier-mode operations on uniform periodic grids, prefer `jax.numpy.fft` over explicit harmonic loops
     (e.g. `uHat` in `sfincs_jax.diagnostics`).
+  - **Keep matvec control‑flow free** when using JAX GMRES/BiCGStab: avoid `lax.scan`/`lax.fori_loop`
+    inside matrix-free operator applications. Use static fused sums instead.
 
 - **Exploit linearity**: for linear runs, the operator is constant; store and reuse the assembled RHS and
   re-run only GMRES when parameters change.

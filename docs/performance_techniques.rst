@@ -268,6 +268,12 @@ This reduces both setup and apply costs for the FP preconditioner when
 ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K`` (or ``SFINCS_JAX_FP_LOW_RANK_K``) is set,
 including the ``auto`` default for larger FP blocks.
 
+**Measured impact (FP-heavy cases).** With ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K=auto``
+the low-rank update improved end-to-end wall time by ~9% for
+``geometryScheme5_3species_loRes`` and ~21% for ``tokamak_1species_FPCollisions_noEr``
+relative to ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K=0`` (profiles in
+``examples/performance/output/reduced_profiles_fp_*.json``).
+
 **Coarse x-grid additive preconditioner (xmg).**
 
 ``SFINCS_JAX_TRANSPORT_PRECOND=xmg`` adds a two-level correction:
@@ -303,6 +309,53 @@ RHSMode=1 preconditioning (matrix-free)
 - **Constraint-aware Schur**: enforces constraintScheme=2 source constraints via a
   diagonal or dense Schur complement.
 
+**PAS gauge/constraint projection.** PAS operators admit a nullspace drift in the
+flux-surface average. We remove it before Krylov iterations:
+
+.. math::
+
+   f \leftarrow f - \langle f \rangle_{\mathrm{FS}},
+
+applied per species and :math:`x` using the same :math:`(\theta,\zeta)` weights
+as diagnostics. This stabilizes PAS tokamak-like cases and pairs with the
+theta-line preconditioner default.
+
+Implementation: ``sfincs_jax.v3_driver`` (``use_pas_projection`` and
+``_project_pas_f``). Control: ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`` (auto on for
+``N_\zeta=1`` tokamak-like runs).
+
+**Constraint-aware Schur (constraintScheme=2).** With constraint variables
+:math:`c`, the linear system is partitioned as
+
+.. math::
+
+   \begin{bmatrix}
+   A_{ff} & A_{fc} \\\\
+   A_{cf} & A_{cc}
+   \end{bmatrix}
+   \begin{bmatrix}
+   f \\\\
+   c
+   \end{bmatrix}
+   =
+   \begin{bmatrix}
+   b_f \\\\
+   b_c
+   \end{bmatrix}.
+
+The preconditioner uses a Schur complement approximation
+
+.. math::
+
+   S \approx A_{cc} - A_{cf} A_{ff}^{-1} A_{fc},
+
+with diagonal or dense approximations for :math:`S`. This preserves constraint
+coupling while improving conditioning in high‑ratio PAS cases.
+
+Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_schur_*``).
+Controls: ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` and
+``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``.
+
 These are cached to avoid recomputation. RHS-only gradients are excluded from the cache key
 so scan points can reuse the same preconditioner blocks. Controls:
 
@@ -321,15 +374,16 @@ Matvec fusion for collisionless + drift terms
 ---------------------------------------------
 
 **Technique.** Accumulate collisionless streaming, ExB, magnetic-drift, and Er
-drift contributions in a single ``jax.lax.scan`` to reduce Python overhead and
-improve XLA fusion in the matrix-free operator application.
+drift contributions in a single static sum expression to reduce Python overhead
+while keeping the matvec control‑flow free (required for JAX GMRES/BiCGStab).
 
 **Implementation.**
 
 - ``SFINCS_JAX_FUSED_MATVEC`` (default enabled) in ``sfincs_jax.v3_fblock``.
 
-**Notes.** The collision operators (PAS/FP) remain separate so remat/checkpointing
-controls and Phi1‑dependent variants stay intact.
+**Notes.** Avoid ``lax.scan``/``lax.fori_loop`` inside the matvec used by JAX
+iterative solvers: they assert on control‑flow. The collision operators (PAS/FP)
+remain separate so remat/checkpointing controls and Phi1‑dependent variants stay intact.
 
 Transport diagnostics: batched + precomputed
 --------------------------------------------

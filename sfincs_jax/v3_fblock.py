@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import functools
 import math
+import operator
 import os
 from pathlib import Path
 from typing import Any
@@ -800,47 +802,41 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_b
     if use_fused:
         zero = jnp.zeros_like(f)
 
-        def term_collisionless(_):
-            return apply_collisionless_v3(op.collisionless, f)
+        def term_collisionless(f_in):
+            return apply_collisionless_v3(op.collisionless, f_in)
 
-        def term_exb_theta(_):
-            return apply_exb_theta_v3(op.exb_theta, f) if op.exb_theta is not None else zero
+        def term_exb_theta(f_in):
+            return apply_exb_theta_v3(op.exb_theta, f_in) if op.exb_theta is not None else zero
 
-        def term_exb_zeta(_):
-            return apply_exb_zeta_v3(op.exb_zeta, f) if op.exb_zeta is not None else zero
+        def term_exb_zeta(f_in):
+            return apply_exb_zeta_v3(op.exb_zeta, f_in) if op.exb_zeta is not None else zero
 
-        def term_mag_theta(_):
-            return apply_magnetic_drift_theta_v3(op.magdrift_theta, f) if op.magdrift_theta is not None else zero
+        def term_mag_theta(f_in):
+            return apply_magnetic_drift_theta_v3(op.magdrift_theta, f_in) if op.magdrift_theta is not None else zero
 
-        def term_mag_zeta(_):
-            return apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f) if op.magdrift_zeta is not None else zero
+        def term_mag_zeta(f_in):
+            return apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f_in) if op.magdrift_zeta is not None else zero
 
-        def term_mag_xidot(_):
-            return apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f) if op.magdrift_xidot is not None else zero
+        def term_mag_xidot(f_in):
+            return apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f_in) if op.magdrift_xidot is not None else zero
 
-        def term_er_xidot(_):
-            return apply_er_xidot_v3(op.er_xidot, f) if op.er_xidot is not None else zero
+        def term_er_xidot(f_in):
+            return apply_er_xidot_v3(op.er_xidot, f_in) if op.er_xidot is not None else zero
 
-        def term_er_xdot(_):
-            return apply_er_xdot_v3(op.er_xdot, f) if op.er_xdot is not None else zero
+        def term_er_xdot(f_in):
+            return apply_er_xdot_v3(op.er_xdot, f_in) if op.er_xdot is not None else zero
 
-        term_fns = (
-            term_collisionless,
-            term_exb_theta,
-            term_exb_zeta,
-            term_mag_theta,
-            term_mag_zeta,
-            term_mag_xidot,
-            term_er_xidot,
-            term_er_xdot,
+        terms = (
+            term_collisionless(f),
+            term_exb_theta(f),
+            term_exb_zeta(f),
+            term_mag_theta(f),
+            term_mag_zeta(f),
+            term_mag_xidot(f),
+            term_er_xidot(f),
+            term_er_xdot(f),
         )
-
-        def body(carry, idx):
-            term = jax.lax.switch(idx, term_fns, operand=None)
-            return carry + term, None
-
-        idxs = jnp.arange(len(term_fns))
-        out, _ = jax.lax.scan(body, out, idxs)
+        out = out + functools.reduce(operator.add, terms)
     else:
         out = out + apply_collisionless_v3(op.collisionless, f)
         if op.exb_theta is not None:

@@ -288,9 +288,9 @@ performance without changing the input file:
 - ``SFINCS_JAX_FBLOCK_CACHE_MAX``: maximum number of cached f-block operator entries
   (default: ``8``).
 
-- ``SFINCS_JAX_FUSED_MATVEC``: fuse collisionless + drift contributions with a JAX
-  ``lax.scan`` accumulation (default: enabled). Set to ``0`` to use the unfused
-  sequential path (debugging).
+- ``SFINCS_JAX_FUSED_MATVEC``: fuse collisionless + drift contributions into a
+  single static sum (control‑flow free so JAX GMRES/BiCGStab remain stable).
+  Default: enabled. Set to ``0`` to use the unfused sequential path (debugging).
 
 - ``SFINCS_JAX_REMAT_COLLISIONS``: enable gradient checkpointing around collision operators to
   reduce peak memory during autodiff (default: auto, based on size threshold).
