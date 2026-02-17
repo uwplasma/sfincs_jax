@@ -2069,6 +2069,9 @@ def solve_v3_full_system_linear_gmres(
                 rhs1_precond_kind = "point"
         else:
             rhs1_precond_kind = None
+    if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
+        # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
+        rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
     rhs1_precond_enabled = (
         rhs1_precond_kind is not None
         and int(op.rhs_mode) == 1
@@ -2372,32 +2375,87 @@ def solve_v3_full_system_linear_gmres(
             return v_full[active_idx_jnp]
 
         if use_pas_projection:
-            def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+            fs_factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)
+            fs_sum = jnp.sum(fs_factor)
+            fs_sum_safe = jnp.where(fs_sum != 0, fs_sum, jnp.asarray(1.0, dtype=jnp.float64))
+            ix0 = _ix_min(bool(op.point_at_x0))
+            mask_x = (jnp.arange(int(op.n_x)) >= ix0).astype(jnp.float64)
+
+            def _project_pas_f(f_flat: jnp.ndarray) -> jnp.ndarray:
+                f = f_flat.reshape(op.fblock.f_shape)
+                avg = jnp.einsum("tz,sxtz->sx", fs_factor, f[:, :, 0, :, :])
+                avg = avg * mask_x[None, :]
+                avg = avg / fs_sum_safe
+                f = f.at[:, :, 0, :, :].add(-avg[:, :, None, None])
+                return f.reshape((-1,))
+
+            def _expand_active_f(v_reduced: jnp.ndarray) -> jnp.ndarray:
                 z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
                 padded = jnp.concatenate([z0, v_reduced], axis=0)
-                f_full = padded[full_to_active_jnp]
-                f = f_full.reshape(op.fblock.f_shape)
-                src = _constraint_scheme2_source_from_f(op, f)
-                return jnp.concatenate([f_full, src.reshape((-1,))], axis=0)
+                return padded[full_to_active_jnp]
+
+            def _project_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+                f_full = _expand_active_f(v_reduced)
+                f_proj = _project_pas_f(f_full)
+                return reduce_full(f_proj)
+
+            def _wrap_pas_precond(precond_fn: Callable[[jnp.ndarray], jnp.ndarray]) -> Callable[[jnp.ndarray], jnp.ndarray]:
+                def _apply(v_reduced: jnp.ndarray) -> jnp.ndarray:
+                    z_reduced = precond_fn(v_reduced)
+                    return _project_reduced(z_reduced)
+                return _apply
+
+            def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
+                f_full = _expand_active_f(v_reduced)
+                if int(op.extra_size) > 0:
+                    zeros_e = jnp.zeros((int(op.extra_size),), dtype=v_reduced.dtype)
+                    return jnp.concatenate([f_full, zeros_e], axis=0)
+                return f_full
+
+            zeros_extra = jnp.zeros((int(op.extra_size),), dtype=jnp.float64)
+
+            def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
+                f_full = _expand_active_f(x_reduced)
+                f_proj = _project_pas_f(f_full)
+                x_full = jnp.concatenate([f_proj, zeros_extra], axis=0) if int(op.extra_size) > 0 else f_proj
+                y_full = mv(x_full)
+                y_f = y_full[: op.f_size]
+                y_proj = _project_pas_f(y_f)
+                return reduce_full(y_proj)
+
+            rhs_f = rhs[: op.f_size]
+            rhs_proj = _project_pas_f(rhs_f)
+            rhs_reduced = reduce_full(rhs_proj)
+            x0_reduced = None
+            if x0 is not None:
+                x0_arr = jnp.asarray(x0)
+                if x0_arr.shape == (active_size,):
+                    x0_reduced = _project_reduced(x0_arr)
+                elif x0_arr.shape == (op.total_size,):
+                    f0_proj = _project_pas_f(x0_arr[: op.f_size])
+                    x0_reduced = reduce_full(f0_proj)
+                elif x0_arr.shape == (op.f_size,):
+                    f0_proj = _project_pas_f(x0_arr)
+                    x0_reduced = reduce_full(f0_proj)
         else:
             def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
                 z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
                 padded = jnp.concatenate([z0, v_reduced], axis=0)
                 return padded[full_to_active_jnp]
 
-        def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
-            return reduce_full(mv(expand_reduced(x_reduced)))
+            def mv_reduced(x_reduced: jnp.ndarray) -> jnp.ndarray:
+                return reduce_full(mv(expand_reduced(x_reduced)))
 
-        rhs_reduced = reduce_full(rhs)
-        x0_reduced = None
-        if x0 is not None:
-            x0_arr = jnp.asarray(x0)
-            if x0_arr.shape == (active_size,):
-                x0_reduced = x0_arr
-            elif x0_arr.shape == (op.total_size,):
-                x0_reduced = reduce_full(x0_arr)
-            elif use_pas_projection and x0_arr.shape == (op.f_size,):
-                x0_reduced = x0_arr[active_idx_jnp]
+            rhs_reduced = reduce_full(rhs)
+            x0_reduced = None
+            if x0 is not None:
+                x0_arr = jnp.asarray(x0)
+                if x0_arr.shape == (active_size,):
+                    x0_reduced = x0_arr
+                elif x0_arr.shape == (op.total_size,):
+                    x0_reduced = reduce_full(x0_arr)
+                elif use_pas_projection and x0_arr.shape == (op.f_size,):
+                    x0_reduced = x0_arr[active_idx_jnp]
         preconditioner_reduced = None
         bicgstab_preconditioner_reduced = None
         if rhs1_bicgstab_kind is not None:
@@ -2406,6 +2464,8 @@ def solve_v3_full_system_linear_gmres(
             bicgstab_preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
                 op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
             )
+            if use_pas_projection:
+                bicgstab_preconditioner_reduced = _wrap_pas_precond(bicgstab_preconditioner_reduced)
 
         def _build_rhs1_preconditioner_reduced():
             if emit is not None:
@@ -2415,22 +2475,22 @@ def solve_v3_full_system_linear_gmres(
                     f"{rhs1_precond_kind} (active-DOF)",
                 )
             if rhs1_precond_kind == "theta_line":
-                return _build_rhsmode1_theta_line_preconditioner(
+                precond = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
-            if rhs1_precond_kind == "zeta_line":
-                return _build_rhsmode1_zeta_line_preconditioner(
+            elif rhs1_precond_kind == "zeta_line":
+                precond = _build_rhsmode1_zeta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
-            if rhs1_precond_kind == "schur":
-                return _build_rhsmode1_schur_preconditioner(
+            elif rhs1_precond_kind == "schur":
+                precond = _build_rhsmode1_schur_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
-            if rhs1_precond_kind == "collision":
-                return _build_rhsmode1_collision_preconditioner(
+            elif rhs1_precond_kind == "collision":
+                precond = _build_rhsmode1_collision_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
-            if rhs1_precond_kind == "adi":
+            elif rhs1_precond_kind == "adi":
                 pre_theta = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
@@ -2450,9 +2510,10 @@ def solve_v3_full_system_linear_gmres(
                     for _ in range(sweeps):
                         out = pre_zeta(pre_theta(out))
                     return out
-
-                return preconditioner_reduced
-            return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+                precond = preconditioner_reduced
+            else:
+                precond = _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+            return _wrap_pas_precond(precond) if use_pas_projection else precond
 
         if rhs1_precond_enabled:
             solver_kind = _solver_kind(solve_method)[0]
@@ -2764,6 +2825,8 @@ def solve_v3_full_system_linear_gmres(
                     for _ in range(sweeps):
                         out = pre_zeta(pre_theta(out))
                     return out
+            if use_pas_projection:
+                strong_preconditioner_reduced = _wrap_pas_precond(strong_preconditioner_reduced)
 
             strong_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RESTART", "").strip()
             strong_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MAXITER", "").strip()
@@ -2856,7 +2919,21 @@ def solve_v3_full_system_linear_gmres(
             except Exception as exc:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
-        x_full = expand_reduced(res_reduced.x)
+        if use_pas_projection:
+            f_full = _expand_active_f(res_reduced.x)
+            f_full = _project_pas_f(f_full)
+            if int(op.extra_size) > 0:
+                zeros_extra = jnp.zeros((int(op.extra_size),), dtype=jnp.float64)
+                y_full = mv(jnp.concatenate([f_full, zeros_extra], axis=0))
+                r_f = rhs[: op.f_size] - y_full[: op.f_size]
+                extra = _constraint_scheme2_source_from_f(op, r_f.reshape(op.fblock.f_shape)) / fs_sum_safe
+                if ix0 > 0:
+                    extra = extra.at[:, :ix0].set(0.0)
+                x_full = jnp.concatenate([f_full, extra.reshape((-1,))], axis=0)
+            else:
+                x_full = f_full
+        else:
+            x_full = expand_reduced(res_reduced.x)
         # Residuals in active-DOF mode are computed on the reduced system to avoid an
         # extra full matvec; this matches the reduced KSP system used upstream.
         residual_norm_full = res_reduced.residual_norm

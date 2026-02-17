@@ -129,8 +129,10 @@ Solving a supported v3 linear run (matrix-free)
    RHSMode=2/3 transport solves. BiCGStab remains available for low-memory RHSMode=1 runs via
    ``--solve-method bicgstab``. Transport solves apply a cheap collision-diagonal
    preconditioner by default, while RHSMode=1 preconditioning follows the v3 namelist defaults
-   (point-block Jacobi unless line preconditioners are requested). For strict PETSc-style iteration
-   histories, use ``--solve-method incremental``.
+   (point-block Jacobi unless line preconditioners are requested). For PAS tokamak-like
+   ``N_zeta=1`` cases with constraint projection enabled, ``sfincs_jax`` upgrades to the
+   theta-line preconditioner by default to reduce Krylov iterations. For strict PETSc-style
+   iteration histories, use ``--solve-method incremental``.
 
 Solver controls (environment variables)
 ---------------------------------------
@@ -378,8 +380,9 @@ performance without changing the input file:
   (``theta_line``, ``zeta_line``, ``adi``, or ``auto``). Default: disabled unless explicitly set.
 
 - ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS``: enable PAS-specific constraint projection for
-  ``constraintScheme=2`` RHSMode=1 solves (drop explicit source unknowns and enforce
-  source = flux-surface-average of ``L=0``).
+  ``constraintScheme=2`` RHSMode=1 solves (drop explicit source unknowns and enforce the
+  normalized flux-surface-average constraint on ``L=0``; sources are recovered from the
+  projected residual).
 
   - ``auto`` (default): enable only for tokamak-like cases with ``N_zeta=1``.
   - ``1``/``true``: force enable for all PAS ``constraintScheme=2`` cases.
