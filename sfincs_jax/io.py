@@ -1736,7 +1736,7 @@ def write_sfincs_jax_output_h5(
         elif emit is not None:
             emit(
                 1,
-                "write_sfincs_jax_output_h5: defaulting to Krylov BiCGStab for RHSMode=1 "
+                "write_sfincs_jax_output_h5: defaulting to Krylov GMRES (incremental) for RHSMode=1 "
                 f"(active_n={active_total_size}, total_n={int(op0.total_size)})",
             )
 

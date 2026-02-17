@@ -76,17 +76,18 @@ JAX-native performance patterns used in `sfincs_jax`
   adjacent scan points with matching operators. For built-in scans, enable
   ``SFINCS_JAX_SCAN_RECYCLE=1`` to wire these automatically.
 - **Transport preconditioning (default)**: RHSMode=2/3 transport solves use a JAX-native
-  preconditioner built analytically from the collision operator. For FP cases, the default
-  is a lightweight **species×x block-Jacobi** (per-L) preconditioner; otherwise the collision
-  diagonal is used. This cuts iterations without matvec-based assembly and preserves parity
-  on the reduced suite.
+  preconditioner built analytically from the collision operator. By default (BiCGStab),
+  a collision-diagonal preconditioner is used. For FP cases and GMRES-based transport solves,
+  ``SFINCS_JAX_TRANSPORT_PRECOND=auto`` promotes a lightweight **species×x block-Jacobi**
+  (per-L) preconditioner for modest system sizes. This cuts iterations without matvec-based
+  assembly and preserves parity on the reduced suite.
 - **Low-rank FP preconditioning**: optional Woodbury corrections approximate the dense
   FP species×x blocks with a low-rank update to reduce setup and apply costs.
 - **Coarse x-grid preconditioning**: ``SFINCS_JAX_TRANSPORT_PRECOND=xmg`` adds a two-level
   x-grid correction (coarse solve + fine diagonal smoother) to reduce PAS/FP iterations.
-- **Mixed-precision preconditioners**: ``SFINCS_JAX_PRECOND_DTYPE=float32`` (or ``auto``)
-  stores JAX preconditioner blocks in float32 while keeping the Krylov solve in float64,
-  reducing memory and preconditioner cost. ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` controls
+- **Mixed-precision preconditioners**: ``SFINCS_JAX_PRECOND_DTYPE`` defaults to ``auto``
+  (float32 for large systems, float64 otherwise) to reduce memory and preconditioner cost
+  while keeping Krylov solves in float64. ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` controls
   the auto threshold.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
@@ -110,20 +111,21 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Use implicit differentiation for solve gradients**: for objectives that depend on the solution `x(p)` of
   a linear system `A(p) x = b(p)`, prefer `jax.lax.custom_linear_solve` (adjoint solve) over
   differentiating through Krylov iterations.
-- **Default to short-recurrence Krylov when possible**: BiCGStab avoids storing a full GMRES basis and
-  is therefore far more memory efficient for large systems. GMRES remains available and is used as a
-  fallback when BiCGStab stagnates; transport-matrix solves now default to BiCGStab with the collision
-  diagonal preconditioner for speed and memory efficiency. [#petsc-bcgs]_
+- **Default to short-recurrence Krylov for transport**: BiCGStab avoids storing a full GMRES basis and
+  is therefore far more memory efficient for large RHSMode=2/3 systems. GMRES remains available and is
+  used as a fallback when BiCGStab stagnates; transport-matrix solves default to BiCGStab with the
+  collision-diagonal preconditioner for speed and memory efficiency. RHSMode=1 remains GMRES-first for
+  parity. [#petsc-bcgs]_
 - **JIT-compiled Krylov solves (default)**: `sfincs_jax` now JIT-compiles the GMRES/BiCGStab wrappers
   to reduce Python overhead for iterative solves; set ``SFINCS_JAX_SOLVER_JIT=0`` to disable.
 
 Krylov solver strategy (memory + recycling)
 -------------------------------------------
 
-`sfincs_jax` now defaults RHSMode=1 linear solves to BiCGStab (short recurrence, O(n) memory) and
-falls back to GMRES when BiCGStab stagnates. For RHSMode=2/3 transport-matrix solves we also default
-to BiCGStab and apply the collision-diagonal preconditioner by default, with GMRES as the fallback.
-This keeps memory usage low while preserving reduced-suite parity. [#petsc-bcgs]_
+`sfincs_jax` defaults RHSMode=1 linear solves to GMRES (parity-first) and supports BiCGStab as an
+opt-in low-memory option with GMRES fallback on stagnation. For RHSMode=2/3 transport-matrix solves we
+default to BiCGStab and apply the collision-diagonal preconditioner by default, with GMRES as the
+fallback. This keeps memory usage low while preserving reduced-suite parity. [#petsc-bcgs]_
 
 For RHSMode=2/3 transport matrices, the ``whichRHS`` loop solves a sequence of linear systems with
 nearly identical operators. We prototype a lightweight recycling hook that reuses the last ``k``
@@ -170,7 +172,7 @@ The regularization used when inverting preconditioner blocks can be tuned with:
 
 - ``SFINCS_JAX_RHSMODE1_PRECOND_REG`` (default: ``1e-10``).
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` for default collision
-  preconditioning when preconditioner options are not set (default: 1500).
+  preconditioning when preconditioner options are not set (default: 600).
 
 These options are most useful when you also select a Krylov solve method for RHSMode=1 via:
 
@@ -188,51 +190,15 @@ You can also control which side the preconditioner is applied on:
    preserving practical output parity.
 
 
-Next refactor plan (performance + differentiability)
-----------------------------------------------------
+Future optimization ideas (optional)
+------------------------------------
 
-The next pass targets parity-preserving speedups first, then deeper solver refactors:
+Parity is now achieved at the reduced-suite tolerances, so remaining performance work is
+profiling-driven and optional. High-ROI ideas to revisit if runtime becomes a bottleneck:
 
-1. **Compilation/cache discipline**
-
-   - Enable JAX persistent compilation cache in parity/benchmark runs to remove repeat JIT cost.
-   - Keep shape signatures stable across case loops (avoid recompiling for each ``whichRHS`` call).
-   - Move optional debug branches behind static flags so production traces stay minimal.
-
-2. **Hot-path loop elimination**
-
-   - Replace Python-side ``for which_rhs in ...`` assembly loops in transport-matrix workflows with
-     ``jax.vmap``/``jax.lax.scan`` over a batched RHS vector.
-   - Fuse repeated diagnostics postprocessing into one jitted batched kernel to reduce host/device transfers.
-   - Keep operator branches (base vs rhs/transport) as static dispatch points to avoid XLA retraces.
-
-3. **Linear solve modernization**
-
-   - Keep matrix-free execution as default, and add a block preconditioner built from
-     species-local pitch-angle/Fokker-Planck diagonals.
-   - Extend the recycled-subspace hook toward GCRO-DR / GMRES-DR style augmentation for
-     transport-matrix sequences.
-   - Evaluate IDR(s) or other short-recurrence Krylov solvers for additional memory savings.
-   - Reuse frozen linearizations in nonlinear includePhi1 solves when parity permits, to cut Newton cost.
-
-4. **Profiling + acceptance gates**
-
-   - Profile with JAX tracing/profiling tools and make ``block_until_ready()`` mandatory in benchmarks.
-   - Track compile time, steady-state iteration time, and memory footprint separately in CI benchmarks.
-   - Require parity + performance guardrails before enabling each optimization by default.
-
-Primary references used to prioritize this plan:
-
-- JAX persistent compilation cache:
-  https://docs.jax.dev/en/latest/persistent_compilation_cache.html
-- JAX GPU/throughput tips:
-  https://docs.jax.dev/en/latest/gpu_performance_tips.html
-- JAX profiling guide:
-  https://docs.jax.dev/en/latest/profiling.html
-- JAX "Thinking in JAX" (jit/vmap/shape discipline):
-  https://docs.jax.dev/en/latest/notebooks/thinking_in_jax.html
-- JAXopt status/maintenance note:
-  https://jaxopt.github.io/stable/
+1. **Deeper Krylov recycling/deflation** (GCRO-DR / GMRES-DR) for long transport scans.
+2. **Multilevel x-grid preconditioning** (coarse V-cycles) for stiff PAS/FP operators.
+3. **Mixed-precision factorization** for FP block preconditioners (keep solves in float64).
 
 .. [#petsc-bcgs] PETSc KSPBCGS manual page (BiCGStab solver notes, including memory behavior vs GMRES),
    https://petsc.gitlab.io/petsc/main/manualpages/KSP/KSPBCGS/
@@ -348,20 +314,20 @@ Latest fixture-based snapshot (4 repeats, compile excluded for JAX):
      - max abs(ΔL11)
    * - ``scheme1``
      - 0.0275
-     - 0.1035
+     - 0.0937
      - 3.10e-13
    * - ``scheme11``
      - 3.6393
-     - 0.1404
-     - 1.41e-15
+     - 0.1285
+     - 1.39e-15
    * - ``scheme12``
      - 0.00888
-     - 0.1219
-     - 9.68e-08
+     - 0.1073
+     - 8.82e-08
    * - ``scheme5_filtered``
      - 2.9621
-     - 0.1326
-     - 5.82e-16
+     - 0.1138
+     - 5.30e-16
 
 Fixture snapshot note: these values come from the frozen Fortran fixtures used by
 ``examples/performance/benchmark_transport_l11_vs_fortran.py`` when no local Fortran
@@ -393,17 +359,17 @@ Latest snapshot (3 repeats):
      - Compile estimate (s)
      - Warm steady solve (s/run)
    * - ``scheme1``
-     - 1.6422
-     - 0.0290
+     - 1.5432
+     - 0.0327
    * - ``scheme11``
-     - 1.4366
-     - 0.0350
+     - 1.2959
+     - 0.0232
    * - ``scheme12``
-     - 1.3499
-     - 0.0407
+     - 1.3417
+     - 0.0237
    * - ``scheme5_filtered``
-     - 1.5037
-     - 0.0440
+     - 1.3672
+     - 0.0364
 
 
 Memory footprint and compilation-time optimization (literature-backed)

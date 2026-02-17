@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_mismatch=6, parity_ok=32
+- Status counts: parity_mismatch=2, parity_ok=36
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -33,8 +33,8 @@
      - 1
      - 0
      - -
-     - 3.414
-     - -
+     - 3.560
+     - 24
      - 0/124
      - S:0 P:0
      - 7/7
@@ -46,25 +46,25 @@
      - 1
      - 0
      - -
-     - 3.554
+     - 3.780
      - 155
      - 0/124
      - S:0 P:0
      - 7/7
      - All common numeric datasets matched tolerance. strict=0/124
    * - HSX_PASCollisions_DKESTrajectories
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
      - -
-     - 20.217
+     - 17.085
      - -
-     - 3/193
-     - S:3 P:0
+     - 0/193
+     - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=3/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_PASCollisions_fullTrajectories
      - parity_ok
      - none
@@ -72,38 +72,38 @@
      - 1
      - 0
      - -
-     - 25.765
+     - 18.943
      - -
      - 0/193
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_magneticDrifts_noEr
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
      - -
-     - 16.597
+     - 14.706
      - -
-     - 3/193
-     - S:3 P:0
+     - 0/193
+     - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=3/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_magneticDrifts_withEr
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
      - -
-     - 18.807
+     - 17.007
      - -
-     - 12/193
-     - S:12 P:0
+     - 0/193
+     - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=12/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_noEr
      - parity_ok
      - none
@@ -111,7 +111,7 @@
      - 1
      - 0
      - -
-     - 12.543
+     - 10.474
      - -
      - 0/193
      - S:0 P:0
@@ -124,7 +124,7 @@
      - 1
      - 0
      - -
-     - 15.975
+     - 13.420
      - -
      - 0/207
      - S:0 P:0
@@ -137,25 +137,25 @@
      - 1
      - 0
      - -
-     - 12.732
+     - 10.820
      - -
      - 0/207
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/207
    * - geometryScheme4_2species_noEr
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
      - -
-     - 11.047
+     - 8.344
      - -
-     - 4/207
-     - S:4 P:0
+     - 0/207
+     - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=4/207
+     - All common numeric datasets matched tolerance. strict=0/207
    * - geometryScheme4_2species_noEr_withPhi1InDKE
      - parity_ok
      - none
@@ -163,7 +163,7 @@
      - 1
      - 0
      - -
-     - 4.111
+     - 4.020
      - -
      - 0/265
      - S:0 P:0
@@ -176,7 +176,7 @@
      - 1
      - 0
      - -
-     - 2.199
+     - 2.181
      - -
      - 0/265
      - S:0 P:0
@@ -189,7 +189,7 @@
      - 1
      - 0
      - -
-     - 12.482
+     - 9.754
      - -
      - 0/193
      - S:0 P:0
@@ -202,7 +202,7 @@
      - 1
      - 0
      - -
-     - 2.309
+     - 2.288
      - -
      - 0/251
      - S:0 P:0
@@ -215,7 +215,7 @@
      - 1
      - 0
      - -
-     - 15.882
+     - 14.414
      - -
      - 0/193
      - S:0 P:0
@@ -228,8 +228,8 @@
      - 1
      - 0
      - -
-     - 49.543
-     - 32000
+     - 4.029
+     - 178
      - 0/207
      - S:0 P:0
      - 9/9
@@ -241,7 +241,7 @@
      - 1
      - 0
      - -
-     - 1.704
+     - 1.672
      - -
      - 0/203
      - S:0 P:0
@@ -254,7 +254,7 @@
      - 1
      - 0
      - -
-     - 2.353
+     - 2.350
      - -
      - 0/208
      - S:0 P:0
@@ -267,7 +267,7 @@
      - 1
      - 0
      - -
-     - 1.428
+     - 1.561
      - -
      - 1/208
      - S:0 P:1
@@ -280,7 +280,7 @@
      - 1
      - 0
      - -
-     - 1.374
+     - 1.740
      - -
      - 1/208
      - S:0 P:1
@@ -293,8 +293,8 @@
      - 1
      - 0
      - -
-     - 7.721
-     - -
+     - 3.607
+     - 128
      - 0/207
      - S:0 P:0
      - 9/9
@@ -306,7 +306,7 @@
      - 1
      - 0
      - -
-     - 14.193
+     - 11.804
      - -
      - 0/207
      - S:0 P:0
@@ -319,7 +319,7 @@
      - 1
      - 0
      - -
-     - 16.560
+     - 14.205
      - -
      - 0/207
      - S:0 P:0
@@ -332,7 +332,7 @@
      - 1
      - 0
      - -
-     - 13.147
+     - 11.248
      - -
      - 0/207
      - S:0 P:0
@@ -345,7 +345,7 @@
      - 1
      - 0
      - -
-     - 14.889
+     - 13.304
      - -
      - 0/207
      - S:0 P:0
@@ -358,8 +358,8 @@
      - 1
      - 0
      - -
-     - 6.191
-     - -
+     - 13.495
+     - 8560
      - 0/202
      - S:0 P:0
      - 9/9
@@ -371,7 +371,7 @@
      - 1
      - 0
      - -
-     - 3.604
+     - 3.869
      - -
      - 0/275
      - S:0 P:0
@@ -384,7 +384,7 @@
      - 1
      - 0
      - -
-     - 1.652
+     - 1.665
      - -
      - 0/275
      - S:0 P:0
@@ -397,8 +397,8 @@
      - 1
      - 0
      - -
-     - 12.647
-     - -
+     - 42.855
+     - 32000
      - 0/214
      - S:0 P:0
      - 9/9
@@ -410,8 +410,8 @@
      - 1
      - 0
      - -
-     - 17.157
-     - -
+     - 6.835
+     - 184
      - 0/214
      - S:0 P:0
      - 9/9
@@ -423,8 +423,8 @@
      - 1
      - 0
      - -
-     - 25.471
-     - -
+     - 66.921
+     - 31989
      - 0/212
      - S:0 P:0
      - 9/9
@@ -436,8 +436,8 @@
      - 1
      - 0
      - -
-     - 3.286
-     - -
+     - 3.462
+     - 69
      - 0/212
      - S:0 P:0
      - 9/9
@@ -449,7 +449,7 @@
      - 1
      - 0
      - -
-     - 3.541
+     - 3.715
      - -
      - 0/275
      - S:0 P:0
@@ -462,8 +462,8 @@
      - 1
      - 0
      - -
-     - 39.733
-     - 17566
+     - 14.296
+     - 3631
      - 0/212
      - S:0 P:0
      - 9/9
@@ -475,7 +475,7 @@
      - 1
      - 0
      - -
-     - 10.977
+     - 9.226
      - -
      - 0/212
      - S:0 P:0
@@ -488,7 +488,7 @@
      - 1
      - 0
      - -
-     - 12.882
+     - 10.849
      - -
      - 0/212
      - S:0 P:0
@@ -501,7 +501,7 @@
      - 1
      - 0
      - -
-     - 4.732
+     - 4.781
      - -
      - 0/194
      - S:0 P:0
@@ -514,7 +514,7 @@
      - 1
      - 0
      - -
-     - 1.749
+     - 1.902
      - 0.0 (0-0)
      - 0/194
      - S:0 P:0

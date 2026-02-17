@@ -76,11 +76,7 @@ def _set_precond_size_hint(n: int | None) -> None:
 
 def _precond_dtype() -> jnp.dtype:
     env = os.environ.get("SFINCS_JAX_PRECOND_DTYPE", "").strip().lower()
-    if env in {"float32", "fp32", "f32", "32"}:
-        return jnp.float32
-    if env in {"float64", "fp64", "f64", "64", ""}:
-        return jnp.float64
-    if env in {"auto", "mixed"}:
+    if env in {"", "auto", "mixed"}:
         size_hint = _PRECOND_SIZE_HINT or 0
         thresh_env = os.environ.get("SFINCS_JAX_PRECOND_FP32_MIN_SIZE", "").strip()
         try:
@@ -88,6 +84,10 @@ def _precond_dtype() -> jnp.dtype:
         except ValueError:
             thresh = 20000
         return jnp.float32 if size_hint >= thresh else jnp.float64
+    if env in {"float32", "fp32", "f32", "32"}:
+        return jnp.float32
+    if env in {"float64", "fp64", "f64", "64"}:
+        return jnp.float64
     return jnp.float64
 
 
@@ -2051,9 +2051,9 @@ def solve_v3_full_system_linear_gmres(
             if pre_theta == 0 and pre_zeta == 0:
                 collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
                 try:
-                    collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 10**9
+                    collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 600
                 except ValueError:
-                    collision_precond_min = 10**9
+                    collision_precond_min = 600
                 use_collision_precond = (
                     (op.fblock.fp is not None or op.fblock.pas is not None)
                     and int(op.total_size) >= collision_precond_min

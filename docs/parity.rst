@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode is ``36/38 parity_ok`` (HSX FPCollisions cases differ without tolerance overrides). For cases that emit stdout signals, print parity is 7/7.
+     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode is ``36/38 parity_ok`` (monoenergetic geometryScheme=5 cases differ without tolerance overrides). For cases that emit stdout signals, print parity is 38/38.
 
 Implemented (parity-tested)
 ---------------------------
@@ -97,7 +97,7 @@ Current scope limits
 
 - Reduced-suite parity (``docs/_generated/reduced_upstream_suite_status*.rst``) reports
   38/38 parity_ok in practical mode and 36/38 parity_ok in strict mode (strict ignores
-  per-case tolerance overrides for HSX FPCollisions).
+  per-case tolerance overrides for monoenergetic geometryScheme=5 fixtures).
 - Reduced-suite reports now include **JAX solver iteration counts** (mean/min/max when multiple
   ``whichRHS`` solves are present). Collection is enabled by default in
   ``scripts/run_reduced_upstream_suite.py`` and can be disabled with
@@ -115,6 +115,18 @@ Current scope limits
   these solver-branch differences via per-case tolerances on flow/jHat diagnostics in the reduced-suite reports, while
   maintaining full reduced-suite parity at the current tolerances.
 
+Near-zero tolerances
+--------------------
+
+Some diagnostics are expected to be very close to zero in specific regimes, so strict relative
+tolerances can overstate differences. ``sfincs_jax.compare.compare_sfincs_outputs`` applies small
+absolute floors for near-zero fields in these cases (e.g., RHSMode=1 constraintScheme=1/2 flow,
+pressure, and ``delta_f`` diagnostics; monoenergetic density/pressure moments; and RHSMode=2/3
+``sources`` terms).
+These built-in floors are documented in ``sfincs_jax/compare.py`` and are always active in
+practical parity checks; strict mode ignores per-case JSON overrides but still respects these
+near-zero safeguards.
+
 Reduced-suite parity status (source of truth)
 ---------------------------------------------
 
@@ -130,7 +142,9 @@ Regenerate these files:
 
 .. code-block:: bash
 
-   python scripts/run_reduced_upstream_suite.py --timeout-s 30 --max-attempts 1
+   python scripts/run_reduced_upstream_suite.py --timeout-s 120 --max-attempts 1
+
+Default tolerances are ``rtol=5e-4`` and ``atol=1e-10``; override with ``--rtol``/``--atol``.
 
 Target a single case family:
 
@@ -138,7 +152,7 @@ Target a single case family:
 
    python scripts/run_reduced_upstream_suite.py \
      --pattern 'HSX_FPCollisions|filteredW7XNetCDF_2species_magneticDrifts|geometryScheme4_2species' \
-     --timeout-s 30 --max-attempts 1
+     --timeout-s 120 --max-attempts 1
 
 Matrix/operator parity diagnosis (Fortran PETSc matrix vs JAX matvec):
 

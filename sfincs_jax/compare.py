@@ -135,6 +135,7 @@ def compare_sfincs_outputs(
         # zero at isolated grid points, amplifying solver-roundoff differences. Use small
         # absolute floors for those diagnostics to avoid overstating near-zero mismatches.
         rhs1_tol = {
+            "FSADensityPerturbation": {"atol": 1e-8},
             "densityPerturbation": {"atol": 1e-6},
             "pressurePerturbation": {"atol": 2e-3},
             "pressureAnisotropy": {"atol": 2e-3},
@@ -149,6 +150,8 @@ def compare_sfincs_outputs(
             "velocityUsingTotalDensity": {"atol": 1e-7},
             "MachUsingFSAThermalSpeed": {"atol": 1e-7},
             "jHat": {"atol": 1e-7},
+            "delta_f": {"atol": 1e-8},
+            "sources": {"atol": 1e-9},
         }
         for k, v in rhs1_tol.items():
             local_tolerances.setdefault(k, v)

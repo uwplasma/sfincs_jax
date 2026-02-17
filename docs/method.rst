@@ -280,9 +280,10 @@ SFINCS v3 systems are large, stiff, and often ill-conditioned due to collision o
 constraint nullspaces, and mixed dense/sparse structure. `sfincs_jax` mirrors the v3
 iterative strategy but keeps the operator matrix-free:
 
-- **GMRES** (Saad & Schultz, 1986) is used as a robust fallback when short-recurrence
-  solvers stagnate.
-- **BiCGStab** (van der Vorst, 1992) is the default for RHSMode=1 and transport solves.
+- **GMRES** (Saad & Schultz, 1986) is the default for RHSMode=1 (parity-first) and is
+  used as a robust fallback when short-recurrence solvers stagnate.
+- **BiCGStab** (van der Vorst, 1992) is the default for transport solves and is
+  available for RHSMode=1 when low memory is preferred.
 - **IDR(s)** (Sonneveld & van Gijzen, 2008) is available for memory-efficient,
   short-recurrence solves.
 - **Preconditioning** follows a block structure: collision-diagonal approximations,

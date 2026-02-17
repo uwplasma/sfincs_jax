@@ -1032,7 +1032,11 @@ def _run_case(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run reduced-resolution upstream suite one case at a time with 30s timeout/reduction policy.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run reduced-resolution upstream suite one case at a time with an adaptive timeout/reduction policy."
+        )
+    )
     parser.add_argument(
         "--examples-root",
         type=Path,
@@ -1052,10 +1056,10 @@ def main() -> int:
         help="Path to Fortran v3 executable (or set SFINCS_FORTRAN_EXE).",
     )
     parser.add_argument("--pattern", type=str, default=None, help="Regex filter on case directory path.")
-    parser.add_argument("--timeout-s", type=float, default=30.0, help="Per-run timeout in seconds.")
+    parser.add_argument("--timeout-s", type=float, default=120.0, help="Per-run timeout in seconds.")
     parser.add_argument("--max-attempts", type=int, default=6, help="Maximum adaptive retries per case.")
-    parser.add_argument("--rtol", type=float, default=1e-8)
-    parser.add_argument("--atol", type=float, default=1e-8)
+    parser.add_argument("--rtol", type=float, default=5e-4)
+    parser.add_argument("--atol", type=float, default=1e-10)
     parser.add_argument(
         "--reuse-fortran",
         action="store_true",

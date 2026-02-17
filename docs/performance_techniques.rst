@@ -179,9 +179,8 @@ if the basis truncation is explicit in the input.
 Krylov solver strategy (short recurrence + fallback)
 ----------------------------------------------------
 
-**Technique.** Use GMRES as the default for RHSMode=1 and transport (parity-first),
-with BiCGStab available as a short-recurrence alternative and GMRES fallback on
-stagnation or non-finite residuals.
+**Technique.** Use GMRES as the default for RHSMode=1 (parity-first) and BiCGStab
+as the default for transport, with GMRES fallback on stagnation or non-finite residuals.
 
 **Motivation.**
 
@@ -197,8 +196,8 @@ candidate for future low-memory solves.
 
 **Compared to Fortran.**
 
-Fortran typically uses GMRES via PETSc; `sfincs_jax` defaults to GMRES for parity,
-while still allowing BiCGStab for low-memory runs.
+Fortran typically uses GMRES via PETSc; `sfincs_jax` keeps GMRES for RHSMode=1 parity
+and switches to BiCGStab for transport to reduce memory, with GMRES fallback.
 
 **Impact.**
 
@@ -244,7 +243,7 @@ Approximate the operator with its collision diagonal:
 
 Includes PAS diagonal and FP self-collision diagonal (per L, per x).
 
-**Species×x block-Jacobi (new default for FP).**
+**Species×x block-Jacobi (FP auto / opt-in).**
 
 When the FP operator is available, build per-:math:`L` blocks across species and :math:`x`:
 
@@ -278,6 +277,8 @@ Set ``SFINCS_JAX_XMG_STRIDE`` to control the coarsening.
 
 - ``_build_rhsmode23_sxblock_preconditioner`` in ``sfincs_jax.v3_driver``.
 - Controlled by ``SFINCS_JAX_TRANSPORT_PRECOND`` (``auto``, ``sxblock``, ``collision``, etc.).
+  ``auto`` picks the collision-diagonal preconditioner for the default BiCGStab transport
+  solver and upgrades to species×x blocks for modest FP systems when GMRES is selected.
 
 **Compared to Fortran.**
 
@@ -307,7 +308,7 @@ These are cached to avoid recomputation. Controls:
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
-- ``SFINCS_JAX_PRECOND_DTYPE`` (``float32`` or ``auto`` for mixed-precision storage)
+- ``SFINCS_JAX_PRECOND_DTYPE`` (default ``auto``; ``float32`` or ``float64`` to override)
 - ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)
 
 Transport diagnostics: batched + precomputed

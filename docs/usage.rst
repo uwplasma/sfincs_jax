@@ -118,9 +118,16 @@ Solving a supported v3 linear run (matrix-free)
 
 .. note::
 
-   The default ``--solve-method auto`` uses GMRES for RHSMode=1 (parity-first) and GMRES for RHSMode=2/3
-   transport solves. BiCGStab remains available for low-memory runs via ``--solve-method bicgstab``.
-   Transport solves apply a cheap collision-diagonal
+   For end-to-end differentiation, build inputs via the Python API and keep the computation in JAX.
+   File I/O, VMEC/Boozer parsing, and SciPy-based solver-history logging use NumPy and are not
+   differentiable. Disable history logging with ``SFINCS_JAX_FORTRAN_STDOUT=0`` and
+   ``SFINCS_JAX_SOLVER_ITER_STATS=0`` when tracing gradients.
+
+.. note::
+
+   The default ``--solve-method auto`` uses GMRES for RHSMode=1 (parity-first) and BiCGStab for
+   RHSMode=2/3 transport solves. BiCGStab remains available for low-memory RHSMode=1 runs via
+   ``--solve-method bicgstab``. Transport solves apply a cheap collision-diagonal
    preconditioner by default, while RHSMode=1 preconditioning follows the v3 namelist defaults
    (point-block Jacobi unless line preconditioners are requested). For strict PETSc-style iteration
    histories, use ``--solve-method incremental``.
@@ -164,7 +171,7 @@ performance without changing the input file:
   - ``0``: disable.
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` before the default
-  RHSMode=1 preconditioner switches to the collision-diagonal option (default: disabled unless set).
+  RHSMode=1 preconditioner switches to the collision-diagonal option (default: ``600``).
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``: choose the collision preconditioner flavor
   when ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision`` or BiCGStab preconditioning is enabled.
@@ -183,6 +190,10 @@ performance without changing the input file:
   complement (default: ``1e-14``). Smaller values tighten the constraint solve but can
   amplify noise.
 
+- ``SFINCS_JAX_PRECOND_DTYPE``: dtype for preconditioner blocks (default: ``auto`` uses
+  float32 for large systems and float64 otherwise). ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``
+  controls the auto threshold.
+
 - ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND``: optional RHSMode=1 BiCGStab preconditioning.
 
   - ``collision`` (default): collision-diagonal preconditioner (PAS/FP + identity shift).
@@ -190,14 +201,14 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_BICGSTAB_FALLBACK``: control when BiCGStab falls back to GMRES.
 
-  - ``strict``/``1``: fallback if the residual exceeds tolerance (parity-first).
-  - ``0``/``loose`` (default): fallback only on non-finite residuals (performance-first).
+  - ``strict``/``1`` (default): fallback if the residual exceeds tolerance (parity-first).
+  - ``0``/``loose``: fallback only on non-finite residuals (performance-first).
 
 - ``SFINCS_JAX_TRANSPORT_PRECOND``: RHSMode=2/3 transport preconditioner.
 
-  - ``auto`` (default): if the FP collision operator is available, use a lightweight
-    **species×x block-Jacobi** preconditioner (per-L) for small systems; otherwise fall
-    back to the collision-diagonal preconditioner.
+  - ``auto`` (default): with the default BiCGStab transport solver, use the collision-diagonal
+    preconditioner. When GMRES is selected and the FP collision operator is available, ``auto``
+    upgrades to a lightweight **species×x block-Jacobi** preconditioner (per-L) for small systems.
   - ``block``/``block_jacobi``: local (x,L) block-Jacobi preconditioner built from a
     simplified transport operator (stronger, higher setup cost).
   - ``sxblock``/``block_sx``/``species_x``: lightweight species×x block-Jacobi built from
@@ -228,8 +239,9 @@ performance without changing the input file:
   cases (disabled by default). When enabled, set ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX`` to
   bound the system size.
 
-- ``SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX``: enable a dense LU preconditioner for RHSMode=3
-  transport solves when the system size is below the specified threshold (default: ``600``).
+- ``SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX``: enable a dense LU preconditioner for transport solves
+  when the system size is below the specified threshold (default: ``1600`` for RHSMode=2,
+  ``600`` for RHSMode=3).
 
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE``: reuse saved Krylov recycle vectors across runs
   when ``SFINCS_JAX_STATE_IN`` is set (default: enabled; set to ``0`` to disable).
