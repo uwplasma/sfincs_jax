@@ -311,11 +311,11 @@ python scripts/generate_readme_reduced_suite_table.py
 | tokamak_1species_FPCollisions_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.374 | 1.294 | - | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_FPCollisions_withEr_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.694 | 37.484 | 32000.0 (32000-32000) | 0/214 (strict 0/214) | 9/9 |
 | tokamak_1species_FPCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.380 | 5.428 | 184.0 (184-184) | 0/214 (strict 0/214) | 9/9 |
-| tokamak_1species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | - | 41.939 | 8961 | 0/212 (strict 0/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.294 | 42.428 | 8961.0 (8961-8961) | 0/212 (strict 0/212) | 9/9 |
 | tokamak_1species_PASCollisions_noEr_Nx1 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.057 | 1.593 | 1.0 (1-1) | 0/212 (strict 0/212) | 9/9 |
 | tokamak_1species_PASCollisions_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.086 | 2.973 | - | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.086 | 39.947 | 12179.0 (12179-12179) | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | - | 16.663 | - | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.193 | 15.350 | - | 0/212 (strict 0/212) | 9/9 |
 | tokamak_2species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.140 | 8.550 | - | 0/212 (strict 0/212) | 9/9 |
 | transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.211 | 4.161 | - | 0/194 (strict 0/194) | 9/9 |
 | transportMatrix_geometryScheme2 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.151 | 1.464 | 0.0 (0-0) | 0/194 (strict 0/194) | 9/9 |
