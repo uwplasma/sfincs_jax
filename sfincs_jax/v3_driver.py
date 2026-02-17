@@ -160,6 +160,86 @@ _RHSMODE1_PRECOND_IDX_CACHE: dict[tuple[object, ...], _RHSMode1PrecondIdxCache] 
 
 
 @dataclass(frozen=True)
+class _SparseILUCache:
+    a_csr: object
+    ilu: object
+
+
+_RHSMODE1_SPARSE_ILU_CACHE: dict[tuple[object, ...], _SparseILUCache] = {}
+
+
+def _rhsmode1_sparse_cache_key(
+    op: V3FullSystemOperator,
+    *,
+    kind: str,
+    active_size: int,
+    use_active_dof_mode: bool,
+    use_pas_projection: bool,
+    drop_tol: float,
+    drop_rel: float,
+    ilu_drop_tol: float,
+    fill_factor: float,
+) -> tuple[object, ...]:
+    return (
+        *_rhsmode1_precond_cache_key(op, kind),
+        int(active_size),
+        int(bool(use_active_dof_mode)),
+        int(bool(use_pas_projection)),
+        float(drop_tol),
+        float(drop_rel),
+        float(ilu_drop_tol),
+        float(fill_factor),
+    )
+
+
+def _build_sparse_ilu_from_matvec(
+    *,
+    matvec: Callable[[jnp.ndarray], jnp.ndarray],
+    n: int,
+    dtype: jnp.dtype,
+    cache_key: tuple[object, ...],
+    drop_tol: float,
+    drop_rel: float,
+    ilu_drop_tol: float,
+    fill_factor: float,
+    emit: Callable[[int, str], None] | None = None,
+) -> tuple[object, object]:
+    cached = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
+    if cached is not None:
+        return cached.a_csr, cached.ilu
+
+    if emit is not None:
+        emit(1, f"sparse_ilu: assembling dense operator (n={n})")
+    a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
+    a_np = np.array(a_dense, dtype=np.float64, copy=True)
+    max_abs = float(np.max(np.abs(a_np))) if a_np.size else 0.0
+    thresh = max(float(drop_tol), float(drop_rel) * max_abs)
+    if thresh > 0.0:
+        if emit is not None:
+            emit(1, f"sparse_ilu: dropping entries |a| < {thresh:.3e}")
+        a_np = a_np.copy()
+        a_np[np.abs(a_np) < thresh] = 0.0
+
+    import scipy.sparse as sp  # noqa: PLC0415
+    from scipy.sparse.linalg import spilu  # noqa: PLC0415
+
+    a_csr = sp.csr_matrix(a_np)
+    a_csr.eliminate_zeros()
+    if emit is not None:
+        nnz = int(a_csr.nnz)
+        emit(1, f"sparse_ilu: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
+
+    ilu = spilu(
+        a_csr.tocsc(),
+        drop_tol=float(ilu_drop_tol),
+        fill_factor=float(fill_factor),
+        permc_spec="COLAMD",
+    )
+    _RHSMODE1_SPARSE_ILU_CACHE[cache_key] = _SparseILUCache(a_csr=a_csr, ilu=ilu)
+    return a_csr, ilu
+
+
+@dataclass(frozen=True)
 class _TransportPrecondCache:
     inv_diag_f: jnp.ndarray
 
@@ -3277,6 +3357,48 @@ def solve_v3_full_system_linear_gmres(
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
 
+    sparse_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_PRECOND", "").strip().lower()
+    if sparse_precond_env in {"1", "true", "yes", "on"}:
+        sparse_precond_mode = "on"
+    elif sparse_precond_env in {"0", "false", "no", "off"}:
+        sparse_precond_mode = "off"
+    else:
+        sparse_precond_mode = "auto"
+    sparse_allow_nondiff_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF", "").strip().lower()
+    sparse_allow_nondiff = sparse_allow_nondiff_env in {"1", "true", "yes", "on"}
+    sparse_matvec_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_MATVEC", "").strip().lower()
+    if sparse_matvec_env in {"1", "true", "yes", "on"}:
+        sparse_use_matvec = True
+    elif sparse_matvec_env in {"0", "false", "no", "off"}:
+        sparse_use_matvec = False
+    else:
+        sparse_use_matvec = False
+    sparse_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_MAX", "").strip()
+    try:
+        sparse_max_size = int(sparse_max_env) if sparse_max_env else 4000
+    except ValueError:
+        sparse_max_size = 4000
+    sparse_drop_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DROP_TOL", "").strip()
+    sparse_drop_rel_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DROP_REL", "").strip()
+    sparse_ilu_drop_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_DROP_TOL", "").strip()
+    sparse_ilu_fill_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_FILL_FACTOR", "").strip()
+    try:
+        sparse_drop_tol = float(sparse_drop_tol_env) if sparse_drop_tol_env else 0.0
+    except ValueError:
+        sparse_drop_tol = 0.0
+    try:
+        sparse_drop_rel = float(sparse_drop_rel_env) if sparse_drop_rel_env else 1.0e-6
+    except ValueError:
+        sparse_drop_rel = 1.0e-6
+    try:
+        sparse_ilu_drop_tol = float(sparse_ilu_drop_env) if sparse_ilu_drop_env else 1.0e-4
+    except ValueError:
+        sparse_ilu_drop_tol = 1.0e-4
+    try:
+        sparse_ilu_fill = float(sparse_ilu_fill_env) if sparse_ilu_fill_env else 10.0
+    except ValueError:
+        sparse_ilu_fill = 10.0
+
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
         if method_l in {"auto", "default"}:
@@ -4198,6 +4320,94 @@ def solve_v3_full_system_linear_gmres(
                 ksp_maxiter = strong_maxiter
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind("incremental")[0]
+
+        sparse_enabled = False
+        if sparse_precond_mode == "on":
+            sparse_enabled = True
+        elif sparse_precond_mode == "auto":
+            sparse_enabled = op.fblock.fp is not None
+        if sparse_enabled:
+            sparse_enabled = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
+        if sparse_enabled:
+            if use_implicit and not sparse_allow_nondiff:
+                sparse_enabled = False
+                if emit is not None:
+                    emit(1, "sparse_ilu: disabled for implicit solves (set SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF=1 to override)")
+            elif int(active_size) > sparse_max_size:
+                sparse_enabled = False
+                if emit is not None:
+                    emit(1, f"sparse_ilu: disabled (size={int(active_size)} > max={int(sparse_max_size)})")
+
+        if sparse_enabled and float(res_reduced.residual_norm) > target_reduced:
+            try:
+                _mark("rhs1_sparse_precond_build_start")
+                cache_key = _rhsmode1_sparse_cache_key(
+                    op,
+                    kind="sparse_ilu",
+                    active_size=int(active_size),
+                    use_active_dof_mode=True,
+                    use_pas_projection=use_pas_projection,
+                    drop_tol=sparse_drop_tol,
+                    drop_rel=sparse_drop_rel,
+                    ilu_drop_tol=sparse_ilu_drop_tol,
+                    fill_factor=sparse_ilu_fill,
+                )
+                a_csr, ilu = _build_sparse_ilu_from_matvec(
+                    matvec=mv_reduced,
+                    n=int(active_size),
+                    dtype=rhs_reduced.dtype,
+                    cache_key=cache_key,
+                    drop_tol=sparse_drop_tol,
+                    drop_rel=sparse_drop_rel,
+                    ilu_drop_tol=sparse_ilu_drop_tol,
+                    fill_factor=sparse_ilu_fill,
+                    emit=emit,
+                )
+                _mark("rhs1_sparse_precond_build_done")
+
+                def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
+                    x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                    y_np = ilu.solve(x_np)
+                    return jnp.asarray(y_np, dtype=jnp.float64)
+
+                if sparse_use_matvec:
+                    def _mv_sparse(v: jnp.ndarray) -> jnp.ndarray:
+                        x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                        y_np = a_csr @ x_np
+                        return jnp.asarray(y_np, dtype=jnp.float64)
+                else:
+                    _mv_sparse = mv_reduced
+
+                if emit is not None:
+                    emit(0, "solve_v3_full_system_linear_gmres: sparse ILU GMRES fallback")
+                x_np, rn_sparse, _history = gmres_solve_with_history_scipy(
+                    matvec=_mv_sparse,
+                    b=rhs_reduced,
+                    preconditioner=_precond_sparse,
+                    x0=res_reduced.x,
+                    tol=tol,
+                    atol=atol,
+                    restart=restart,
+                    maxiter=maxiter,
+                    precondition_side=gmres_precond_side,
+                )
+                res_sparse = GMRESSolveResult(
+                    x=jnp.asarray(x_np, dtype=jnp.float64),
+                    residual_norm=jnp.asarray(rn_sparse, dtype=jnp.float64),
+                )
+                if float(res_sparse.residual_norm) < float(res_reduced.residual_norm):
+                    res_reduced = res_sparse
+                    ksp_matvec = _mv_sparse
+                    ksp_b = rhs_reduced
+                    ksp_precond = _precond_sparse
+                    ksp_x0 = res_reduced.x
+                    ksp_restart = restart
+                    ksp_maxiter = maxiter
+                    ksp_precond_side = gmres_precond_side
+                    ksp_solver_kind = _solver_kind("incremental")[0]
+            except Exception as exc:  # noqa: BLE001
+                if emit is not None:
+                    emit(1, f"sparse_ilu: failed ({type(exc).__name__}: {exc})")
         residual_norm_check = float(res_reduced.residual_norm)
         if ksp_precond is not None and ksp_precond_side == "left":
             try:
