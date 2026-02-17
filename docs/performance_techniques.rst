@@ -265,7 +265,8 @@ and apply a Woodbury inverse:
    = D^{-1} - D^{-1} U \left(I + V^\top D^{-1} U\right)^{-1} V^\top D^{-1}.
 
 This reduces both setup and apply costs for the FP preconditioner when
-``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K`` (or ``SFINCS_JAX_FP_LOW_RANK_K``) is set.
+``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K`` (or ``SFINCS_JAX_FP_LOW_RANK_K``) is set,
+including the ``auto`` default for larger FP blocks.
 
 **Coarse x-grid additive preconditioner (xmg).**
 

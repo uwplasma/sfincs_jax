@@ -353,17 +353,24 @@ def _build_rhsmode23_sxblock_preconditioner(
     low_rank_env = os.environ.get("SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K", "").strip()
     if not low_rank_env:
         low_rank_env = os.environ.get("SFINCS_JAX_FP_LOW_RANK_K", "").strip()
-    try:
-        low_rank_k = int(low_rank_env) if low_rank_env else 0
-    except ValueError:
+    low_rank_env = low_rank_env.strip().lower()
+    low_rank_auto = low_rank_env in {"", "auto"}
+    if low_rank_env and low_rank_env != "auto":
+        try:
+            low_rank_k = int(low_rank_env)
+        except ValueError:
+            low_rank_k = 0
+    else:
         low_rank_k = 0
-    low_rank_k = max(0, low_rank_k)
+
+    f_shape = op.fblock.f_shape
+    n_species, n_x, n_l, _, _ = f_shape
+    n_block = n_species * n_x
+    if low_rank_auto and low_rank_k <= 0 and n_block >= 24:
+        low_rank_k = min(8, n_block)
 
     precond_dtype = _precond_dtype()
     if low_rank_k > 0:
-        f_shape = op.fblock.f_shape
-        n_species, n_x, n_l, _, _ = f_shape
-        n_block = n_species * n_x
         rank_k = min(int(low_rank_k), int(n_block))
         cache_key = _transport_precond_cache_key(op, f"collision_sxblock_lr_{rank_k}")
         cached_lr = _TRANSPORT_SXBLOCK_LR_PRECOND_CACHE.get(cache_key)
@@ -701,16 +708,22 @@ def _build_rhsmode1_collision_preconditioner(
         low_rank_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K", "").strip()
         if not low_rank_env:
             low_rank_env = os.environ.get("SFINCS_JAX_FP_LOW_RANK_K", "").strip()
-        try:
-            low_rank_k = int(low_rank_env) if low_rank_env else 0
-        except ValueError:
+        low_rank_env = low_rank_env.strip().lower()
+        low_rank_auto = low_rank_env in {"", "auto"}
+        if low_rank_env and low_rank_env != "auto":
+            try:
+                low_rank_k = int(low_rank_env)
+            except ValueError:
+                low_rank_k = 0
+        else:
             low_rank_k = 0
-        low_rank_k = max(0, low_rank_k)
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+        n_block = n_species * n_x
+        if low_rank_auto and low_rank_k <= 0 and n_block >= 24:
+            low_rank_k = min(8, n_block)
 
         if low_rank_k > 0:
-            f_shape = op.fblock.f_shape
-            n_species, n_x, n_l, _, _ = f_shape
-            n_block = n_species * n_x
             rank_k = min(int(low_rank_k), int(n_block))
             cache_key = _transport_precond_cache_key(op, f"rhs1_collision_sxblock_lr_{rank_k}")
             cached_lr = _RHSMODE1_SXBLOCK_LR_PRECOND_CACHE.get(cache_key)

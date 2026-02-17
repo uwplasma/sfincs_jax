@@ -187,8 +187,9 @@ performance without changing the input file:
   - ``diag``: use the collision diagonal only (PAS/FP + identity shift).
 
 - ``SFINCS_JAX_RHSMODE1_FP_LOW_RANK_K``: use a low-rank Woodbury correction (rank ``K``)
-  for the FP species×x collision preconditioner (``sxblock``). Set to ``0`` to disable
-  (default: ``0``). ``SFINCS_JAX_FP_LOW_RANK_K`` provides a global fallback.
+  for the FP species×x collision preconditioner (``sxblock``). ``auto`` (default when
+  unset) selects a small rank (up to 8) for larger FP blocks. Set to ``0`` to disable.
+  ``SFINCS_JAX_FP_LOW_RANK_K`` provides a global fallback.
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_EPS``: diagonal safeguard for the constraintScheme=2 Schur
   complement (default: ``1e-14``). Smaller values tighten the constraint solve but can
@@ -229,7 +230,8 @@ performance without changing the input file:
   preconditioner diagonal blocks (default: ``1e-10``).
 
 - ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K``: low-rank Woodbury correction (rank ``K``)
-  for the FP species×x transport preconditioner. Set to ``0`` to disable (default: ``0``).
+  for the FP species×x transport preconditioner. ``auto`` (default when unset) selects
+  a small rank (up to 8) for larger FP blocks. Set to ``0`` to disable.
   ``SFINCS_JAX_FP_LOW_RANK_K`` provides a global fallback.
 
 - ``SFINCS_JAX_XMG_STRIDE``: coarse-grid stride for ``xmg`` transport preconditioning
