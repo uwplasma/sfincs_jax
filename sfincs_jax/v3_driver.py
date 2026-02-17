@@ -1496,6 +1496,11 @@ def _build_rhsmode1_schur_preconditioner(
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Approximate Schur-complement preconditioner for constraintScheme=2 RHSMode=1 solves."""
     precond_dtype = _precond_dtype()
+    species_block_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPECIES_BLOCK_MAX", "").strip()
+    try:
+        species_block_max = int(species_block_max_env) if species_block_max_env else 1600
+    except ValueError:
+        species_block_max = 1600
     base_kind_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_BASE", "").strip().lower()
     if base_kind_env in {"theta", "theta_line", "line_theta"}:
         base_kind = "theta_line"
@@ -1503,16 +1508,46 @@ def _build_rhsmode1_schur_preconditioner(
         base_kind = "zeta_line"
     elif base_kind_env in {"adi", "adi_line", "theta_zeta", "zeta_theta"}:
         base_kind = "adi"
+    elif base_kind_env in {"species", "species_block", "speciesblock"}:
+        base_kind = "species_block"
     elif base_kind_env in {"point", "block", "jacobi"}:
         base_kind = "point"
     else:
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+        dke_size = int(local_per_species * int(op.n_theta) * int(op.n_zeta))
         if int(op.n_theta) > 1 or int(op.n_zeta) > 1:
-            base_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+            tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+            try:
+                tz_max = int(tz_max_env) if tz_max_env else 128
+            except ValueError:
+                tz_max = 128
+            if (
+                op.fblock.pas is not None
+                and int(op.n_theta) > 1
+                and int(op.n_zeta) > 1
+                and species_block_max > 0
+                and dke_size <= species_block_max
+            ):
+                base_kind = "species_block"
+            elif (
+                op.fblock.pas is not None
+                and int(op.n_theta) > 1
+                and int(op.n_zeta) > 1
+                and int(op.n_theta) * int(op.n_zeta) <= tz_max
+            ):
+                base_kind = "theta_zeta"
+            else:
+                base_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
         else:
             base_kind = "point"
 
     if base_kind == "theta_line":
         base_precond = _build_rhsmode1_theta_line_preconditioner(op=op)
+    elif base_kind == "species_block":
+        base_precond = _build_rhsmode1_species_block_preconditioner(op=op)
+    elif base_kind == "theta_zeta":
+        base_precond = _build_rhsmode1_theta_zeta_preconditioner(op=op)
     elif base_kind == "zeta_line":
         base_precond = _build_rhsmode1_zeta_line_preconditioner(op=op)
     elif base_kind == "adi":
@@ -1802,6 +1837,270 @@ def _build_rhsmode1_theta_line_preconditioner(
     return _apply_reduced
 
 
+def _build_rhsmode1_theta_zeta_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a RHSMode=1 preconditioner using full (theta,zeta) blocks.
+
+    For each species and each active (x,L) pair, solve the full angular block over
+    all theta/zeta points. This captures 2D angular coupling while treating x/L
+    coupling as diagonal, making it stronger than the theta- or zeta-line options.
+    """
+    cache_key = _rhsmode1_precond_cache_key(op, "theta_zeta")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = op
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+        block_count = int(n_species * local_per_species)
+        block_size = int(n_theta * n_zeta)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        idx_map = np.zeros((block_count, block_size), dtype=np.int32)
+        block_inv = np.zeros((block_count, block_size, block_size), dtype=np.float64)
+
+        block_idx = 0
+        for s in range(n_species):
+            for ix in range(n_x):
+                max_l = int(nxi_for_x[ix])
+                for il in range(max_l):
+                    k = 0
+                    for it in range(n_theta):
+                        for iz in range(n_zeta):
+                            idx_map[block_idx, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz)
+                            )
+                            k += 1
+                    rep_idx = idx_map[block_idx, :]
+                    chunk_cols = _precond_chunk_cols(total_size, int(rep_idx.shape[0]))
+                    y_sub = _matvec_submatrix(
+                        op_pc,
+                        col_idx=rep_idx,
+                        row_idx=rep_idx,
+                        total_size=total_size,
+                        chunk_cols=chunk_cols,
+                    )
+                    a = np.asarray(y_sub.T, dtype=np.float64)
+                    a = a + reg * np.eye(block_size, dtype=np.float64)
+                    try:
+                        inv = np.linalg.inv(a)
+                    except np.linalg.LinAlgError:
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    if not np.all(np.isfinite(inv)):
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    block_inv[block_idx, :, :] = inv
+                    block_idx += 1
+
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_CACHE[cache_key] = cached
+
+    block_inv_jnp = cached.block_inv_jnp
+    flat_idx_jnp = cached.flat_idx_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+    block_size = int(block_inv_jnp.shape[-1])
+    block_count = int(block_inv_jnp.shape[0])
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        r_loc = r_full[flat_idx_jnp].reshape((block_count, block_size))
+        z_loc = jnp.einsum("bij,bj->bi", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_species_block_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Build a RHSMode=1 preconditioner using full species blocks.
+
+    For each species, solve a block over all (x,L,theta,zeta) points. This captures
+    both angular and x/L coupling within each species while ignoring inter-species
+    coupling, providing a much stronger preconditioner for PAS systems.
+    """
+    cache_key = _rhsmode1_precond_cache_key(op, "species_block")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = op
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+        block_size = int(local_per_species * n_theta * n_zeta)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        idx_map = np.zeros((n_species, block_size), dtype=np.int32)
+        block_inv = np.zeros((n_species, block_size, block_size), dtype=np.float64)
+
+        for s in range(n_species):
+            k = 0
+            for ix in range(n_x):
+                max_l = int(nxi_for_x[ix])
+                for il in range(max_l):
+                    for it in range(n_theta):
+                        for iz in range(n_zeta):
+                            idx_map[s, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz)
+                            )
+                            k += 1
+            rep_idx = idx_map[s, :]
+            chunk_cols = _precond_chunk_cols(total_size, int(rep_idx.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=rep_idx,
+                row_idx=rep_idx,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            a = np.asarray(y_sub.T, dtype=np.float64)
+            a = a + reg * np.eye(block_size, dtype=np.float64)
+            try:
+                inv = np.linalg.inv(a)
+            except np.linalg.LinAlgError:
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            if not np.all(np.isfinite(inv)):
+                inv = np.linalg.pinv(a, rcond=1e-12)
+            block_inv[s, :, :] = inv
+
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_CACHE[cache_key] = cached
+
+    block_inv_jnp = cached.block_inv_jnp
+    flat_idx_jnp = cached.flat_idx_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+    n_species = int(block_inv_jnp.shape[0])
+    block_size = int(block_inv_jnp.shape[-1])
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        r_loc = r_full[flat_idx_jnp].reshape((n_species, block_size))
+        z_loc = jnp.einsum("sij,sj->si", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
 def _build_rhsmode1_zeta_line_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -1962,6 +2261,18 @@ def solve_v3_full_system_linear_gmres(
     and an outer Newton-Krylov iteration (not yet shipped as a stable API).
     """
     t = Timer()
+    restart_env = os.environ.get("SFINCS_JAX_GMRES_RESTART", "").strip()
+    if restart_env:
+        try:
+            restart = int(restart_env)
+        except ValueError:
+            pass
+    maxiter_env = os.environ.get("SFINCS_JAX_GMRES_MAXITER", "").strip()
+    if maxiter_env:
+        try:
+            maxiter = int(maxiter_env)
+        except ValueError:
+            pass
     if emit is not None:
         emit(1, "solve_v3_full_system_linear_gmres: building operator")
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
@@ -2160,6 +2471,10 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = None
         elif rhs1_precond_env in {"theta", "theta_line", "line_theta"}:
             rhs1_precond_kind = "theta_line"
+        elif rhs1_precond_env in {"species", "species_block", "speciesblock"}:
+            rhs1_precond_kind = "species_block"
+        elif rhs1_precond_env in {"theta_zeta", "theta_zeta_line", "tz", "tz_line"}:
+            rhs1_precond_kind = "theta_zeta"
         elif rhs1_precond_env in {"zeta", "zeta_line", "line_zeta"}:
             rhs1_precond_kind = "zeta_line"
         elif rhs1_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
@@ -2177,10 +2492,38 @@ def solve_v3_full_system_linear_gmres(
         # use point-block Jacobi. Enable line preconditioning only when explicitly requested.
         if int(op.rhs_mode) == 1 and (not bool(op.include_phi1)):
             if pre_theta == 0 and pre_zeta == 0:
+                tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+                try:
+                    tz_max = int(tz_max_env) if tz_max_env else 128
+                except ValueError:
+                    tz_max = 128
+                species_block_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPECIES_BLOCK_MAX", "").strip()
+                try:
+                    species_block_max = int(species_block_max_env) if species_block_max_env else 1600
+                except ValueError:
+                    species_block_max = 1600
+                nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+                local_per_species = int(np.sum(nxi_for_x))
+                dke_size = int(local_per_species * int(op.n_theta) * int(op.n_zeta))
                 if full_precond_requested and int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
                     rhs1_precond_kind = "schur"
                 elif full_precond_requested and (int(op.n_theta) > 1 or int(op.n_zeta) > 1):
                     rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                elif (
+                    op.fblock.pas is not None
+                    and int(op.n_theta) > 1
+                    and int(op.n_zeta) > 1
+                    and species_block_max > 0
+                    and dke_size <= species_block_max
+                ):
+                    rhs1_precond_kind = "species_block"
+                elif (
+                    op.fblock.pas is not None
+                    and int(op.n_theta) > 1
+                    and int(op.n_zeta) > 1
+                    and int(op.n_theta) * int(op.n_zeta) <= tz_max
+                ):
+                    rhs1_precond_kind = "theta_zeta"
                 else:
                     collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
                     try:
@@ -2680,6 +3023,10 @@ def solve_v3_full_system_linear_gmres(
                 precond = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+            elif rhs1_precond_kind == "species_block":
+                precond = _build_rhsmode1_species_block_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
             elif rhs1_precond_kind == "zeta_line":
                 precond = _build_rhsmode1_zeta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
@@ -2970,8 +3317,12 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind = None
         elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
             strong_precond_kind = "theta_line"
+        elif strong_precond_env in {"species", "species_block", "speciesblock"}:
+            strong_precond_kind = "species_block"
         elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
             strong_precond_kind = "zeta_line"
+        elif strong_precond_env in {"theta_zeta", "theta_zeta_line", "tz", "tz_line"}:
+            strong_precond_kind = "theta_zeta"
         elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
             strong_precond_kind = "adi"
         elif strong_precond_env in {"schur", "schur_complement", "constraint_schur"}:
@@ -2993,7 +3344,15 @@ def solve_v3_full_system_linear_gmres(
                 and int(active_size) >= strong_precond_min
                 and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
             ):
-                strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+                try:
+                    tz_max = int(tz_max_env) if tz_max_env else 128
+                except ValueError:
+                    tz_max = 128
+                if int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
+                    strong_precond_kind = "theta_zeta"
+                else:
+                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 
         if strong_precond_kind is not None and float(res_reduced.residual_norm) > target_reduced:
             if emit is not None:
@@ -3005,6 +3364,14 @@ def solve_v3_full_system_linear_gmres(
 
             if strong_precond_kind == "theta_line":
                 strong_preconditioner_reduced = _build_rhsmode1_theta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "species_block":
+                strong_preconditioner_reduced = _build_rhsmode1_species_block_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "theta_zeta":
+                strong_preconditioner_reduced = _build_rhsmode1_theta_zeta_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             elif strong_precond_kind == "zeta_line":
@@ -3241,6 +3608,10 @@ def solve_v3_full_system_linear_gmres(
                     emit(1, f"solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner={rhs1_precond_kind}")
                 if rhs1_precond_kind == "theta_line":
                     return _build_rhsmode1_theta_line_preconditioner(op=op)
+                if rhs1_precond_kind == "species_block":
+                    return _build_rhsmode1_species_block_preconditioner(op=op)
+                if rhs1_precond_kind == "theta_zeta":
+                    return _build_rhsmode1_theta_zeta_preconditioner(op=op)
                 if rhs1_precond_kind == "zeta_line":
                     return _build_rhsmode1_zeta_line_preconditioner(op=op)
                 if rhs1_precond_kind == "schur":
@@ -3458,6 +3829,8 @@ def solve_v3_full_system_linear_gmres(
                 strong_precond_kind = None
             elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
                 strong_precond_kind = "theta_line"
+            elif strong_precond_env in {"species", "species_block", "speciesblock"}:
+                strong_precond_kind = "species_block"
             elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
                 strong_precond_kind = "zeta_line"
             elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
@@ -3493,6 +3866,8 @@ def solve_v3_full_system_linear_gmres(
 
                 if strong_precond_kind == "theta_line":
                     strong_preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
+                elif strong_precond_kind == "species_block":
+                    strong_preconditioner_full = _build_rhsmode1_species_block_preconditioner(op=op)
                 elif strong_precond_kind == "zeta_line":
                     strong_preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
                 elif strong_precond_kind == "schur":

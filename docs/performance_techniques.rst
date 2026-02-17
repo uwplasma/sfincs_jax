@@ -306,6 +306,7 @@ RHSMode=1 preconditioning (matrix-free)
 
 - **Point-block Jacobi**: local (x,L) blocks at each :math:`(\theta,\zeta)`.
 - **Theta-line / Zeta-line / ADI**: 1D line solves across angular dimensions.
+- **Species-block (PAS)**: full (x,L,θ,ζ) block per species for strong PAS conditioning.
 - **Collision diagonal / xblock / sxblock**: analytic blocks from PAS/FP collisions.
 - **Constraint-aware Schur**: enforces constraintScheme=2 source constraints via a
   diagonal or dense Schur complement.
@@ -357,8 +358,9 @@ Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_schur_*``).
 Controls: ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` and
 ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``. The base preconditioner used inside the
 Schur construction can be selected with ``SFINCS_JAX_RHSMODE1_SCHUR_BASE``; the
-default ``auto`` path uses a theta/zeta line base when angular coupling is present,
-which avoids dense fallback on FP-heavy cases.
+default ``auto`` path uses a PAS species-block base when the per‑species block
+size is modest and falls back to theta/zeta line bases otherwise, which avoids
+dense fallback on PAS stellarator cases without excessive cost on larger systems.
 See ``docs/references.rst`` for Schur complement references.
 
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
@@ -369,6 +371,7 @@ These are cached to avoid recomputation. RHS-only gradients are excluded from th
 so scan points can reuse the same preconditioner blocks. Controls:
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER``
+- ``SFINCS_JAX_RHSMODE1_SPECIES_BLOCK_MAX`` (auto cap for PAS species-block preconditioning)
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
