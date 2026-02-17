@@ -92,6 +92,9 @@ JAX-native performance patterns used in `sfincs_jax`
   while keeping Krylov solves in float64. ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` controls
   the auto threshold, and ``SFINCS_JAX_PRECOND_FP32_MIN_BLOCK`` controls the per-block
   auto threshold.
+- **Auto Schur for PAS constraints**: when ``constraintScheme=2`` and PAS collisions
+  are active, large systems default to a Schur-complement preconditioner
+  (``SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN``) to reduce Krylov iterations in HSX-like cases.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.

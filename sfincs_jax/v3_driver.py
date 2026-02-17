@@ -2683,10 +2683,25 @@ def solve_v3_full_system_linear_gmres(
                 max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
                 local_per_species = int(np.sum(nxi_for_x))
                 dke_size = int(local_per_species * int(op.n_theta) * int(op.n_zeta))
+                schur_auto = False
+                if (
+                    int(op.constraint_scheme) == 2
+                    and int(op.extra_size) > 0
+                    and op.fblock.pas is not None
+                    and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+                ):
+                    schur_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN", "").strip()
+                    try:
+                        schur_auto_min = int(schur_auto_min_env) if schur_auto_min_env else 2500
+                    except ValueError:
+                        schur_auto_min = 2500
+                    schur_auto = int(op.total_size) >= schur_auto_min
                 if full_precond_requested and int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
                     rhs1_precond_kind = "schur"
                 elif full_precond_requested and (int(op.n_theta) > 1 or int(op.n_zeta) > 1):
                     rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                elif schur_auto:
+                    rhs1_precond_kind = "schur"
                 elif (
                     op.fblock.pas is not None
                     and int(op.n_theta) > 1

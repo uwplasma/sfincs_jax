@@ -363,6 +363,10 @@ size is modest, then prefers the PAS x-block :math:`(\theta,\zeta)` variant when
 the per‑:math:`x` block is still small, and falls back to theta/zeta line bases
 otherwise. This avoids dense fallback on PAS stellarator cases without excessive
 cost on larger systems.
+
+For PAS cases with ``constraintScheme=2``, ``SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN``
+can trigger the Schur preconditioner automatically once ``total_size`` exceeds
+the threshold (default: ``2500``), which helps HSX-like cases.
 See ``docs/references.rst`` for Schur complement references.
 
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
@@ -386,6 +390,7 @@ so scan points can reuse the same preconditioner blocks. Controls:
 - ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX`` (auto cap for PAS per‑x :math:`(\theta,\zeta)` preconditioning)
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
+- ``SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN`` (auto Schur cutoff by total size)
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
 - ``SFINCS_JAX_PRECOND_DTYPE`` (default ``auto``; ``float32`` or ``float64`` to override)
 - ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)

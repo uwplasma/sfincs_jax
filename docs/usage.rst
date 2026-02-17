@@ -200,6 +200,10 @@ performance without changing the input file:
   complement (default: ``1e-14``). Smaller values tighten the constraint solve but can
   amplify noise.
 
+- ``SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN``: when ``constraintScheme=2`` and PAS collisions
+  are active, auto-select Schur preconditioning if ``total_size`` exceeds this threshold
+  (default: ``2500``). Set to ``0`` to always allow auto Schur.
+
 - ``SFINCS_JAX_PRECOND_DTYPE``: dtype for preconditioner blocks (default: ``auto`` uses
   float32 for large systems and float64 otherwise). ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``
   controls the global auto threshold; ``SFINCS_JAX_PRECOND_FP32_MIN_BLOCK`` controls

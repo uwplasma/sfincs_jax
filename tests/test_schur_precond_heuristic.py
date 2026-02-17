@@ -27,3 +27,29 @@ def test_full_precond_uses_schur_for_constraint_scheme2(tmp_path: Path, monkeypa
 
     joined = "\n".join(logs)
     assert "building RHSMode=1 preconditioner=schur" in joined
+
+
+def test_schur_auto_min_for_pas(tmp_path: Path, monkeypatch) -> None:
+    """Auto Schur selection should respect SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN."""
+    input_path = Path(__file__).parent / "reduced_inputs" / "geometryScheme4_2species_PAS_noEr.input.namelist"
+    out_path = tmp_path / "sfincsOutput_jax.h5"
+
+    logs: list[str] = []
+
+    def emit(_level: int, msg: str) -> None:
+        logs.append(msg)
+
+    monkeypatch.setenv("SFINCS_JAX_FORTRAN_STDOUT", "0")
+    monkeypatch.setenv("SFINCS_JAX_SOLVER_ITER_STATS", "0")
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN", "0")
+
+    write_sfincs_jax_output_h5(
+        input_namelist=input_path,
+        output_path=out_path,
+        compute_solution=True,
+        emit=emit,
+        verbose=True,
+    )
+
+    joined = "\n".join(logs)
+    assert "building RHSMode=1 preconditioner=schur" in joined
