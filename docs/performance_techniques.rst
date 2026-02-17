@@ -355,8 +355,15 @@ coupling while improving conditioning in high‑ratio PAS cases.
 
 Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_schur_*``).
 Controls: ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` and
-``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``.
+``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``. The base preconditioner used inside the
+Schur construction can be selected with ``SFINCS_JAX_RHSMODE1_SCHUR_BASE``; the
+default ``auto`` path uses a theta/zeta line base when angular coupling is present,
+which avoids dense fallback on FP-heavy cases.
 See ``docs/references.rst`` for Schur complement references.
+
+When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
+``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
+preserving the constraint coupling.
 
 These are cached to avoid recomputation. RHS-only gradients are excluded from the cache key
 so scan points can reuse the same preconditioner blocks. Controls:
@@ -367,6 +374,13 @@ so scan points can reuse the same preconditioner blocks. Controls:
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
 - ``SFINCS_JAX_PRECOND_DTYPE`` (default ``auto``; ``float32`` or ``float64`` to override)
 - ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)
+
+**KSP history cost.** PETSc-style KSP residual histories and iteration counts are
+computed via an additional SciPy solve (to match the PETSc text). For large Krylov
+counts this can dominate runtime, so the defaults now skip these when the estimated
+iteration count exceeds ``SFINCS_JAX_KSP_HISTORY_MAX_ITER`` /
+``SFINCS_JAX_SOLVER_ITER_STATS_MAX_ITER``. Raise those caps (or set to ``none``)
+only when strict per-iteration history is required.
 
 **Mixed-precision preconditioning.** With ``SFINCS_JAX_PRECOND_DTYPE=auto`` (default),
 preconditioner blocks switch to float32 once the estimated block size exceeds

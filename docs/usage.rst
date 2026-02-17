@@ -381,18 +381,30 @@ performance without changing the input file:
 
   - ``1``/``true``: run a SciPy Krylov solve after the JAX solve to estimate iteration counts.
   - ``0``/``false``: disable (default outside the reduced-suite runner).
+  - Because this invokes an extra SciPy solve, keep the iteration caps below for performance.
 
 - ``SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE``: skip iteration counting when the linear system size
   exceeds the provided threshold (useful when stats collection becomes too costly).
+
+- ``SFINCS_JAX_SOLVER_ITER_STATS_MAX_ITER``: skip iteration counting when the estimated iteration
+  count (``restart * maxiter`` for GMRES) exceeds the provided threshold (default: ``2000``).
 
 - ``SFINCS_JAX_KSP_HISTORY_MAX_SIZE``: skip PETSc-style KSP residual history output when the
   linear system size exceeds the provided threshold (default: ``800``; set to ``none`` to
   always emit).
 
+- ``SFINCS_JAX_KSP_HISTORY_MAX_ITER``: skip PETSc-style KSP residual history output when the
+  estimated iteration count (``restart * maxiter`` for GMRES) exceeds the provided threshold
+  (default: ``2000``).
+
 - ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND``: strong RHSMode=1 fallback preconditioner
   (``theta_line``, ``zeta_line``, ``adi``, or ``auto``). Default: ``auto`` for
   ``constraintScheme=2`` when the environment variable is unset, otherwise disabled
   unless explicitly set.
+
+- ``SFINCS_JAX_RHSMODE1_SCHUR_BASE``: choose the base preconditioner used inside the
+  constraint-aware Schur preconditioner (``theta_line``, ``zeta_line``, ``adi``, or
+  ``point``). Default: ``auto`` (uses line preconditioning when angular coupling is present).
 
 - ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS``: enable PAS-specific constraint projection for
   ``constraintScheme=2`` RHSMode=1 solves (drop explicit source unknowns and enforce the
