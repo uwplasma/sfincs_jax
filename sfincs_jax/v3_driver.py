@@ -1924,7 +1924,12 @@ def _build_rhsmode1_schur_preconditioner(
         if cached is not None:
             return cached
         # Ensure base block preconditioner cache exists.
-        _build_rhsmode1_block_preconditioner(op=op)
+        _build_rhsmode1_block_preconditioner(
+            op=op,
+            preconditioner_species=1,
+            preconditioner_x=0,
+            preconditioner_xi=1,
+        )
         block_key = _rhsmode1_precond_cache_key(op, "point")
         block_cached = _RHSMODE1_PRECOND_CACHE.get(block_key)
         if block_cached is None:
