@@ -273,7 +273,8 @@ performance without changing the input file:
   before ``SFINCS_JAX_PRECOND_DTYPE=auto`` switches to float32 (default: ``20000``).
 
 - ``SFINCS_JAX_STATE_IN``/``SFINCS_JAX_STATE_OUT``: path for reading/writing Krylov
-  recycle states (used for scan warm-starting and multi-RHS reuse).
+  recycle states (used for scan warm-starting and multi-RHS reuse). RHSMode=1 states
+  now store a short history of prior solutions for recycling.
 
 - ``SFINCS_JAX_SCAN_RECYCLE``: enable automatic scan-level Krylov recycling in
   :func:`sfincs_jax.scans.run_er_scan` by wiring ``SFINCS_JAX_STATE_IN/OUT`` between
@@ -308,6 +309,10 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_K``: recycle up to ``k`` previous Krylov solution vectors across
   successive ``whichRHS`` solves in transport-matrix runs. Set to ``0`` to disable.
+
+- ``SFINCS_JAX_RHSMODE1_RECYCLE_K``: recycle up to ``k`` previous RHSMode=1 solution vectors
+  (via least-squares deflation) when ``SFINCS_JAX_STATE_IN`` is provided. Set to ``0`` to
+  disable (default: ``4``).
 
 - ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX``: enable a dense retry when transport-matrix Krylov
   solves stagnate. The dense retry is applied only when the active system size is below the

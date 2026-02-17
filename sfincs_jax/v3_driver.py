@@ -7,7 +7,7 @@ from jax import config as _jax_config
 
 _jax_config.update("jax_enable_x64", True)
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 import os
 import numpy as np
 
@@ -1904,6 +1904,7 @@ def solve_v3_full_system_linear_gmres(
     identity_shift: float = 0.0,
     phi1_hat_base: jnp.ndarray | None = None,
     emit: Callable[[int, str], None] | None = None,
+    recycle_basis: Sequence[jnp.ndarray] | None = None,
 ) -> V3LinearSolveResult:
     """Solve the current v3 full-system linear problem `A x = rhs` matrix-free using GMRES.
 
@@ -1934,10 +1935,40 @@ def solve_v3_full_system_linear_gmres(
     if emit is not None:
         emit(2, f"solve_v3_full_system_linear_gmres: rhs_norm={float(rhs_norm):.6e}")
 
+    recycle_k_env = os.environ.get("SFINCS_JAX_RHSMODE1_RECYCLE_K", "").strip()
+    try:
+        recycle_k = int(recycle_k_env) if recycle_k_env else 4
+    except ValueError:
+        recycle_k = 4
+    recycle_k = max(0, recycle_k)
+    recycle_basis_use: list[jnp.ndarray] = []
+    if recycle_k > 0 and recycle_basis:
+        for vec in recycle_basis:
+            v = jnp.asarray(vec)
+            if v.shape == (op.total_size,):
+                recycle_basis_use.append(v)
+        if len(recycle_basis_use) > recycle_k:
+            recycle_basis_use = recycle_basis_use[-recycle_k:]
+
     def mv(x):
         # Use the JIT-compiled operator application to reduce Python overhead in repeated matvecs
         # (e.g. during GMRES iterations and Er scans).
         return apply_v3_full_system_operator_cached(op, x)
+
+    def _recycled_initial_guess(
+        rhs_vec: jnp.ndarray,
+        basis: list[jnp.ndarray],
+        basis_au: list[jnp.ndarray],
+    ) -> jnp.ndarray | None:
+        if not basis or not basis_au:
+            return None
+        u = jnp.stack(basis, axis=1)  # (N, k)
+        au = jnp.stack(basis_au, axis=1)  # (N, k)
+        coeff, *_ = jnp.linalg.lstsq(au, rhs_vec, rcond=None)
+        x0_guess = u @ coeff
+        if not jnp.all(jnp.isfinite(x0_guess)):
+            return None
+        return x0_guess
 
     active_env = os.environ.get("SFINCS_JAX_ACTIVE_DOF", "").strip().lower()
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
@@ -2437,6 +2468,24 @@ def solve_v3_full_system_linear_gmres(
                 elif x0_arr.shape == (op.f_size,):
                     f0_proj = _project_pas_f(x0_arr)
                     x0_reduced = reduce_full(f0_proj)
+            if recycle_basis_use:
+                basis_reduced: list[jnp.ndarray] = []
+                for vec in recycle_basis_use:
+                    if vec.shape != (op.total_size,):
+                        continue
+                    f_proj = _project_pas_f(vec[: op.f_size])
+                    basis_reduced.append(reduce_full(f_proj))
+                if basis_reduced:
+                    basis_au = [mv_reduced(b) for b in basis_reduced]
+                    x0_recycled = _recycled_initial_guess(rhs_reduced, basis_reduced, basis_au)
+                    if x0_recycled is not None:
+                        if x0_reduced is None:
+                            x0_reduced = x0_recycled
+                        else:
+                            r0 = jnp.linalg.norm(mv_reduced(x0_reduced) - rhs_reduced)
+                            r1 = jnp.linalg.norm(mv_reduced(x0_recycled) - rhs_reduced)
+                            if jnp.isfinite(r1) and (not jnp.isfinite(r0) or float(r1) < float(r0)):
+                                x0_reduced = x0_recycled
         else:
             def expand_reduced(v_reduced: jnp.ndarray) -> jnp.ndarray:
                 z0 = jnp.zeros((1,), dtype=v_reduced.dtype)
@@ -2456,6 +2505,23 @@ def solve_v3_full_system_linear_gmres(
                     x0_reduced = reduce_full(x0_arr)
                 elif use_pas_projection and x0_arr.shape == (op.f_size,):
                     x0_reduced = x0_arr[active_idx_jnp]
+            if recycle_basis_use:
+                basis_reduced = []
+                for vec in recycle_basis_use:
+                    if vec.shape != (op.total_size,):
+                        continue
+                    basis_reduced.append(reduce_full(vec))
+                if basis_reduced:
+                    basis_au = [mv_reduced(b) for b in basis_reduced]
+                    x0_recycled = _recycled_initial_guess(rhs_reduced, basis_reduced, basis_au)
+                    if x0_recycled is not None:
+                        if x0_reduced is None:
+                            x0_reduced = x0_recycled
+                        else:
+                            r0 = jnp.linalg.norm(mv_reduced(x0_reduced) - rhs_reduced)
+                            r1 = jnp.linalg.norm(mv_reduced(x0_recycled) - rhs_reduced)
+                            if jnp.isfinite(r1) and (not jnp.isfinite(r0) or float(r1) < float(r0)):
+                                x0_reduced = x0_recycled
         preconditioner_reduced = None
         bicgstab_preconditioner_reduced = None
         if rhs1_bicgstab_kind is not None:
@@ -3071,6 +3137,22 @@ def solve_v3_full_system_linear_gmres(
                     preconditioner_full = _build_rhs1_preconditioner_full()
             if preconditioner_full is None and bicgstab_preconditioner_full is not None:
                 preconditioner_full = bicgstab_preconditioner_full
+            if recycle_basis_use:
+                basis_full: list[jnp.ndarray] = []
+                for vec in recycle_basis_use:
+                    if vec.shape == (op.total_size,):
+                        basis_full.append(vec)
+                if basis_full:
+                    basis_au = [mv(v) for v in basis_full]
+                    x0_recycled = _recycled_initial_guess(rhs, basis_full, basis_au)
+                    if x0_recycled is not None:
+                        if x0 is None:
+                            x0 = x0_recycled
+                        else:
+                            r0 = jnp.linalg.norm(mv(jnp.asarray(x0)) - rhs)
+                            r1 = jnp.linalg.norm(mv(x0_recycled) - rhs)
+                            if jnp.isfinite(r1) and (not jnp.isfinite(r0) or float(r1) < float(r0)):
+                                x0 = x0_recycled
             result, residual_vec = _solve_linear_with_residual(
                 matvec_fn=mv,
                 b_vec=rhs,

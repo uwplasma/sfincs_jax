@@ -1676,6 +1676,7 @@ def write_sfincs_jax_output_h5(
         op0 = full_system_operator_from_namelist(nml=nml)
         state_in_env = os.environ.get("SFINCS_JAX_STATE_IN", "").strip()
         x0_state = None
+        recycle_basis_state = None
         if state_in_env:
             try:
                 from .solver_state import load_krylov_state  # noqa: PLC0415
@@ -1683,8 +1684,16 @@ def write_sfincs_jax_output_h5(
                 state = load_krylov_state(path=state_in_env, op=op0)
                 if state is not None:
                     x0_state = state.get("x_full")
+                    recycle_basis_state = state.get("x_history")
             except Exception:  # noqa: BLE001
                 x0_state = None
+                recycle_basis_state = None
+        recycle_k_env = os.environ.get("SFINCS_JAX_RHSMODE1_RECYCLE_K", "").strip()
+        try:
+            recycle_k = int(recycle_k_env) if recycle_k_env else 4
+        except ValueError:
+            recycle_k = 4
+        recycle_k = max(0, recycle_k)
         precompile_env = os.environ.get("SFINCS_JAX_PRECOMPILE", "").strip().lower()
         if precompile_env in {"1", "true", "yes", "on"}:
             precompile_v3_full_system(op0, include_jacobian=bool(include_phi1))
@@ -1815,6 +1824,7 @@ def write_sfincs_jax_output_h5(
                 tol=float(solver_tol),
                 solve_method=solve_method,
                 x0=x0_state,
+                recycle_basis=recycle_basis_state,
                 emit=emit,
             )
             _mark("rhs1_solve_done")
@@ -1830,7 +1840,16 @@ def write_sfincs_jax_output_h5(
             try:
                 from .solver_state import save_krylov_state  # noqa: PLC0415
 
-                save_krylov_state(path=state_out_env, op=op0, x_full=result.x)
+                x_history = None
+                if recycle_k > 0:
+                    history: list[jnp.ndarray] = []
+                    if recycle_basis_state:
+                        history.extend([jnp.asarray(v) for v in recycle_basis_state])
+                    history.append(jnp.asarray(result.x))
+                    if len(history) > recycle_k:
+                        history = history[-recycle_k:]
+                    x_history = history
+                save_krylov_state(path=state_out_env, op=op0, x_full=result.x, x_history=x_history)
             except Exception:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"write_sfincs_jax_output_h5: failed to write state {state_out_env}")

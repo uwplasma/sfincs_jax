@@ -32,6 +32,7 @@ def save_krylov_state(
     op,
     x_full: jnp.ndarray | None = None,
     x_by_rhs: dict[int, jnp.ndarray] | None = None,
+    x_history: list[jnp.ndarray] | None = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,6 +46,10 @@ def save_krylov_state(
         x_stack = np.stack([np.asarray(x_by_rhs[int(k)], dtype=np.float64) for k in which_rhs], axis=0)
         payload["which_rhs"] = which_rhs
         payload["x_by_rhs"] = x_stack
+    if x_history is not None:
+        if isinstance(x_history, (list, tuple)) and x_history:
+            x_hist_stack = np.stack([np.asarray(v, dtype=np.float64) for v in x_history], axis=0)
+            payload["x_history"] = x_hist_stack
     np.savez(path, **payload)
 
 
@@ -76,6 +81,10 @@ def load_krylov_state(
         x_stack = np.asarray(data["x_by_rhs"], dtype=np.float64)
         if x_stack.ndim == 2 and which_rhs.ndim == 1 and x_stack.shape[0] == which_rhs.shape[0]:
             out["x_by_rhs"] = {int(k): x_stack[i, :] for i, k in enumerate(which_rhs)}
+    if "x_history" in data:
+        x_hist = np.asarray(data["x_history"], dtype=np.float64)
+        if x_hist.ndim == 2:
+            out["x_history"] = [x_hist[i, :] for i in range(x_hist.shape[0])]
     if not out:
         return None
     return out

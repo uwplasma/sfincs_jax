@@ -375,6 +375,7 @@ where :math:`U` contains recent solution vectors.
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_K`` in ``sfincs_jax.v3_driver``.
 - ``SFINCS_JAX_STATE_IN``/``SFINCS_JAX_STATE_OUT`` (cross-run recycling).
 - ``SFINCS_JAX_SCAN_RECYCLE`` (auto-wires state files between scan points).
+- ``SFINCS_JAX_RHSMODE1_RECYCLE_K`` (RHSMode=1 scan reuse with least-squares deflation).
 
 **Compared to Fortran.**
 
