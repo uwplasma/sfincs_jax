@@ -313,6 +313,10 @@ so scan points can reuse the same preconditioner blocks. Controls:
 - ``SFINCS_JAX_PRECOND_DTYPE`` (default ``auto``; ``float32`` or ``float64`` to override)
 - ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)
 
+**Mixed-precision preconditioning.** With ``SFINCS_JAX_PRECOND_DTYPE=auto`` (default),
+preconditioner blocks switch to float32 once the estimated block size exceeds
+``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``, while Krylov iterations remain in float64.
+
 Transport diagnostics: batched + precomputed
 --------------------------------------------
 
