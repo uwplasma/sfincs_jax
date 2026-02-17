@@ -359,19 +359,31 @@ Controls: ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` and
 ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``. The base preconditioner used inside the
 Schur construction can be selected with ``SFINCS_JAX_RHSMODE1_SCHUR_BASE``; the
 default ``auto`` path uses a PAS species-block base when the per‑species block
-size is modest and falls back to theta/zeta line bases otherwise, which avoids
-dense fallback on PAS stellarator cases without excessive cost on larger systems.
+size is modest, then prefers the PAS x-block :math:`(\theta,\zeta)` variant when
+the per‑:math:`x` block is still small, and falls back to theta/zeta line bases
+otherwise. This avoids dense fallback on PAS stellarator cases without excessive
+cost on larger systems.
 See ``docs/references.rst`` for Schur complement references.
 
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
 preserving the constraint coupling.
 
+**PAS x-block :math:`(\theta,\zeta)` preconditioner.** For PAS cases with
+angular grids, ``sfincs_jax`` can build per‑species, per‑:math:`x` blocks over
+the full :math:`(L,\theta,\zeta)` space. This captures angular coupling without
+forming the full species block, and it is selected automatically when
+:math:`L \times N_\theta \times N_\zeta` stays below
+``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX``.
+
+Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_xblock_tz_preconditioner``).
+
 These are cached to avoid recomputation. RHS-only gradients are excluded from the cache key
 so scan points can reuse the same preconditioner blocks. Controls:
 
 - ``SFINCS_JAX_RHSMODE1_PRECONDITIONER``
 - ``SFINCS_JAX_RHSMODE1_SPECIES_BLOCK_MAX`` (auto cap for PAS species-block preconditioning)
+- ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX`` (auto cap for PAS per‑x :math:`(\theta,\zeta)` preconditioning)
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
@@ -386,8 +398,10 @@ iteration count exceeds ``SFINCS_JAX_KSP_HISTORY_MAX_ITER`` /
 only when strict per-iteration history is required.
 
 **Mixed-precision preconditioning.** With ``SFINCS_JAX_PRECOND_DTYPE=auto`` (default),
-preconditioner blocks switch to float32 once the estimated block size exceeds
-``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``, while Krylov iterations remain in float64.
+preconditioner blocks switch to float32 once the estimated system size exceeds
+``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (global) or the per-block size exceeds
+``SFINCS_JAX_PRECOND_FP32_MIN_BLOCK`` (per-block), while Krylov iterations remain
+in float64.
 
 Matvec fusion for collisionless + drift terms
 ---------------------------------------------

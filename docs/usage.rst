@@ -167,6 +167,7 @@ performance without changing the input file:
 
   - ``point`` (or ``1``): point-block Jacobi on local (x,L) unknowns at each :math:`(\theta,\zeta)`.
   - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
+  - ``xblock_tz``: PAS per‑:math:`x` block over :math:`(L,\theta,\zeta)` (captures angular coupling).
   - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
   - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
   - ``adi``: apply the theta-line and zeta-line preconditioners sequentially (strongest of the built-ins,
@@ -176,6 +177,10 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` before the default
   RHSMode=1 preconditioner switches to the collision-diagonal option (default: ``600``).
+
+- ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX``: maximum per‑:math:`x` block size
+  (:math:`L \times N_\theta \times N_\zeta`) before the PAS xblock_tz preconditioner
+  is disabled in auto mode (default: ``1200``).
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``: choose the collision preconditioner flavor
   when ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision`` or BiCGStab preconditioning is enabled.
@@ -197,7 +202,8 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_PRECOND_DTYPE``: dtype for preconditioner blocks (default: ``auto`` uses
   float32 for large systems and float64 otherwise). ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE``
-  controls the auto threshold.
+  controls the global auto threshold; ``SFINCS_JAX_PRECOND_FP32_MIN_BLOCK`` controls
+  the per-block threshold.
 
 - ``SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND``: optional RHSMode=1 BiCGStab preconditioning.
 

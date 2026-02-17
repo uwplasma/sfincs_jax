@@ -90,7 +90,8 @@ JAX-native performance patterns used in `sfincs_jax`
 - **Mixed-precision preconditioners**: ``SFINCS_JAX_PRECOND_DTYPE`` defaults to ``auto``
   (float32 for large systems, float64 otherwise) to reduce memory and preconditioner cost
   while keeping Krylov solves in float64. ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` controls
-  the auto threshold.
+  the auto threshold, and ``SFINCS_JAX_PRECOND_FP32_MIN_BLOCK`` controls the per-block
+  auto threshold.
 - **Cached Boozer `.bc` parsing**: scheme11/12 geometry loading now caches parsed
   surfaces by content digest (plus geometry scheme), so repeated localized/copy paths of
   the same equilibrium file reuse one parsed surface table.
