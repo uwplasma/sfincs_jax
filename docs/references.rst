@@ -29,6 +29,12 @@ The solver stack in `sfincs_jax` draws on standard Krylov and preconditioning re
   *SIAM J. Sci. Stat. Comput.* 13(2), 1992.
 - P. Sonneveld and M. B. van Gijzen, “IDR(s): A family of simple and fast algorithms for
   solving large nonsymmetric systems of linear equations,” *SIAM J. Sci. Comput.* 31(2), 2008.
+- M. A. Woodbury, “Inverting modified matrices,” *Statistical Research Group Memo Report*, 1950
+  (Woodbury identity / low‑rank updates).
+- G. H. Golub and C. F. Van Loan, *Matrix Computations*, 4th ed., Johns Hopkins Univ. Press, 2013
+  (Schur complements, block factorization).
+- M. de Sturler, “Truncation strategies for optimal Krylov subspace methods,”
+  *SIAM J. Numer. Anal.* 36(3), 1999 (GCRO/deflation concepts).
 - M. Benzi, “Preconditioning techniques for large linear systems: a survey,” *J. Comput. Phys.*
   182(2), 2002.
 

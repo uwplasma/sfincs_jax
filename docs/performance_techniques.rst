@@ -273,6 +273,7 @@ the low-rank update improved end-to-end wall time by ~9% for
 ``geometryScheme5_3species_loRes`` and ~21% for ``tokamak_1species_FPCollisions_noEr``
 relative to ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K=0`` (profiles in
 ``examples/performance/output/reduced_profiles_fp_*.json``).
+See ``docs/references.rst`` for Woodbury/low-rank update references.
 
 **Coarse x-grid additive preconditioner (xmg).**
 
@@ -355,6 +356,7 @@ coupling while improving conditioning in high‑ratio PAS cases.
 Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_schur_*``).
 Controls: ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` and
 ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``.
+See ``docs/references.rst`` for Schur complement references.
 
 These are cached to avoid recomputation. RHS-only gradients are excluded from the cache key
 so scan points can reuse the same preconditioner blocks. Controls:
