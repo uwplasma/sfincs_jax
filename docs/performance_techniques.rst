@@ -403,6 +403,21 @@ preconditioner blocks switch to float32 once the estimated system size exceeds
 ``SFINCS_JAX_PRECOND_FP32_MIN_BLOCK`` (per-block), while Krylov iterations remain
 in float64.
 
+**Lightweight profiling.** Set ``SFINCS_JAX_PROFILE=1`` to emit coarse timing and
+memory marks during RHSMode=1 solves (operator build, RHS assembly, preconditioner
+construction, strong-preconditioner fallback). The output looks like:
+
+.. code-block:: text
+
+   profiling: operator_built dt_s=0.42 total_s=0.42 rss_mb=512.0 drss_mb=35.0 device_mb=na
+   profiling: rhs_assembled dt_s=0.08 total_s=0.50 rss_mb=515.0 drss_mb=38.0 device_mb=na
+   profiling: rhs1_precond_build_start dt_s=0.00 total_s=0.50 ...
+   profiling: rhs1_precond_build_done dt_s=1.25 total_s=1.75 ...
+
+This is intentionally low overhead and does not require external profilers. For
+detailed JAX tracing, use ``jax.profiler`` or standard tools, but keep them off
+for parity runs.
+
 Matvec fusion for collisionless + drift terms
 ---------------------------------------------
 
