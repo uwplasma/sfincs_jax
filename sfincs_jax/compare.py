@@ -100,6 +100,13 @@ def compare_sfincs_outputs(
         )
     rhs_mode_a = _as_int(a.get("RHSMode"))
     rhs_mode_b = _as_int(b.get("RHSMode"))
+    geom_a = _as_int(a.get("geometryScheme"))
+    geom_b = _as_int(b.get("geometryScheme"))
+    if geom_a == 5 and geom_b == 5 and "uHat" in a and "uHat" in b:
+        # VMEC geometryScheme=5 leaves uHat undefined in v3 (computeBHat_VMEC does not
+        # populate it). Normalize to zeros for stable, strict comparisons.
+        a["uHat"] = np.zeros_like(np.asarray(a["uHat"], dtype=np.float64))
+        b["uHat"] = np.zeros_like(np.asarray(b["uHat"], dtype=np.float64))
     local_tolerances: Dict[str, Dict[str, float]] = dict(tolerances or {})
     if rhs_mode_a == 3 and rhs_mode_b == 3 and constraint_a == 2 and constraint_b == 2:
         # Monoenergetic (RHSMode=3) with constraintScheme=2 can yield tiny total densities

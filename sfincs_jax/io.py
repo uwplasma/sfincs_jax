@@ -1275,13 +1275,9 @@ def sfincs_jax_output_dict(
         out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
         out["GHat"] = np.asarray(g_hat, dtype=np.float64)
         out["IHat"] = np.asarray(i_hat, dtype=np.float64)
-        # For geometryScheme=5, v3 writes nonzero uHat in monoenergetic (RHSMode=3) workflows,
-        # while many RHSMode=1 fixtures keep uHat at 0.
-        compute_u_hat = int(rhs_mode) == 3
-        if compute_u_hat:
-            # VMEC geometries store placeholder G/I in the geometry struct; use the
-            # flux-surface averages computed above so uHat matches v3 outputs.
-            geom_for_uhat = replace(geom, g_hat=g_hat, i_hat=i_hat, b0_over_bbar=b0)
+        # v3's VMEC path does not populate uHat (computeBHat_VMEC skips it), so leave zeros
+        # for parity and deterministic outputs.
+        compute_u_hat = False
     else:
         out["B0OverBBar"] = np.asarray(float(geom.b0_over_bbar), dtype=np.float64)
         out["iota"] = np.asarray(float(geom.iota), dtype=np.float64)
