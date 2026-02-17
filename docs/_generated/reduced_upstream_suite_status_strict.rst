@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_ok=38
+- Status counts: parity_mismatch=2, parity_ok=36
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -32,8 +32,8 @@
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 30.000
-     - 3.559
+     - 4.949
+     - 3.384
      - 24.0 (24-24)
      - 0/124
      - S:0 P:0
@@ -45,8 +45,8 @@
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 22.901
-     - 3.758
+     - 3.423
+     - 3.651
      - 155.0 (155-155)
      - 0/124
      - S:0 P:0
@@ -58,8 +58,8 @@
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.624
-     - 16.593
+     - 0.242
+     - 28.699
      - -
      - 0/193
      - S:0 P:0
@@ -71,8 +71,8 @@
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.780
-     - 20.655
+     - 0.412
+     - 33.650
      - -
      - 0/193
      - S:0 P:0
@@ -84,8 +84,8 @@
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
-     - 5.656
-     - 14.115
+     - 0.517
+     - 13.025
      - -
      - 0/193
      - S:0 P:0
@@ -97,8 +97,8 @@
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
-     - 8.617
-     - 16.037
+     - 1.508
+     - 14.867
      - -
      - 0/193
      - S:0 P:0
@@ -110,8 +110,8 @@
      - NTHETA=7,NX=3,NXI=9,NZETA=5
      - 1
      - 0
-     - 5.970
-     - 9.887
+     - 3.815
+     - 10.026
      - -
      - 0/193
      - S:0 P:0
@@ -123,8 +123,8 @@
      - NTHETA=7,NX=3,NXI=12,NZETA=12
      - 1
      - 0
-     - 0.354
-     - 12.844
+     - 0.559
+     - 23.075
      - -
      - 0/207
      - S:0 P:0
@@ -136,8 +136,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=6
      - 1
      - 0
-     - 0.077
-     - 10.134
+     - 0.221
+     - 17.915
      - -
      - 0/207
      - S:0 P:0
@@ -149,8 +149,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 4.546
-     - 7.760
+     - 0.560
+     - 7.650
      - -
      - 0/207
      - S:0 P:0
@@ -162,8 +162,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 7.613
-     - 3.934
+     - 3.648
+     - 3.835
      - -
      - 0/265
      - S:0 P:0
@@ -175,8 +175,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 9.161
-     - 2.145
+     - 1.036
+     - 1.968
      - -
      - 0/265
      - S:0 P:0
@@ -188,8 +188,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 6.759
-     - 8.963
+     - 1.563
+     - 8.665
      - -
      - 0/193
      - S:0 P:0
@@ -201,8 +201,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 5.776
-     - 2.258
+     - 1.168
+     - 2.216
      - -
      - 0/251
      - S:0 P:0
@@ -214,8 +214,8 @@
      - NTHETA=5,NX=2,NXI=9,NZETA=9
      - 1
      - 0
-     - 5.450
-     - 13.500
+     - 0.875
+     - 12.125
      - -
      - 0/193
      - S:0 P:0
@@ -227,8 +227,8 @@
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 6.427
-     - 4.005
+     - 0.313
+     - 3.449
      - 178.0 (178-178)
      - 0/207
      - S:0 P:0
@@ -240,8 +240,8 @@
      - NTHETA=14,NX=1,NXI=9,NZETA=15
      - 1
      - 0
-     - 0.674
-     - 1.705
+     - 0.194
+     - 1.292
      - -
      - 0/203
      - S:0 P:0
@@ -253,8 +253,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.989
-     - 2.345
+     - 0.325
+     - 1.881
      - -
      - 0/208
      - S:0 P:0
@@ -266,8 +266,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.915
-     - 1.583
+     - 0.600
+     - 1.223
      - -
      - 0/208
      - S:0 P:0
@@ -279,8 +279,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.427
-     - 1.706
+     - 0.269
+     - 1.289
      - -
      - 0/208
      - S:0 P:0
@@ -292,8 +292,8 @@
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 4.146
-     - 3.623
+     - 0.269
+     - 3.089
      - 128.0 (128-128)
      - 0/207
      - S:0 P:0
@@ -305,8 +305,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 5.628
-     - 11.407
+     - 0.321
+     - 10.503
      - -
      - 0/207
      - S:0 P:0
@@ -318,8 +318,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 5.569
-     - 13.345
+     - 0.334
+     - 11.785
      - -
      - 0/207
      - S:0 P:0
@@ -331,8 +331,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.188
-     - 10.823
+     - 0.153
+     - 18.297
      - -
      - 0/207
      - S:0 P:0
@@ -344,8 +344,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.147
-     - 12.308
+     - 0.149
+     - 19.926
      - -
      - 0/207
      - S:0 P:0
@@ -357,8 +357,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 6.078
-     - 13.143
+     - 0.251
+     - 11.654
      - 8560.0 (8560-8560)
      - 0/202
      - S:0 P:0
@@ -370,8 +370,8 @@
      - NTHETA=6,NX=4,NXI=8,NZETA=1
      - 1
      - 0
-     - 24.688
-     - 3.876
+     - 0.908
+     - 3.206
      - -
      - 0/275
      - S:0 P:0
@@ -383,8 +383,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=1
      - 1
      - 0
-     - 9.498
-     - 1.684
+     - 0.374
+     - 1.294
      - -
      - 0/275
      - S:0 P:0
@@ -396,8 +396,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 5.996
-     - 42.356
+     - 0.694
+     - 37.484
      - 32000.0 (32000-32000)
      - 0/214
      - S:0 P:0
@@ -409,35 +409,35 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 6.099
-     - 6.110
+     - 0.380
+     - 5.428
      - 184.0 (184-184)
      - 0/214
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/214
    * - tokamak_1species_PASCollisions_noEr
-     - parity_ok
-     - none
+     - parity_mismatch
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.152
-     - 62.900
-     - 31989.0 (31989-31989)
-     - 0/212
-     - S:0 P:0
+     - 0.079
+     - 95.664
+     - 31978.0 (31978-31978)
+     - 33/212
+     - S:12 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/212
+     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=33/212
    * - tokamak_1species_PASCollisions_noEr_Nx1
      - parity_ok
      - none
      - NTHETA=11,NX=1,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.093
-     - 3.308
-     - 69.0 (69-69)
+     - 0.057
+     - 1.593
+     - 1.0 (1-1)
      - 0/212
      - S:0 P:0
      - 9/9
@@ -448,8 +448,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.148
-     - 3.615
+     - 0.086
+     - 2.973
      - -
      - 0/275
      - S:0 P:0
@@ -461,34 +461,34 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.148
-     - 13.481
-     - 3631.0 (3631-3631)
+     - 0.086
+     - 39.947
+     - 12179.0 (12179-12179)
      - 0/212
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_noEr
-     - parity_ok
-     - none
+     - parity_mismatch
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.079
-     - 8.644
+     - 0.082
+     - 7.234
      - -
-     - 0/212
-     - S:0 P:0
+     - 35/212
+     - S:12 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/212
+     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=35/212
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.086
-     - 10.147
+     - 0.140
+     - 8.550
      - -
      - 0/212
      - S:0 P:0
@@ -500,8 +500,8 @@
      - NTHETA=7,NX=3,NXI=12,NZETA=8
      - 1
      - 0
-     - 15.982
-     - 4.632
+     - 0.211
+     - 4.161
      - -
      - 0/194
      - S:0 P:0
@@ -513,8 +513,8 @@
      - NTHETA=5,NX=4,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.247
-     - 1.810
+     - 0.151
+     - 1.464
      - 0.0 (0-0)
      - 0/194
      - S:0 P:0
