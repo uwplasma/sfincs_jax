@@ -466,6 +466,10 @@ performance without changing the input file:
   - ``1``/``true``: force enable for all PAS ``constraintScheme=2`` cases.
   - ``0``/``false``: disable.
 
+- ``SFINCS_JAX_PAS_SOURCE_ZERO_TOL``: for ``constraintScheme=2`` solves, zero-out tiny
+  recovered source terms when their max-abs value is below this tolerance (default:
+  ``2e-9``). This tightens parity with Fortran when sources should be numerically zero.
+
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
 

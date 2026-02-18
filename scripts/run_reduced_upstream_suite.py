@@ -256,6 +256,23 @@ def _tail(path: Path, n: int = 40) -> str:
     return "\n".join(lines[-n:])
 
 
+def _parse_fortran_runtime_from_log(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    marker = "Time to solve:"
+    total = 0.0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if marker not in line:
+            continue
+        tail = line.split(marker, 1)[1]
+        token = tail.strip().split()[0]
+        try:
+            total += float(token.replace("D", "E").replace("d", "e"))
+        except ValueError:
+            continue
+    return total if total > 0.0 else None
+
+
 def _run_jax_cli(
     *,
     input_path: Path,
@@ -830,6 +847,8 @@ def _run_case(
             if fortran_input.exists() and fortran_input.read_text() == dst_input.read_text():
                 fortran_h5_this_attempt = out_fortran_existing
                 fortran_log_path = fortran_log if fortran_log.exists() else None
+                if fortran_runtime is None and fortran_log_path is not None:
+                    fortran_runtime = _parse_fortran_runtime_from_log(fortran_log_path)
         else:
             if fortran_dir.exists():
                 shutil.rmtree(fortran_dir)

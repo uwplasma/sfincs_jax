@@ -4850,6 +4850,14 @@ def solve_v3_full_system_linear_gmres(
                 extra = _constraint_scheme2_source_from_f(op, r_f.reshape(op.fblock.f_shape)) / fs_sum_safe
                 if ix0 > 0:
                     extra = extra.at[:, :ix0].set(0.0)
+                zero_env = os.environ.get("SFINCS_JAX_PAS_SOURCE_ZERO_TOL", "").strip()
+                try:
+                    zero_tol = float(zero_env) if zero_env else 2e-9
+                except ValueError:
+                    zero_tol = 2e-9
+                if zero_tol > 0.0:
+                    max_abs = jnp.max(jnp.abs(extra))
+                    extra = jnp.where(max_abs <= zero_tol, jnp.zeros_like(extra), extra)
                 x_full = jnp.concatenate([f_full, extra.reshape((-1,))], axis=0)
             else:
                 x_full = f_full
@@ -5462,6 +5470,18 @@ def solve_v3_full_system_linear_gmres(
             if not bool(jnp.allclose(x_projected, result.x)):
                 residual_norm_projected = jnp.linalg.norm(residual_projected)
                 result = GMRESSolveResult(x=x_projected, residual_norm=residual_norm_projected)
+        if int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
+            zero_env = os.environ.get("SFINCS_JAX_PAS_SOURCE_ZERO_TOL", "").strip()
+            try:
+                zero_tol = float(zero_env) if zero_env else 2e-9
+            except ValueError:
+                zero_tol = 2e-9
+            if zero_tol > 0.0:
+                extra = result.x[-int(op.extra_size) :]
+                max_abs = jnp.max(jnp.abs(extra))
+                extra = jnp.where(max_abs <= zero_tol, jnp.zeros_like(extra), extra)
+                x_new = jnp.concatenate([result.x[: -int(op.extra_size)], extra], axis=0)
+                result = GMRESSolveResult(x=x_new, residual_norm=result.residual_norm)
     if ksp_matvec is not None and ksp_b is not None:
         ksp_history = _emit_ksp_history(
             matvec_fn=ksp_matvec,
