@@ -52,6 +52,9 @@ python examples/performance/profile_transport_compile_runtime_cache.py --repeats
 - Figure: `examples/performance/output/compile_runtime_cache/transport_compile_runtime_cache_2x2.png`
 - JSON: `examples/performance/output/compile_runtime_cache/transport_compile_runtime_cache_2x2.json`
 
+Small dense fallback assemblies now skip JIT for modest matrix sizes (`n<=800`) to
+reduce overhead in tiny PAS/transport cases while keeping large systems compiled.
+
 ## Installation
 
 Install from PyPI:
@@ -231,6 +234,8 @@ python scripts/run_reduced_upstream_suite.py --timeout-s 120 --max-attempts 1 --
 
 The reduced-suite runner enables a persistent JAX compilation cache by default at
 `tests/reduced_upstream_examples/.jax_compilation_cache` (override with `--jax-cache-dir`).
+The CLI also defaults to a user cache directory (`~/.cache/sfincs_jax/jax_compilation_cache`)
+and auto-enables JAX's persistent compilation cache unless explicitly disabled.
 
 Target a specific case while preserving the 30s adaptive policy:
 

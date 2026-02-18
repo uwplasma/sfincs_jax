@@ -8,14 +8,7 @@ import time
 
 import numpy as np
 
-from .compare import compare_sfincs_outputs
-from .fortran import run_sfincs_fortran
-from .io import read_sfincs_h5, write_sfincs_jax_output_h5
 from .namelist import read_sfincs_input
-from .postprocess_upstream import run_upstream_util
-from .scans import linspace_including_endpoints, run_er_scan
-from .ambipolar import solve_ambipolar_from_scan_dir
-from .v3_driver import solve_v3_full_system_linear_gmres, solve_v3_transport_matrix_linear_gmres
 
 
 def _now() -> float:
@@ -82,6 +75,8 @@ def _emit_runtime_info(*, args: argparse.Namespace) -> None:
 
 def _cmd_solve_v3(args: argparse.Namespace) -> int:
     t0 = _now()
+    from .v3_driver import solve_v3_full_system_linear_gmres  # noqa: PLC0415
+
     nml = read_sfincs_input(Path(args.input))
     _emit("################################################################", level=0, args=args)
     _emit(" sfincs_jax solve-v3", level=0, args=args)
@@ -112,6 +107,8 @@ def _cmd_solve_v3(args: argparse.Namespace) -> int:
 
 def _cmd_run_fortran(args: argparse.Namespace) -> int:
     t0 = _now()
+    from .fortran import run_sfincs_fortran  # noqa: PLC0415
+
     _emit("################################################################", level=0, args=args)
     _emit(" sfincs_jax run-fortran", level=0, args=args)
     _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
@@ -127,6 +124,8 @@ def _cmd_run_fortran(args: argparse.Namespace) -> int:
 
 def _cmd_write_output(args: argparse.Namespace) -> int:
     t0 = _now()
+    from .io import write_sfincs_jax_output_h5  # noqa: PLC0415
+
     nml = read_sfincs_input(Path(args.input))
     rhs_mode = int(nml.group("general").get("RHSMODE", 1))
 
@@ -151,6 +150,8 @@ def _cmd_write_output(args: argparse.Namespace) -> int:
 
 def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
     t0 = _now()
+    from .v3_driver import solve_v3_transport_matrix_linear_gmres  # noqa: PLC0415
+
     nml = read_sfincs_input(Path(args.input))
     _emit("################################################################", level=0, args=args)
     _emit(" sfincs_jax transport-matrix-v3", level=0, args=args)
@@ -188,6 +189,8 @@ def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
 
 
 def _cmd_dump_h5(args: argparse.Namespace) -> int:
+    from .io import read_sfincs_h5  # noqa: PLC0415
+
     data = read_sfincs_h5(Path(args.sfincs_output))
     if args.keys_only:
         for k in sorted(data.keys()):
@@ -199,6 +202,8 @@ def _cmd_dump_h5(args: argparse.Namespace) -> int:
 
 
 def _cmd_compare_h5(args: argparse.Namespace) -> int:
+    from .compare import compare_sfincs_outputs  # noqa: PLC0415
+
     tolerances = None
     if args.tolerances_json:
         with open(args.tolerances_json, "r", encoding="utf-8") as f:
@@ -225,6 +230,8 @@ def _cmd_compare_h5(args: argparse.Namespace) -> int:
 
 def _cmd_scan_er(args: argparse.Namespace) -> int:
     t0 = _now()
+    from .scans import linspace_including_endpoints, run_er_scan  # noqa: PLC0415
+
     _emit("################################################################", level=0, args=args)
     _emit(" sfincs_jax scan-er", level=0, args=args)
     _emit(f" input={Path(args.input).resolve()}", level=0, args=args)
@@ -250,6 +257,8 @@ def _cmd_scan_er(args: argparse.Namespace) -> int:
 
 def _cmd_ambipolar_solve(args: argparse.Namespace) -> int:
     t0 = _now()
+    from .ambipolar import solve_ambipolar_from_scan_dir  # noqa: PLC0415
+
     _emit("################################################################", level=0, args=args)
     _emit(" sfincs_jax ambipolar-solve", level=0, args=args)
     _emit(f" scan-dir={Path(args.scan_dir).resolve()}", level=0, args=args)
@@ -432,6 +441,8 @@ def main(argv: list[str] | None = None) -> int:
 
     def _cmd_postprocess_upstream(args: argparse.Namespace) -> int:
         t0 = _now()
+        from .postprocess_upstream import run_upstream_util  # noqa: PLC0415
+
         _emit("################################################################", level=0, args=args)
         _emit(" sfincs_jax postprocess-upstream", level=0, args=args)
         _emit(f" case_dir={Path(args.case_dir).resolve()}", level=0, args=args)

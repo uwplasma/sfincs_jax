@@ -14,9 +14,31 @@ from jax import vmap
 from jax import lax
 
 from .geometry import BoozerGeometry
-from .v3_system import V3FullSystemOperator, with_transport_rhs_settings
+from .v3_system import V3FullSystemOperator, with_transport_rhs_settings, _operator_signature_cached
 
 _STRICT_SUM_ORDER = os.environ.get("SFINCS_JAX_STRICT_SUM_ORDER", "").strip().lower() in {"1", "true", "yes", "on"}
+_TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX_ENV = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_CACHE_MAX", "").strip()
+try:
+    _TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX = int(_TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX_ENV) if _TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX_ENV else 4
+except ValueError:
+    _TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX = 4
+_TRANSPORT_DIAG_PRECOMPUTE_CACHE: dict[tuple[object, ...], V3TransportDiagnosticsPrecomputed] = {}
+_TRANSPORT_DIAG_PRECOMPUTE_ORDER: list[tuple[object, ...]] = []
+
+
+def _transport_diag_precompute_cached(op0: V3FullSystemOperator) -> V3TransportDiagnosticsPrecomputed:
+    sig = _operator_signature_cached(op0)
+    cached = _TRANSPORT_DIAG_PRECOMPUTE_CACHE.get(sig)
+    if cached is not None:
+        return cached
+    precomputed = v3_transport_diagnostics_vm_only_precompute(op0)
+    _TRANSPORT_DIAG_PRECOMPUTE_CACHE[sig] = precomputed
+    _TRANSPORT_DIAG_PRECOMPUTE_ORDER.append(sig)
+    max_cache = int(_TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX)
+    if max_cache > 0 and len(_TRANSPORT_DIAG_PRECOMPUTE_ORDER) > max_cache:
+        oldest = _TRANSPORT_DIAG_PRECOMPUTE_ORDER.pop(0)
+        _TRANSPORT_DIAG_PRECOMPUTE_CACHE.pop(oldest, None)
+    return precomputed
 
 
 @jtu.register_pytree_node_class
@@ -1060,7 +1082,10 @@ def v3_transport_output_fields_vm_only(
         [jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values],
         axis=0,
     )  # (N,total)
-    diag_stack = v3_transport_diagnostics_vm_only_batch_op0_jit(op0=op0, x_full_stack=x_stack)
+    precomputed = _transport_diag_precompute_cached(op0)
+    diag_stack = v3_transport_diagnostics_vm_only_batch_op0_precomputed_jit(
+        op0=op0, precomputed=precomputed, x_full_stack=x_stack
+    )
 
     pf_vm_psi_hat = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
     hf_vm_psi_hat = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)

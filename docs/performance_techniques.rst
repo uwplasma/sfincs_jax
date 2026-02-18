@@ -125,6 +125,9 @@ and enable persistent compilation caching for repeated runs.
 - `sfincs_jax` JITs the matvec and solver wrappers (GMRES/BiCGStab).
 - The reduced-suite runner (`scripts/run_reduced_upstream_suite.py`) supports a
   persistent cache via ``--jax-cache-dir``.
+- The CLI defaults to a user cache directory (``~/.cache/sfincs_jax/jax_compilation_cache``)
+  and enables ``jax.experimental.compilation_cache`` automatically unless disabled.
+- Command-line subcommands lazily import heavy modules to reduce startup overhead.
 
 **Why it’s fast.**
 
@@ -468,6 +471,11 @@ This is intentionally low overhead and does not require external profilers. For
 detailed JAX tracing, use ``jax.profiler`` or standard tools, but keep them off
 for parity runs.
 
+**XLA dump profiling.** For kernel-level inspection, you can dump HLO/LLVM with
+``XLA_FLAGS=--xla_dump_to=/tmp/sfincs_xla`` (optionally add
+``--xla_dump_hlo_as_text``). This is heavier and should be used only for
+targeted performance investigations.
+
 Matvec fusion for collisionless + drift terms
 ---------------------------------------------
 
@@ -509,7 +517,7 @@ then compute diagnostics in one batched kernel.
 These are implemented in ``sfincs_jax.transport_matrix`` with strict-order
 reductions matching v3 when required.
 
-**Precompute constants.**
+**Precompute constants + cache.**
 
 Factors depending only on geometry, species normalization, and grids
 (:math:`w_x`, :math:`B/D`, prefactors, etc.) are precomputed once per transport run
@@ -519,7 +527,9 @@ and reused for all ``whichRHS`` solves.
 
 - ``v3_transport_diagnostics_vm_only_precompute`` and
   ``v3_transport_diagnostics_vm_only_batch_op0_precomputed``.
-- Controlled by ``SFINCS_JAX_TRANSPORT_DIAG_PRECOMPUTE`` (default enabled).
+- Cached by operator signature in ``sfincs_jax.transport_matrix`` to reuse
+  geometry/species factors across repeated transport solves (default cache size: ``4``;
+  override with ``SFINCS_JAX_TRANSPORT_DIAG_CACHE_MAX``).
 
 **Compared to Fortran.**
 
@@ -602,7 +612,8 @@ Controls:
   when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always allow).
 - ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX`` (default: ``3000`` for RHSMode=2/3).
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK`` / ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX``.
-- ``SFINCS_JAX_DENSE_ASSEMBLE_JIT``: JIT-compile dense matrix assembly (default on).
+- ``SFINCS_JAX_DENSE_ASSEMBLE_JIT``: JIT-compile dense matrix assembly
+  (auto by default: off for ``n<=800``, on for larger matrices).
 - ``SFINCS_JAX_DENSE_BLOCK``: assemble dense matrices in column blocks to cap peak memory.
 
 **Impact.**
