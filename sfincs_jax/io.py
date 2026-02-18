@@ -1121,7 +1121,8 @@ def sfincs_jax_output_dict(
     out["integerToRepresentFalse"] = np.asarray(-1, dtype=np.int32)
     out["integerToRepresentTrue"] = np.asarray(1, dtype=np.int32)
 
-    out["useIterativeLinearSolver"] = _fortran_logical(True)
+    use_iterative_linear = bool(_get_int(other, "useIterativeLinearSolver", 1))
+    out["useIterativeLinearSolver"] = _fortran_logical(use_iterative_linear)
     out["RHSMode"] = np.asarray(int(rhs_mode), dtype=np.int32)
     # In v3, `NIterations` is initialized to 0 and overwritten later when diagnostics
     # are written (linear runs set it to the number of recorded iterations).
