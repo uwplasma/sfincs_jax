@@ -3900,6 +3900,15 @@ def solve_v3_full_system_linear_gmres(
                             r1 = jnp.linalg.norm(mv_reduced(x0_recycled) - rhs_reduced)
                             if jnp.isfinite(r1) and (not jnp.isfinite(r0) or float(r1) < float(r0)):
                                 x0_reduced = x0_recycled
+        target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
+        dense_shortcut_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO", "").strip()
+        try:
+            dense_shortcut_ratio = float(dense_shortcut_ratio_env) if dense_shortcut_ratio_env else 1.0e6
+        except ValueError:
+            dense_shortcut_ratio = 1.0e6
+        early_dense_shortcut = False
+        probe_shortcut = False
+        probe_x0: jnp.ndarray | None = None
         preconditioner_reduced = None
         bicgstab_preconditioner_reduced = None
         if rhs1_bicgstab_kind is not None:
@@ -4057,7 +4066,43 @@ def solve_v3_full_system_linear_gmres(
             except Exception as exc:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"sparse_operator: failed ({type(exc).__name__}: {exc})")
-        if solve_method_kind == "dense_ksp":
+        probe_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_PROBE", "").strip().lower()
+        probe_enabled = probe_env not in {"0", "false", "no", "off"}
+        if (
+            probe_enabled
+            and (not probe_shortcut)
+            and preconditioner_reduced is not None
+            and solve_method_kind not in {"dense", "dense_ksp"}
+        ):
+            try:
+                probe_x0 = preconditioner_reduced(rhs_reduced)
+                probe_r = rhs_reduced - mv_reduced(probe_x0)
+                probe_norm = float(jnp.linalg.norm(probe_r))
+                probe_ratio = probe_norm / max(float(target_reduced), 1e-300)
+                if dense_shortcut_ratio > 0 and probe_ratio >= dense_shortcut_ratio:
+                    early_dense_shortcut = True
+                    probe_shortcut = True
+                    res_reduced = GMRESSolveResult(x=probe_x0, residual_norm=jnp.asarray(probe_norm))
+                    ksp_matvec = mv_reduced
+                    ksp_b = rhs_reduced
+                    ksp_precond = preconditioner_reduced
+                    ksp_x0 = probe_x0
+                    ksp_precond_side = gmres_precond_side
+                    ksp_solver_kind = _solver_kind(solve_method)[0]
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: dense fallback shortcut (probe) "
+                            f"(ratio={probe_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
+                        )
+                elif x0_reduced is None:
+                    x0_reduced = probe_x0
+            except Exception as exc:  # noqa: BLE001
+                if emit is not None:
+                    emit(1, f"solve_v3_full_system_linear_gmres: probe failed ({type(exc).__name__}: {exc})")
+        if probe_shortcut:
+            pass
+        elif solve_method_kind == "dense_ksp":
             if int(op.phi1_size) != 0:
                 raise NotImplementedError("dense_ksp is only supported for includePhi1=false RHSMode=1 solves.")
             if emit is not None:
@@ -4154,7 +4199,7 @@ def solve_v3_full_system_linear_gmres(
             ksp_x0 = x0_reduced
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = _solver_kind(solve_method)[0]
-        if preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
+        if (not probe_shortcut) and preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
             if emit is not None:
                 emit(0, "solve_v3_full_system_linear_gmres: preconditioned reduced GMRES returned non-finite result; retrying without preconditioner")
             res_reduced = _solve_linear(
@@ -4175,7 +4220,6 @@ def solve_v3_full_system_linear_gmres(
             ksp_x0 = x0_reduced
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = _solver_kind(solve_method)[0]
-        target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
         res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
         stage2_ratio_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RATIO", "").strip()
         try:
@@ -4183,6 +4227,14 @@ def solve_v3_full_system_linear_gmres(
         except ValueError:
             stage2_ratio = 1.0e2
         stage2_trigger = bool(res_ratio > stage2_ratio) if stage2_ratio > 0 else True
+        if (not early_dense_shortcut) and dense_shortcut_ratio > 0 and res_ratio >= dense_shortcut_ratio:
+            early_dense_shortcut = True
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: dense fallback shortcut (early) "
+                    f"(ratio={res_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
+                )
         solver_kind = _solver_kind(solve_method)[0]
         if solver_kind == "bicgstab" and (
             (not _gmres_result_is_finite(res_reduced))
@@ -4218,6 +4270,7 @@ def solve_v3_full_system_linear_gmres(
             float(res_reduced.residual_norm) > target_reduced
             and stage2_enabled
             and stage2_trigger
+            and not early_dense_shortcut
             and t.elapsed_s() < stage2_time_cap_s
         ):
             if preconditioner_reduced is None and rhs1_precond_enabled:
@@ -4421,6 +4474,7 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind is not None
             and float(res_reduced.residual_norm) > target_reduced
             and strong_precond_trigger
+            and not early_dense_shortcut
         ):
             _mark("rhs1_strong_precond_build_start")
             if emit is not None:
@@ -4518,13 +4572,8 @@ def solve_v3_full_system_linear_gmres(
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind("incremental")[0]
 
-        dense_shortcut = False
-        dense_shortcut_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO", "").strip()
-        try:
-            dense_shortcut_ratio = float(dense_shortcut_ratio_env) if dense_shortcut_ratio_env else 1.0e6
-        except ValueError:
-            dense_shortcut_ratio = 1.0e6
-        if dense_shortcut_ratio > 0:
+        dense_shortcut = early_dense_shortcut
+        if not dense_shortcut and dense_shortcut_ratio > 0:
             quick_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
             if quick_ratio >= dense_shortcut_ratio:
                 dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
@@ -4753,6 +4802,7 @@ def solve_v3_full_system_linear_gmres(
             and dense_fallback_trigger
             and (float(residual_norm_true) > target_reduced or force_dense_cs0)
         ):
+            _mark("rhs1_dense_fallback_start")
             if emit is not None:
                 emit(
                     0,
@@ -4789,6 +4839,7 @@ def solve_v3_full_system_linear_gmres(
             except Exception as exc:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
+            _mark("rhs1_dense_fallback_done")
         if use_pas_projection:
             f_full = _expand_active_f(res_reduced.x)
             f_full = _project_pas_f(f_full)
@@ -5359,6 +5410,7 @@ def solve_v3_full_system_linear_gmres(
             and dense_fallback_trigger
             and float(residual_norm_true) > target
         ):
+            _mark("rhs1_dense_fallback_start")
             if emit is not None:
                 emit(
                     0,
@@ -5387,6 +5439,7 @@ def solve_v3_full_system_linear_gmres(
             except Exception as exc:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
+            _mark("rhs1_dense_fallback_done")
     if int(op.rhs_mode) == 1:
         project_env = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower()
         if project_env in {"0", "false", "no", "off"}:

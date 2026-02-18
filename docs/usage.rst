@@ -369,6 +369,10 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``: skip sparse ILU and other expensive
   fallbacks and go directly to the dense solve when ``||r|| / target`` exceeds this
   ratio (default: ``1e6``; set ``<= 0`` to disable the shortcut).
+- ``SFINCS_JAX_RHSMODE1_DENSE_PROBE``: before expensive Krylov fallbacks, run a
+  one-step preconditioner probe (one matvec) and jump straight to the dense
+  solve if the residual ratio still exceeds ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``.
+  Disable with ``0``/``false`` if you want to always attempt full GMRES first.
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE``: constraintScheme=2 Schur preconditioner mode
   (``auto``/``diag``/``full``). ``auto`` selects a dense Schur complement when the
