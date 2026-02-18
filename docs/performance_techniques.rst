@@ -530,6 +530,11 @@ and reused for all ``whichRHS`` solves.
 - Cached by operator signature in ``sfincs_jax.transport_matrix`` to reuse
   geometry/species factors across repeated transport solves (default cache size: ``4``;
   override with ``SFINCS_JAX_TRANSPORT_DIAG_CACHE_MAX``).
+- For large transport solves, diagnostics can be processed in chunks to reduce peak
+  memory. Use ``SFINCS_JAX_TRANSPORT_DIAG_CHUNK`` (default: auto for
+  ``N * total_size > 2e5``) to set an explicit chunk size.
+- Rematerialization for transport diagnostics is enabled automatically at the same
+  threshold (override with ``SFINCS_JAX_TRANSPORT_DIAG_REMAT``).
 
 **Compared to Fortran.**
 
@@ -614,6 +619,8 @@ Controls:
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK`` / ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX``.
 - ``SFINCS_JAX_DENSE_ASSEMBLE_JIT``: JIT-compile dense matrix assembly
   (auto by default: off for ``n<=800``, on for larger matrices).
+- ``SFINCS_JAX_DENSE_BLOCK``: column block size for dense assembly (auto block size
+  of ``128`` is used when ``n>=1000`` and no explicit block is set).
 - ``SFINCS_JAX_DENSE_BLOCK``: assemble dense matrices in column blocks to cap peak memory.
 
 **Impact.**

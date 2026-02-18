@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import numpy as np
 
 from jax import config as _jax_config
 
@@ -1060,6 +1061,7 @@ def v3_transport_output_fields_vm_only(
     *,
     op0: V3FullSystemOperator,
     state_vectors_by_rhs: dict[int, jnp.ndarray],
+    chunk_size: int | None = None,
 ) -> dict[str, jnp.ndarray]:
     """Compute a larger set of RHSMode=2/3 output fields used by upstream postprocessing scripts.
 
@@ -1078,52 +1080,136 @@ def v3_transport_output_fields_vm_only(
         if which_rhs not in state_vectors_by_rhs:
             raise ValueError(f"Missing state vector for which_rhs={which_rhs}.")
 
-    x_stack = jnp.stack(
-        [jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values],
-        axis=0,
-    )  # (N,total)
+    if chunk_size is None or int(chunk_size) <= 0:
+        if int(op0.total_size) * int(n) >= 200_000:
+            chunk_size = 4
+        else:
+            chunk_size = 0
+
     precomputed = _transport_diag_precompute_cached(op0)
-    diag_stack = v3_transport_diagnostics_vm_only_batch_op0_precomputed_jit(
-        op0=op0, precomputed=precomputed, x_full_stack=x_stack
+    remat_env = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_REMAT", "").strip().lower()
+    if remat_env in {"1", "true", "yes", "on"}:
+        use_remat = True
+    elif remat_env in {"0", "false", "no", "off"}:
+        use_remat = False
+    else:
+        use_remat = int(op0.total_size) * int(n) >= 200_000
+    diag_fn = (
+        v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit
+        if use_remat
+        else v3_transport_diagnostics_vm_only_batch_op0_precomputed_jit
     )
 
-    pf_vm_psi_hat = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
-    hf_vm_psi_hat = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
-    flow = jnp.transpose(diag_stack.fsab_flow, (1, 0))  # (S,N)
+    if chunk_size <= 0 or int(chunk_size) >= int(n):
+        x_stack = jnp.stack(
+            [jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_values],
+            axis=0,
+        )  # (N,total)
+        diag_stack = diag_fn(op0=op0, precomputed=precomputed, x_full_stack=x_stack)
 
-    pf_before_vm_stzn = diag_stack.particle_flux_before_surface_integral_vm  # (N,S,T,Z)
-    hf_before_vm_stzn = diag_stack.heat_flux_before_surface_integral_vm  # (N,S,T,Z)
-    pf_before_vm0_stzn = diag_stack.particle_flux_before_surface_integral_vm0  # (N,S,T,Z)
-    hf_before_vm0_stzn = diag_stack.heat_flux_before_surface_integral_vm0  # (N,S,T,Z)
+        pf_vm_psi_hat = jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0))  # (S,N)
+        hf_vm_psi_hat = jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0))  # (S,N)
+        flow = jnp.transpose(diag_stack.fsab_flow, (1, 0))  # (S,N)
 
-    # Convert to Python-read order (Z,T,S,N):
-    pf_before_vm = jnp.transpose(pf_before_vm_stzn, (3, 2, 1, 0))
-    hf_before_vm = jnp.transpose(hf_before_vm_stzn, (3, 2, 1, 0))
-    pf_before_vm0 = jnp.transpose(pf_before_vm0_stzn, (3, 2, 1, 0))
-    hf_before_vm0 = jnp.transpose(hf_before_vm0_stzn, (3, 2, 1, 0))
+        pf_before_vm_stzn = diag_stack.particle_flux_before_surface_integral_vm  # (N,S,T,Z)
+        hf_before_vm_stzn = diag_stack.heat_flux_before_surface_integral_vm  # (N,S,T,Z)
+        pf_before_vm0_stzn = diag_stack.particle_flux_before_surface_integral_vm0  # (N,S,T,Z)
+        hf_before_vm0_stzn = diag_stack.heat_flux_before_surface_integral_vm0  # (N,S,T,Z)
 
-    w2d = op0.theta_weights[:, None] * op0.zeta_weights[None, :]  # (T,Z)
-    pf_vm0_psi_hat = jnp.einsum("tz,nstz->sn", w2d, pf_before_vm0_stzn)
-    hf_vm0_psi_hat = jnp.einsum("tz,nstz->sn", w2d, hf_before_vm0_stzn)
+        # Convert to Python-read order (Z,T,S,N):
+        pf_before_vm = jnp.transpose(pf_before_vm_stzn, (3, 2, 1, 0))
+        hf_before_vm = jnp.transpose(hf_before_vm_stzn, (3, 2, 1, 0))
+        pf_before_vm0 = jnp.transpose(pf_before_vm0_stzn, (3, 2, 1, 0))
+        hf_before_vm0 = jnp.transpose(hf_before_vm0_stzn, (3, 2, 1, 0))
 
-    pf_vs_x = jnp.transpose(diag_stack.particle_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
-    hf_vs_x = jnp.transpose(diag_stack.heat_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
-    flow_vs_x = jnp.transpose(diag_stack.fsab_flow_vs_x, (1, 2, 0))  # (X,S,N)
+        w2d = op0.theta_weights[:, None] * op0.zeta_weights[None, :]  # (T,Z)
+        pf_vm0_psi_hat = jnp.einsum("tz,nstz->sn", w2d, pf_before_vm0_stzn)
+        hf_vm0_psi_hat = jnp.einsum("tz,nstz->sn", w2d, hf_before_vm0_stzn)
 
-    # vE terms are 0 in the parity-tested RHSMode=2/3 fixtures without Phi1/Er.
-    pf_before_ve = jnp.zeros((z, t, s, n), dtype=jnp.float64)
-    hf_before_ve = jnp.zeros((z, t, s, n), dtype=jnp.float64)
-    pf_before_ve0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
-    hf_before_ve0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
+        pf_vs_x = jnp.transpose(diag_stack.particle_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
+        hf_vs_x = jnp.transpose(diag_stack.heat_flux_vm_psi_hat_vs_x, (1, 2, 0))  # (X,S,N)
+        flow_vs_x = jnp.transpose(diag_stack.fsab_flow_vs_x, (1, 2, 0))  # (X,S,N)
 
-    sources = None
-    extra_stack = x_stack[:, op0.f_size + op0.phi1_size :]  # (N,extra)
-    if int(op0.constraint_scheme) == 2:
-        src = extra_stack.reshape((n, s, x))  # (N,S,X)
-        sources = jnp.transpose(src, (2, 1, 0))  # (X,S,N)
-    elif int(op0.constraint_scheme) in {1, 3, 4}:
-        src = extra_stack.reshape((n, s, 2))  # (N,S,2)
-        sources = jnp.transpose(src, (2, 1, 0))  # (2,S,N)
+        # vE terms are 0 in the parity-tested RHSMode=2/3 fixtures without Phi1/Er.
+        pf_before_ve = jnp.zeros((z, t, s, n), dtype=jnp.float64)
+        hf_before_ve = jnp.zeros((z, t, s, n), dtype=jnp.float64)
+        pf_before_ve0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
+        hf_before_ve0 = jnp.zeros((z, t, s, n), dtype=jnp.float64)
+
+        sources = None
+        extra_stack = x_stack[:, op0.f_size + op0.phi1_size :]  # (N,extra)
+        if int(op0.constraint_scheme) == 2:
+            src = extra_stack.reshape((n, s, x))  # (N,S,X)
+            sources = jnp.transpose(src, (2, 1, 0))  # (X,S,N)
+        elif int(op0.constraint_scheme) in {1, 3, 4}:
+            src = extra_stack.reshape((n, s, 2))  # (N,S,2)
+            sources = jnp.transpose(src, (2, 1, 0))  # (2,S,N)
+    else:
+        pf_vm_psi_hat = np.zeros((s, n), dtype=np.float64)
+        hf_vm_psi_hat = np.zeros((s, n), dtype=np.float64)
+        flow = np.zeros((s, n), dtype=np.float64)
+        pf_before_vm = np.zeros((z, t, s, n), dtype=np.float64)
+        hf_before_vm = np.zeros((z, t, s, n), dtype=np.float64)
+        pf_before_vm0 = np.zeros((z, t, s, n), dtype=np.float64)
+        hf_before_vm0 = np.zeros((z, t, s, n), dtype=np.float64)
+        pf_vs_x = np.zeros((x, s, n), dtype=np.float64)
+        hf_vs_x = np.zeros((x, s, n), dtype=np.float64)
+        flow_vs_x = np.zeros((x, s, n), dtype=np.float64)
+        pf_vm0_psi_hat = np.zeros((s, n), dtype=np.float64)
+        hf_vm0_psi_hat = np.zeros((s, n), dtype=np.float64)
+        pf_before_ve = np.zeros((z, t, s, n), dtype=np.float64)
+        hf_before_ve = np.zeros((z, t, s, n), dtype=np.float64)
+        pf_before_ve0 = np.zeros((z, t, s, n), dtype=np.float64)
+        hf_before_ve0 = np.zeros((z, t, s, n), dtype=np.float64)
+        sources = None
+
+        w2d = jnp.asarray(op0.theta_weights, dtype=jnp.float64)[:, None] * jnp.asarray(op0.zeta_weights, dtype=jnp.float64)[None, :]
+        has_sources = int(op0.constraint_scheme) in {1, 2, 3, 4}
+        if has_sources:
+            if int(op0.constraint_scheme) == 2:
+                sources = np.zeros((x, s, n), dtype=np.float64)
+            else:
+                sources = np.zeros((2, s, n), dtype=np.float64)
+
+        for start in range(0, n, int(chunk_size)):
+            end = min(n, start + int(chunk_size))
+            rhs_chunk = rhs_values[start:end]
+            x_stack = jnp.stack(
+                [jnp.asarray(state_vectors_by_rhs[which_rhs], dtype=jnp.float64) for which_rhs in rhs_chunk],
+                axis=0,
+            )
+            diag_stack = diag_fn(op0=op0, precomputed=precomputed, x_full_stack=x_stack)
+            pf_vm_psi_hat[:, start:end] = np.asarray(jnp.transpose(diag_stack.particle_flux_vm_psi_hat, (1, 0)))
+            hf_vm_psi_hat[:, start:end] = np.asarray(jnp.transpose(diag_stack.heat_flux_vm_psi_hat, (1, 0)))
+            flow[:, start:end] = np.asarray(jnp.transpose(diag_stack.fsab_flow, (1, 0)))
+
+            pf_before_vm_stzn = diag_stack.particle_flux_before_surface_integral_vm
+            hf_before_vm_stzn = diag_stack.heat_flux_before_surface_integral_vm
+            pf_before_vm0_stzn = diag_stack.particle_flux_before_surface_integral_vm0
+            hf_before_vm0_stzn = diag_stack.heat_flux_before_surface_integral_vm0
+
+            pf_before_vm[:, :, :, start:end] = np.asarray(jnp.transpose(pf_before_vm_stzn, (3, 2, 1, 0)))
+            hf_before_vm[:, :, :, start:end] = np.asarray(jnp.transpose(hf_before_vm_stzn, (3, 2, 1, 0)))
+            pf_before_vm0[:, :, :, start:end] = np.asarray(jnp.transpose(pf_before_vm0_stzn, (3, 2, 1, 0)))
+            hf_before_vm0[:, :, :, start:end] = np.asarray(jnp.transpose(hf_before_vm0_stzn, (3, 2, 1, 0)))
+
+            pf_vs_x[:, :, start:end] = np.asarray(jnp.transpose(diag_stack.particle_flux_vm_psi_hat_vs_x, (1, 2, 0)))
+            hf_vs_x[:, :, start:end] = np.asarray(jnp.transpose(diag_stack.heat_flux_vm_psi_hat_vs_x, (1, 2, 0)))
+            flow_vs_x[:, :, start:end] = np.asarray(jnp.transpose(diag_stack.fsab_flow_vs_x, (1, 2, 0)))
+
+            pf_vm0_psi_hat_chunk = jnp.einsum("tz,nstz->sn", w2d, pf_before_vm0_stzn)
+            hf_vm0_psi_hat_chunk = jnp.einsum("tz,nstz->sn", w2d, hf_before_vm0_stzn)
+            pf_vm0_psi_hat[:, start:end] = np.asarray(pf_vm0_psi_hat_chunk)
+            hf_vm0_psi_hat[:, start:end] = np.asarray(hf_vm0_psi_hat_chunk)
+
+            if has_sources:
+                extra_stack = x_stack[:, op0.f_size + op0.phi1_size :]
+                if int(op0.constraint_scheme) == 2:
+                    src = extra_stack.reshape((end - start, s, x))
+                    sources[:, :, start:end] = np.asarray(jnp.transpose(src, (2, 1, 0)))
+                else:
+                    src = extra_stack.reshape((end - start, s, 2))
+                    sources[:, :, start:end] = np.asarray(jnp.transpose(src, (2, 1, 0)))
 
     fsab2 = jnp.asarray(op0.fsab_hat2, dtype=jnp.float64)
     b0, _g, _i = _flux_functions_from_op(op0)

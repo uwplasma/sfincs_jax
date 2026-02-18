@@ -314,6 +314,9 @@ def assemble_dense_matrix_from_matvec(*, matvec, n: int, dtype: jnp.dtype) -> jn
         block = int(block_env) if block_env else 0
     except ValueError:
         block = 0
+    if block == 0 and int(n) >= 1000:
+        # Limit peak memory for larger dense assemblies.
+        block = 128
     jit_env = os.environ.get("SFINCS_JAX_DENSE_ASSEMBLE_JIT", "").strip().lower()
     if jit_env:
         use_jit = jit_env not in {"0", "false", "no", "off"}

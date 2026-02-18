@@ -2607,7 +2607,16 @@ def write_sfincs_jax_output_h5(
             #
             # This is intentionally limited to the parity-tested vm-only branch (no vE terms)
             # for now; missing vE/vd/Phi1-related fields will be added as solver parity expands.
-            fields = v3_transport_output_fields_vm_only(op0=result.op0, state_vectors_by_rhs=result.state_vectors_by_rhs)
+            diag_chunk_env = os.environ.get("SFINCS_JAX_TRANSPORT_DIAG_CHUNK", "").strip()
+            try:
+                diag_chunk = int(diag_chunk_env) if diag_chunk_env else None
+            except ValueError:
+                diag_chunk = None
+            fields = v3_transport_output_fields_vm_only(
+                op0=result.op0,
+                state_vectors_by_rhs=result.state_vectors_by_rhs,
+                chunk_size=diag_chunk,
+            )
 
             # Add transportMatrix (Fortran reads it transposed vs mathematical row/col).
             fields["transportMatrix"] = np.asarray(result.transport_matrix, dtype=np.float64).T
