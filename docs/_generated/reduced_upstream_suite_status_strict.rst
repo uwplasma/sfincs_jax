@@ -4,14 +4,14 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_ok=38
+- Status counts: jax_error=26, parity_ok=12
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
 
 .. list-table:: Reduced-resolution upstream suite parity status
    :header-rows: 1
-   :widths: 23 9 16 10 7 7 10 10 10 11 13 12 16
+   :widths: 23 9 16 10 7 7 10 10 9 9 10 11 13 12 16
 
    * - Case
      - Status
@@ -21,149 +21,173 @@
      - Reductions
      - Fortran(s)
      - JAX(s)
+     - Fortran MB
+     - JAX MB
      - JAX iters
      - Mismatches
      - Buckets
      - Print parity
      - Note
    * - HSX_FPCollisions_DKESTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 1.717
-     - 3.018
+     - 20.460
      - -
-     - 0/124
+     - 120.5
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 7/7
-     - All common numeric datasets matched tolerance. strict=0/124
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_DKESTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_DKESTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - HSX_FPCollisions_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 1.783
-     - 3.119
+     - 8.740
      - -
-     - 0/124
+     - 115.1
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 7/7
-     - All common numeric datasets matched tolerance. strict=0/124
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_FPCollisions_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - HSX_PASCollisions_DKESTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.158
-     - 2.992
+     - 0.201
      - -
-     - 0/193
+     - 105.5
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_DKESTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_DKESTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - HSX_PASCollisions_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.267
-     - 4.704
+     - 0.222
      - -
-     - 0/193
+     - 113.2
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/HSX_PASCollisions_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - filteredW7XNetCDF_2species_magneticDrifts_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
-     - 0.460
-     - 1.764
+     - 0.207
      - -
-     - 0/193
+     - 120.0
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - filteredW7XNetCDF_2species_magneticDrifts_withEr
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
-     - 0.568
-     - 1.884
+     - 0.140
      - -
-     - 0/193
+     - 118.0
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_withEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_magneticDrifts_withEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - filteredW7XNetCDF_2species_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=7,NX=3,NXI=9,NZETA=5
      - 1
      - 0
-     - 0.460
-     - 1.548
+     - 0.139
      - -
-     - 0/193
+     - 125.2
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/filteredW7XNetCDF_2species_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - geometryScheme4_1species_PAS_withEr_DKESTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=7,NX=3,NXI=12,NZETA=12
      - 1
      - 0
-     - 0.180
-     - 1.977
+     - 0.096
      - -
-     - 0/207
+     - 103.3
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_1species_PAS_withEr_DKESTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_1species_PAS_withEr_DKESTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - geometryScheme4_2species_PAS_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=7,NX=3,NXI=6,NZETA=6
      - 1
      - 0
-     - 0.113
-     - 1.985
+     - 0.092
      - -
-     - 0/207
+     - 100.5
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_PAS_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_PAS_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - geometryScheme4_2species_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 0.656
-     - 1.662
+     - 0.129
      - -
-     - 0/207
+     - 107.8
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - geometryScheme4_2species_noEr_withPhi1InDKE
      - parity_ok
      - none
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 1.683
-     - 3.521
+     - 0.148
+     - 1.787
+     - 118.9
+     - 521.4
      - -
      - 0/265
      - S:0 P:0
@@ -175,73 +199,85 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 1.005
-     - 2.039
+     - 0.150
+     - 1.515
+     - 114.7
+     - 501.7
      - -
      - 0/265
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/265
    * - geometryScheme4_2species_withEr_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 0.662
-     - 1.815
+     - 0.142
      - -
-     - 0/193
+     - 105.9
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme4_2species_withEr_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - geometryScheme4_2species_withEr_fullTrajectories_withQN
      - parity_ok
      - none
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.849
-     - 2.269
+     - 0.156
+     - 1.449
+     - 111.5
+     - 461.7
      - -
      - 0/251
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/251
    * - geometryScheme5_3species_loRes
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=5,NX=2,NXI=9,NZETA=9
      - 1
      - 0
-     - 0.536
-     - 1.764
+     - 0.133
      - -
-     - 0/193
+     - 125.0
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme5_3species_loRes/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/geometryScheme5_3species_loRes/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - inductiveE_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 0.516
-     - 6.664
+     - 0.144
      - -
-     - 0/207
+     - 104.2
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/inductiveE_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/inductiveE_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - monoenergetic_geometryScheme1
      - parity_ok
      - none
      - NTHETA=14,NX=1,NXI=9,NZETA=15
      - 1
      - 0
-     - 0.228
-     - 1.423
+     - 0.144
+     - 1.551
+     - 112.0
+     - 737.5
      - -
      - 0/203
      - S:0 P:0
@@ -253,8 +289,10 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.247
-     - 2.038
+     - 0.256
+     - 2.210
+     - 109.4
+     - 661.3
      - -
      - 0/208
      - S:0 P:0
@@ -266,8 +304,10 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.309
-     - 1.330
+     - 0.140
+     - 1.432
+     - 126.3
+     - 649.7
      - -
      - 0/208
      - S:0 P:0
@@ -279,99 +319,115 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.204
-     - 1.339
+     - 0.152
+     - 1.310
+     - 126.3
+     - 599.7
      - -
      - 0/208
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/208
    * - quick_2species_FPCollisions_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 0.445
-     - 6.614
+     - 0.198
      - -
-     - 0/207
+     - 105.8
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/quick_2species_FPCollisions_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/quick_2species_FPCollisions_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.412
-     - 1.706
+     - 0.202
      - -
-     - 0/207
+     - 112.3
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.644
-     - 1.929
+     - 0.143
      - -
-     - 0/207
+     - 112.1
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.123
-     - 1.769
+     - 0.136
      - -
-     - 0/207
+     - 102.0
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - geometry parsing mismatch
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.112
-     - 1.928
+     - 0.202
      - -
-     - 0/207
+     - 101.2
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/207
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_1species_FPCollisions_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.336
-     - 1.331
+     - 0.143
      - -
-     - 0/202
+     - 102.5
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/202
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
      - parity_ok
      - none
      - NTHETA=6,NX=4,NXI=8,NZETA=1
      - 1
      - 0
-     - 1.672
-     - 5.071
+     - 1.770
+     - 2.016
+     - 137.1
+     - 534.3
      - -
      - 0/275
      - S:0 P:0
@@ -383,125 +439,145 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=1
      - 1
      - 0
-     - 0.711
-     - 1.447
+     - 0.142
+     - 1.438
+     - 109.1
+     - 462.2
      - -
      - 0/275
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/275
    * - tokamak_1species_FPCollisions_withEr_DKESTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.633
-     - 1.599
+     - 0.139
      - -
-     - 0/214
+     - 106.0
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/214
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_DKESTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_DKESTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_1species_FPCollisions_withEr_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.593
-     - 1.773
+     - 0.135
      - -
-     - 0/214
+     - 105.7
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/214
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_FPCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_1species_PASCollisions_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.016
-     - 1.654
+     - 0.084
      - -
-     - 0/212
+     - 95.3
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/212
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_1species_PASCollisions_noEr_Nx1
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=1,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.021
-     - 1.598
+     - 0.086
      - -
-     - 0/212
+     - 93.3
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/212
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_Nx1/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_noEr_Nx1/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_1species_PASCollisions_noEr_withQN
      - parity_ok
      - none
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.036
-     - 1.817
+     - 0.144
+     - 1.482
+     - 100.3
+     - 491.5
      - -
      - 0/275
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/275
    * - tokamak_1species_PASCollisions_withEr_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.067
-     - 2.094
+     - 0.090
      - -
-     - 0/212
+     - 97.1
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/212
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_withEr_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_1species_PASCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_2species_PASCollisions_noEr
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.025
-     - 1.767
+     - 0.089
      - -
-     - 0/212
+     - 97.0
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/212
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_noEr/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_noEr/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
-     - parity_ok
-     - none
+     - jax_error
+     - solver branch mismatch
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.096
-     - 2.298
+     - 0.084
      - -
-     - 0/212
+     - 99.8
+     - -
+     - -
+     - -
      - S:0 P:0
-     - 9/9
-     - All common numeric datasets matched tolerance. strict=0/212
+     - -
+     - JAX error: CalledProcessError: Command '['python', '-m', 'sfincs_jax', '-v', 'write-output', '--input', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_withEr_fullTrajectories/input.namelist', '--out', '/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/tokamak_2species_PASCollisions_withEr_fullTrajectories/sfincsOutput_jax.h5', '--compute-solution']' returned non-zero exit status 1.
    * - transportMatrix_geometryScheme11
      - parity_ok
      - none
      - NTHETA=7,NX=3,NXI=12,NZETA=8
      - 1
      - 0
-     - 0.119
-     - 1.280
+     - 0.196
+     - 1.669
+     - 110.6
+     - 573.6
      - -
      - 0/194
      - S:0 P:0
@@ -513,8 +589,10 @@
      - NTHETA=5,NX=4,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.020
-     - 1.172
+     - 0.136
+     - 1.300
+     - 105.3
+     - 426.0
      - -
      - 0/194
      - S:0 P:0

@@ -88,6 +88,8 @@ class CaseResult:
     jax_runtime_s: float | None
     jax_runtime_s_cold: float | None
     jax_runtime_s_warm: float | None
+    fortran_max_rss_mb: float | None
+    jax_max_rss_mb: float | None
     jax_solver_iters_mean: float | None
     jax_solver_iters_min: int | None
     jax_solver_iters_max: int | None
@@ -273,6 +275,44 @@ def _parse_fortran_runtime_from_log(path: Path) -> float | None:
     return total if total > 0.0 else None
 
 
+_TIME_RSS_PATTERNS: tuple[tuple[re.Pattern[str], float], ...] = (
+    (re.compile(r"maximum resident set size\s*\(kbytes\)\s*:\s*(\d+)", flags=re.IGNORECASE), 1.0 / 1024.0),
+    (re.compile(r"maximum resident set size\s*\(bytes\)\s*:\s*(\d+)", flags=re.IGNORECASE), 1.0 / (1024.0 * 1024.0)),
+    (re.compile(r"^\s*(\d+)\s+maximum resident set size", flags=re.IGNORECASE | re.MULTILINE), 1.0 / (1024.0 * 1024.0)),
+)
+
+
+def _parse_max_rss_mb_from_time_log(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    for pattern, scale in _TIME_RSS_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                return float(match.group(1)) * scale
+            except ValueError:
+                continue
+    return None
+
+
+def _parse_jax_max_rss_from_log(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    rss_vals: list[float] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "profiling:" not in line or "rss_mb=" not in line:
+            continue
+        try:
+            token = line.split("rss_mb=", 1)[1].split()[0]
+            if token.lower() == "na":
+                continue
+            rss_vals.append(float(token))
+        except Exception:
+            continue
+    return max(rss_vals) if rss_vals else None
+
+
 def _run_jax_cli(
     *,
     input_path: Path,
@@ -284,7 +324,7 @@ def _run_jax_cli(
     collect_iterations: bool = True,
     repeats: int = 1,
     cache_dir: Path | None = None,
-) -> tuple[float, float | None]:
+) -> tuple[float, float | None, float | None]:
     cmd = [
         "python",
         "-m",
@@ -313,6 +353,7 @@ def _run_jax_cli(
         "SFINCS_JAX_KSP_HISTORY_MAX_SIZE",
         env.get("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "800"),
     )
+    env.setdefault("SFINCS_JAX_PROFILE", "1")
     run_times: list[float] = []
     repeat_count = max(1, int(repeats))
     for idx in range(repeat_count):
@@ -338,11 +379,21 @@ def _run_jax_cli(
     warm = None
     if len(run_times) > 1:
         warm = float(np.mean(np.asarray(run_times[1:], dtype=np.float64)))
-    return cold, warm
+    rss_mb = _parse_jax_max_rss_from_log(log_path)
+    return cold, warm, rss_mb
 
 
-def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_path: Path) -> tuple[float, Path, int]:
+def _run_fortran_direct(
+    *, input_path: Path, exe: Path, timeout_s: float, log_path: Path
+) -> tuple[float, Path, int, float | None]:
     cmd = [str(exe.resolve())]
+    time_prefix: list[str] = []
+    if Path("/usr/bin/time").exists():
+        if sys.platform == "darwin":
+            time_prefix = ["/usr/bin/time", "-l"]
+        else:
+            time_prefix = ["/usr/bin/time", "-v"]
+    cmd = [*time_prefix, *cmd]
     t0 = time.perf_counter()
     env = dict(os.environ)
     with log_path.open("w", encoding="utf-8") as log:
@@ -357,6 +408,7 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
         )
     dt = time.perf_counter() - t0
     out = input_path.parent / "sfincsOutput.h5"
+    rss_mb = _parse_max_rss_mb_from_time_log(log_path)
     if proc.returncode != 0:
         tail = _tail(log_path, n=80)
         lower_tail = tail.lower()
@@ -380,11 +432,12 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
                 )
             dt_retry = time.perf_counter() - t1
             out_retry = input_path.parent / "sfincsOutput.h5"
+            rss_mb_retry = _parse_max_rss_mb_from_time_log(retry_log)
             if retry_proc.returncode == 0 and out_retry.exists():
-                return dt_retry, out_retry, int(retry_proc.returncode)
+                return dt_retry, out_retry, int(retry_proc.returncode), rss_mb_retry
             if out.exists() and retry_proc.returncode != 0:
-                return dt_retry, out_retry if out_retry.exists() else out, int(retry_proc.returncode)
-            return dt_retry, out_retry, int(retry_proc.returncode)
+                return dt_retry, out_retry if out_retry.exists() else out, int(retry_proc.returncode), rss_mb_retry
+            return dt_retry, out_retry, int(retry_proc.returncode), rss_mb_retry
         # Some MPI-enabled builds error out on libfabric defaults. Retry once with a TCP provider.
         mpi_hint = any(s in lower_tail for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
         if mpi_hint:
@@ -448,8 +501,9 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
                         env=env_retry,
                     )
                 dt = time.perf_counter() - t0
+                rss_mb = _parse_max_rss_mb_from_time_log(log_path)
                 if proc.returncode == 0 and out.exists():
-                    return dt, out, int(proc.returncode)
+                    return dt, out, int(proc.returncode), rss_mb
                 tail = _tail(log_path, n=80)
             mpi_exec = None
             mpi_exec_vendor = None
@@ -504,14 +558,15 @@ def _run_fortran_direct(*, input_path: Path, exe: Path, timeout_s: float, log_pa
                             env=env_retry,
                         )
                     dt = time.perf_counter() - t0
+                    rss_mb = _parse_max_rss_mb_from_time_log(log_path)
                     if proc.returncode == 0 and out.exists():
-                        return dt, out, int(proc.returncode)
+                        return dt, out, int(proc.returncode), rss_mb
                     tail = _tail(log_path, n=80)
         raise RuntimeError(f"Fortran failed rc={proc.returncode}.\n{tail}")
     if not out.exists():
         tail = _tail(log_path, n=40)
         raise RuntimeError(f"Fortran did not produce output.\n{tail}")
-    return dt, out, int(proc.returncode)
+    return dt, out, int(proc.returncode), rss_mb
 
 
 def _compare_outputs(
@@ -638,6 +693,8 @@ def _load_existing_results(report_json: Path) -> dict[str, CaseResult]:
             jax_runtime_s=item.get("jax_runtime_s"),
             jax_runtime_s_cold=item.get("jax_runtime_s_cold"),
             jax_runtime_s_warm=item.get("jax_runtime_s_warm"),
+            fortran_max_rss_mb=item.get("fortran_max_rss_mb"),
+            jax_max_rss_mb=item.get("jax_max_rss_mb"),
             jax_solver_iters_mean=item.get("jax_solver_iters_mean"),
             jax_solver_iters_min=item.get("jax_solver_iters_min"),
             jax_solver_iters_max=item.get("jax_solver_iters_max"),
@@ -710,7 +767,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         lines.append("- Tolerances: practical mode applies per-case `*.compare_tolerances.json` when present.\n\n")
     lines.append(".. list-table:: Reduced-resolution upstream suite parity status\n")
     lines.append("   :header-rows: 1\n")
-    lines.append("   :widths: 23 9 16 10 7 7 10 10 10 11 13 12 16\n\n")
+    lines.append("   :widths: 23 9 16 10 7 7 10 10 9 9 10 11 13 12 16\n\n")
     lines.append("   * - Case\n")
     lines.append("     - Status\n")
     lines.append("     - Blocker\n")
@@ -719,6 +776,8 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
     lines.append("     - Reductions\n")
     lines.append("     - Fortran(s)\n")
     lines.append("     - JAX(s)\n")
+    lines.append("     - Fortran MB\n")
+    lines.append("     - JAX MB\n")
     lines.append("     - JAX iters\n")
     lines.append("     - Mismatches\n")
     lines.append("     - Buckets\n")
@@ -736,6 +795,8 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         res = ",".join(f"{k}={v}" for k, v in sorted(row.final_resolution.items()))
         ft = "-" if row.fortran_runtime_s is None else f"{row.fortran_runtime_s:.3f}"
         jt = "-" if row.jax_runtime_s is None else f"{row.jax_runtime_s:.3f}"
+        fm = "-" if row.fortran_max_rss_mb is None else f"{row.fortran_max_rss_mb:.1f}"
+        jm = "-" if row.jax_max_rss_mb is None else f"{row.jax_max_rss_mb:.1f}"
         n_common = row.strict_n_common_keys if strict else row.n_common_keys
         n_bad = row.strict_n_mismatch_common if strict else row.n_mismatch_common
         n_solver = row.strict_n_mismatch_solver if strict else row.n_mismatch_solver
@@ -759,6 +820,8 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         lines.append(f"     - {row.reductions}\n")
         lines.append(f"     - {ft}\n")
         lines.append(f"     - {jt}\n")
+        lines.append(f"     - {fm}\n")
+        lines.append(f"     - {jm}\n")
         lines.append(f"     - {iters}\n")
         lines.append(f"     - {mm}\n")
         lines.append(f"     - {buckets}\n")
@@ -804,6 +867,8 @@ def _run_case(
     jax_runtime = None
     jax_runtime_cold = None
     jax_runtime_warm = None
+    fortran_max_rss_mb = None
+    jax_max_rss_mb = None
     jax_solver_iters_mean = None
     jax_solver_iters_min = None
     jax_solver_iters_max = None
@@ -849,6 +914,7 @@ def _run_case(
                 fortran_log_path = fortran_log if fortran_log.exists() else None
                 if fortran_runtime is None and fortran_log_path is not None:
                     fortran_runtime = _parse_fortran_runtime_from_log(fortran_log_path)
+                    fortran_max_rss_mb = _parse_max_rss_mb_from_time_log(fortran_log_path)
         else:
             if fortran_dir.exists():
                 shutil.rmtree(fortran_dir)
@@ -859,7 +925,7 @@ def _run_case(
 
         try:
             if fortran_h5_this_attempt is None:
-                fortran_runtime, out_fortran, fortran_rc = _run_fortran_direct(
+                fortran_runtime, out_fortran, fortran_rc, fortran_max_rss_mb = _run_fortran_direct(
                     input_path=fortran_dir / "input.namelist",
                     exe=fortran_exe,
                     timeout_s=timeout_s,
@@ -915,7 +981,7 @@ def _run_case(
         jax_log = case_out_dir / "sfincs_jax.log"
         jax_log_path = jax_log
         try:
-            jax_runtime_cold, jax_runtime_warm = _run_jax_cli(
+            jax_runtime_cold, jax_runtime_warm, jax_max_rss_mb = _run_jax_cli(
                 input_path=dst_input,
                 output_path=jax_h5,
                 timeout_s=timeout_s,
@@ -1017,6 +1083,8 @@ def _run_case(
         jax_runtime_s=jax_runtime,
         jax_runtime_s_cold=jax_runtime_cold,
         jax_runtime_s_warm=jax_runtime_warm,
+        fortran_max_rss_mb=fortran_max_rss_mb,
+        jax_max_rss_mb=jax_max_rss_mb,
         jax_solver_iters_mean=jax_solver_iters_mean,
         jax_solver_iters_min=jax_solver_iters_min,
         jax_solver_iters_max=jax_solver_iters_max,

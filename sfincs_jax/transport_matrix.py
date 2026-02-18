@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import weakref
 from dataclasses import dataclass
 import numpy as np
 
@@ -23,18 +24,20 @@ try:
     _TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX = int(_TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX_ENV) if _TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX_ENV else 4
 except ValueError:
     _TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX = 4
-_TRANSPORT_DIAG_PRECOMPUTE_CACHE: dict[tuple[object, ...], V3TransportDiagnosticsPrecomputed] = {}
-_TRANSPORT_DIAG_PRECOMPUTE_ORDER: list[tuple[object, ...]] = []
+_TRANSPORT_DIAG_PRECOMPUTE_CACHE: dict[int, tuple[weakref.ReferenceType[V3FullSystemOperator], V3TransportDiagnosticsPrecomputed]] = {}
+_TRANSPORT_DIAG_PRECOMPUTE_ORDER: list[int] = []
 
 
 def _transport_diag_precompute_cached(op0: V3FullSystemOperator) -> V3TransportDiagnosticsPrecomputed:
-    sig = _operator_signature_cached(op0)
-    cached = _TRANSPORT_DIAG_PRECOMPUTE_CACHE.get(sig)
+    key = id(op0)
+    cached = _TRANSPORT_DIAG_PRECOMPUTE_CACHE.get(key)
     if cached is not None:
-        return cached
+        ref, precomputed = cached
+        if ref() is op0:
+            return precomputed
     precomputed = v3_transport_diagnostics_vm_only_precompute(op0)
-    _TRANSPORT_DIAG_PRECOMPUTE_CACHE[sig] = precomputed
-    _TRANSPORT_DIAG_PRECOMPUTE_ORDER.append(sig)
+    _TRANSPORT_DIAG_PRECOMPUTE_CACHE[key] = (weakref.ref(op0), precomputed)
+    _TRANSPORT_DIAG_PRECOMPUTE_ORDER.append(key)
     max_cache = int(_TRANSPORT_DIAG_PRECOMPUTE_CACHE_MAX)
     if max_cache > 0 and len(_TRANSPORT_DIAG_PRECOMPUTE_ORDER) > max_cache:
         oldest = _TRANSPORT_DIAG_PRECOMPUTE_ORDER.pop(0)

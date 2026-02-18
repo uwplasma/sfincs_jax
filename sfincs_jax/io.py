@@ -2589,7 +2589,11 @@ def write_sfincs_jax_output_h5(
 
             # Import lazily to keep geometry-only use-cases lightweight.
             from .v3_driver import solve_v3_transport_matrix_linear_gmres
-            from .transport_matrix import v3_rhsmode1_output_fields_vm_only_jit, v3_transport_output_fields_vm_only
+            from .transport_matrix import (
+                transport_matrix_size_from_rhs_mode,
+                v3_rhsmode1_output_fields_vm_only_jit,
+                v3_transport_output_fields_vm_only,
+            )
 
             if emit is not None:
                 emit(0, " Computing transport matrix.")
@@ -2612,11 +2616,13 @@ def write_sfincs_jax_output_h5(
                 diag_chunk = int(diag_chunk_env) if diag_chunk_env else None
             except ValueError:
                 diag_chunk = None
-            fields = v3_transport_output_fields_vm_only(
-                op0=result.op0,
-                state_vectors_by_rhs=result.state_vectors_by_rhs,
-                chunk_size=diag_chunk,
-            )
+            fields = result.transport_output_fields
+            if fields is None:
+                fields = v3_transport_output_fields_vm_only(
+                    op0=result.op0,
+                    state_vectors_by_rhs=result.state_vectors_by_rhs,
+                    chunk_size=diag_chunk,
+                )
 
             # Add transportMatrix (Fortran reads it transposed vs mathematical row/col).
             fields["transportMatrix"] = np.asarray(result.transport_matrix, dtype=np.float64).T
@@ -2626,7 +2632,7 @@ def write_sfincs_jax_output_h5(
             # (moments, momentum flux, and NTV) for each whichRHS solve. Populate these
             # additional datasets in the same Python-read axis order as Fortran output.
             op0 = result.op0
-            n_rhs = len(result.state_vectors_by_rhs)
+            n_rhs = transport_matrix_size_from_rhs_mode(int(op0.rhs_mode))
             z = int(op0.n_zeta)
             t = int(op0.n_theta)
             s = int(op0.n_species)
@@ -2634,136 +2640,137 @@ def write_sfincs_jax_output_h5(
             # the number of RHS solves for RHSMode=2/3.
             data["NIterations"] = np.asarray(n_rhs, dtype=np.int32)
 
-            def _alloc_ztsn() -> "jnp.ndarray":
-                return jnp.zeros((z, t, s, n_rhs), dtype=jnp.float64)
+            if result.transport_output_fields is None:
+                def _alloc_ztsn() -> "jnp.ndarray":
+                    return jnp.zeros((z, t, s, n_rhs), dtype=jnp.float64)
 
-            def _alloc_zt_n() -> "jnp.ndarray":
-                return jnp.zeros((z, t, n_rhs), dtype=jnp.float64)
+                def _alloc_zt_n() -> "jnp.ndarray":
+                    return jnp.zeros((z, t, n_rhs), dtype=jnp.float64)
 
-            def _alloc_sn() -> "jnp.ndarray":
-                return jnp.zeros((s, n_rhs), dtype=jnp.float64)
+                def _alloc_sn() -> "jnp.ndarray":
+                    return jnp.zeros((s, n_rhs), dtype=jnp.float64)
 
-            # Allocate missing diagnostics arrays:
-            dens = _alloc_ztsn()
-            pres = _alloc_ztsn()
-            pres_aniso = _alloc_ztsn()
-            flow = _alloc_ztsn()
-            total_dens = _alloc_ztsn()
-            total_pres = _alloc_ztsn()
-            vel_fsadens = _alloc_ztsn()
-            vel_total = _alloc_ztsn()
-            mach = _alloc_ztsn()
-            j_hat = _alloc_zt_n()
-            fsa_dens = _alloc_sn()
-            fsa_pres = _alloc_sn()
+                # Allocate missing diagnostics arrays:
+                dens = _alloc_ztsn()
+                pres = _alloc_ztsn()
+                pres_aniso = _alloc_ztsn()
+                flow = _alloc_ztsn()
+                total_dens = _alloc_ztsn()
+                total_pres = _alloc_ztsn()
+                vel_fsadens = _alloc_ztsn()
+                vel_total = _alloc_ztsn()
+                mach = _alloc_ztsn()
+                j_hat = _alloc_zt_n()
+                fsa_dens = _alloc_sn()
+                fsa_pres = _alloc_sn()
 
-            mf_before_vm = _alloc_ztsn()
-            mf_before_vm0 = _alloc_ztsn()
-            mf_before_vE = _alloc_ztsn()
-            mf_before_vE0 = _alloc_ztsn()
-            mf_vm_psi_hat = _alloc_sn()
-            mf_vm0_psi_hat = _alloc_sn()
+                mf_before_vm = _alloc_ztsn()
+                mf_before_vm0 = _alloc_ztsn()
+                mf_before_vE = _alloc_ztsn()
+                mf_before_vE0 = _alloc_ztsn()
+                mf_vm_psi_hat = _alloc_sn()
+                mf_vm0_psi_hat = _alloc_sn()
 
-            # NTV:
-            ntv_before = _alloc_ztsn()
-            ntv = _alloc_sn()
+                # NTV:
+                ntv_before = _alloc_ztsn()
+                ntv = _alloc_sn()
 
-            # NTVKernel from v3 geometry.F90; use base output arrays for parity.
-            geometry_scheme = int(np.asarray(data["geometryScheme"]))
-            compute_ntv = geometry_scheme != 5
-            bh = jnp.asarray(data["BHat"], dtype=jnp.float64)
-            if compute_ntv:
-                dbt = jnp.asarray(data["dBHatdtheta"], dtype=jnp.float64)
-                dbz = jnp.asarray(data["dBHatdzeta"], dtype=jnp.float64)
-                uhat = jnp.asarray(data["uHat"], dtype=jnp.float64)
-                # v3 geometry defines invFSA_BHat2 as 1 / FSABHat2 (not <1/BHat^2>).
-                inv_fsa_b2 = 1.0 / jnp.asarray(float(data["FSABHat2"]), dtype=jnp.float64)
-                ghat = jnp.asarray(float(data["GHat"]), dtype=jnp.float64)
-                ihat = jnp.asarray(float(data["IHat"]), dtype=jnp.float64)
-                iota = jnp.asarray(float(data["iota"]), dtype=jnp.float64)
-                ntv_kernel = (2.0 / 5.0) / bh * (
-                    (uhat - ghat * inv_fsa_b2) * (iota * dbt + dbz)
-                    + iota * (1.0 / (bh * bh)) * (ghat * dbt - ihat * dbz)
-                )
-            else:
-                ntv_kernel = jnp.zeros_like(bh)
-
-            # Shared weights:
-            w2d = jnp.asarray(op0.theta_weights, dtype=jnp.float64)[:, None] * jnp.asarray(op0.zeta_weights, dtype=jnp.float64)[None, :]
-            vprime_hat = jnp.sum(w2d / jnp.asarray(op0.d_hat, dtype=jnp.float64))
-            x = jnp.asarray(op0.x, dtype=jnp.float64)
-            xw = jnp.asarray(op0.x_weights, dtype=jnp.float64)
-            w_ntv = xw * (x**4)
-            z_s = jnp.asarray(op0.z_s, dtype=jnp.float64)
-            t_hat = jnp.asarray(op0.t_hat, dtype=jnp.float64)
-            m_hat = jnp.asarray(op0.m_hat, dtype=jnp.float64)
-            sqrt_t = jnp.sqrt(t_hat)
-            sqrt_m = jnp.sqrt(m_hat)
-
-            for which_rhs, x_full in result.state_vectors_by_rhs.items():
-                j = int(which_rhs) - 1
-                from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
-
-                op_rhs = with_transport_rhs_settings(op0, which_rhs=int(which_rhs))
-                d = v3_rhsmode1_output_fields_vm_only_jit(op_rhs, x_full=x_full)
-
-                dens = dens.at[:, :, :, j].set(jnp.transpose(d["densityPerturbation"], (2, 1, 0)))
-                pres = pres.at[:, :, :, j].set(jnp.transpose(d["pressurePerturbation"], (2, 1, 0)))
-                pres_aniso = pres_aniso.at[:, :, :, j].set(jnp.transpose(d["pressureAnisotropy"], (2, 1, 0)))
-                flow = flow.at[:, :, :, j].set(jnp.transpose(d["flow"], (2, 1, 0)))
-                total_dens = total_dens.at[:, :, :, j].set(jnp.transpose(d["totalDensity"], (2, 1, 0)))
-                total_pres = total_pres.at[:, :, :, j].set(jnp.transpose(d["totalPressure"], (2, 1, 0)))
-                vel_fsadens = vel_fsadens.at[:, :, :, j].set(jnp.transpose(d["velocityUsingFSADensity"], (2, 1, 0)))
-                vel_total = vel_total.at[:, :, :, j].set(jnp.transpose(d["velocityUsingTotalDensity"], (2, 1, 0)))
-                mach = mach.at[:, :, :, j].set(jnp.transpose(d["MachUsingFSAThermalSpeed"], (2, 1, 0)))
-                j_hat = j_hat.at[:, :, j].set(jnp.transpose(d["jHat"], (1, 0)))
-                fsa_dens = fsa_dens.at[:, j].set(d["FSADensityPerturbation"])
-                fsa_pres = fsa_pres.at[:, j].set(d["FSAPressurePerturbation"])
-
-                mf_before_vm = mf_before_vm.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm"], (2, 1, 0)))
-                mf_before_vm0 = mf_before_vm0.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm0"], (2, 1, 0)))
-                mf_before_vE = mf_before_vE.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE"], (2, 1, 0)))
-                mf_before_vE0 = mf_before_vE0.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE0"], (2, 1, 0)))
-                mf_vm_psi_hat = mf_vm_psi_hat.at[:, j].set(d["momentumFlux_vm_psiHat"])
-                mf_vm0_psi_hat = mf_vm0_psi_hat.at[:, j].set(d["momentumFlux_vm0_psiHat"])
-
-                if compute_ntv and int(op0.n_xi) > 2:
-                    f_delta = jnp.asarray(x_full[: op0.f_size], dtype=jnp.float64).reshape(op0.fblock.f_shape)
-                    sum_ntv = jnp.einsum("x,sxtz->stz", w_ntv, f_delta[:, :, 2, :, :])
-                    ntv_before_stz = (
-                        (4.0 * jnp.pi * (t_hat * t_hat) * sqrt_t / (m_hat * sqrt_m * vprime_hat))[:, None, None]
-                        * ntv_kernel[None, :, :]
-                        * sum_ntv
+                # NTVKernel from v3 geometry.F90; use base output arrays for parity.
+                geometry_scheme = int(np.asarray(data["geometryScheme"]))
+                compute_ntv = geometry_scheme != 5
+                bh = jnp.asarray(data["BHat"], dtype=jnp.float64)
+                if compute_ntv:
+                    dbt = jnp.asarray(data["dBHatdtheta"], dtype=jnp.float64)
+                    dbz = jnp.asarray(data["dBHatdzeta"], dtype=jnp.float64)
+                    uhat = jnp.asarray(data["uHat"], dtype=jnp.float64)
+                    # v3 geometry defines invFSA_BHat2 as 1 / FSABHat2 (not <1/BHat^2>).
+                    inv_fsa_b2 = 1.0 / jnp.asarray(float(data["FSABHat2"]), dtype=jnp.float64)
+                    ghat = jnp.asarray(float(data["GHat"]), dtype=jnp.float64)
+                    ihat = jnp.asarray(float(data["IHat"]), dtype=jnp.float64)
+                    iota = jnp.asarray(float(data["iota"]), dtype=jnp.float64)
+                    ntv_kernel = (2.0 / 5.0) / bh * (
+                        (uhat - ghat * inv_fsa_b2) * (iota * dbt + dbz)
+                        + iota * (1.0 / (bh * bh)) * (ghat * dbt - ihat * dbz)
                     )
-                    ntv_s = jnp.einsum("tz,stz->s", w2d, ntv_before_stz)
                 else:
-                    ntv_before_stz = jnp.zeros((s, t, z), dtype=jnp.float64)
-                    ntv_s = jnp.zeros((s,), dtype=jnp.float64)
+                    ntv_kernel = jnp.zeros_like(bh)
 
-                ntv_before = ntv_before.at[:, :, :, j].set(jnp.transpose(ntv_before_stz, (2, 1, 0)))
-                ntv = ntv.at[:, j].set(ntv_s)
+                # Shared weights:
+                w2d = jnp.asarray(op0.theta_weights, dtype=jnp.float64)[:, None] * jnp.asarray(op0.zeta_weights, dtype=jnp.float64)[None, :]
+                vprime_hat = jnp.sum(w2d / jnp.asarray(op0.d_hat, dtype=jnp.float64))
+                x = jnp.asarray(op0.x, dtype=jnp.float64)
+                xw = jnp.asarray(op0.x_weights, dtype=jnp.float64)
+                w_ntv = xw * (x**4)
+                z_s = jnp.asarray(op0.z_s, dtype=jnp.float64)
+                t_hat = jnp.asarray(op0.t_hat, dtype=jnp.float64)
+                m_hat = jnp.asarray(op0.m_hat, dtype=jnp.float64)
+                sqrt_t = jnp.sqrt(t_hat)
+                sqrt_m = jnp.sqrt(m_hat)
 
-            fields["densityPerturbation"] = dens
-            fields["pressurePerturbation"] = pres
-            fields["pressureAnisotropy"] = pres_aniso
-            fields["flow"] = flow
-            fields["totalDensity"] = total_dens
-            fields["totalPressure"] = total_pres
-            fields["velocityUsingFSADensity"] = vel_fsadens
-            fields["velocityUsingTotalDensity"] = vel_total
-            fields["MachUsingFSAThermalSpeed"] = mach
-            fields["jHat"] = j_hat
-            fields["FSADensityPerturbation"] = fsa_dens
-            fields["FSAPressurePerturbation"] = fsa_pres
+                for which_rhs, x_full in result.state_vectors_by_rhs.items():
+                    j = int(which_rhs) - 1
+                    from .v3_system import with_transport_rhs_settings  # noqa: PLC0415
 
-            fields["momentumFluxBeforeSurfaceIntegral_vm"] = mf_before_vm
-            fields["momentumFluxBeforeSurfaceIntegral_vm0"] = mf_before_vm0
-            fields["momentumFluxBeforeSurfaceIntegral_vE"] = mf_before_vE
-            fields["momentumFluxBeforeSurfaceIntegral_vE0"] = mf_before_vE0
-            fields["momentumFlux_vm_psiHat"] = mf_vm_psi_hat
-            fields["momentumFlux_vm0_psiHat"] = mf_vm0_psi_hat
-            fields["NTVBeforeSurfaceIntegral"] = ntv_before
-            fields["NTV"] = ntv
+                    op_rhs = with_transport_rhs_settings(op0, which_rhs=int(which_rhs))
+                    d = v3_rhsmode1_output_fields_vm_only_jit(op_rhs, x_full=x_full)
+
+                    dens = dens.at[:, :, :, j].set(jnp.transpose(d["densityPerturbation"], (2, 1, 0)))
+                    pres = pres.at[:, :, :, j].set(jnp.transpose(d["pressurePerturbation"], (2, 1, 0)))
+                    pres_aniso = pres_aniso.at[:, :, :, j].set(jnp.transpose(d["pressureAnisotropy"], (2, 1, 0)))
+                    flow = flow.at[:, :, :, j].set(jnp.transpose(d["flow"], (2, 1, 0)))
+                    total_dens = total_dens.at[:, :, :, j].set(jnp.transpose(d["totalDensity"], (2, 1, 0)))
+                    total_pres = total_pres.at[:, :, :, j].set(jnp.transpose(d["totalPressure"], (2, 1, 0)))
+                    vel_fsadens = vel_fsadens.at[:, :, :, j].set(jnp.transpose(d["velocityUsingFSADensity"], (2, 1, 0)))
+                    vel_total = vel_total.at[:, :, :, j].set(jnp.transpose(d["velocityUsingTotalDensity"], (2, 1, 0)))
+                    mach = mach.at[:, :, :, j].set(jnp.transpose(d["MachUsingFSAThermalSpeed"], (2, 1, 0)))
+                    j_hat = j_hat.at[:, :, j].set(jnp.transpose(d["jHat"], (1, 0)))
+                    fsa_dens = fsa_dens.at[:, j].set(d["FSADensityPerturbation"])
+                    fsa_pres = fsa_pres.at[:, j].set(d["FSAPressurePerturbation"])
+
+                    mf_before_vm = mf_before_vm.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm"], (2, 1, 0)))
+                    mf_before_vm0 = mf_before_vm0.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm0"], (2, 1, 0)))
+                    mf_before_vE = mf_before_vE.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE"], (2, 1, 0)))
+                    mf_before_vE0 = mf_before_vE0.at[:, :, :, j].set(jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE0"], (2, 1, 0)))
+                    mf_vm_psi_hat = mf_vm_psi_hat.at[:, j].set(d["momentumFlux_vm_psiHat"])
+                    mf_vm0_psi_hat = mf_vm0_psi_hat.at[:, j].set(d["momentumFlux_vm0_psiHat"])
+
+                    if compute_ntv and int(op0.n_xi) > 2:
+                        f_delta = jnp.asarray(x_full[: op0.f_size], dtype=jnp.float64).reshape(op0.fblock.f_shape)
+                        sum_ntv = jnp.einsum("x,sxtz->stz", w_ntv, f_delta[:, :, 2, :, :])
+                        ntv_before_stz = (
+                            (4.0 * jnp.pi * (t_hat * t_hat) * sqrt_t / (m_hat * sqrt_m * vprime_hat))[:, None, None]
+                            * ntv_kernel[None, :, :]
+                            * sum_ntv
+                        )
+                        ntv_s = jnp.einsum("tz,stz->s", w2d, ntv_before_stz)
+                    else:
+                        ntv_before_stz = jnp.zeros((s, t, z), dtype=jnp.float64)
+                        ntv_s = jnp.zeros((s,), dtype=jnp.float64)
+
+                    ntv_before = ntv_before.at[:, :, :, j].set(jnp.transpose(ntv_before_stz, (2, 1, 0)))
+                    ntv = ntv.at[:, j].set(ntv_s)
+
+                fields["densityPerturbation"] = dens
+                fields["pressurePerturbation"] = pres
+                fields["pressureAnisotropy"] = pres_aniso
+                fields["flow"] = flow
+                fields["totalDensity"] = total_dens
+                fields["totalPressure"] = total_pres
+                fields["velocityUsingFSADensity"] = vel_fsadens
+                fields["velocityUsingTotalDensity"] = vel_total
+                fields["MachUsingFSAThermalSpeed"] = mach
+                fields["jHat"] = j_hat
+                fields["FSADensityPerturbation"] = fsa_dens
+                fields["FSAPressurePerturbation"] = fsa_pres
+
+                fields["momentumFluxBeforeSurfaceIntegral_vm"] = mf_before_vm
+                fields["momentumFluxBeforeSurfaceIntegral_vm0"] = mf_before_vm0
+                fields["momentumFluxBeforeSurfaceIntegral_vE"] = mf_before_vE
+                fields["momentumFluxBeforeSurfaceIntegral_vE0"] = mf_before_vE0
+                fields["momentumFlux_vm_psiHat"] = mf_vm_psi_hat
+                fields["momentumFlux_vm0_psiHat"] = mf_vm0_psi_hat
+                fields["NTVBeforeSurfaceIntegral"] = ntv_before
+                fields["NTV"] = ntv
 
             # Classical fluxes (v3 `classicalTransport.F90`) depend on the imposed gradients
             # and therefore must be computed separately for each whichRHS in RHSMode=2/3 runs.
