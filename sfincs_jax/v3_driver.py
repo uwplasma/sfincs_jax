@@ -23,6 +23,7 @@ from .solver import (
     bicgstab_solve_with_residual_jit,
     bicgstab_solve_with_history_scipy,
     dense_solve_from_matrix,
+    dense_solve_from_matrix_row_scaled,
     gmres_solve,
     gmres_solve_jit,
     gmres_solve_with_residual,
@@ -164,6 +165,7 @@ class _SparseILUCache:
     a_csr_full: object
     a_csr_drop: object
     ilu: object | None
+    a_dense: np.ndarray | None
     l_dense: np.ndarray | None
     u_dense: np.ndarray | None
     l_unit_diag: bool
@@ -208,11 +210,20 @@ def _build_sparse_ilu_from_matvec(
     fill_factor: float,
     build_dense_factors: bool,
     build_ilu: bool,
+    store_dense: bool,
     emit: Callable[[int, str], None] | None = None,
-) -> tuple[object, object, object, np.ndarray | None, np.ndarray | None, bool]:
+) -> tuple[object, object, object | None, np.ndarray | None, np.ndarray | None, np.ndarray | None, bool]:
     cached = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
     if cached is not None:
-        return cached.a_csr_full, cached.a_csr_drop, cached.ilu, cached.l_dense, cached.u_dense, cached.l_unit_diag
+        return (
+            cached.a_csr_full,
+            cached.a_csr_drop,
+            cached.ilu,
+            cached.a_dense,
+            cached.l_dense,
+            cached.u_dense,
+            cached.l_unit_diag,
+        )
 
     if emit is not None:
         emit(1, f"sparse_ilu: assembling dense operator (n={n})")
@@ -246,6 +257,7 @@ def _build_sparse_ilu_from_matvec(
             fill_factor=float(fill_factor),
             permc_spec="COLAMD",
         )
+    a_dense = a_np_full if store_dense else None
     l_dense = None
     u_dense = None
     l_unit_diag = True
@@ -258,11 +270,12 @@ def _build_sparse_ilu_from_matvec(
         a_csr_full=a_csr_full,
         a_csr_drop=a_csr_drop,
         ilu=ilu,
+        a_dense=a_dense,
         l_dense=l_dense,
         u_dense=u_dense,
         l_unit_diag=l_unit_diag,
     )
-    return a_csr_full, a_csr_drop, ilu, l_dense, u_dense, l_unit_diag
+    return a_csr_full, a_csr_drop, ilu, a_dense, l_dense, u_dense, l_unit_diag
 
 
 @dataclass(frozen=True)
@@ -3421,6 +3434,7 @@ def solve_v3_full_system_linear_gmres(
     sparse_ilu_drop_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_DROP_TOL", "").strip()
     sparse_ilu_fill_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_FILL_FACTOR", "").strip()
     sparse_ilu_dense_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_DENSE_MAX", "").strip()
+    sparse_dense_cache_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DENSE_CACHE_MAX", "").strip()
     try:
         sparse_drop_tol = float(sparse_drop_tol_env) if sparse_drop_tol_env else 0.0
     except ValueError:
@@ -3441,6 +3455,10 @@ def solve_v3_full_system_linear_gmres(
         sparse_ilu_dense_max = int(sparse_ilu_dense_env) if sparse_ilu_dense_env else 2500
     except ValueError:
         sparse_ilu_dense_max = 2500
+    try:
+        sparse_dense_cache_max = int(sparse_dense_cache_env) if sparse_dense_cache_env else 3000
+    except ValueError:
+        sparse_dense_cache_max = 3000
 
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
@@ -3993,7 +4011,7 @@ def solve_v3_full_system_linear_gmres(
                     ilu_drop_tol=sparse_ilu_drop_tol,
                     fill_factor=sparse_ilu_fill,
                 )
-                a_csr_full, _a_csr_drop, _ilu, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
+                a_csr_full, _a_csr_drop, _ilu, _a_dense, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
                     matvec=mv_reduced,
                     n=int(active_size),
                     dtype=rhs_reduced.dtype,
@@ -4004,6 +4022,7 @@ def solve_v3_full_system_linear_gmres(
                     fill_factor=sparse_ilu_fill,
                     build_dense_factors=False,
                     build_ilu=False,
+                    store_dense=False,
                     emit=emit,
                 )
 
@@ -4260,6 +4279,13 @@ def solve_v3_full_system_linear_gmres(
             and (not use_pas_projection)
         ):
             strong_precond_auto = True
+        if (
+            strong_precond_env == ""
+            and op.fblock.fp is not None
+            and int(active_size) >= strong_precond_min
+            and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+        ):
+            strong_precond_auto = True
         strong_precond_kind: str | None = None
         if strong_precond_disabled:
             strong_precond_kind = None
@@ -4295,6 +4321,36 @@ def solve_v3_full_system_linear_gmres(
                 and int(op.rhs_mode) == 1
                 and (not bool(op.include_phi1))
                 and op.fblock.pas is not None
+                and int(active_size) >= strong_precond_min
+                and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+            ):
+                tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+                try:
+                    tz_max = int(tz_max_env) if tz_max_env else 128
+                except ValueError:
+                    tz_max = 128
+                xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+                try:
+                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+                except ValueError:
+                    xblock_tz_max = 1200
+                max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+                if (
+                    int(op.n_theta) > 1
+                    and int(op.n_zeta) > 1
+                    and xblock_tz_max > 0
+                    and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+                ):
+                    strong_precond_kind = "xblock_tz"
+                elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
+                    strong_precond_kind = "theta_zeta"
+                else:
+                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+            elif (
+                rhs1_precond_env == ""
+                and int(op.rhs_mode) == 1
+                and (not bool(op.include_phi1))
+                and op.fblock.fp is not None
                 and int(active_size) >= strong_precond_min
                 and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
             ):
@@ -4440,6 +4496,7 @@ def solve_v3_full_system_linear_gmres(
                 if emit is not None:
                     emit(1, f"sparse_ilu: disabled (size={int(active_size)} > max={int(sparse_max_size)})")
 
+        dense_matrix_cache: np.ndarray | None = None
         if sparse_enabled and float(res_reduced.residual_norm) > target_reduced:
             try:
                 _mark("rhs1_sparse_precond_build_start")
@@ -4455,7 +4512,8 @@ def solve_v3_full_system_linear_gmres(
                     fill_factor=sparse_ilu_fill,
                 )
                 build_dense_factors = bool(use_implicit) and int(active_size) <= int(sparse_ilu_dense_max)
-                a_csr_full, _a_csr_drop, ilu, l_dense, u_dense, l_unit_diag = _build_sparse_ilu_from_matvec(
+                store_dense = int(active_size) <= int(sparse_dense_cache_max)
+                a_csr_full, _a_csr_drop, ilu, a_dense_cache, l_dense, u_dense, l_unit_diag = _build_sparse_ilu_from_matvec(
                     matvec=mv_reduced,
                     n=int(active_size),
                     dtype=rhs_reduced.dtype,
@@ -4466,8 +4524,10 @@ def solve_v3_full_system_linear_gmres(
                     fill_factor=sparse_ilu_fill,
                     build_dense_factors=build_dense_factors,
                     build_ilu=True,
+                    store_dense=store_dense,
                     emit=emit,
                 )
+                dense_matrix_cache = a_dense_cache
                 _mark("rhs1_sparse_precond_build_done")
 
                 if use_implicit:
@@ -4595,21 +4655,30 @@ def solve_v3_full_system_linear_gmres(
                     f"(size={active_size} residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
                 )
             try:
-                dense_method = "dense"
-                if int(op.constraint_scheme) == 0:
-                    dense_method = "dense_row_scaled"
-                res_dense = _solve_linear(
-                    matvec_fn=mv_reduced,
-                    b_vec=rhs_reduced,
-                    precond_fn=None,
-                    x0_vec=None,
-                    tol_val=tol,
-                    atol_val=atol,
-                    restart_val=restart,
-                    maxiter_val=maxiter,
-                    solve_method_val=dense_method,
-                    precond_side="none",
-                )
+                if dense_matrix_cache is not None:
+                    a_dense_jnp = jnp.asarray(dense_matrix_cache, dtype=rhs_reduced.dtype)
+                    if int(op.constraint_scheme) == 0:
+                        x_dense, _rn = dense_solve_from_matrix_row_scaled(a=a_dense_jnp, b=rhs_reduced)
+                    else:
+                        x_dense, _rn = dense_solve_from_matrix(a=a_dense_jnp, b=rhs_reduced)
+                    r_dense = rhs_reduced - mv_reduced(x_dense)
+                    res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
+                else:
+                    dense_method = "dense"
+                    if int(op.constraint_scheme) == 0:
+                        dense_method = "dense_row_scaled"
+                    res_dense = _solve_linear(
+                        matvec_fn=mv_reduced,
+                        b_vec=rhs_reduced,
+                        precond_fn=None,
+                        x0_vec=None,
+                        tol_val=tol,
+                        atol_val=atol,
+                        restart_val=restart,
+                        maxiter_val=maxiter,
+                        solve_method_val=dense_method,
+                        precond_side="none",
+                    )
                 if float(res_dense.residual_norm) < float(res_reduced.residual_norm):
                     res_reduced = res_dense
             except Exception as exc:  # noqa: BLE001
@@ -4965,6 +5034,13 @@ def solve_v3_full_system_linear_gmres(
                 and int(op.extra_size) > 0
             ):
                 strong_precond_auto = True
+            if (
+                strong_precond_env == ""
+                and op.fblock.fp is not None
+                and int(op.total_size) >= strong_precond_min
+                and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+            ):
+                strong_precond_auto = True
             strong_precond_kind: str | None = None
             if strong_precond_disabled:
                 strong_precond_kind = None
@@ -5012,6 +5088,36 @@ def solve_v3_full_system_linear_gmres(
                         and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
                     ):
                         strong_precond_kind = "xblock_tz"
+                    else:
+                        strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                elif (
+                    rhs1_precond_env == ""
+                    and int(op.rhs_mode) == 1
+                    and (not bool(op.include_phi1))
+                    and op.fblock.fp is not None
+                    and int(op.total_size) >= strong_precond_min
+                    and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+                ):
+                    tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+                    try:
+                        tz_max = int(tz_max_env) if tz_max_env else 128
+                    except ValueError:
+                        tz_max = 128
+                    xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+                    try:
+                        xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+                    except ValueError:
+                        xblock_tz_max = 1200
+                    max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+                    if (
+                        int(op.n_theta) > 1
+                        and int(op.n_zeta) > 1
+                        and xblock_tz_max > 0
+                        and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+                    ):
+                        strong_precond_kind = "xblock_tz"
+                    elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
+                        strong_precond_kind = "theta_zeta"
                     else:
                         strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 

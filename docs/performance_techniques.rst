@@ -369,6 +369,10 @@ can trigger the Schur preconditioner automatically once ``total_size`` exceeds
 the threshold (default: ``2500``), which helps HSX-like cases.
 See ``docs/references.rst`` for Schur complement references.
 
+For FP-heavy RHSMode=1 systems, the strong-preconditioner fallback is now enabled
+automatically once the active system exceeds ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN``,
+so difficult FP cases attempt a stronger angular block preconditioner before dense fallback.
+
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
 preserving the constraint coupling.
@@ -398,6 +402,7 @@ the RHSMode=1 sparse fallback). Controls:
 - ``SFINCS_JAX_RHSMODE1_SPARSE_DROP_TOL`` / ``SFINCS_JAX_RHSMODE1_SPARSE_DROP_REL``
 - ``SFINCS_JAX_RHSMODE1_SPARSE_ILU_DROP_TOL`` / ``SFINCS_JAX_RHSMODE1_SPARSE_ILU_FILL_FACTOR``
 - ``SFINCS_JAX_RHSMODE1_SPARSE_ILU_DENSE_MAX`` (max size for JAX triangular apply)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_DENSE_CACHE_MAX`` (reuse assembled dense operator for fallback solves)
 - ``SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF`` (explicit-only override)
 
 **PAS x-block :math:`(\theta,\zeta)` preconditioner.** For PAS cases with
