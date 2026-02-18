@@ -6,12 +6,33 @@ for selected examples, then expand coverage over time.
 
 from __future__ import annotations
 
+# Enable a default JAX compilation cache for repeated CLI invocations unless the
+# user explicitly disables it. This improves cold-start performance without
+# requiring environment configuration.
+import os
+
+_disable_cache = os.environ.get("SFINCS_JAX_DISABLE_COMPILATION_CACHE", "").strip().lower()
+if _disable_cache not in {"1", "true", "yes", "on"}:
+    if not os.environ.get("JAX_COMPILATION_CACHE_DIR", "").strip():
+        default_cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "sfincs_jax", "jax_compilation_cache")
+        os.environ["JAX_COMPILATION_CACHE_DIR"] = default_cache_dir
+        os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
+        os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+
 # SFINCS parity fixtures and most scientific use-cases rely on float64 accuracy.
 # Set this as early as possible on package import.
 try:
     from jax import config as _jax_config  # noqa: PLC0415
 
     _jax_config.update("jax_enable_x64", True)
+    _cache_dir = os.environ.get("JAX_COMPILATION_CACHE_DIR", "").strip()
+    if _cache_dir:
+        try:  # pragma: no cover - best-effort cache enable
+            from jax.experimental import compilation_cache as _compilation_cache  # noqa: PLC0415
+
+            _compilation_cache.set_cache_dir(_cache_dir)
+        except Exception:
+            pass
 except Exception:
     # Keep import lightweight for tooling that inspects the package without JAX.
     pass

@@ -284,6 +284,27 @@ def f0_l0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
     return pref[:, :, None, None] * exp_phi1[:, None, :, :]
 
 
+def f0_l0_v3_from_operator_phi1(op: V3FullSystemOperator, phi1_hat: jnp.ndarray) -> jnp.ndarray:
+    """Compute v3 `f0` for L=0 with an explicit Phi1 override (shape: S,X,T,Z)."""
+    x = jnp.asarray(op.x, dtype=jnp.float64)
+    expx2 = jnp.exp(-(x * x))  # (X,)
+
+    z = jnp.asarray(op.z_s, dtype=jnp.float64)  # (S,)
+    n_hat = jnp.asarray(op.n_hat, dtype=jnp.float64)
+    t_hat = jnp.asarray(op.t_hat, dtype=jnp.float64)
+    m_hat = jnp.asarray(op.m_hat, dtype=jnp.float64)
+
+    # (S, X)
+    pref = n_hat[:, None] * m_hat[:, None] / (jnp.pi * t_hat[:, None])
+    pref = pref * jnp.sqrt(m_hat[:, None] / (jnp.pi * t_hat[:, None]))
+    pref = pref * expx2[None, :]
+
+    phi1 = jnp.asarray(phi1_hat, dtype=jnp.float64)  # (T,Z)
+    exp_phi1 = jnp.exp(-(z[:, None, None] * op.alpha / t_hat[:, None, None]) * phi1[None, :, :])  # (S,T,Z)
+
+    return pref[:, :, None, None] * exp_phi1[:, None, :, :]
+
+
 def f0_v3_from_operator(op: V3FullSystemOperator) -> jnp.ndarray:
     """Compute v3 `f0` (Maxwellian) in the BLOCK_F layout.
 
@@ -687,7 +708,11 @@ v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit = jax.jit(
 
 
 def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(
-    op: V3FullSystemOperator, *, x_full: jnp.ndarray, f0_l0: jnp.ndarray
+    op: V3FullSystemOperator,
+    *,
+    x_full: jnp.ndarray,
+    f0_l0: jnp.ndarray,
+    phi1_hat: jnp.ndarray | None = None,
 ) -> dict[str, jnp.ndarray]:
     """RHSMode=1 output subset with a precomputed Maxwellian f0 (L=0)."""
     x_full = jnp.asarray(x_full, dtype=jnp.float64)
@@ -842,7 +867,8 @@ def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(
         flow_vs_x = jnp.zeros((op.n_species, op.n_x), dtype=jnp.float64)
 
     # Total density/pressure and velocities:
-    exp_phi1 = jnp.exp(-(z[:, None, None] * op.alpha / t_hat[:, None, None]) * op.phi1_hat_base[None, :, :])
+    phi1_use = op.phi1_hat_base if phi1_hat is None else phi1_hat
+    exp_phi1 = jnp.exp(-(z[:, None, None] * op.alpha / t_hat[:, None, None]) * phi1_use[None, :, :])
     total_density = n_hat[:, None, None] * exp_phi1 + dens
     total_pressure = n_hat[:, None, None] * exp_phi1 * t_hat[:, None, None] + pres
     vel_fsadens = flow / n_hat[:, None, None]
@@ -934,6 +960,18 @@ def v3_rhsmode1_output_fields_vm_only(op: V3FullSystemOperator, *, x_full: jnp.n
     return _v3_rhsmode1_output_fields_vm_only_from_f0_l0(op, x_full=x_full, f0_l0=f0_l0)
 
 
+def v3_rhsmode1_output_fields_vm_only_phi1(
+    op: V3FullSystemOperator, *, x_full: jnp.ndarray
+) -> dict[str, jnp.ndarray]:
+    """Compute RHSMode=1 diagnostics using Phi1 extracted from the state vector."""
+    n_t = int(op.n_theta)
+    n_z = int(op.n_zeta)
+    phi1_flat = x_full[op.f_size : op.f_size + n_t * n_z]
+    phi1 = phi1_flat.reshape((n_t, n_z))
+    f0_l0 = f0_l0_v3_from_operator_phi1(op, phi1)
+    return _v3_rhsmode1_output_fields_vm_only_from_f0_l0(op, x_full=x_full, f0_l0=f0_l0, phi1_hat=phi1)
+
+
 def v3_rhsmode1_output_fields_vm_only_batch(
     op: V3FullSystemOperator,
     *,
@@ -970,8 +1008,30 @@ def v3_rhsmode1_output_fields_vm_only_batch(
     return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
 
 
+def v3_rhsmode1_output_fields_vm_only_phi1_batch(
+    op: V3FullSystemOperator,
+    *,
+    x_full_stack: jnp.ndarray,
+) -> dict[str, jnp.ndarray]:
+    """Vectorized RHSMode=1 diagnostics over an iteration axis with Phi1 from state."""
+    x_full_stack = jnp.asarray(x_full_stack, dtype=jnp.float64)
+    if x_full_stack.ndim == 1:
+        x_full_stack = x_full_stack[None, :]
+    if x_full_stack.ndim != 2 or x_full_stack.shape[1] != int(op.total_size):
+        raise ValueError(
+            f"x_full_stack must have shape (N,{int(op.total_size)}) or ({int(op.total_size)},), got {x_full_stack.shape}"
+        )
+
+    def _one(x_state: jnp.ndarray) -> dict[str, jnp.ndarray]:
+        return v3_rhsmode1_output_fields_vm_only_phi1(op, x_full=x_state)
+
+    return vmap(_one, in_axes=0, out_axes=0)(x_full_stack)
+
+
 v3_rhsmode1_output_fields_vm_only_jit = jax.jit(v3_rhsmode1_output_fields_vm_only)
 v3_rhsmode1_output_fields_vm_only_batch_jit = jax.jit(v3_rhsmode1_output_fields_vm_only_batch)
+v3_rhsmode1_output_fields_vm_only_phi1_jit = jax.jit(v3_rhsmode1_output_fields_vm_only_phi1)
+v3_rhsmode1_output_fields_vm_only_phi1_batch_jit = jax.jit(v3_rhsmode1_output_fields_vm_only_phi1_batch)
 
 
 def v3_transport_output_fields_vm_only(

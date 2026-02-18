@@ -315,7 +315,10 @@ def assemble_dense_matrix_from_matvec(*, matvec, n: int, dtype: jnp.dtype) -> jn
     except ValueError:
         block = 0
     jit_env = os.environ.get("SFINCS_JAX_DENSE_ASSEMBLE_JIT", "").strip().lower()
-    use_jit = jit_env not in {"0", "false", "no", "off"}
+    if jit_env:
+        use_jit = jit_env not in {"0", "false", "no", "off"}
+    else:
+        use_jit = int(n) > 800
 
     def _assemble(block_cols: jnp.ndarray) -> jnp.ndarray:
         return vmap(matvec, in_axes=1, out_axes=1)(block_cols)

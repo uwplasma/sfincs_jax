@@ -45,6 +45,7 @@ def _collect_profiles(
     *,
     timeout_s: float | None = None,
     jax_cache_dir: Path | None = None,
+    jax_trace_dir: Path | None = None,
 ) -> dict[str, object]:
     logs: list[str] = []
 
@@ -66,6 +67,12 @@ def _collect_profiles(
         os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
         os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
 
+    if jax_trace_dir is not None:
+        jax_trace_dir.mkdir(parents=True, exist_ok=True)
+        import jax  # noqa: PLC0415
+
+        jax.profiler.start_trace(str(jax_trace_dir))
+
     from sfincs_jax.io import write_sfincs_jax_output_h5  # noqa: PLC0415
 
     try:
@@ -86,6 +93,13 @@ def _collect_profiles(
             signal.setitimer(signal.ITIMER_REAL, 0)
             if old_handler is not None:
                 signal.signal(signal.SIGALRM, old_handler)
+        if jax_trace_dir is not None:
+            try:
+                import jax  # noqa: PLC0415
+
+                jax.profiler.stop_trace()
+            except Exception:
+                pass
 
     entries = [_parse_profile_line(line) for line in logs]
     max_rss = None
@@ -121,6 +135,11 @@ def main() -> int:
         "--out-dir",
         default=str(_ROOT / "examples" / "performance" / "output" / "reduced_profiles"),
         help="Directory for output sfincsOutput.h5 files.",
+    )
+    parser.add_argument(
+        "--jax-trace-dir",
+        default=None,
+        help="Optional JAX profiler trace output directory.",
     )
     parser.add_argument("--timeout-s", type=float, default=None, help="Optional per-case timeout in seconds.")
     parser.add_argument(
@@ -178,6 +197,7 @@ def main() -> int:
                     out_path,
                     timeout_s=args.timeout_s,
                     jax_cache_dir=Path(args.jax_cache_dir) if args.jax_cache_dir else None,
+                    jax_trace_dir=Path(args.jax_trace_dir) / input_path.stem if args.jax_trace_dir else None,
                 )
             )
         except Exception as exc:  # noqa: BLE001

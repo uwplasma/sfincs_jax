@@ -3191,9 +3191,19 @@ def solve_v3_full_system_linear_gmres(
         full_precond_dense_max = 2500
 
     full_precond_size = active_size if use_active_dof_mode else int(op.total_size)
+    auto_dense_full_precond = bool(
+        full_precond_mode == "auto"
+        and full_precond_requested
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and int(op.constraint_scheme) != 0
+        and full_precond_dense_max > 0
+        and int(full_precond_size) <= int(full_precond_dense_max)
+        and str(solve_method).strip().lower() in {"auto", "default"}
+    )
     if (
         full_precond_requested
-        and full_precond_mode in {"dense", "dense_ksp"}
+        and (full_precond_mode in {"dense", "dense_ksp"} or auto_dense_full_precond)
         and int(op.rhs_mode) == 1
         and (not bool(op.include_phi1))
         and full_precond_dense_max > 0
@@ -3380,6 +3390,8 @@ def solve_v3_full_system_linear_gmres(
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
         rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+    if str(solve_method).strip().lower() in {"dense", "dense_ksp", "dense_row_scaled"}:
+        rhs1_precond_kind = None
     rhs1_precond_enabled = (
         rhs1_precond_kind is not None
         and int(op.rhs_mode) == 1
@@ -3619,6 +3631,19 @@ def solve_v3_full_system_linear_gmres(
         fortran_stdout = True
     else:
         fortran_stdout = emit is not None
+    ksp_history_max_env = os.environ.get("SFINCS_JAX_KSP_HISTORY_MAX_SIZE", "").strip().lower()
+    if ksp_history_max_env in {"none", "inf", "infinite", "unlimited"}:
+        ksp_history_max_size = None
+    else:
+        try:
+            ksp_history_max_size = int(ksp_history_max_env) if ksp_history_max_env else 800
+        except ValueError:
+            ksp_history_max_size = 800
+    ksp_history_max_iter_env = os.environ.get("SFINCS_JAX_KSP_HISTORY_MAX_ITER", "").strip()
+    try:
+        ksp_history_max_iter = int(ksp_history_max_iter_env) if ksp_history_max_iter_env else 2000
+    except ValueError:
+        ksp_history_max_iter = 2000
     iter_stats_env = os.environ.get("SFINCS_JAX_SOLVER_ITER_STATS", "").strip().lower()
     iter_stats_enabled = iter_stats_env in {"1", "true", "yes", "on"}
     iter_stats_max_env = os.environ.get("SFINCS_JAX_SOLVER_ITER_STATS_MAX_SIZE", "").strip()
@@ -5710,6 +5735,10 @@ def solve_v3_full_system_newton_krylov_history(
                 "solve_v3_full_system_newton_krylov_history: active-DOF mode enabled "
                 f"(size={active_size}/{int(op.total_size)})",
             )
+    gmres_restart_use = int(gmres_restart)
+    if active_size <= 1000:
+        gmres_restart_use = min(gmres_restart_use, 200)
+    gmres_restart_use = max(1, gmres_restart_use)
 
     def _reduce_full(v_full: jnp.ndarray) -> jnp.ndarray:
         assert active_idx_jnp is not None
@@ -5728,6 +5757,18 @@ def solve_v3_full_system_newton_krylov_history(
     # histories and `sfincsOutput.h5` shape parity for linear Phi1 fixtures.
     pc_env = os.environ.get("SFINCS_JAX_PHI1_USE_PRECONDITIONER", "").strip().lower()
     use_preconditioner = pc_env not in {"0", "false", "no", "off"}
+    dense_cutoff_env = os.environ.get("SFINCS_JAX_PHI1_NK_DENSE_CUTOFF", "").strip()
+    try:
+        dense_cutoff = int(dense_cutoff_env) if dense_cutoff_env else 5000
+    except ValueError:
+        dense_cutoff = 5000
+    linear_size = active_size if use_active_dof_mode else int(op.total_size)
+    solve_method_in = str(solve_method).strip().lower()
+    use_dense_linear = solve_method_in in {"dense", "dense_row_scaled"} or (
+        use_frozen_linearization and int(linear_size) <= int(dense_cutoff)
+    )
+    if use_dense_linear:
+        use_preconditioner = False
     precond_opts = nml.group("preconditionerOptions")
 
     def _phi1_precond_opt_int(key: str, default: int) -> int:
@@ -5797,6 +5838,19 @@ def solve_v3_full_system_newton_krylov_history(
     except ValueError:
         frozen_jac_every = 1
     frozen_jac_every = max(1, frozen_jac_every)
+    ksp_history_max_env = os.environ.get("SFINCS_JAX_KSP_HISTORY_MAX_SIZE", "").strip().lower()
+    if ksp_history_max_env in {"none", "inf", "infinite", "unlimited"}:
+        ksp_history_max_size = None
+    else:
+        try:
+            ksp_history_max_size = int(ksp_history_max_env) if ksp_history_max_env else 800
+        except ValueError:
+            ksp_history_max_size = 800
+    ksp_history_max_iter_env = os.environ.get("SFINCS_JAX_KSP_HISTORY_MAX_ITER", "").strip()
+    try:
+        ksp_history_max_iter = int(ksp_history_max_iter_env) if ksp_history_max_iter_env else 2000
+    except ValueError:
+        ksp_history_max_iter = 2000
 
     def _emit_ksp_history_nk(
         *,
@@ -5812,6 +5866,19 @@ def solve_v3_full_system_newton_krylov_history(
     ) -> None:
         if emit is None or not fortran_stdout:
             return
+        size = int(b_vec.size)
+        if ksp_history_max_size is not None and size > int(ksp_history_max_size):
+            emit(1, f"fortran-stdout: KSP history skipped (size={size} > max={int(ksp_history_max_size)})")
+            return
+        if maxiter_val is not None and ksp_history_max_iter is not None:
+            est_iters = int(maxiter_val) * max(1, int(restart_val))
+            if est_iters > int(ksp_history_max_iter):
+                emit(
+                    1,
+                    "fortran-stdout: KSP history skipped "
+                    f"(estimated_iters={est_iters} > max={int(ksp_history_max_iter)})",
+                )
+                return
         try:
             _x_hist, _rn, history = gmres_solve_with_history_scipy(
                 matvec=matvec_fn,
@@ -5957,12 +6024,6 @@ def solve_v3_full_system_newton_krylov_history(
 
         solve_method_linear = str(solve_method)
         if use_frozen_linearization:
-            dense_cutoff_env = os.environ.get("SFINCS_JAX_PHI1_NK_DENSE_CUTOFF", "").strip()
-            try:
-                dense_cutoff = int(dense_cutoff_env) if dense_cutoff_env else 5000
-            except ValueError:
-                dense_cutoff = 5000
-            linear_size = active_size if use_active_dof_mode else int(op.total_size)
             if int(linear_size) <= int(dense_cutoff):
                 solve_method_linear = "dense"
 
@@ -5977,7 +6038,7 @@ def solve_v3_full_system_newton_krylov_history(
                 b=rhs_reduced,
                 preconditioner=preconditioner,
                 tol=float(gmres_tol),
-                restart=int(gmres_restart),
+                restart=int(gmres_restart_use),
                 maxiter=gmres_maxiter,
                 solve_method=solve_method_linear,
             )
@@ -5988,7 +6049,7 @@ def solve_v3_full_system_newton_krylov_history(
                 x0_vec=None,
                 tol_val=float(gmres_tol),
                 atol_val=0.0,
-                restart_val=int(gmres_restart),
+                restart_val=int(gmres_restart_use),
                 maxiter_val=gmres_maxiter,
                 precond_side="left",
             )
@@ -6004,7 +6065,7 @@ def solve_v3_full_system_newton_krylov_history(
                     b=rhs_reduced,
                     preconditioner=None,
                     tol=float(gmres_tol),
-                    restart=int(gmres_restart),
+                    restart=int(gmres_restart_use),
                     maxiter=gmres_maxiter,
                     solve_method=solve_method_linear,
                 )
@@ -6015,7 +6076,7 @@ def solve_v3_full_system_newton_krylov_history(
                     x0_vec=None,
                     tol_val=float(gmres_tol),
                     atol_val=0.0,
-                    restart_val=int(gmres_restart),
+                    restart_val=int(gmres_restart_use),
                     maxiter_val=gmres_maxiter,
                     precond_side="left",
                 )
@@ -6027,7 +6088,7 @@ def solve_v3_full_system_newton_krylov_history(
                 b=-r,
                 preconditioner=preconditioner,
                 tol=float(gmres_tol),
-                restart=int(gmres_restart),
+                restart=int(gmres_restart_use),
                 maxiter=gmres_maxiter,
                 solve_method=solve_method_linear,
             )
@@ -6038,7 +6099,7 @@ def solve_v3_full_system_newton_krylov_history(
                 x0_vec=None,
                 tol_val=float(gmres_tol),
                 atol_val=0.0,
-                restart_val=int(gmres_restart),
+                restart_val=int(gmres_restart_use),
                 maxiter_val=gmres_maxiter,
                 precond_side="left",
             )
@@ -6054,7 +6115,7 @@ def solve_v3_full_system_newton_krylov_history(
                     b=-r,
                     preconditioner=None,
                     tol=float(gmres_tol),
-                    restart=int(gmres_restart),
+                    restart=int(gmres_restart_use),
                     maxiter=gmres_maxiter,
                     solve_method=solve_method_linear,
                 )
@@ -6065,7 +6126,7 @@ def solve_v3_full_system_newton_krylov_history(
                     x0_vec=None,
                     tol_val=float(gmres_tol),
                     atol_val=0.0,
-                    restart_val=int(gmres_restart),
+                    restart_val=int(gmres_restart_use),
                     maxiter_val=gmres_maxiter,
                     precond_side="left",
                 )
@@ -6418,6 +6479,19 @@ def solve_v3_transport_matrix_linear_gmres(
             if emit is not None:
                 emit(0, f"solve_v3_transport_matrix_linear_gmres: forced dense solve for RHSMode={rhs_mode} (n={int(op0.total_size)})")
         elif (
+            int(rhs_mode) == 2
+            and (not force_krylov)
+            and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
+            and int(op0.total_size) <= 1500
+        ):
+            solve_method_use = "dense"
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_transport_matrix_linear_gmres: auto dense solve for RHSMode=2 "
+                    f"(n={int(op0.total_size)})",
+                )
+        elif (
             dense_fallback
             and (not force_krylov)
             and int(op0.total_size) <= dense_fallback_max
@@ -6458,6 +6532,8 @@ def solve_v3_transport_matrix_linear_gmres(
     )
     dense_precond_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
     dense_precond_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    dense_solver_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    dense_solver_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
 
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
@@ -6614,6 +6690,22 @@ def solve_v3_transport_matrix_linear_gmres(
                 f"(size={active_size}/{int(op0.total_size)}){reason}",
             )
 
+    if (
+        int(rhs_mode) == 2
+        and (not force_krylov)
+        and (not force_dense)
+        and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
+    ):
+        auto_dense_size = int(active_size) if use_active_dof_mode else int(op0.total_size)
+        if auto_dense_size <= 1500:
+            solve_method_use = "dense"
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_transport_matrix_linear_gmres: auto dense solve for RHSMode=2 "
+                    f"(n={auto_dense_size})",
+                )
+
     reduce_full = None
     expand_reduced = None
     if use_active_dof_mode:
@@ -6708,6 +6800,27 @@ def solve_v3_transport_matrix_linear_gmres(
 
         cache[key] = precond
         return precond
+
+    def _dense_solver_for_matvec(
+        *,
+        matvec_fn,
+        n: int,
+        dtype: jnp.dtype,
+        cache: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]],
+        key: tuple[object, int],
+    ) -> Callable[[jnp.ndarray], jnp.ndarray]:
+        if key in cache:
+            return cache[key]
+        import jax.scipy.linalg as jla  # noqa: PLC0415
+
+        a_dense = assemble_dense_matrix_from_matvec(matvec=matvec_fn, n=n, dtype=dtype)
+        lu, piv = jla.lu_factor(a_dense)
+
+        def solve(v: jnp.ndarray) -> jnp.ndarray:
+            return jla.lu_solve((lu, piv), v)
+
+        cache[key] = solve
+        return solve
 
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
@@ -6944,7 +7057,7 @@ def solve_v3_transport_matrix_linear_gmres(
         )
 
     dense_batch_done = False
-    if str(solve_method_use).lower() == "dense" and not use_active_dof_mode:
+    if str(solve_method_use).lower() == "dense":
         requested_epar_krylov = any((_rhs3_krylov_flags(which_rhs)[0] or _rhs3_krylov_flags(which_rhs)[1]) for which_rhs in which_rhs_values)
         if not requested_epar_krylov:
             op_probe_ref = op_matvec_by_index[0]
@@ -6961,39 +7074,71 @@ def solve_v3_transport_matrix_linear_gmres(
                     emit(1, "solve_v3_transport_matrix_linear_gmres: dense batched solve across all whichRHS")
                 t_dense = Timer()
 
-                def _mv_dense(x: jnp.ndarray) -> jnp.ndarray:
-                    return apply_v3_full_system_operator_cached(op_probe_ref, x)
+                if use_active_dof_mode:
+                    assert reduce_full is not None
+                    assert expand_reduced is not None
 
-                a_dense = assemble_dense_matrix_from_matvec(
-                    matvec=_mv_dense, n=int(op0.total_size), dtype=jnp.float64
-                )
-                rhs_mat = jnp.stack(rhs_by_index, axis=1)
-                x_mat, _ = dense_solve_from_matrix(a=a_dense, b=rhs_mat)
-                x_cols: list[jnp.ndarray] = []
-                for idx, which_rhs in enumerate(which_rhs_values):
-                    x_col = x_mat[:, idx]
-                    rhs_vec = rhs_by_index[idx]
-                    x_col = _maybe_project_constraint_nullspace(
-                        x_col, which_rhs=int(which_rhs), op_matvec=op_probe_ref, rhs_vec=rhs_vec
+                    def _mv_dense(x: jnp.ndarray) -> jnp.ndarray:
+                        y_full = apply_v3_full_system_operator_cached(op_probe_ref, expand_reduced(x))
+                        return reduce_full(y_full)
+
+                    rhs_mat = jnp.stack([reduce_full(rhs) for rhs in rhs_by_index], axis=1)
+                    a_dense = assemble_dense_matrix_from_matvec(
+                        matvec=_mv_dense, n=int(active_size), dtype=jnp.float64
                     )
-                    x_cols.append(x_col)
-
-                x_mat_proj = jnp.stack(x_cols, axis=1)
-                res_mat = a_dense @ x_mat_proj - rhs_mat
-                res_norms = jnp.linalg.norm(res_mat, axis=0)
-
-                for idx, which_rhs in enumerate(which_rhs_values):
-                    x_col = x_mat_proj[:, idx]
-                    state_vectors[which_rhs] = x_col
-                    residual_norms[which_rhs] = res_norms[idx]
-                    elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
-                    if emit is not None:
-                        emit(
-                            0,
-                            f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
-                            f"elapsed_s={float(elapsed_s[-1]):.3f}",
+                    x_mat, _ = dense_solve_from_matrix(a=a_dense, b=rhs_mat)
+                    res_mat = a_dense @ x_mat - rhs_mat
+                    res_norms = jnp.linalg.norm(res_mat, axis=0)
+                    for idx, which_rhs in enumerate(which_rhs_values):
+                        x_col = expand_reduced(x_mat[:, idx])
+                        rhs_vec = rhs_by_index[idx]
+                        x_col = _maybe_project_constraint_nullspace(
+                            x_col, which_rhs=int(which_rhs), op_matvec=op_probe_ref, rhs_vec=rhs_vec
                         )
-                dense_batch_done = True
+                        state_vectors[which_rhs] = x_col
+                        residual_norms[which_rhs] = res_norms[idx]
+                        elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
+                        if emit is not None:
+                            emit(
+                                0,
+                                f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
+                                f"elapsed_s={float(elapsed_s[-1]):.3f}",
+                            )
+                    dense_batch_done = True
+                else:
+                    def _mv_dense(x: jnp.ndarray) -> jnp.ndarray:
+                        return apply_v3_full_system_operator_cached(op_probe_ref, x)
+
+                    a_dense = assemble_dense_matrix_from_matvec(
+                        matvec=_mv_dense, n=int(op0.total_size), dtype=jnp.float64
+                    )
+                    rhs_mat = jnp.stack(rhs_by_index, axis=1)
+                    x_mat, _ = dense_solve_from_matrix(a=a_dense, b=rhs_mat)
+                    x_cols: list[jnp.ndarray] = []
+                    for idx, which_rhs in enumerate(which_rhs_values):
+                        x_col = x_mat[:, idx]
+                        rhs_vec = rhs_by_index[idx]
+                        x_col = _maybe_project_constraint_nullspace(
+                            x_col, which_rhs=int(which_rhs), op_matvec=op_probe_ref, rhs_vec=rhs_vec
+                        )
+                        x_cols.append(x_col)
+
+                    x_mat_proj = jnp.stack(x_cols, axis=1)
+                    res_mat = a_dense @ x_mat_proj - rhs_mat
+                    res_norms = jnp.linalg.norm(res_mat, axis=0)
+
+                    for idx, which_rhs in enumerate(which_rhs_values):
+                        x_col = x_mat_proj[:, idx]
+                        state_vectors[which_rhs] = x_col
+                        residual_norms[which_rhs] = res_norms[idx]
+                        elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
+                        if emit is not None:
+                            emit(
+                                0,
+                                f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
+                                f"elapsed_s={float(elapsed_s[-1]):.3f}",
+                            )
+                    dense_batch_done = True
 
     if not dense_batch_done:
         for idx, which_rhs in enumerate(which_rhs_values):
@@ -7127,18 +7272,17 @@ def solve_v3_transport_matrix_linear_gmres(
                             f"(size={int(active_size)} residual={float(res_reduced.residual_norm):.3e} > target={target_rhs:.3e})",
                         )
                     try:
-                        res_dense = _solve_linear(
+                        sig = _operator_signature_cached(op_matvec)
+                        dense_solver = _dense_solver_for_matvec(
                             matvec_fn=mv_reduced,
-                            b_vec=rhs_reduced,
-                            x0_vec=None,
-                            tol_val=tol_rhs,
-                            atol_val=atol,
-                            restart_val=_restart_for_method("dense"),
-                            maxiter_val=maxiter,
-                            solve_method_val="dense",
-                            preconditioner_val=None,
-                            precondition_side_val="none",
+                            n=int(active_size),
+                            dtype=rhs_reduced.dtype,
+                            cache=dense_solver_cache_reduced,
+                            key=(sig, int(active_size)),
                         )
+                        x_dense = dense_solver(rhs_reduced)
+                        r_dense = rhs_reduced - mv_reduced(x_dense)
+                        res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
                         if _residual_value(res_dense) < _residual_value(res_reduced):
                             res_reduced = res_dense
                             dense_used = True
@@ -7281,18 +7425,17 @@ def solve_v3_transport_matrix_linear_gmres(
                             f"(size={int(op0.total_size)} residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
                         )
                     try:
-                        res_dense, residual_dense = _solve_linear_with_residual(
+                        sig = _operator_signature_cached(op_matvec)
+                        dense_solver = _dense_solver_for_matvec(
                             matvec_fn=mv,
-                            b_vec=rhs,
-                            x0_vec=None,
-                            tol_val=tol_rhs,
-                            atol_val=atol,
-                            restart_val=_restart_for_method("dense"),
-                            maxiter_val=maxiter,
-                            solve_method_val="dense",
-                            preconditioner_val=None,
-                            precondition_side_val="none",
+                            n=int(op0.total_size),
+                            dtype=rhs.dtype,
+                            cache=dense_solver_cache_full,
+                            key=(sig, int(op0.total_size)),
                         )
+                        x_dense = dense_solver(rhs)
+                        residual_dense = rhs - mv(x_dense)
+                        res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(residual_dense))
                         if _residual_value(res_dense) < _residual_value(res):
                             res = res_dense
                             residual_vec = residual_dense
