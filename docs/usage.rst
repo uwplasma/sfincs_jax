@@ -289,6 +289,8 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1 when GMRES is selected).
+- ``SFINCS_JAX_LINEAR_STAGE2_RATIO``: only run stage-2 when ``||r|| / target`` exceeds the
+  given ratio (default: ``1e2``; set ``<= 0`` to always allow stage-2).
 
 - ``SFINCS_JAX_IMPLICIT_SOLVE``: control implicit differentiation through linear solves.
 
@@ -362,6 +364,8 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``: enable a dense fallback solve for RHSMode=1
   when GMRES stagnates. This is only applied when the active system size is below the
   specified threshold (default: ``3000``).
+- ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO``: only run the dense fallback when
+  ``||r|| / target`` exceeds the given ratio (default: ``1e2``; set ``<= 0`` to always allow).
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE``: constraintScheme=2 Schur preconditioner mode
   (``auto``/``diag``/``full``). ``auto`` selects a dense Schur complement when the
@@ -430,6 +434,8 @@ performance without changing the input file:
   (``theta_line``, ``zeta_line``, ``adi``, or ``auto``). Default: ``auto`` for
   ``constraintScheme=2`` when the environment variable is unset, otherwise disabled
   unless explicitly set.
+- ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO``: only run strong-preconditioner fallbacks
+  when ``||r|| / target`` exceeds the given ratio (default: ``1e2``; set ``<= 0`` to always allow).
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_BASE``: choose the base preconditioner used inside the
   constraint-aware Schur preconditioner (``theta_line``, ``zeta_line``, ``adi``, or

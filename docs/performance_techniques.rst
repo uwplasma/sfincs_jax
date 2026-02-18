@@ -372,6 +372,9 @@ See ``docs/references.rst`` for Schur complement references.
 For FP-heavy RHSMode=1 systems, the strong-preconditioner fallback is now enabled
 automatically once the active system exceeds ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN``,
 so difficult FP cases attempt a stronger angular block preconditioner before dense fallback.
+The fallback now uses a residual-ratio gate; tune
+``SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO`` (default: ``1e2``) to avoid expensive
+fallbacks when the residual is only slightly above target.
 
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
@@ -572,13 +575,20 @@ rescue transport-matrix solves that stall.
 **Current default:**
 
 - RHSMode=1 dense fallback is **enabled for modest systems** (``total_size <= 3000``)
-  when Krylov iterations stagnate.
+  when Krylov iterations stagnate. The trigger uses the **true (unpreconditioned)**
+  residual norm so the fallback still fires even if a left-preconditioned norm
+  appears small (parity-first behavior).
 - Transport dense fallback is **disabled** unless explicitly requested, but a
   dense retry is enabled for RHSMode=2/3 when the active system size is modest.
 
 Controls:
 
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX`` (default: ``3000``).
+- ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO`` (default: ``1e2``). Dense fallback
+  only triggers when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always
+  allow the fallback).
+- ``SFINCS_JAX_LINEAR_STAGE2_RATIO`` (default: ``1e2``). Stage-2 GMRES only runs
+  when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always allow).
 - ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX`` (default: ``3000`` for RHSMode=2/3).
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK`` / ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX``.
 - ``SFINCS_JAX_DENSE_ASSEMBLE_JIT``: JIT-compile dense matrix assembly (default on).

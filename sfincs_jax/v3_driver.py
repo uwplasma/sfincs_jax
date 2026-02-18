@@ -4156,6 +4156,13 @@ def solve_v3_full_system_linear_gmres(
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = _solver_kind(solve_method)[0]
         target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
+        res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
+        stage2_ratio_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RATIO", "").strip()
+        try:
+            stage2_ratio = float(stage2_ratio_env) if stage2_ratio_env else 1.0e2
+        except ValueError:
+            stage2_ratio = 1.0e2
+        stage2_trigger = bool(res_ratio > stage2_ratio) if stage2_ratio > 0 else True
         solver_kind = _solver_kind(solve_method)[0]
         if solver_kind == "bicgstab" and (
             (not _gmres_result_is_finite(res_reduced))
@@ -4187,7 +4194,12 @@ def solve_v3_full_system_linear_gmres(
             ksp_x0 = x0_reduced
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = "gmres"
-        if float(res_reduced.residual_norm) > target_reduced and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+        if (
+            float(res_reduced.residual_norm) > target_reduced
+            and stage2_enabled
+            and stage2_trigger
+            and t.elapsed_s() < stage2_time_cap_s
+        ):
             if preconditioner_reduced is None and rhs1_precond_enabled:
                 preconditioner_reduced = _build_rhs1_preconditioner_reduced()
             stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
@@ -4224,12 +4236,20 @@ def solve_v3_full_system_linear_gmres(
                 ksp_maxiter = stage2_maxiter
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
+        res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
+        strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
+        try:
+            strong_ratio = float(strong_ratio_env) if strong_ratio_env else 1.0e2
+        except ValueError:
+            strong_ratio = 1.0e2
+        strong_precond_trigger = bool(res_ratio > strong_ratio) if strong_ratio > 0 else True
         if (
             float(res_reduced.residual_norm) > target_reduced
             and int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
             and rhs1_precond_kind == "point"
             and (op.fblock.fp is not None or op.fblock.pas is not None)
+            and strong_precond_trigger
         ):
             if bicgstab_preconditioner_reduced is None:
                 bicgstab_preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
@@ -4377,7 +4397,11 @@ def solve_v3_full_system_linear_gmres(
                 else:
                     strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 
-        if strong_precond_kind is not None and float(res_reduced.residual_norm) > target_reduced:
+        if (
+            strong_precond_kind is not None
+            and float(res_reduced.residual_norm) > target_reduced
+            and strong_precond_trigger
+        ):
             _mark("rhs1_strong_precond_build_start")
             if emit is not None:
                 emit(
@@ -4607,9 +4631,13 @@ def solve_v3_full_system_linear_gmres(
                 if emit is not None:
                     emit(1, f"sparse_ilu: failed ({type(exc).__name__}: {exc})")
         residual_norm_check = float(res_reduced.residual_norm)
+        residual_norm_true = residual_norm_check
         if ksp_precond is not None and ksp_precond_side == "left":
             try:
                 r_vec = ksp_b - ksp_matvec(res_reduced.x)
+                residual_norm_true = float(jnp.linalg.norm(r_vec))
+                if not np.isfinite(residual_norm_true):
+                    residual_norm_true = float("inf")
                 r_pc = ksp_precond(r_vec)
                 r_pc_norm = float(jnp.linalg.norm(r_pc))
                 if np.isfinite(r_pc_norm):
@@ -4622,7 +4650,7 @@ def solve_v3_full_system_linear_gmres(
         except ValueError:
             dense_fallback_max = 0
         dense_fallback_max_huge = 0
-        dense_fallback_ratio = 1.0e8
+        dense_fallback_ratio = 1.0e2
         if dense_fallback_max > 0:
             dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
             try:
@@ -4631,22 +4659,25 @@ def solve_v3_full_system_linear_gmres(
                 dense_fallback_max_huge = dense_fallback_max
             dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
             try:
-                dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e8
+                dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e2
             except ValueError:
-                dense_fallback_ratio = 1.0e8
-        res_ratio = float(residual_norm_check) / max(float(target_reduced), 1e-300)
+                dense_fallback_ratio = 1.0e2
+        res_ratio = float(residual_norm_true) / max(float(target_reduced), 1e-300)
+        dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
         dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
         force_dense_cs0 = int(op.constraint_scheme) == 0
         if force_dense_cs0:
             # constraintScheme=0 systems are singular; keep the dense fallback
             # available even when the residual ratio is huge.
             dense_fallback_limit = max(dense_fallback_limit, dense_fallback_max)
+            dense_fallback_trigger = True
         if (
             dense_fallback_limit > 0
             and int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
             and int(active_size) <= dense_fallback_limit
-            and (float(residual_norm_check) > target_reduced or force_dense_cs0)
+            and dense_fallback_trigger
+            and (float(residual_norm_true) > target_reduced or force_dense_cs0)
         ):
             if emit is not None:
                 emit(
@@ -4912,6 +4943,13 @@ def solve_v3_full_system_linear_gmres(
             # If GMRES does not reach the requested tolerance (common without preconditioning),
             # retry with a larger iteration budget and the more robust incremental mode.
             target = max(float(atol), float(tol) * float(rhs_norm))
+            res_ratio = float(result.residual_norm) / max(float(target), 1e-300)
+            stage2_ratio_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RATIO", "").strip()
+            try:
+                stage2_ratio = float(stage2_ratio_env) if stage2_ratio_env else 1.0e2
+            except ValueError:
+                stage2_ratio = 1.0e2
+            stage2_trigger = bool(res_ratio > stage2_ratio) if stage2_ratio > 0 else True
             solver_kind = _solver_kind(solve_method)[0]
             if solver_kind == "bicgstab" and (
                 (not _gmres_result_is_finite(result))
@@ -4943,7 +4981,12 @@ def solve_v3_full_system_linear_gmres(
                 ksp_x0 = x0
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = "gmres"
-        if float(result.residual_norm) > target and stage2_enabled and t.elapsed_s() < stage2_time_cap_s:
+        if (
+            float(result.residual_norm) > target
+            and stage2_enabled
+            and stage2_trigger
+            and t.elapsed_s() < stage2_time_cap_s
+        ):
             if preconditioner_full is None and rhs1_precond_enabled:
                 preconditioner_full = _build_rhs1_preconditioner_full()
             stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
@@ -4981,12 +5024,20 @@ def solve_v3_full_system_linear_gmres(
                 ksp_maxiter = stage2_maxiter
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
+        res_ratio = float(result.residual_norm) / max(float(target), 1e-300)
+        strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
+        try:
+            strong_ratio = float(strong_ratio_env) if strong_ratio_env else 1.0e2
+        except ValueError:
+            strong_ratio = 1.0e2
+        strong_precond_trigger = bool(res_ratio > strong_ratio) if strong_ratio > 0 else True
         if (
             float(result.residual_norm) > target
             and int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
             and rhs1_precond_kind == "point"
             and (op.fblock.fp is not None or op.fblock.pas is not None)
+            and strong_precond_trigger
         ):
             if bicgstab_preconditioner_full is None:
                 bicgstab_preconditioner_full = _build_rhsmode1_collision_preconditioner(op=op)
@@ -5196,57 +5247,72 @@ def solve_v3_full_system_linear_gmres(
                     ksp_maxiter = strong_maxiter
                     ksp_precond_side = gmres_precond_side
                     ksp_solver_kind = _solver_kind("incremental")[0]
-            residual_norm_check = float(result.residual_norm)
-            if ksp_precond is not None and ksp_precond_side == "left":
-                try:
-                    if residual_vec is None:
-                        residual_vec = rhs - mv(result.x)
-                    r_pc = ksp_precond(residual_vec)
-                    r_pc_norm = float(jnp.linalg.norm(r_pc))
-                    if np.isfinite(r_pc_norm):
-                        residual_norm_check = r_pc_norm
-                except Exception:
-                    pass
-            dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
+        residual_norm_check = float(result.residual_norm)
+        residual_norm_true = residual_norm_check
+        if ksp_precond is not None and ksp_precond_side == "left":
             try:
-                dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
-            except ValueError:
-                dense_fallback_max = 3000
-            if (
-                dense_fallback_max > 0
-                and int(op.rhs_mode) == 1
-                and (not bool(op.include_phi1))
-                and int(op.total_size) <= dense_fallback_max
-                and float(residual_norm_check) > target
-            ):
+                if residual_vec is None:
+                    residual_vec = rhs - mv(result.x)
+                residual_norm_true = float(jnp.linalg.norm(residual_vec))
+                if not np.isfinite(residual_norm_true):
+                    residual_norm_true = float("inf")
+                r_pc = ksp_precond(residual_vec)
+                r_pc_norm = float(jnp.linalg.norm(r_pc))
+                if np.isfinite(r_pc_norm):
+                    residual_norm_check = r_pc_norm
+            except Exception:
+                pass
+        dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
+        try:
+            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
+        except ValueError:
+            dense_fallback_max = 3000
+        dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
+        try:
+            dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e2
+        except ValueError:
+            dense_fallback_ratio = 1.0e2
+        res_ratio = float(residual_norm_true) / max(float(target), 1e-300)
+        dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
+        force_dense_cs0 = int(op.constraint_scheme) == 0
+        if force_dense_cs0:
+            dense_fallback_trigger = True
+        if (
+            dense_fallback_max > 0
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and int(op.total_size) <= dense_fallback_max
+            and dense_fallback_trigger
+            and float(residual_norm_true) > target
+        ):
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: dense fallback "
+                    f"(size={int(op.total_size)} residual={float(residual_norm_check):.3e} > target={target:.3e})",
+                )
+            try:
+                dense_method = "dense"
+                if int(op.constraint_scheme) == 0:
+                    dense_method = "dense_row_scaled"
+                res_dense, residual_vec_dense = _solve_linear_with_residual(
+                    matvec_fn=mv,
+                    b_vec=rhs,
+                    precond_fn=None,
+                    x0_vec=None,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val=dense_method,
+                    precond_side="none",
+                )
+                if float(res_dense.residual_norm) < float(result.residual_norm):
+                    result = res_dense
+                    residual_vec = residual_vec_dense
+            except Exception as exc:  # noqa: BLE001
                 if emit is not None:
-                    emit(
-                        0,
-                        "solve_v3_full_system_linear_gmres: dense fallback "
-                        f"(size={int(op.total_size)} residual={float(residual_norm_check):.3e} > target={target:.3e})",
-                    )
-                try:
-                    dense_method = "dense"
-                    if int(op.constraint_scheme) == 0:
-                        dense_method = "dense_row_scaled"
-                    res_dense, residual_vec_dense = _solve_linear_with_residual(
-                        matvec_fn=mv,
-                        b_vec=rhs,
-                        precond_fn=None,
-                        x0_vec=None,
-                        tol_val=tol,
-                        atol_val=atol,
-                        restart_val=restart,
-                        maxiter_val=maxiter,
-                        solve_method_val=dense_method,
-                        precond_side="none",
-                    )
-                    if float(res_dense.residual_norm) < float(result.residual_norm):
-                        result = res_dense
-                        residual_vec = residual_vec_dense
-                except Exception as exc:  # noqa: BLE001
-                    if emit is not None:
-                        emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
+                    emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
     if int(op.rhs_mode) == 1:
         project_env = os.environ.get("SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE", "").strip().lower()
         if project_env in {"0", "false", "no", "off"}:
