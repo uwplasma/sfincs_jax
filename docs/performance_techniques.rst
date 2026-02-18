@@ -378,7 +378,10 @@ fallbacks when the residual is only slightly above target.
 
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
-preserving the constraint coupling.
+preserving the constraint coupling. For tokamak-like cases (``N_zeta=1``) with
+``|Er|`` below ``SFINCS_JAX_RHSMODE1_SCHUR_ER_ABS_MIN`` (default: ``0``),
+the default switches to the cheaper theta-line preconditioner to reduce setup time.
+Set ``SFINCS_JAX_RHSMODE1_SCHUR_TOKAMAK=1`` to force Schur in these cases.
 
 **Sparse ILU (FP-heavy RHSMode=1).** For FP-heavy RHSMode=1 systems, a PETSc‑like
 incomplete factorization is available to avoid dense fallback while retaining

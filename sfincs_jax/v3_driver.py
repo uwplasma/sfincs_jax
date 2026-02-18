@@ -3298,8 +3298,28 @@ def solve_v3_full_system_linear_gmres(
                     except ValueError:
                         schur_auto_min = 2500
                     schur_auto = int(op.total_size) >= schur_auto_min
+                phys_params = nml.group("physicsParameters")
+                er_val = phys_params.get("ER", phys_params.get("Er", phys_params.get("er", None)))
+                er_abs = 0.0
+                if er_val is not None:
+                    try:
+                        er_abs = float(er_val)
+                    except (TypeError, ValueError):
+                        er_abs = 0.0
+                er_abs = abs(er_abs)
+                schur_er_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_ER_ABS_MIN", "").strip()
+                try:
+                    schur_er_min = float(schur_er_env) if schur_er_env else 0.0
+                except ValueError:
+                    schur_er_min = 0.0
+                schur_tokamak_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_TOKAMAK", "").strip().lower()
+                schur_tokamak = schur_tokamak_env in {"1", "true", "yes", "on"}
+                tokamak_like = int(op.n_zeta) == 1
                 if full_precond_requested and int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
-                    rhs1_precond_kind = "schur"
+                    if tokamak_like and (not schur_tokamak) and er_abs <= schur_er_min:
+                        rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                    else:
+                        rhs1_precond_kind = "schur"
                 elif full_precond_requested and (int(op.n_theta) > 1 or int(op.n_zeta) > 1):
                     rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif schur_auto:

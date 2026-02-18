@@ -443,6 +443,12 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_SCHUR_BASE``: choose the base preconditioner used inside the
   constraint-aware Schur preconditioner (``theta_line``, ``zeta_line``, ``adi``, or
   ``point``). Default: ``auto`` (uses line preconditioning when angular coupling is present).
+- ``SFINCS_JAX_RHSMODE1_SCHUR_TOKAMAK``: force Schur preconditioning for tokamak-like
+  cases with ``N_zeta=1`` even when a cheaper theta-line preconditioner would be
+  selected by default (set to ``1`` to force Schur).
+- ``SFINCS_JAX_RHSMODE1_SCHUR_ER_ABS_MIN``: minimum ``|Er|`` for which tokamak-like
+  cases default to Schur. When ``|Er|`` is below this threshold (default: ``0``),
+  ``sfincs_jax`` uses the cheaper theta-line preconditioner for ``N_zeta=1`` cases.
 
 - ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS``: enable PAS-specific constraint projection for
   ``constraintScheme=2`` RHSMode=1 solves (drop explicit source unknowns and enforce the
