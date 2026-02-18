@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -45,6 +46,48 @@ from sfincs_jax.namelist import read_sfincs_input
 
 RES_KEYS: tuple[str, ...] = ("NTHETA", "NZETA", "NX", "NXI")
 MIN_RES: dict[str, int] = {"NTHETA": 5, "NZETA": 1, "NX": 1, "NXI": 2}
+
+
+def _terminate_process_group(proc: subprocess.Popen[bytes] | subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            return
+    try:
+        proc.wait(timeout=5.0)
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _run_logged_subprocess(
+    *,
+    cmd: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    log_path: Path,
+    timeout_s: float,
+    mode: str = "w",
+) -> int:
+    with log_path.open(mode, encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(cwd),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(proc)
+            raise
+    return int(proc.returncode)
 
 
 def _detect_mpi_vendor_for_exe(exe: Path) -> str | None:
@@ -416,20 +459,18 @@ def _run_fortran_direct(
     cmd = [*time_prefix, *cmd]
     t0 = time.perf_counter()
     env = dict(os.environ)
-    with log_path.open("w", encoding="utf-8") as log:
-        proc = subprocess.run(
-            cmd,
-            cwd=str(input_path.parent),
-            check=False,
-            timeout=timeout_s,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
-        )
+    returncode = _run_logged_subprocess(
+        cmd=cmd,
+        cwd=input_path.parent,
+        env=env,
+        log_path=log_path,
+        timeout_s=timeout_s,
+    )
+    last_returncode = returncode
     dt = time.perf_counter() - t0
     out = input_path.parent / "sfincsOutput.h5"
     rss_mb = _parse_max_rss_mb_from_time_log(log_path)
-    if proc.returncode != 0:
+    if returncode != 0:
         tail = _tail(log_path, n=80)
         lower_tail = tail.lower()
         if "attempting to use an mpi routine" in lower_tail and "mpich" in lower_tail:
@@ -440,24 +481,22 @@ def _run_fortran_direct(
             retry_env["PETSC_OPTIONS"] = fallback_opts
             retry_log = log_path.with_suffix(".petsc_fallback.log")
             t1 = time.perf_counter()
-            with retry_log.open("w", encoding="utf-8") as log:
-                retry_proc = subprocess.run(
-                    cmd,
-                    cwd=str(input_path.parent),
-                    check=False,
-                    timeout=timeout_s,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    env=retry_env,
-                )
+            retry_returncode = _run_logged_subprocess(
+                cmd=cmd,
+                cwd=input_path.parent,
+                env=retry_env,
+                log_path=retry_log,
+                timeout_s=timeout_s,
+            )
+            last_returncode = retry_returncode
             dt_retry = time.perf_counter() - t1
             out_retry = input_path.parent / "sfincsOutput.h5"
             rss_mb_retry = _parse_max_rss_mb_from_time_log(retry_log)
-            if retry_proc.returncode == 0 and out_retry.exists():
-                return dt_retry, out_retry, int(retry_proc.returncode), rss_mb_retry
-            if out.exists() and retry_proc.returncode != 0:
-                return dt_retry, out_retry if out_retry.exists() else out, int(retry_proc.returncode), rss_mb_retry
-            return dt_retry, out_retry, int(retry_proc.returncode), rss_mb_retry
+            if retry_returncode == 0 and out_retry.exists():
+                return dt_retry, out_retry, int(retry_returncode), rss_mb_retry
+            if out.exists() and retry_returncode != 0:
+                return dt_retry, out_retry if out_retry.exists() else out, int(retry_returncode), rss_mb_retry
+            return dt_retry, out_retry, int(retry_returncode), rss_mb_retry
         # Some MPI-enabled builds error out on libfabric defaults. Retry once with a TCP provider.
         mpi_hint = any(s in lower_tail for s in ("mpi_init", "ofi call", "libfabric", "mpidi_ofi"))
         if mpi_hint:
@@ -510,20 +549,18 @@ def _run_fortran_direct(
                 # Try to avoid touching non-loopback NICs on macOS runners.
                 env_retry.setdefault("MPICH_OFI_INTERFACE_NAME", "lo0")
                 env_retry.setdefault("FI_TCP_IFACE", "lo0")
-                with log_path.open("w", encoding="utf-8") as log:
-                    proc = subprocess.run(
-                        cmd,
-                        cwd=str(input_path.parent),
-                        check=False,
-                        timeout=timeout_s,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        env=env_retry,
-                    )
+                retry_returncode = _run_logged_subprocess(
+                    cmd=cmd,
+                    cwd=input_path.parent,
+                    env=env_retry,
+                    log_path=log_path,
+                    timeout_s=timeout_s,
+                )
                 dt = time.perf_counter() - t0
                 rss_mb = _parse_max_rss_mb_from_time_log(log_path)
-                if proc.returncode == 0 and out.exists():
-                    return dt, out, int(proc.returncode), rss_mb
+                last_returncode = retry_returncode
+                if retry_returncode == 0 and out.exists():
+                    return dt, out, int(retry_returncode), rss_mb
                 tail = _tail(log_path, n=80)
             mpi_exec = None
             mpi_exec_vendor = None
@@ -567,26 +604,24 @@ def _run_fortran_direct(
                     env_retry.setdefault("PRTE_MCA_oob_tcp_if_include", "lo0")
                     env_retry.setdefault("HYDRA_IFACE", "lo0")
                     env_retry.setdefault("HYDRA_USE_LOCALHOST", "1")
-                    with log_path.open("w", encoding="utf-8") as log:
-                        proc = subprocess.run(
-                            cmd_mpi,
-                            cwd=str(input_path.parent),
-                            check=False,
-                            timeout=timeout_s,
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            env=env_retry,
-                        )
+                    retry_returncode = _run_logged_subprocess(
+                        cmd=cmd_mpi,
+                        cwd=input_path.parent,
+                        env=env_retry,
+                        log_path=log_path,
+                        timeout_s=timeout_s,
+                    )
                     dt = time.perf_counter() - t0
                     rss_mb = _parse_max_rss_mb_from_time_log(log_path)
-                    if proc.returncode == 0 and out.exists():
-                        return dt, out, int(proc.returncode), rss_mb
+                    last_returncode = retry_returncode
+                    if retry_returncode == 0 and out.exists():
+                        return dt, out, int(retry_returncode), rss_mb
                     tail = _tail(log_path, n=80)
-        raise RuntimeError(f"Fortran failed rc={proc.returncode}.\n{tail}")
+        raise RuntimeError(f"Fortran failed rc={last_returncode}.\n{tail}")
     if not out.exists():
         tail = _tail(log_path, n=40)
         raise RuntimeError(f"Fortran did not produce output.\n{tail}")
-    return dt, out, int(proc.returncode), rss_mb
+    return dt, out, int(returncode), rss_mb
 
 
 def _compare_outputs(
@@ -1040,13 +1075,24 @@ def _run_case(
                 and max_rt > 0.0
             ):
                 ratio = float(target_runtime_s) / max_rt
-                factor = max(1.15, min(2.0, ratio**0.5))
+                factor = max(1.15, min(8.0, ratio**0.6))
                 new_res = _scale_resolution_in_place(dst_input, factor=factor)
                 if new_res != final_res:
                     scale_iters += 1
                     note = f"Scaled resolution by {factor:.2f} to target runtime."
                     continue
-            if target_cap is not None and max_rt > float(target_cap):
+            if (
+                target_cap is not None
+                and max_rt > float(target_cap)
+                and scale_iters < int(target_runtime_max_iters)
+            ):
+                new_res = _reduce_max_axis_in_place(dst_input)
+                if new_res != final_res:
+                    scale_iters += 1
+                    note = (
+                        f"Reduced resolution to keep runtime under cap {float(target_cap):.2f}s."
+                    )
+                    continue
                 note = f"Runtime {max_rt:.2f}s exceeds cap {float(target_cap):.2f}s; keeping resolution."
 
         if fortran_h5_this_attempt is None or jax_h5_path is None:
@@ -1204,8 +1250,8 @@ def main() -> int:
     parser.add_argument(
         "--target-runtime-max-iters",
         type=int,
-        default=4,
-        help="Maximum number of resolution scale-ups per case when targeting runtime.",
+        default=8,
+        help="Maximum number of resolution scale adjustments per case when targeting runtime.",
     )
     parser.add_argument(
         "--reuse-fortran",
