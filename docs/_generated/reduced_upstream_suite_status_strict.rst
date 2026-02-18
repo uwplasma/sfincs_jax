@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_mismatch=1, parity_ok=37
+- Status counts: parity_ok=38
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -32,8 +32,8 @@
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 12.962
-     - 3.237
+     - 9.260
+     - 3.223
      - -
      - 0/124
      - S:0 P:0
@@ -45,8 +45,8 @@
      - NTHETA=5,NX=1,NXI=2,NZETA=1
      - 1
      - 0
-     - 12.429
-     - 3.483
+     - 9.608
+     - 3.382
      - -
      - 0/124
      - S:0 P:0
@@ -58,8 +58,8 @@
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.332
-     - 4.919
+     - 0.361
+     - 4.513
      - -
      - 0/193
      - S:0 P:0
@@ -71,34 +71,34 @@
      - NTHETA=6,NX=3,NXI=10,NZETA=8
      - 1
      - 0
-     - 0.388
-     - 6.153
+     - 0.411
+     - 6.159
      - -
      - 0/193
      - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_magneticDrifts_noEr
-     - parity_mismatch
-     - solver branch mismatch
+     - parity_ok
+     - none
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
+     - 3.303
+     - 26.939
      - -
-     - 56.259
-     - -
-     - 30/193
-     - S:12 P:0
+     - 0/193
+     - S:0 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=30/193
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_magneticDrifts_withEr
      - parity_ok
      - none
      - NTHETA=6,NX=3,NXI=7,NZETA=7
      - 1
      - 0
-     - 3.397
-     - 60.423
+     - 2.322
+     - 28.693
      - -
      - 0/193
      - S:0 P:0
@@ -110,8 +110,8 @@
      - NTHETA=7,NX=3,NXI=9,NZETA=5
      - 1
      - 0
-     - 2.950
-     - 36.332
+     - 2.410
+     - 19.821
      - -
      - 0/193
      - S:0 P:0
@@ -123,8 +123,8 @@
      - NTHETA=7,NX=3,NXI=12,NZETA=12
      - 1
      - 0
-     - 0.265
-     - 3.529
+     - 0.396
+     - 3.517
      - -
      - 0/207
      - S:0 P:0
@@ -136,8 +136,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=6
      - 1
      - 0
-     - 0.197
-     - 2.196
+     - 0.261
+     - 2.190
      - -
      - 0/207
      - S:0 P:0
@@ -149,8 +149,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 3.320
-     - 26.466
+     - 9.297
+     - 16.288
      - -
      - 0/207
      - S:0 P:0
@@ -162,8 +162,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 7.584
-     - 3.798
+     - 6.860
+     - 3.809
      - -
      - 0/265
      - S:0 P:0
@@ -175,8 +175,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 5.302
-     - 2.250
+     - 4.260
+     - 2.227
      - -
      - 0/265
      - S:0 P:0
@@ -188,8 +188,8 @@
      - NTHETA=7,NX=3,NXI=6,NZETA=5
      - 1
      - 0
-     - 3.585
-     - 29.508
+     - 3.027
+     - 19.048
      - -
      - 0/193
      - S:0 P:0
@@ -201,8 +201,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 5.040
-     - 2.485
+     - 18.881
+     - 2.998
      - -
      - 0/251
      - S:0 P:0
@@ -214,8 +214,8 @@
      - NTHETA=5,NX=2,NXI=9,NZETA=9
      - 1
      - 0
-     - 3.526
-     - 45.868
+     - 19.482
+     - 27.133
      - -
      - 0/193
      - S:0 P:0
@@ -227,8 +227,8 @@
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 2.612
-     - 6.866
+     - 10.364
+     - 6.858
      - -
      - 0/207
      - S:0 P:0
@@ -240,8 +240,8 @@
      - NTHETA=14,NX=1,NXI=9,NZETA=15
      - 1
      - 0
-     - 0.449
-     - 1.547
+     - 0.392
+     - 1.607
      - -
      - 0/203
      - S:0 P:0
@@ -253,8 +253,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.560
-     - 2.185
+     - 0.617
+     - 2.234
      - -
      - 0/208
      - S:0 P:0
@@ -266,8 +266,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.628
-     - 1.481
+     - 0.493
+     - 1.480
      - -
      - 0/208
      - S:0 P:0
@@ -279,8 +279,8 @@
      - NTHETA=9,NX=1,NXI=12,NZETA=16
      - 1
      - 0
-     - 0.446
-     - 1.486
+     - 0.489
+     - 1.503
      - -
      - 0/208
      - S:0 P:0
@@ -292,8 +292,8 @@
      - NTHETA=5,NX=3,NXI=4,NZETA=4
      - 1
      - 0
-     - 3.055
-     - 6.891
+     - 3.625
+     - 6.874
      - -
      - 0/207
      - S:0 P:0
@@ -305,8 +305,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 3.307
-     - 48.095
+     - 3.112
+     - 23.060
      - -
      - 0/207
      - S:0 P:0
@@ -318,8 +318,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 3.567
-     - 52.233
+     - 2.892
+     - 26.922
      - -
      - 0/207
      - S:0 P:0
@@ -331,8 +331,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.281
-     - 2.344
+     - 0.441
+     - 2.703
      - -
      - 0/207
      - S:0 P:0
@@ -344,8 +344,8 @@
      - NTHETA=5,NX=3,NXI=8,NZETA=8
      - 1
      - 0
-     - 0.256
-     - 3.713
+     - 0.591
+     - 4.418
      - -
      - 0/207
      - S:0 P:0
@@ -357,8 +357,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 3.103
-     - 8.104
+     - 12.484
+     - 5.484
      - -
      - 0/202
      - S:0 P:0
@@ -370,8 +370,8 @@
      - NTHETA=6,NX=4,NXI=8,NZETA=1
      - 1
      - 0
-     - 12.216
-     - 5.420
+     - 79.970
+     - 5.865
      - -
      - 0/275
      - S:0 P:0
@@ -383,8 +383,8 @@
      - NTHETA=5,NX=2,NXI=4,NZETA=1
      - 1
      - 0
-     - 4.557
-     - 1.607
+     - 31.823
+     - 1.834
      - -
      - 0/275
      - S:0 P:0
@@ -396,8 +396,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 3.347
-     - 5.738
+     - 18.493
+     - 5.512
      - -
      - 0/214
      - S:0 P:0
@@ -409,8 +409,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 3.336
-     - 6.565
+     - 3.141
+     - 6.584
      - -
      - 0/214
      - S:0 P:0
@@ -422,8 +422,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.090
-     - 2.092
+     - 0.144
+     - 2.175
      - -
      - 0/212
      - S:0 P:0
@@ -435,8 +435,8 @@
      - NTHETA=11,NX=1,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.091
-     - 2.210
+     - 0.148
+     - 2.074
      - -
      - 0/212
      - S:0 P:0
@@ -448,8 +448,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.148
-     - 3.457
+     - 0.146
+     - 3.590
      - -
      - 0/275
      - S:0 P:0
@@ -461,8 +461,8 @@
      - NTHETA=11,NX=4,NXI=16,NZETA=1
      - 1
      - 0
-     - 0.149
-     - 2.323
+     - 0.150
+     - 2.398
      - -
      - 0/212
      - S:0 P:0
@@ -474,8 +474,8 @@
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.084
-     - 2.237
+     - 0.086
+     - 2.350
      - -
      - 0/212
      - S:0 P:0
@@ -487,8 +487,8 @@
      - NTHETA=11,NX=4,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.158
-     - 2.545
+     - 0.205
+     - 2.556
      - -
      - 0/212
      - S:0 P:0
@@ -500,8 +500,8 @@
      - NTHETA=7,NX=3,NXI=12,NZETA=8
      - 1
      - 0
-     - 2.053
-     - 4.602
+     - 1.925
+     - 4.610
      - -
      - 0/194
      - S:0 P:0
@@ -513,8 +513,8 @@
      - NTHETA=5,NX=4,NXI=4,NZETA=5
      - 1
      - 0
-     - 2.223
-     - 1.735
+     - 1.439
+     - 1.812
      - 0.0 (0-0)
      - 0/194
      - S:0 P:0

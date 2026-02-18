@@ -366,6 +366,9 @@ performance without changing the input file:
   specified threshold (default: ``3000``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO``: only run the dense fallback when
   ``||r|| / target`` exceeds the given ratio (default: ``1e2``; set ``<= 0`` to always allow).
+- ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``: skip sparse ILU and other expensive
+  fallbacks and go directly to the dense solve when ``||r|| / target`` exceeds this
+  ratio (default: ``1e6``; set ``<= 0`` to disable the shortcut).
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE``: constraintScheme=2 Schur preconditioner mode
   (``auto``/``diag``/``full``). ``auto`` selects a dense Schur complement when the

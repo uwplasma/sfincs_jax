@@ -587,6 +587,10 @@ Controls:
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO`` (default: ``1e2``). Dense fallback
   only triggers when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always
   allow the fallback).
+- ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO`` (default: ``1e6``). When the residual
+  ratio exceeds this threshold, ``sfincs_jax`` skips sparse ILU and other heavy
+  fallbacks and goes straight to the dense solve (if enabled). This avoids wasting
+  time on ILU builds when dense fallback is inevitable.
 - ``SFINCS_JAX_LINEAR_STAGE2_RATIO`` (default: ``1e2``). Stage-2 GMRES only runs
   when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always allow).
 - ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX`` (default: ``3000`` for RHSMode=2/3).

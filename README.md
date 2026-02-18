@@ -281,44 +281,44 @@ python scripts/generate_readme_reduced_suite_table.py
 <!-- BEGIN REDUCED_SUITE_TABLE -->
 | Case | Fortran outputs | sfincs_jax outputs | Fortran(s) | sfincs_jax(s) | JAX iters | Mismatches (practical/strict) | Print parity |
 | --- | --- | --- | ---: | ---: | ---: | --- | --- |
-| HSX_FPCollisions_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 12.962 | 3.237 | - | 0/124 (strict 0/124) | 7/7 |
-| HSX_FPCollisions_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 12.429 | 3.483 | - | 0/124 (strict 0/124) | 7/7 |
-| HSX_PASCollisions_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.332 | 4.919 | - | 0/193 (strict 0/193) | 9/9 |
-| HSX_PASCollisions_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.388 | 6.153 | - | 0/193 (strict 0/193) | 9/9 |
-| filteredW7XNetCDF_2species_magneticDrifts_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | - | 56.259 | - | 32/193 (strict 30/193) | 9/9 |
-| filteredW7XNetCDF_2species_magneticDrifts_withEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.397 | 60.423 | - | 0/193 (strict 0/193) | 9/9 |
-| filteredW7XNetCDF_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 2.950 | 36.332 | - | 0/193 (strict 0/193) | 9/9 |
-| geometryScheme4_1species_PAS_withEr_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.265 | 3.529 | - | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_PAS_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.197 | 2.196 | - | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.320 | 26.466 | - | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_noEr_withPhi1InDKE | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 7.584 | 3.798 | - | 0/265 (strict 0/265) | 9/9 |
-| geometryScheme4_2species_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 5.302 | 2.250 | - | 0/265 (strict 0/265) | 9/9 |
-| geometryScheme4_2species_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.585 | 29.508 | - | 0/193 (strict 0/193) | 9/9 |
-| geometryScheme4_2species_withEr_fullTrajectories_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 5.040 | 2.485 | - | 0/251 (strict 0/251) | 9/9 |
-| geometryScheme5_3species_loRes | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.526 | 45.868 | - | 0/193 (strict 0/193) | 9/9 |
-| inductiveE_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 2.612 | 6.866 | - | 0/207 (strict 0/207) | 9/9 |
-| monoenergetic_geometryScheme1 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.449 | 1.547 | - | 0/203 (strict 0/203) | 9/9 |
-| monoenergetic_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.560 | 2.185 | - | 0/208 (strict 0/208) | 9/9 |
-| monoenergetic_geometryScheme5_ASCII | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.628 | 1.481 | - | 0/208 (strict 0/208) | 9/9 |
-| monoenergetic_geometryScheme5_netCDF | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.446 | 1.486 | - | 0/208 (strict 0/208) | 9/9 |
-| quick_2species_FPCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.055 | 6.891 | - | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.307 | 48.095 | - | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.567 | 52.233 | - | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.281 | 2.344 | - | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.256 | 3.713 | - | 0/207 (strict 0/207) | 9/9 |
-| tokamak_1species_FPCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.103 | 8.104 | - | 0/202 (strict 0/202) | 9/9 |
-| tokamak_1species_FPCollisions_noEr_withPhi1InDKE | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 12.216 | 5.420 | - | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_FPCollisions_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 4.557 | 1.607 | - | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_FPCollisions_withEr_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.347 | 5.738 | - | 0/214 (strict 0/214) | 9/9 |
-| tokamak_1species_FPCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.336 | 6.565 | - | 0/214 (strict 0/214) | 9/9 |
-| tokamak_1species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.090 | 2.092 | - | 0/212 (strict 0/212) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_Nx1 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.091 | 2.210 | - | 0/212 (strict 0/212) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.148 | 3.457 | - | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.149 | 2.323 | - | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.084 | 2.237 | - | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.158 | 2.545 | - | 0/212 (strict 0/212) | 9/9 |
-| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 2.053 | 4.602 | - | 0/194 (strict 0/194) | 9/9 |
-| transportMatrix_geometryScheme2 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 2.223 | 1.735 | 0.0 (0-0) | 0/194 (strict 0/194) | 9/9 |
+| HSX_FPCollisions_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 9.260 | 3.223 | - | 0/124 (strict 0/124) | 7/7 |
+| HSX_FPCollisions_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 9.608 | 3.382 | - | 0/124 (strict 0/124) | 7/7 |
+| HSX_PASCollisions_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.361 | 4.513 | - | 0/193 (strict 0/193) | 9/9 |
+| HSX_PASCollisions_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.411 | 6.159 | - | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.303 | 26.939 | - | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_withEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 2.322 | 28.693 | - | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 2.410 | 19.821 | - | 0/193 (strict 0/193) | 9/9 |
+| geometryScheme4_1species_PAS_withEr_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.396 | 3.517 | - | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_PAS_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.261 | 2.190 | - | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 9.297 | 16.288 | - | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_noEr_withPhi1InDKE | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 6.860 | 3.809 | - | 0/265 (strict 0/265) | 9/9 |
+| geometryScheme4_2species_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 4.260 | 2.227 | - | 0/265 (strict 0/265) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.027 | 19.048 | - | 0/193 (strict 0/193) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 18.881 | 2.998 | - | 0/251 (strict 0/251) | 9/9 |
+| geometryScheme5_3species_loRes | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 19.482 | 27.133 | - | 0/193 (strict 0/193) | 9/9 |
+| inductiveE_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 10.364 | 6.858 | - | 0/207 (strict 0/207) | 9/9 |
+| monoenergetic_geometryScheme1 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.392 | 1.607 | - | 0/203 (strict 0/203) | 9/9 |
+| monoenergetic_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.617 | 2.234 | - | 0/208 (strict 0/208) | 9/9 |
+| monoenergetic_geometryScheme5_ASCII | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.493 | 1.480 | - | 0/208 (strict 0/208) | 9/9 |
+| monoenergetic_geometryScheme5_netCDF | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.489 | 1.503 | - | 0/208 (strict 0/208) | 9/9 |
+| quick_2species_FPCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.625 | 6.874 | - | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.112 | 23.060 | - | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 2.892 | 26.922 | - | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.441 | 2.703 | - | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.591 | 4.418 | - | 0/207 (strict 0/207) | 9/9 |
+| tokamak_1species_FPCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 12.484 | 5.484 | - | 0/202 (strict 0/202) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withPhi1InDKE | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 79.970 | 5.865 | - | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 31.823 | 1.834 | - | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_DKESTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 18.493 | 5.512 | - | 0/214 (strict 0/214) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 3.141 | 6.584 | - | 0/214 (strict 0/214) | 9/9 |
+| tokamak_1species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.144 | 2.175 | - | 0/212 (strict 0/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr_Nx1 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.148 | 2.074 | - | 0/212 (strict 0/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr_withQN | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.146 | 3.590 | - | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.150 | 2.398 | - | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_noEr | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.086 | 2.350 | - | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_withEr_fullTrajectories | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 0.205 | 2.556 | - | 0/212 (strict 0/212) | 9/9 |
+| transportMatrix_geometryScheme11 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 1.925 | 4.610 | - | 0/194 (strict 0/194) | 9/9 |
+| transportMatrix_geometryScheme2 | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | 1.439 | 1.812 | 0.0 (0-0) | 0/194 (strict 0/194) | 9/9 |
 <!-- END REDUCED_SUITE_TABLE -->
 
 
