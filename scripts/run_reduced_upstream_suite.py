@@ -251,6 +251,26 @@ def _reduce_max_axis_in_place(input_path: Path) -> dict[str, int]:
     return _resolution_from_namelist(input_path)
 
 
+def _scale_resolution_in_place(input_path: Path, *, factor: float) -> dict[str, int]:
+    current = _resolution_from_namelist(input_path)
+    if not current or factor <= 1.0:
+        return current
+    updates: dict[str, int] = {}
+    for key, val in current.items():
+        if key not in RES_KEYS:
+            continue
+        scaled = int(np.ceil(float(val) * float(factor)))
+        scaled = max(int(MIN_RES.get(key, 1)), scaled)
+        updates[key] = scaled
+    if not updates:
+        return current
+    if all(int(current.get(k, -1)) == int(v) for k, v in updates.items()):
+        return current
+    text = input_path.read_text()
+    input_path.write_text(_replace_resolution_values_in_text(text, updates=updates))
+    return _resolution_from_namelist(input_path)
+
+
 def _tail(path: Path, n: int = 40) -> str:
     if not path.exists():
         return ""
@@ -840,6 +860,9 @@ def _run_case(
     rtol: float,
     atol: float,
     max_attempts: int,
+    target_runtime_s: float | None = None,
+    target_runtime_max_s: float | None = None,
+    target_runtime_max_iters: int = 0,
     use_seed_resolution: bool = False,
     reuse_fortran: bool = False,
     collect_iterations: bool = True,
@@ -897,6 +920,7 @@ def _run_case(
     strict_mismatch_keys: list[str] = []
     strict_mismatch_solver_keys: list[str] = []
     strict_mismatch_physics_keys: list[str] = []
+    scale_iters = 0
 
     while attempts < max_attempts:
         attempts += 1
@@ -1006,6 +1030,24 @@ def _run_case(
             note = f"JAX error: {type(exc).__name__}: {exc}"
             status = "jax_error"
             break
+
+        if target_runtime_s is not None and fortran_runtime is not None and jax_runtime is not None:
+            target_cap = target_runtime_max_s if target_runtime_max_s is not None else target_runtime_s
+            max_rt = max(float(fortran_runtime), float(jax_runtime))
+            if (
+                max_rt < float(target_runtime_s)
+                and scale_iters < int(target_runtime_max_iters)
+                and max_rt > 0.0
+            ):
+                ratio = float(target_runtime_s) / max_rt
+                factor = max(1.15, min(2.0, ratio**0.5))
+                new_res = _scale_resolution_in_place(dst_input, factor=factor)
+                if new_res != final_res:
+                    scale_iters += 1
+                    note = f"Scaled resolution by {factor:.2f} to target runtime."
+                    continue
+            if target_cap is not None and max_rt > float(target_cap):
+                note = f"Runtime {max_rt:.2f}s exceeds cap {float(target_cap):.2f}s; keeping resolution."
 
         if fortran_h5_this_attempt is None or jax_h5_path is None:
             note = "Missing output file after successful run."
@@ -1148,6 +1190,24 @@ def main() -> int:
     parser.add_argument("--rtol", type=float, default=5e-4)
     parser.add_argument("--atol", type=float, default=1e-10)
     parser.add_argument(
+        "--target-runtime-s",
+        type=float,
+        default=None,
+        help="If set, increase resolution until max(Fortran,JAX) runtime reaches this target.",
+    )
+    parser.add_argument(
+        "--target-runtime-max-s",
+        type=float,
+        default=None,
+        help="Optional cap for per-case target runtime (defaults to --target-runtime-s).",
+    )
+    parser.add_argument(
+        "--target-runtime-max-iters",
+        type=int,
+        default=4,
+        help="Maximum number of resolution scale-ups per case when targeting runtime.",
+    )
+    parser.add_argument(
         "--reuse-fortran",
         action="store_true",
         help="Reuse an existing per-case fortran_run/sfincsOutput.h5 if present instead of rerunning Fortran.",
@@ -1213,6 +1273,9 @@ def main() -> int:
             rtol=float(args.rtol),
             atol=float(args.atol),
             max_attempts=int(args.max_attempts),
+            target_runtime_s=args.target_runtime_s,
+            target_runtime_max_s=args.target_runtime_max_s,
+            target_runtime_max_iters=int(args.target_runtime_max_iters),
             use_seed_resolution=use_seed_resolution,
             reuse_fortran=bool(args.reuse_fortran),
             collect_iterations=not bool(args.no_collect_iterations),
