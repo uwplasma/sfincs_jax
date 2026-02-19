@@ -70,6 +70,8 @@ def gmres_custom_linear_solve(
     restart: int = 80,
     maxiter: int | None = 400,
     solve_method: str = "batched",
+    size_hint: int | None = None,
+    solver_jit: bool | None = None,
 ) -> ImplicitGMRESSolveResult:
     """Solve `A x = b` with GMRES and define gradients via implicit differentiation.
 
@@ -96,6 +98,8 @@ def gmres_custom_linear_solve(
         maxiter=maxiter,
         solve_method=solve_method,
         solver="gmres",
+        size_hint=size_hint,
+        solver_jit=solver_jit,
     )
     gmres = gmres_solve(
         matvec=matvec,
@@ -107,6 +111,21 @@ def gmres_custom_linear_solve(
         solve_method=solve_method,
     )
     return ImplicitGMRESSolveResult(x=result.x, gmres=gmres)
+
+
+def _use_solver_jit(size_hint: int | None = None) -> bool:
+    env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    if env in {"0", "false", "no", "off"}:
+        return False
+    thresh_env = os.environ.get("SFINCS_JAX_SOLVER_JIT_MAX_SIZE", "").strip()
+    try:
+        thresh = int(thresh_env) if thresh_env else 20000
+    except ValueError:
+        thresh = 20000
+    size = int(size_hint) if size_hint is not None else 0
+    return size <= thresh
 
 
 def _linear_custom_solve_core(
@@ -123,6 +142,8 @@ def _linear_custom_solve_core(
     preconditioner_transpose: MatVec | None,
     x0: jnp.ndarray | None,
     precondition_side: str,
+    size_hint: int | None,
+    solver_jit: bool | None,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     b = jnp.asarray(b, dtype=jnp.float64)
 
@@ -130,8 +151,10 @@ def _linear_custom_solve_core(
     if solver_kind in {"auto", "default"}:
         solver_kind = "bicgstab"
 
-    solver_jit_env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
-    use_solver_jit = solver_jit_env not in {"0", "false", "no", "off"}
+    if solver_jit is None:
+        use_solver_jit = _use_solver_jit(size_hint=size_hint)
+    else:
+        use_solver_jit = bool(solver_jit)
 
     def _solve_direct(mv: MatVec, rhs: jnp.ndarray) -> GMRESSolveResult:
         if solver_kind in {"bicgstab", "bicgstab_jax"}:
@@ -210,6 +233,8 @@ def linear_custom_solve(
     preconditioner_transpose: MatVec | None = None,
     x0: jnp.ndarray | None = None,
     precondition_side: str = "left",
+    size_hint: int | None = None,
+    solver_jit: bool | None = None,
 ) -> ImplicitLinearSolveResult:
     """Implicit-diff linear solve wrapper using `jax.lax.custom_linear_solve`."""
     x, r = _linear_custom_solve_core(
@@ -225,6 +250,8 @@ def linear_custom_solve(
         preconditioner_transpose=preconditioner_transpose,
         x0=x0,
         precondition_side=precondition_side,
+        size_hint=size_hint,
+        solver_jit=solver_jit,
     )
     return ImplicitLinearSolveResult(x=x, residual_norm=jnp.linalg.norm(r))
 
@@ -243,6 +270,8 @@ def linear_custom_solve_with_residual(
     preconditioner_transpose: MatVec | None = None,
     x0: jnp.ndarray | None = None,
     precondition_side: str = "left",
+    size_hint: int | None = None,
+    solver_jit: bool | None = None,
 ) -> tuple[ImplicitLinearSolveResult, jnp.ndarray]:
     """Implicit-diff linear solve that also returns the residual vector."""
     x, r = _linear_custom_solve_core(
@@ -258,5 +287,7 @@ def linear_custom_solve_with_residual(
         preconditioner_transpose=preconditioner_transpose,
         x0=x0,
         precondition_side=precondition_side,
+        size_hint=size_hint,
+        solver_jit=solver_jit,
     )
     return ImplicitLinearSolveResult(x=x, residual_norm=jnp.linalg.norm(r)), r

@@ -65,9 +65,20 @@ from .v3_system import (
 from .profiling import maybe_profiler
 
 
-def _use_solver_jit() -> bool:
+def _use_solver_jit(size_hint: int | None = None) -> bool:
     env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
-    return env not in {"0", "false", "no", "off"}
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if size_hint is None:
+        size_hint = _PRECOND_SIZE_HINT or 0
+    thresh_env = os.environ.get("SFINCS_JAX_SOLVER_JIT_MAX_SIZE", "").strip()
+    try:
+        thresh = int(thresh_env) if thresh_env else 20000
+    except ValueError:
+        thresh = 20000
+    return int(size_hint) <= thresh
 
 
 _PRECOND_SIZE_HINT: int | None = None
@@ -3708,6 +3719,7 @@ def solve_v3_full_system_linear_gmres(
                 solve_method=gmres_method,
                 solver=solver_kind,
                 precondition_side=precond_side,
+                size_hint=int(op.total_size),
             )
         return _gmres_solve_dispatch(
             matvec=matvec_fn,
@@ -3749,6 +3761,7 @@ def solve_v3_full_system_linear_gmres(
                 solve_method=gmres_method,
                 solver=solver_kind,
                 precondition_side=precond_side,
+                size_hint=int(op.total_size),
             )
         if solver_kind == "bicgstab":
             solver_fn = bicgstab_solve_with_residual_jit if _use_solver_jit() else bicgstab_solve_with_residual
@@ -7084,8 +7097,7 @@ def solve_v3_transport_matrix_linear_gmres(
         else:
             maxiter = max(int(maxiter), 800)
 
-    solver_jit_env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
-    use_solver_jit = solver_jit_env not in {"0", "false", "no", "off"}
+    use_solver_jit = _use_solver_jit(int(op0.total_size))
 
     def _dense_dtype(dtype_in: jnp.dtype) -> jnp.dtype:
         return jnp.float32 if dense_use_mixed else dtype_in
@@ -7131,6 +7143,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 solve_method=gmres_method,
                 solver=solver_kind,
                 precondition_side=precondition_side_val,
+                size_hint=int(op0.total_size),
             )
         solver_fn = gmres_solve_jit if use_solver_jit else gmres_solve
         return solver_fn(
@@ -7173,6 +7186,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 solve_method=gmres_method,
                 solver=solver_kind,
                 precondition_side=precondition_side_val,
+                size_hint=int(op0.total_size),
             )
         if solver_kind == "bicgstab":
             solver_fn = bicgstab_solve_with_residual_jit if use_solver_jit else bicgstab_solve_with_residual
