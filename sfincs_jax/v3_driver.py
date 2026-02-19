@@ -6538,6 +6538,17 @@ def solve_v3_transport_matrix_linear_gmres(
         dense_retry_max = 3000 if int(rhs_mode) in {2, 3} else 0
     if low_memory_outputs:
         dense_retry_max = 0
+    dense_mem_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_MAX_MB", "").strip()
+    try:
+        dense_mem_max_mb = float(dense_mem_env) if dense_mem_env else 64.0
+    except ValueError:
+        dense_mem_max_mb = 64.0
+    dense_mem_est_mb64 = (int(op0.total_size) ** 2) * 8.0 / 1.0e6
+    dense_mem_est_mb32 = (int(op0.total_size) ** 2) * 4.0 / 1.0e6
+    dense_mem_block64 = bool(dense_mem_max_mb > 0.0 and dense_mem_est_mb64 > dense_mem_max_mb)
+    dense_mem_block32 = bool(dense_mem_max_mb > 0.0 and dense_mem_est_mb32 > dense_mem_max_mb)
+    dense_mem_block = dense_mem_block32
+    dense_use_mixed = dense_mem_block64 and not dense_mem_block32
     dense_fallback_enabled_env = dense_fallback_env in {"1", "true", "yes", "on"}
     dense_fallback_disabled_env = dense_fallback_env in {"0", "false", "no", "off"}
     if dense_fallback_enabled_env:
@@ -6552,6 +6563,24 @@ def solve_v3_transport_matrix_linear_gmres(
         dense_fallback = int(rhs_mode) == 3
         if dense_fallback and not dense_fallback_max_env:
             dense_fallback_max = 6000
+    if dense_mem_block:
+        dense_fallback = False
+        dense_retry_max = 0
+        force_dense = False
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: dense fallback disabled "
+                f"(est_mem32={dense_mem_est_mb32:.1f} MB > {dense_mem_max_mb:.1f} MB)",
+            )
+        if str(solve_method_use).lower() in {"auto", "default", "batched"}:
+            solve_method_use = "incremental"
+    elif dense_use_mixed and emit is not None:
+        emit(
+            1,
+            "solve_v3_transport_matrix_linear_gmres: dense fallback using float32 "
+            f"(est_mem64={dense_mem_est_mb64:.1f} MB > {dense_mem_max_mb:.1f} MB)",
+        )
     if low_memory_outputs:
         dense_fallback = False
     if int(rhs_mode) in {2, 3}:
@@ -6564,6 +6593,7 @@ def solve_v3_transport_matrix_linear_gmres(
             and (not force_krylov)
             and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
             and int(op0.total_size) <= 1500
+            and (not dense_mem_block)
         ):
             solve_method_use = "dense"
             if emit is not None:
@@ -6577,6 +6607,7 @@ def solve_v3_transport_matrix_linear_gmres(
             and (not force_krylov)
             and int(op0.total_size) <= dense_fallback_max
             and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
+            and (not dense_mem_block)
         ):
             # On some JAX versions/platforms, `jax.scipy.sparse.linalg.gmres` can return NaNs for
             # small ill-conditioned problems (observed in CI for RHSMode=3 scheme12 fixtures).
@@ -6593,29 +6624,20 @@ def solve_v3_transport_matrix_linear_gmres(
         gmres_restart = int(gmres_restart_env) if gmres_restart_env else min(int(restart), 40)
     except ValueError:
         gmres_restart = min(int(restart), 40)
+    if dense_mem_block and gmres_restart < 80:
+        gmres_restart = 80
+
+    if dense_mem_block:
+        if maxiter is None:
+            maxiter = 800
+        else:
+            maxiter = max(int(maxiter), 800)
 
     solver_jit_env = os.environ.get("SFINCS_JAX_SOLVER_JIT", "").strip().lower()
     use_solver_jit = solver_jit_env not in {"0", "false", "no", "off"}
 
-    dense_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX", "").strip()
-    try:
-        if dense_precond_env:
-            dense_precond_max = int(dense_precond_env)
-        else:
-            dense_precond_max = 1600 if int(rhs_mode) == 2 else 600
-    except ValueError:
-        dense_precond_max = 1600 if int(rhs_mode) == 2 else 600
-    dense_precond_enabled = (
-        dense_precond_max > 0
-        and int(rhs_mode) in {2, 3}
-        and int(op0.total_size) <= dense_precond_max
-        and str(solve_method_use).lower() != "dense"
-        and (not low_memory_outputs)
-    )
-    dense_precond_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
-    dense_precond_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
-    dense_solver_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
-    dense_solver_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    def _dense_dtype(dtype_in: jnp.dtype) -> jnp.dtype:
+        return jnp.float32 if dense_use_mixed else dtype_in
 
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
@@ -6772,6 +6794,35 @@ def solve_v3_transport_matrix_linear_gmres(
                 f"(size={active_size}/{int(op0.total_size)}){reason}",
             )
 
+    dense_mem_est_active_mb64 = (int(active_size) ** 2) * 8.0 / 1.0e6
+    dense_mem_est_active_mb32 = (int(active_size) ** 2) * 4.0 / 1.0e6
+    dense_mem_block_active32 = bool(dense_mem_max_mb > 0.0 and dense_mem_est_active_mb32 > dense_mem_max_mb)
+    dense_mem_block_active64 = bool(dense_mem_max_mb > 0.0 and dense_mem_est_active_mb64 > dense_mem_max_mb)
+    if dense_mem_block_active32 and not dense_mem_block:
+        dense_mem_block = True
+        dense_use_mixed = False
+        dense_fallback = False
+        dense_retry_max = 0
+        force_dense = False
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: dense fallback disabled "
+                f"(active_est_mem32={dense_mem_est_active_mb32:.1f} MB > {dense_mem_max_mb:.1f} MB)",
+            )
+        if str(solve_method_use).lower() == "dense":
+            solve_method_use = "incremental"
+    elif dense_mem_block_active64 and not dense_mem_block and not dense_use_mixed:
+        dense_use_mixed = True
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: dense fallback using float32 "
+                f"(active_est_mem64={dense_mem_est_active_mb64:.1f} MB > {dense_mem_max_mb:.1f} MB)",
+            )
+    if dense_mem_block:
+        dense_precond_enabled = False
+
     if (
         int(rhs_mode) == 2
         and (not force_krylov)
@@ -6779,7 +6830,7 @@ def solve_v3_transport_matrix_linear_gmres(
         and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
     ):
         auto_dense_size = int(active_size) if use_active_dof_mode else int(op0.total_size)
-        if auto_dense_size <= 1500:
+        if auto_dense_size <= 1500 and (not dense_mem_block):
             solve_method_use = "dense"
             if emit is not None:
                 emit(
@@ -6787,6 +6838,43 @@ def solve_v3_transport_matrix_linear_gmres(
                     "solve_v3_transport_matrix_linear_gmres: auto dense solve for RHSMode=2 "
                     f"(n={auto_dense_size})",
                 )
+
+    dense_precond_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX", "").strip()
+    try:
+        if dense_precond_env:
+            dense_precond_max = int(dense_precond_env)
+        else:
+            dense_precond_max = 1600 if int(rhs_mode) == 2 else 600
+    except ValueError:
+        dense_precond_max = 1600 if int(rhs_mode) == 2 else 600
+    dense_precond_mem_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX_MB", "").strip()
+    try:
+        dense_precond_mem_max_mb = float(dense_precond_mem_env) if dense_precond_mem_env else min(32.0, dense_mem_max_mb or 32.0)
+    except ValueError:
+        dense_precond_mem_max_mb = min(32.0, dense_mem_max_mb or 32.0)
+    dense_precond_size = int(active_size) if use_active_dof_mode else int(op0.total_size)
+    dense_precond_bytes = 4.0 if dense_use_mixed else 8.0
+    dense_precond_est_mb = (dense_precond_size**2) * dense_precond_bytes / 1.0e6
+    dense_precond_mem_block = bool(dense_precond_mem_max_mb > 0.0 and dense_precond_est_mb > dense_precond_mem_max_mb)
+    if dense_precond_mem_block and emit is not None:
+        emit(
+            1,
+            "solve_v3_transport_matrix_linear_gmres: dense preconditioner disabled "
+            f"(est_mem={dense_precond_est_mb:.1f} MB > {dense_precond_mem_max_mb:.1f} MB)",
+        )
+    dense_precond_enabled = (
+        dense_precond_max > 0
+        and int(rhs_mode) in {2, 3}
+        and int(dense_precond_size) <= dense_precond_max
+        and str(solve_method_use).lower() != "dense"
+        and (not low_memory_outputs)
+        and (not dense_mem_block)
+        and (not dense_precond_mem_block)
+    )
+    dense_precond_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    dense_precond_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    dense_solver_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
+    dense_solver_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
 
     reduce_full = None
     expand_reduced = None
@@ -6821,22 +6909,48 @@ def solve_v3_transport_matrix_linear_gmres(
 
     preconditioner_full = None
     preconditioner_reduced = None
+    strong_precond_kind: str | None = None
     default_solver_kind = _solver_kind(solve_method_use)[0]
+    precond_kind_used: str | None = None
     if transport_precond_kind is not None and int(rhs_mode) in {2, 3}:
         precond_kind = transport_precond_kind
         if precond_kind == "auto":
-            if default_solver_kind == "bicgstab":
-                precond_kind = "collision"
-            else:
-                block_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_MAX", "").strip()
-                try:
-                    block_max = int(block_max_env) if block_max_env else 5000
-                except ValueError:
-                    block_max = 5000
-                if op0.fblock.fp is not None and int(op0.total_size) <= block_max:
+            block_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_MAX", "").strip()
+            try:
+                block_max = int(block_max_env) if block_max_env else 5000
+            except ValueError:
+                block_max = 5000
+            sxblock_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SXBLOCK_MAX", "").strip()
+            try:
+                sxblock_max = int(sxblock_max_env) if sxblock_max_env else 64
+            except ValueError:
+                sxblock_max = 64
+            n_block = int(op0.n_species) * int(op0.n_x)
+            if op0.fblock.fp is not None:
+                if n_block <= sxblock_max:
                     precond_kind = "sxblock"
+                elif int(op0.total_size) <= block_max and default_solver_kind != "bicgstab":
+                    precond_kind = "sxblock"
+                elif default_solver_kind == "bicgstab":
+                    precond_kind = "collision"
                 else:
                     precond_kind = "collision"
+                if n_block <= sxblock_max:
+                    strong_precond_kind = "sxblock"
+                elif int(op0.total_size) <= block_max:
+                    strong_precond_kind = "block"
+                else:
+                    strong_precond_kind = "xmg"
+            else:
+                if int(op0.total_size) <= block_max:
+                    precond_kind = "block"
+                    strong_precond_kind = "block"
+                else:
+                    precond_kind = "collision"
+                    strong_precond_kind = "xmg"
+            if dense_mem_block and strong_precond_kind is not None:
+                precond_kind = strong_precond_kind
+        precond_kind_used = precond_kind
         if precond_kind in {"xmg", "multigrid"}:
             preconditioner_full = _build_rhsmode23_xmg_preconditioner(op=op0)
             if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
@@ -6861,6 +6975,45 @@ def solve_v3_transport_matrix_linear_gmres(
                 preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
                     op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+
+    strong_preconditioner_full = None
+    strong_preconditioner_reduced = None
+
+    def _get_strong_preconditioner(use_reduced: bool) -> Callable[[jnp.ndarray], jnp.ndarray] | None:
+        nonlocal strong_preconditioner_full, strong_preconditioner_reduced
+        if strong_precond_kind is None:
+            return None
+        if precond_kind_used is not None and strong_precond_kind == precond_kind_used:
+            return preconditioner_reduced if use_reduced else preconditioner_full
+        if use_reduced:
+            if strong_preconditioner_reduced is None:
+                if strong_precond_kind in {"xmg", "multigrid"}:
+                    strong_preconditioner_reduced = _build_rhsmode23_xmg_preconditioner(
+                        op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind in {"sxblock", "block_sx", "species_x"}:
+                    strong_preconditioner_reduced = _build_rhsmode23_sxblock_preconditioner(
+                        op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind in {"block", "block_jacobi"}:
+                    strong_preconditioner_reduced = _build_rhsmode23_block_preconditioner(
+                        op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                else:
+                    strong_preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
+                        op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+            return strong_preconditioner_reduced
+        if strong_preconditioner_full is None:
+            if strong_precond_kind in {"xmg", "multigrid"}:
+                strong_preconditioner_full = _build_rhsmode23_xmg_preconditioner(op=op0)
+            elif strong_precond_kind in {"sxblock", "block_sx", "species_x"}:
+                strong_preconditioner_full = _build_rhsmode23_sxblock_preconditioner(op=op0)
+            elif strong_precond_kind in {"block", "block_jacobi"}:
+                strong_preconditioner_full = _build_rhsmode23_block_preconditioner(op=op0)
+            else:
+                strong_preconditioner_full = _build_rhsmode23_collision_preconditioner(op=op0)
+        return strong_preconditioner_full
 
     def _dense_preconditioner_for_matvec(
         *,
@@ -7275,11 +7428,18 @@ def solve_v3_transport_matrix_linear_gmres(
                         y_full = apply_v3_full_system_operator_cached(op_probe_ref, expand_reduced(x))
                         return reduce_full(y_full)
 
+                    dense_dtype = _dense_dtype(jnp.float64)
                     rhs_mat = jnp.stack([reduce_full(rhs) for rhs in rhs_by_index], axis=1)
                     a_dense = assemble_dense_matrix_from_matvec(
-                        matvec=_mv_dense, n=int(active_size), dtype=jnp.float64
+                        matvec=_mv_dense, n=int(active_size), dtype=dense_dtype
                     )
+                    rhs_mat = jnp.asarray(rhs_mat, dtype=dense_dtype)
                     x_mat, _ = dense_solve_from_matrix(a=a_dense, b=rhs_mat)
+                    if dense_use_mixed:
+                        r_mat = rhs_mat - a_dense @ x_mat
+                        dx_mat, _ = dense_solve_from_matrix(a=a_dense, b=r_mat)
+                        x_mat = x_mat + dx_mat
+                    x_mat = jnp.asarray(x_mat, dtype=jnp.float64)
                     res_mat = a_dense @ x_mat - rhs_mat
                     res_norms = jnp.linalg.norm(res_mat, axis=0)
                     for idx, which_rhs in enumerate(which_rhs_values):
@@ -7306,10 +7466,16 @@ def solve_v3_transport_matrix_linear_gmres(
                         return apply_v3_full_system_operator_cached(op_probe_ref, x)
 
                     a_dense = assemble_dense_matrix_from_matvec(
-                        matvec=_mv_dense, n=int(op0.total_size), dtype=jnp.float64
+                        matvec=_mv_dense, n=int(op0.total_size), dtype=_dense_dtype(jnp.float64)
                     )
                     rhs_mat = jnp.stack(rhs_by_index, axis=1)
+                    rhs_mat = jnp.asarray(rhs_mat, dtype=a_dense.dtype)
                     x_mat, _ = dense_solve_from_matrix(a=a_dense, b=rhs_mat)
+                    if dense_use_mixed:
+                        r_mat = rhs_mat - a_dense @ x_mat
+                        dx_mat, _ = dense_solve_from_matrix(a=a_dense, b=r_mat)
+                        x_mat = x_mat + dx_mat
+                    x_mat = jnp.asarray(x_mat, dtype=jnp.float64)
                     x_cols: list[jnp.ndarray] = []
                     for idx, which_rhs in enumerate(which_rhs_values):
                         x_col = x_mat[:, idx]
@@ -7376,7 +7542,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     preconditioner_use = _dense_preconditioner_for_matvec(
                         matvec_fn=mv_reduced,
                         n=active_size,
-                        dtype=rhs_reduced.dtype,
+                        dtype=_dense_dtype(rhs_reduced.dtype),
                         cache=dense_precond_cache_reduced,
                         key=(sig, int(active_size)),
                     )
@@ -7463,6 +7629,34 @@ def solve_v3_transport_matrix_linear_gmres(
                         res_reduced = res_retry
                         preconditioner_use = None
                         preconditioner_used = None
+                if _needs_retry(res_reduced, target_rhs):
+                    strong_precond = _get_strong_preconditioner(True)
+                    if strong_precond is not None and strong_precond is not preconditioner_use:
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_transport_matrix_linear_gmres: retry with strong preconditioner "
+                                f"(residual={float(res_reduced.residual_norm):.3e} > target={target_rhs:.3e})",
+                            )
+                        res_strong = _solve_linear(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            x0_vec=res_reduced.x,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=gmres_restart,
+                            maxiter_val=maxiter,
+                            solve_method_val="incremental",
+                            preconditioner_val=strong_precond,
+                            precondition_side_val="left",
+                        )
+                        if _residual_value(res_strong) < _residual_value(res_reduced):
+                            res_reduced = res_strong
+                            preconditioner_use = strong_precond
+                            preconditioner_used = strong_precond
+                            solver_kind_used = "gmres"
+                            solve_method_used = "incremental"
+                            restart_used = gmres_restart
                 if _needs_retry(res_reduced, target_rhs) and dense_retry_max > 0 and int(active_size) <= int(dense_retry_max):
                     if emit is not None:
                         emit(
@@ -7475,11 +7669,16 @@ def solve_v3_transport_matrix_linear_gmres(
                         dense_solver = _dense_solver_for_matvec(
                             matvec_fn=mv_reduced,
                             n=int(active_size),
-                            dtype=rhs_reduced.dtype,
+                            dtype=_dense_dtype(rhs_reduced.dtype),
                             cache=dense_solver_cache_reduced,
                             key=(sig, int(active_size)),
                         )
-                        x_dense = dense_solver(rhs_reduced)
+                        rhs_dense = jnp.asarray(rhs_reduced, dtype=_dense_dtype(rhs_reduced.dtype))
+                        x_dense = dense_solver(rhs_dense)
+                        if dense_use_mixed:
+                            r_dense0 = rhs_reduced - mv_reduced(jnp.asarray(x_dense, dtype=rhs_reduced.dtype))
+                            dx = dense_solver(jnp.asarray(r_dense0, dtype=_dense_dtype(rhs_reduced.dtype)))
+                            x_dense = jnp.asarray(x_dense, dtype=rhs_reduced.dtype) + jnp.asarray(dx, dtype=rhs_reduced.dtype)
                         r_dense = rhs_reduced - mv_reduced(x_dense)
                         res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
                         if _residual_value(res_dense) < _residual_value(res_reduced):
@@ -7500,6 +7699,50 @@ def solve_v3_transport_matrix_linear_gmres(
                 )
                 ax_full = apply_v3_full_system_operator_cached(op_matvec, x_full)
                 res_norm_full = jnp.linalg.norm(ax_full - rhs)
+                if (not dense_used) and dense_retry_max > 0 and int(active_size) <= int(dense_retry_max):
+                    target_full = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs)))
+                    if float(res_norm_full) > target_full:
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_transport_matrix_linear_gmres: dense fallback (true residual) "
+                                f"(size={int(active_size)} residual={float(res_norm_full):.3e} > target={target_full:.3e})",
+                            )
+                        try:
+                            sig = _operator_signature_cached(op_matvec)
+                            dense_solver = _dense_solver_for_matvec(
+                                matvec_fn=mv_reduced,
+                                n=int(active_size),
+                                dtype=_dense_dtype(rhs_reduced.dtype),
+                                cache=dense_solver_cache_reduced,
+                                key=(sig, int(active_size)),
+                            )
+                            rhs_dense = jnp.asarray(rhs_reduced, dtype=_dense_dtype(rhs_reduced.dtype))
+                            x_dense = dense_solver(rhs_dense)
+                            if dense_use_mixed:
+                                r_dense0 = rhs_reduced - mv_reduced(jnp.asarray(x_dense, dtype=rhs_reduced.dtype))
+                                dx = dense_solver(jnp.asarray(r_dense0, dtype=_dense_dtype(rhs_reduced.dtype)))
+                                x_dense = jnp.asarray(x_dense, dtype=rhs_reduced.dtype) + jnp.asarray(dx, dtype=rhs_reduced.dtype)
+                            x_full_dense = expand_reduced(x_dense)
+                            x_full_dense = _maybe_project_constraint_nullspace(
+                                x_full_dense, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
+                            )
+                            ax_dense = apply_v3_full_system_operator_cached(op_matvec, x_full_dense)
+                            res_dense_norm = jnp.linalg.norm(ax_dense - rhs)
+                            if float(res_dense_norm) < float(res_norm_full):
+                                x_full = x_full_dense
+                                ax_full = ax_dense
+                                res_norm_full = res_dense_norm
+                                dense_used = True
+                                solver_kind_used = "dense"
+                                solve_method_used = "dense"
+                        except Exception as exc:  # noqa: BLE001
+                            if emit is not None:
+                                emit(
+                                    1,
+                                    "solve_v3_transport_matrix_linear_gmres: dense fallback failed "
+                                    f"({type(exc).__name__}: {exc})",
+                                )
                 if store_state_vectors:
                     state_vectors[which_rhs] = x_full
                 residual_norms[which_rhs] = res_norm_full
@@ -7539,7 +7782,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     preconditioner_use = _dense_preconditioner_for_matvec(
                         matvec_fn=mv,
                         n=int(op0.total_size),
-                        dtype=rhs.dtype,
+                        dtype=_dense_dtype(rhs.dtype),
                         cache=dense_precond_cache_full,
                         key=(sig, int(op0.total_size)),
                     )
@@ -7619,6 +7862,35 @@ def solve_v3_transport_matrix_linear_gmres(
                         residual_vec = residual_retry
                         preconditioner_use = None
                         preconditioner_used = None
+                if _needs_retry(res, target_rhs):
+                    strong_precond = _get_strong_preconditioner(False)
+                    if strong_precond is not None and strong_precond is not preconditioner_use:
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_transport_matrix_linear_gmres: retry with strong preconditioner "
+                                f"(residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
+                            )
+                        res_strong, residual_vec_strong = _solve_linear_with_residual(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            x0_vec=res.x,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=gmres_restart,
+                            maxiter_val=maxiter,
+                            solve_method_val="incremental",
+                            preconditioner_val=strong_precond,
+                            precondition_side_val="left",
+                        )
+                        if _residual_value(res_strong) < _residual_value(res):
+                            res = res_strong
+                            residual_vec = residual_vec_strong
+                            preconditioner_use = strong_precond
+                            preconditioner_used = strong_precond
+                            solver_kind_used = "gmres"
+                            solve_method_used = "incremental"
+                            restart_used = gmres_restart
                 if _needs_retry(res, target_rhs) and dense_retry_max > 0 and int(op0.total_size) <= int(dense_retry_max):
                     if emit is not None:
                         emit(
@@ -7631,11 +7903,16 @@ def solve_v3_transport_matrix_linear_gmres(
                         dense_solver = _dense_solver_for_matvec(
                             matvec_fn=mv,
                             n=int(op0.total_size),
-                            dtype=rhs.dtype,
+                            dtype=_dense_dtype(rhs.dtype),
                             cache=dense_solver_cache_full,
                             key=(sig, int(op0.total_size)),
                         )
-                        x_dense = dense_solver(rhs)
+                        rhs_dense = jnp.asarray(rhs, dtype=_dense_dtype(rhs.dtype))
+                        x_dense = dense_solver(rhs_dense)
+                        if dense_use_mixed:
+                            r_dense0 = rhs - mv(jnp.asarray(x_dense, dtype=rhs.dtype))
+                            dx = dense_solver(jnp.asarray(r_dense0, dtype=_dense_dtype(rhs.dtype)))
+                            x_dense = jnp.asarray(x_dense, dtype=rhs.dtype) + jnp.asarray(dx, dtype=rhs.dtype)
                         residual_dense = rhs - mv(x_dense)
                         res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(residual_dense))
                         if _residual_value(res_dense) < _residual_value(res):

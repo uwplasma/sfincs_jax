@@ -290,6 +290,8 @@ Set ``SFINCS_JAX_XMG_STRIDE`` to control the coarsening.
 - Controlled by ``SFINCS_JAX_TRANSPORT_PRECOND`` (``auto``, ``sxblock``, ``collision``, etc.).
   ``auto`` picks the collision-diagonal preconditioner for the default BiCGStab transport
   solver and upgrades to species×x blocks for modest FP systems when GMRES is selected.
+  For larger FP systems (especially when dense fallbacks are blocked for memory),
+  ``auto`` escalates to the matrix-free x-grid multigrid preconditioner (``xmg``).
 
 **Compared to Fortran.**
 
@@ -617,6 +619,12 @@ Controls:
   when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always allow).
 - ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX`` (default: ``3000`` for RHSMode=2/3).
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK`` / ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX``.
+- ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB`` (default: ``64``). Disable dense transport
+  fallbacks when the dense matrix would exceed this memory budget. If float64
+  exceeds the limit but float32 does not, the fallback switches to float32 with
+  one refinement step.
+- ``SFINCS_JAX_TRANSPORT_DENSE_PRECOND_MAX_MB`` (default: ``min(32, dense_max_mb)``).
+  Disables dense LU preconditioners when they would exceed the memory budget.
 - ``SFINCS_JAX_DENSE_ASSEMBLE_JIT``: JIT-compile dense matrix assembly
   (auto by default: off for ``n<=800``, on for larger matrices).
 - ``SFINCS_JAX_DENSE_BLOCK``: column block size for dense assembly (auto block size
