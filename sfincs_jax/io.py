@@ -2225,20 +2225,19 @@ def write_sfincs_jax_output_h5(
             _mark("rhs1_solve_done")
             xs = x_hist if x_hist else [result.x]
             # Optional override: force a minimum number of recorded nonlinear iterates.
-            # By default we now keep the naturally accepted-iterate history, which aligns
+            # By default keep the naturally accepted-iterate history, which aligns
             # better with upstream SNES output dimensionality across reduced examples.
             if use_frozen_linearization:
                 min_iters_env = os.environ.get("SFINCS_JAX_PHI1_MIN_ITERS", "").strip()
-                # For QN-only runs (includePhi1InKineticEquation=false), upstream v3 SNES
-                # writes at least 2 diagnostic iterations even when convergence is very fast.
-                # For includePhi1-in-kinetic runs, keep the natural accepted history unless
-                # explicitly overridden.
-                min_iters = 0 if include_phi1_in_kinetic else 2
+                # For QN-only runs (includePhi1InKineticEquation=false), some v3 fixtures
+                # still write a single diagnostic iteration; avoid forcing an extra entry
+                # unless explicitly requested.
+                min_iters = 1
                 if min_iters_env:
                     try:
                         min_iters = max(0, int(min_iters_env))
                     except ValueError:
-                        min_iters = 0 if include_phi1_in_kinetic else 2
+                        min_iters = 1
                 if min_iters > 0:
                     while len(xs) < min_iters:
                         xs.append(xs[-1])
@@ -2255,10 +2254,9 @@ def write_sfincs_jax_output_h5(
             _mark("rhs1_solve_done")
             xs = [result.x]
             if include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option == 1):
-                # v3 includePhi1 workflows run SNES and write at least 2 diagnostic iterations.
-                # For the current linearized parity subset, duplicate the converged state so the
-                # iteration-dependent output arrays match upstream dimensionality.
-                xs = [result.x, result.x]
+                # Keep a single converged state by default; use SFINCS_JAX_PHI1_MIN_ITERS
+                # to force duplication when matching a specific upstream fixture.
+                xs = [result.x]
 
         state_out_env = os.environ.get("SFINCS_JAX_STATE_OUT", "").strip()
         if state_out_env:
