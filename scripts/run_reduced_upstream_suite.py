@@ -1357,7 +1357,7 @@ def _run_case(
         break
 
     else:
-        if last_success is not None:
+        if last_success is not None and target_runtime_s is None:
             status = str(last_success["status"])
             note = f"{last_success['note']} (using last successful run after timeout)"
             fortran_h5_path = last_success.get("fortran_h5")
