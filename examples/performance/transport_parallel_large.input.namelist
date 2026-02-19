@@ -1,0 +1,52 @@
+! Large RHSMode=2 transport-matrix case for parallel scaling benchmarks.
+
+&general
+  RHSMode = 2
+  saveMatricesAndVectorsInBinary = .false.
+/
+
+&geometryParameters
+  geometryScheme = 2  ! simplified LHD model
+/
+
+&speciesParameters
+  Zs = 1
+  mHats = 1
+  nHats = 1.0d+0
+  THats = 1.0d+0
+/
+
+&physicsParameters
+  Delta = 4.5694d-3
+  alpha = 1.0d+0
+
+  nu_n = 0.15d+0
+  Er = 0.0d+0
+
+  collisionOperator = 1
+  includeXDotTerm = .false.
+  includeElectricFieldTermInXiDot = .false.
+  useDKESExBDrift = .true.
+  includePhi1 = .false.
+/
+
+&resolutionParameters
+  Ntheta = 13
+  Nzeta = 13
+  Nxi = 6
+  NL = 3
+  Nx = 4
+  solverTolerance = 1d-10
+/
+
+&otherNumericalParameters
+  Nxi_for_x_option = 0
+/
+
+&preconditionerOptions
+/
+
+&export_f
+  export_full_f = .false.
+  export_delta_f = .false.
+/

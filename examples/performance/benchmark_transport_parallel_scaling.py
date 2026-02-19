@@ -12,9 +12,17 @@ from sfincs_jax.namelist import read_sfincs_input
 from sfincs_jax.v3_driver import solve_v3_transport_matrix_linear_gmres
 
 
-def _run_once(input_path: Path, *, workers: int, cache_dir: Path | None) -> float:
+def _run_once(
+    input_path: Path,
+    *,
+    workers: int,
+    cache_dir: Path | None,
+    precond: str | None,
+) -> float:
     os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     os.environ["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
+    if precond:
+        os.environ["SFINCS_JAX_TRANSPORT_PRECOND"] = precond
     if cache_dir is not None:
         os.environ["JAX_CACHE_DIR"] = str(cache_dir)
     if workers > 1:
@@ -37,7 +45,7 @@ def _run_once(input_path: Path, *, workers: int, cache_dir: Path | None) -> floa
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark parallel whichRHS scaling.")
     repo_root = Path(__file__).resolve().parents[2]
-    default_input = repo_root / "examples" / "performance" / "transport_parallel_medium.input.namelist"
+    default_input = repo_root / "examples" / "performance" / "transport_parallel_large.input.namelist"
     default_out = repo_root / "examples" / "performance" / "output" / "transport_parallel_scaling"
     default_cache = default_out / "jax_cache"
 
@@ -61,6 +69,12 @@ def main() -> None:
         type=int,
         default=1,
         help="Warmup runs before benchmarking (uses workers=1).",
+    )
+    parser.add_argument(
+        "--precond",
+        type=str,
+        default="xmg",
+        help="Transport preconditioner to use during the benchmark (default: xmg).",
     )
     parser.add_argument(
         "--out-dir",
@@ -89,15 +103,15 @@ def main() -> None:
 
     if args.global_warmup and args.global_warmup > 0:
         for _ in range(int(args.global_warmup)):
-            _run_once(input_path, workers=1, cache_dir=cache_dir)
+            _run_once(input_path, workers=1, cache_dir=cache_dir, precond=args.precond)
 
     results = []
     for w in workers:
         for _ in range(max(args.warmup, 0)):
-            _run_once(input_path, workers=w, cache_dir=cache_dir)
+            _run_once(input_path, workers=w, cache_dir=cache_dir, precond=args.precond)
         times = []
         for _ in range(max(args.repeats, 1)):
-            dt = _run_once(input_path, workers=w, cache_dir=cache_dir)
+            dt = _run_once(input_path, workers=w, cache_dir=cache_dir, precond=args.precond)
             times.append(dt)
         times = np.asarray(times, dtype=float)
         results.append(
@@ -124,6 +138,7 @@ def main() -> None:
         "case": input_path.stem.replace(".input", ""),
         "workers": workers,
         "results": results,
+        "precond": args.precond,
     }
 
     json_path = out_dir / "transport_parallel_scaling.json"

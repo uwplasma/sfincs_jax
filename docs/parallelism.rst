@@ -133,8 +133,11 @@ so worker processes can import the main module cleanly.
 
 **Measured scaling (Macbook M3 Max, 14‑core)**
 
-Benchmark case: `examples/performance/transport_parallel_medium.input.namelist`
-(RHSMode=2, geometryScheme=2, moderate grid size).
+Benchmark case: `examples/performance/transport_parallel_large.input.namelist`
+(RHSMode=2, geometryScheme=2, Nxi=6, Nx=4).
+
+Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
+single‑worker runtime in the 30‑45 s range while preserving parity.
 
 Command:
 
@@ -151,35 +154,35 @@ Results (single run per worker count, JAX cache warm‑up enabled):
      - Mean time (s)
      - Speedup
    * - 1
-     - 6.87
+     - 45.48
      - 1.00
    * - 2
-     - 6.86
-     - 1.00
-   * - 3
-     - 4.95
-     - 1.39
-   * - 4
-     - 4.84
+     - 32.12
      - 1.42
+   * - 3
+     - 16.94
+     - 2.68
+   * - 4
+     - 16.86
+     - 2.70
    * - 5
-     - 4.63
-     - 1.48
+     - 16.92
+     - 2.69
    * - 6
-     - 4.56
-     - 1.51
+     - 16.93
+     - 2.69
    * - 7
-     - 4.57
-     - 1.50
+     - 16.90
+     - 2.69
    * - 8
-     - 4.57
-     - 1.50
+     - 16.83
+     - 2.70
    * - 9
-     - 4.59
-     - 1.50
+     - 16.89
+     - 2.69
    * - 10
-     - 4.57
-     - 1.50
+     - 16.85
+     - 2.70
 
 .. figure:: _static/figures/parallel/transport_parallel_scaling.png
    :alt: Parallel whichRHS scaling on Macbook M3 Max
@@ -187,9 +190,10 @@ Results (single run per worker count, JAX cache warm‑up enabled):
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this moderate case, process‑startup and per‑worker overheads limit scaling to
-~1.5×. Larger transport matrices (more `whichRHS`, larger grids) show stronger
-speedup as matvec cost dominates overhead.
+For this larger case, scaling reaches ~2.7× by 3–4 workers before flattening.
+The plateau reflects process overhead and shared‑resource contention on a
+laptop‑class CPU. Larger multi‑RHS runs on server‑class nodes should show
+stronger scaling.
 
 
 Step (2): Parallel cases / scans

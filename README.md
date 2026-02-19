@@ -57,8 +57,10 @@ reduce overhead in tiny PAS/transport cases while keeping large systems compiled
 
 ## Parallel Scaling (Macbook M3 Max)
 
-Parallel `whichRHS` scaling for a medium RHSMode=2 transport‑matrix case
-(`examples/performance/transport_parallel_medium.input.namelist`, geometryScheme=2).
+Parallel `whichRHS` scaling for a larger RHSMode=2 transport‑matrix case
+(`examples/performance/transport_parallel_large.input.namelist`, geometryScheme=2).
+Benchmark uses `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the single‑worker runtime
+in the 30–45 s range.
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
@@ -72,7 +74,7 @@ Run with explicit worker counts and a custom input:
 
 ```bash
 python examples/performance/benchmark_transport_parallel_scaling.py \
-  --input examples/performance/transport_parallel_medium.input.namelist \
+  --input examples/performance/transport_parallel_large.input.namelist \
   --workers 1 2 4 6 8 10 \
   --repeats 1
 ```
