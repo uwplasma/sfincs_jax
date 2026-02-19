@@ -163,6 +163,7 @@ class _RHSMode1PrecondIdxCache:
 
 
 _RHSMODE1_PRECOND_IDX_CACHE: dict[tuple[object, ...], _RHSMode1PrecondIdxCache] = {}
+_RHSMODE1_PAS_PRECOND_PROBE_CACHE: dict[tuple[object, ...], bool] = {}
 
 
 @dataclass(frozen=True)
@@ -4079,6 +4080,7 @@ def solve_v3_full_system_linear_gmres(
         probe_x0: jnp.ndarray | None = None
         preconditioner_reduced = None
         bicgstab_preconditioner_reduced = None
+        pas_precond_force_collision = False
         if rhs1_bicgstab_kind is not None:
             if emit is not None:
                 emit(1, f"solve_v3_full_system_linear_gmres: RHSMode=1 BiCGStab preconditioner={rhs1_bicgstab_kind}")
@@ -4088,6 +4090,83 @@ def solve_v3_full_system_linear_gmres(
                 )
             if use_pas_projection:
                 bicgstab_preconditioner_reduced = _wrap_pas_precond(bicgstab_preconditioner_reduced)
+
+        # PAS probe shortcut: avoid expensive block/line preconditioner builds when a
+        # cheap collision-based preconditioner already provides a strong residual drop.
+        pas_probe_env = os.environ.get("SFINCS_JAX_PAS_PRECOND_PROBE", "").strip().lower()
+        pas_probe_enabled = pas_probe_env not in {"0", "false", "no", "off"}
+        pas_probe_rel_env = os.environ.get("SFINCS_JAX_PAS_PRECOND_PROBE_REL_MAX", "").strip()
+        try:
+            pas_probe_rel_max = float(pas_probe_rel_env) if pas_probe_rel_env else 0.9
+        except ValueError:
+            pas_probe_rel_max = 0.9
+        pas_build_max_env = os.environ.get("SFINCS_JAX_PAS_PRECOND_BUILD_MAX", "").strip()
+        try:
+            pas_build_max = int(pas_build_max_env) if pas_build_max_env else 20000
+        except ValueError:
+            pas_build_max = 20000
+        heavy_precond_kinds = {
+            "point",
+            "theta_line",
+            "zeta_line",
+            "theta_zeta",
+            "adi",
+            "xblock_tz",
+            "sxblock_tz",
+            "species_block",
+        }
+        if (
+            pas_probe_enabled
+            and rhs1_precond_kind in heavy_precond_kinds
+            and rhs1_precond_enabled
+            and solve_method_kind not in {"dense", "dense_ksp"}
+            and op.fblock.pas is not None
+        ):
+            probe_key = _rhsmode1_precond_cache_key(op, "pas_probe_decision")
+            use_collision_precond = _RHSMODE1_PAS_PRECOND_PROBE_CACHE.get(probe_key)
+            if use_collision_precond is None and int(op.total_size) >= int(pas_build_max):
+                use_collision_precond = True
+                _RHSMODE1_PAS_PRECOND_PROBE_CACHE[probe_key] = True
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: PAS precond skip "
+                        f"(size={int(op.total_size)} >= {int(pas_build_max)}) -> collision",
+                    )
+            if use_collision_precond is None:
+                try:
+                    probe_precond = _build_rhsmode1_collision_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                    if use_pas_projection:
+                        probe_precond = _wrap_pas_precond(probe_precond)
+                    probe_x = probe_precond(rhs_reduced)
+                    probe_r = rhs_reduced - mv_reduced(probe_x)
+                    rhs_norm = float(jnp.linalg.norm(rhs_reduced))
+                    probe_rel = float(jnp.linalg.norm(probe_r)) / rhs_norm if rhs_norm > 0 else 0.0
+                    use_collision_precond = probe_rel <= pas_probe_rel_max
+                    _RHSMODE1_PAS_PRECOND_PROBE_CACHE[probe_key] = bool(use_collision_precond)
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_full_system_linear_gmres: PAS precond probe "
+                            f"(rel={probe_rel:.3e}, max={pas_probe_rel_max:.3e}) -> "
+                            f"{'collision' if use_collision_precond else 'full'}",
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    use_collision_precond = None
+                    if emit is not None:
+                        emit(1, f"solve_v3_full_system_linear_gmres: PAS precond probe failed ({type(exc).__name__}: {exc})")
+            if use_collision_precond:
+                preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                if use_pas_projection:
+                    preconditioner_reduced = _wrap_pas_precond(preconditioner_reduced)
+                rhs1_precond_kind = "collision"
+                pas_precond_force_collision = True
+                if rhs1_bicgstab_kind == "rhs1":
+                    bicgstab_preconditioner_reduced = preconditioner_reduced
 
         def _build_rhs1_preconditioner_reduced():
             _mark("rhs1_precond_build_start")
@@ -4173,7 +4252,7 @@ def solve_v3_full_system_linear_gmres(
                 (solver_kind != "bicgstab" and solve_method_kind != "dense")
                 or (rhs1_bicgstab_kind == "rhs1" and solve_method_kind != "dense")
             )
-            if build_rhs1:
+            if build_rhs1 and preconditioner_reduced is None:
                 preconditioner_reduced = _build_rhs1_preconditioner_reduced()
                 if rhs1_bicgstab_kind == "rhs1":
                     bicgstab_preconditioner_reduced = preconditioner_reduced
@@ -4544,6 +4623,11 @@ def solve_v3_full_system_linear_gmres(
         strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
         strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
         strong_precond_auto = strong_precond_env == "auto"
+        if pas_precond_force_collision and strong_precond_env in {"", "auto"}:
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(1, "solve_v3_full_system_linear_gmres: PAS collision probe disabled strong preconditioner auto")
         if (
             strong_precond_env == ""
             and int(op.constraint_scheme) == 2

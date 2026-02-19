@@ -800,42 +800,29 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_b
 
     out = op.identity_shift * f
     if use_fused:
-        zero = jnp.zeros_like(f)
-
-        def term_collisionless(f_in):
-            return apply_collisionless_v3(op.collisionless, f_in)
-
-        def term_exb_theta(f_in):
-            return apply_exb_theta_v3(op.exb_theta, f_in) if op.exb_theta is not None else zero
-
-        def term_exb_zeta(f_in):
-            return apply_exb_zeta_v3(op.exb_zeta, f_in) if op.exb_zeta is not None else zero
-
-        def term_mag_theta(f_in):
-            return apply_magnetic_drift_theta_v3(op.magdrift_theta, f_in) if op.magdrift_theta is not None else zero
-
-        def term_mag_zeta(f_in):
-            return apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f_in) if op.magdrift_zeta is not None else zero
-
-        def term_mag_xidot(f_in):
-            return apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f_in) if op.magdrift_xidot is not None else zero
-
-        def term_er_xidot(f_in):
-            return apply_er_xidot_v3(op.er_xidot, f_in) if op.er_xidot is not None else zero
-
-        def term_er_xdot(f_in):
-            return apply_er_xdot_v3(op.er_xdot, f_in) if op.er_xdot is not None else zero
-
-        terms = (
-            term_collisionless(f),
-            term_exb_theta(f),
-            term_exb_zeta(f),
-            term_mag_theta(f),
-            term_mag_zeta(f),
-            term_mag_xidot(f),
-            term_er_xidot(f),
-            term_er_xdot(f),
-        )
+        terms = [apply_collisionless_v3(op.collisionless, f)]
+        if op.exb_theta is not None:
+            terms.append(apply_exb_theta_v3(op.exb_theta, f))
+        if op.exb_zeta is not None:
+            terms.append(apply_exb_zeta_v3(op.exb_zeta, f))
+        if op.magdrift_theta is not None:
+            terms.append(apply_magnetic_drift_theta_v3(op.magdrift_theta, f))
+        if op.magdrift_zeta is not None:
+            terms.append(apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f))
+        if op.magdrift_xidot is not None:
+            terms.append(apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f))
+        if op.er_xidot is not None:
+            terms.append(apply_er_xidot_v3(op.er_xidot, f))
+        if op.er_xdot is not None:
+            terms.append(apply_er_xdot_v3(op.er_xdot, f))
+        if op.pas is not None:
+            terms.append(_maybe_remat(apply_pitch_angle_scattering_v3)(op.pas, f))
+        if op.fp is not None:
+            terms.append(_maybe_remat(apply_fokker_planck_v3)(op.fp, f))
+        if op.fp_phi1 is not None:
+            if phi1_hat_base is None:
+                raise ValueError("phi1_hat_base is required when includePhi1InCollisionOperator is enabled.")
+            terms.append(_maybe_remat(apply_fokker_planck_v3_phi1)(op.fp_phi1, f, phi1_hat=phi1_hat_base))
         out = out + functools.reduce(operator.add, terms)
     else:
         out = out + apply_collisionless_v3(op.collisionless, f)
@@ -853,14 +840,14 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_b
             out = out + apply_er_xidot_v3(op.er_xidot, f)
         if op.er_xdot is not None:
             out = out + apply_er_xdot_v3(op.er_xdot, f)
-    if op.pas is not None:
-        out = out + _maybe_remat(apply_pitch_angle_scattering_v3)(op.pas, f)
-    if op.fp is not None:
-        out = out + _maybe_remat(apply_fokker_planck_v3)(op.fp, f)
-    if op.fp_phi1 is not None:
-        if phi1_hat_base is None:
-            raise ValueError("phi1_hat_base is required when includePhi1InCollisionOperator is enabled.")
-        out = out + _maybe_remat(apply_fokker_planck_v3_phi1)(op.fp_phi1, f, phi1_hat=phi1_hat_base)
+        if op.pas is not None:
+            out = out + _maybe_remat(apply_pitch_angle_scattering_v3)(op.pas, f)
+        if op.fp is not None:
+            out = out + _maybe_remat(apply_fokker_planck_v3)(op.fp, f)
+        if op.fp_phi1 is not None:
+            if phi1_hat_base is None:
+                raise ValueError("phi1_hat_base is required when includePhi1InCollisionOperator is enabled.")
+            out = out + _maybe_remat(apply_fokker_planck_v3_phi1)(op.fp_phi1, f, phi1_hat=phi1_hat_base)
     return out
 
 
