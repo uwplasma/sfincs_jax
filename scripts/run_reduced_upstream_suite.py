@@ -1104,7 +1104,10 @@ def _run_case(
             note = "Fortran timeout; reduced largest axis."
             saw_timeout = True
             fallback = last_success or disk_last_success
-            if fallback is not None:
+            use_fallback = fallback is not None
+            if target_runtime_s is not None and scale_iters < int(target_runtime_max_iters):
+                use_fallback = False
+            if use_fallback:
                 status = str(fallback.get("status", "parity_ok"))
                 note = "Using last successful run after timeout."
                 fortran_h5_path = fallback.get("fortran_h5")
@@ -1192,7 +1195,10 @@ def _run_case(
             note = "JAX timeout; reduced largest axis."
             saw_timeout = True
             fallback = last_success or disk_last_success
-            if fallback is not None:
+            use_fallback = fallback is not None
+            if target_runtime_s is not None and scale_iters < int(target_runtime_max_iters):
+                use_fallback = False
+            if use_fallback:
                 status = str(fallback.get("status", "parity_ok"))
                 note = "Using last successful run after timeout."
                 fortran_h5_path = fallback.get("fortran_h5")
