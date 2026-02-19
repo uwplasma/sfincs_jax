@@ -1327,7 +1327,7 @@ def _run_case(
                 and not saw_timeout
             ):
                 ratio = float(target_runtime_s) / max_rt
-                factor = max(1.25, min(2.0, ratio**0.5))
+                factor = max(1.1, min(2.0, ratio**0.25))
                 new_res = _scale_resolution_in_place(dst_input, factor=factor)
                 if new_res != final_res:
                     scale_iters += 1
