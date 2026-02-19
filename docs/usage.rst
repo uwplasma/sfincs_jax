@@ -296,6 +296,12 @@ performance without changing the input file:
   - ``right``: solve :math:`A P^{-1} y = b` and set :math:`x = P^{-1} y` (PETSc-like default for GMRES).
   - ``none``: ignore any preconditioner (debugging).
 
+- ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF``: when
+  ``includePhi1InCollisionOperator = .true.``, use a dense Newton step instead of
+  GMRES inside the Newton–Krylov solve for systems with ``total_size`` below this
+  cutoff (default: ``5000``). This improves parity and runtime for small Phi1‑collision
+  fixtures.
+
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1 when GMRES is selected).
 - ``SFINCS_JAX_LINEAR_STAGE2_RATIO``: only run stage-2 when ``||r|| / target`` exceeds the

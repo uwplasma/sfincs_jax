@@ -129,6 +129,19 @@ JAX-native performance patterns used in `sfincs_jax`
 - **JIT-compiled Krylov solves (default)**: `sfincs_jax` now JIT-compiles the GMRES/BiCGStab wrappers
   to reduce Python overhead for iterative solves; set ``SFINCS_JAX_SOLVER_JIT=0`` to disable.
 
+Solver defaults (Phi1 + sharding)
+---------------------------------
+
+- **Dense Newton step for small Phi1-collision systems**: when
+  ``includePhi1InCollisionOperator = .true.`` and the linearized system is modest,
+  the Newton–Krylov inner solve uses a dense Newton step instead of GMRES. This
+  removes Krylov setup overhead and matches v3 parity for Phi1‑collision fixtures.
+  The cutoff is ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF`` (default: ``5000``) and is applied
+  in ``sfincs_jax/io.py``.
+- **Sharded matvec on single‑device runs**: if ``SFINCS_JAX_MATVEC_SHARD_AXIS`` is set
+  but only one device is available, sharding constraints are skipped and the standard
+  unsharded matvec path is used (no functional change, just a no‑op).
+
 Krylov solver strategy (memory + recycling)
 -------------------------------------------
 

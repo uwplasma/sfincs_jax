@@ -133,8 +133,8 @@ so worker processes can import the main module cleanly.
 
 **Measured scaling (Macbook M3 Max, 14‑core)**
 
-Benchmark case: `examples/performance/transport_parallel_xlarge.input.namelist`
-(RHSMode=2, geometryScheme=2, Ntheta=15, Nzeta=15, Nxi=6, Nx=4).
+Benchmark case: `examples/performance/transport_parallel_xxlarge.input.namelist`
+(RHSMode=2, geometryScheme=2, Ntheta=15, Nzeta=15, Nxi=6, NL=4, Nx=5).
 
 Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
 single‑worker runtime in the 1–2 minute range while preserving parity.
@@ -159,17 +159,17 @@ Results (single run per worker count, JAX cache warm‑up enabled):
      - Mean time (s)
      - Speedup
    * - 1
-     - 62.00
+     - 74.84
      - 1.00
    * - 2
-     - 43.09
-     - 1.44
+     - 49.31
+     - 1.52
    * - 3
-     - 22.67
-     - 2.73
+     - 25.37
+     - 2.95
    * - 4
-     - 22.94
-     - 2.70
+     - 25.42
+     - 2.95
 
 .. figure:: _static/figures/parallel/transport_parallel_scaling.png
    :alt: Parallel whichRHS scaling on Macbook M3 Max
@@ -177,7 +177,7 @@ Results (single run per worker count, JAX cache warm‑up enabled):
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this larger case, scaling reaches ~2.7× by 3–4 workers before flattening.
+For this larger case, scaling reaches ~3.0× by 3–4 workers before flattening.
 The plateau reflects process overhead and shared‑resource contention on a
 laptop‑class CPU. Larger multi‑RHS runs on server‑class nodes should show
 stronger scaling.
@@ -190,7 +190,7 @@ Earlier runs (smaller grids)
 
 We also benchmarked smaller RHSMode=2 cases (7–45 s single‑worker time). These
 showed weaker scaling because process startup and JIT overheads dominate at
-small problem sizes. The longer xlarge case above is required to observe clear
+small problem sizes. The longer xxlarge case above is required to observe clear
 speedup on laptop CPUs.
 
 JIT/compilation notes
@@ -198,8 +198,10 @@ JIT/compilation notes
 
 To avoid skew from compilation:
 
-- The benchmark script performs a **global warm‑up** run (workers=1).
-- Each worker count performs a **per‑worker warm‑up** (not timed).
+- The results above were collected after a one‑off warm run (workers=1) to populate
+  the persistent JAX cache, with ``--warmup 0 --global-warmup 0`` for the timing run.
+- To reproduce, either run once with ``--workers 1`` before timing or set
+  ``--global-warmup 1`` and keep ``--warmup 0`` for the timed measurements.
 - A persistent `JAX_CACHE_DIR` is used so processes can reuse compiled kernels.
 
 
@@ -286,7 +288,8 @@ On GPUs, JAX will automatically see all local devices.
 
 - Sharding is currently **experimental** and only enabled when multiple devices
   are visible.
-- When only one device is available, the code falls back to the standard JIT path.
+- When only one device is available, the code falls back to the standard JIT path
+  and skips sharding constraints (no functional change).
 - This mirrors Fortran DMDA splitting along :math:`\theta` or :math:`\zeta`,
   with the same intent: distribute matvec and preconditioner cost.
 

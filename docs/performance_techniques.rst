@@ -618,6 +618,10 @@ rescue transport-matrix solves that stall.
   when Krylov iterations stagnate. The trigger uses the **true (unpreconditioned)**
   residual norm so the fallback still fires even if a left-preconditioned norm
   appears small (parity-first behavior).
+- For RHSMode=1 runs with ``includePhi1InCollisionOperator = .true.``, small systems
+  bypass the Newton–Krylov inner GMRES step and take a dense Newton step instead.
+  This avoids GMRES setup cost and matches Fortran parity for Phi1‑collision fixtures.
+  The cutoff is controlled by ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF`` (default: ``5000``).
 - Transport dense fallback is **disabled** unless explicitly requested, but a
   dense retry is enabled for RHSMode=2/3 when the active system size is modest.
 

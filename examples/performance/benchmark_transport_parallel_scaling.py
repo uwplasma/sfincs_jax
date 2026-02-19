@@ -45,7 +45,7 @@ def _run_once(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark parallel whichRHS scaling.")
     repo_root = Path(__file__).resolve().parents[2]
-    default_input = repo_root / "examples" / "performance" / "transport_parallel_xlarge.input.namelist"
+    default_input = repo_root / "examples" / "performance" / "transport_parallel_xxlarge.input.namelist"
     default_out = repo_root / "examples" / "performance" / "output" / "transport_parallel_scaling"
     default_cache = default_out / "jax_cache"
 
