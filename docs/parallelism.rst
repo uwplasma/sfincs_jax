@@ -126,6 +126,11 @@ path; outputs are merged deterministically by column.
 - The master merges columns deterministically and reconstructs the transport
   matrix.
 
+**Platform note (macOS)**
+
+macOS uses `spawn` for multiprocessing. Run from a file/module (not `python - <<EOF`)
+so worker processes can import the main module cleanly.
+
 **Local sanity check**
 
 On a tiny transport‑matrix fixture, process overhead dominates:
