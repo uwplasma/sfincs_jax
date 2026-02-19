@@ -3087,6 +3087,25 @@ def solve_v3_full_system_linear_gmres(
     active_env = os.environ.get("SFINCS_JAX_ACTIVE_DOF", "").strip().lower()
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
     has_reduced_modes = bool(np.any(nxi_for_x < int(op.n_xi)))
+    phys_params = nml.group("physicsParameters")
+    def _nml_bool(val: object | None) -> bool:
+        if val is None:
+            return False
+        if isinstance(val, bool):
+            return bool(val)
+        if isinstance(val, (int, np.integer)):
+            return bool(int(val))
+        if isinstance(val, (float, np.floating)):
+            return bool(float(val))
+        if isinstance(val, str):
+            return val.strip().lower() in {"t", "true", "1", "yes", ".true."}
+        return False
+    use_dkes = _nml_bool(
+        phys_params.get(
+            "useDKESExBDrift",
+            phys_params.get("useDKESExBdrift", phys_params.get("use_dkes_exb_drift", None)),
+        )
+    )
     use_active_dof_mode = False
     if active_env in {"1", "true", "yes", "on"}:
         use_active_dof_mode = True
@@ -3102,6 +3121,9 @@ def solve_v3_full_system_linear_gmres(
         use_active_dof_mode = has_reduced_modes and (
             int(op.rhs_mode) in {2, 3} or (int(op.rhs_mode) == 1 and (not bool(op.include_phi1)))
         )
+        if use_active_dof_mode and int(op.rhs_mode) == 1 and op.fblock.pas is not None and use_dkes:
+            # DKES trajectories are sensitive to active-DOF reduction for PAS runs.
+            use_active_dof_mode = False
 
     precond_opts = nml.group("preconditionerOptions")
     pas_project_env = os.environ.get("SFINCS_JAX_PAS_PROJECT_CONSTRAINTS", "").strip().lower()
@@ -3293,6 +3315,12 @@ def solve_v3_full_system_linear_gmres(
                     sxblock_tz_max = int(sxblock_tz_max_env) if sxblock_tz_max_env else 0
                 except ValueError:
                     sxblock_tz_max = 0
+                if sxblock_tz_max == 0 and op.fblock.fp is not None and (
+                    int(op.n_theta) > 1 or int(op.n_zeta) > 1
+                ):
+                    # Allow a modest FP sxblock_tz preconditioner in multi-angle FP cases
+                    # to avoid RHSMode=1 stagnation without large dense fallbacks.
+                    sxblock_tz_max = 2000
                 sxblock_size = int(int(op.n_species) * local_per_species)
                 sxblock_tz_size = int(int(op.n_species) * int(op.n_x) * int(op.n_theta) * int(op.n_zeta))
                 schur_auto = False
@@ -3317,6 +3345,13 @@ def solve_v3_full_system_linear_gmres(
                     except (TypeError, ValueError):
                         er_abs = 0.0
                 er_abs = abs(er_abs)
+                epar_val = phys_params.get("EPARALLELHAT", phys_params.get("EParallelHat", None))
+                try:
+                    epar_abs = abs(float(epar_val)) if epar_val is not None else 0.0
+                except (TypeError, ValueError):
+                    epar_abs = 0.0
+                if epar_abs > 0.0 and sxblock_tz_max == 0:
+                    sxblock_tz_max = 2000
                 schur_er_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_ER_ABS_MIN", "").strip()
                 try:
                     schur_er_min = float(schur_er_env) if schur_er_env else 0.0
@@ -3334,6 +3369,12 @@ def solve_v3_full_system_linear_gmres(
                     rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif schur_auto:
                     rhs1_precond_kind = "schur"
+                elif (
+                    op.fblock.fp is not None
+                    and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+                    and int(op.n_theta) * int(op.n_zeta) <= tz_max
+                ):
+                    rhs1_precond_kind = "theta_zeta"
                 elif (
                     op.fblock.fp is not None
                     and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
@@ -3918,6 +3959,11 @@ def solve_v3_full_system_linear_gmres(
             dense_shortcut_ratio = float(dense_shortcut_ratio_env) if dense_shortcut_ratio_env else 1.0e6
         except ValueError:
             dense_shortcut_ratio = 1.0e6
+        dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
+        try:
+            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 4000
+        except ValueError:
+            dense_fallback_max = 0
         early_dense_shortcut = False
         probe_shortcut = False
         probe_x0: jnp.ndarray | None = None
@@ -4093,20 +4139,31 @@ def solve_v3_full_system_linear_gmres(
                 probe_ratio = probe_norm / max(float(target_reduced), 1e-300)
                 if dense_shortcut_ratio > 0 and probe_ratio >= dense_shortcut_ratio:
                     early_dense_shortcut = True
-                    probe_shortcut = True
-                    res_reduced = GMRESSolveResult(x=probe_x0, residual_norm=jnp.asarray(probe_norm))
-                    ksp_matvec = mv_reduced
-                    ksp_b = rhs_reduced
-                    ksp_precond = preconditioner_reduced
-                    ksp_x0 = probe_x0
-                    ksp_precond_side = gmres_precond_side
-                    ksp_solver_kind = _solver_kind(solve_method)[0]
-                    if emit is not None:
-                        emit(
-                            0,
-                            "solve_v3_full_system_linear_gmres: dense fallback shortcut (probe) "
-                            f"(ratio={probe_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
-                        )
+                    allow_probe_shortcut = dense_fallback_max > 0 and int(active_size) <= dense_fallback_max
+                    if allow_probe_shortcut:
+                        probe_shortcut = True
+                        res_reduced = GMRESSolveResult(x=probe_x0, residual_norm=jnp.asarray(probe_norm))
+                        ksp_matvec = mv_reduced
+                        ksp_b = rhs_reduced
+                        ksp_precond = preconditioner_reduced
+                        ksp_x0 = probe_x0
+                        ksp_precond_side = gmres_precond_side
+                        ksp_solver_kind = _solver_kind(solve_method)[0]
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_full_system_linear_gmres: dense fallback shortcut (probe) "
+                                f"(ratio={probe_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
+                            )
+                    else:
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: probe shortcut skipped "
+                                f"(size={int(active_size)} > dense_max={dense_fallback_max})",
+                            )
+                        if x0_reduced is None:
+                            x0_reduced = probe_x0
                 elif x0_reduced is None:
                     x0_reduced = probe_x0
             except Exception as exc:  # noqa: BLE001
@@ -4781,7 +4838,7 @@ def solve_v3_full_system_linear_gmres(
                 pass
         dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
         try:
-            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
+            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 4000
         except ValueError:
             dense_fallback_max = 0
         dense_fallback_max_huge = 0
@@ -6476,7 +6533,7 @@ def solve_v3_transport_matrix_linear_gmres(
         if dense_retry_env:
             dense_retry_max = int(dense_retry_env)
         else:
-            dense_retry_max = 3000 if int(rhs_mode) in {2, 3} else 0
+            dense_retry_max = 6000 if int(rhs_mode) in {2, 3} else 0
     except ValueError:
         dense_retry_max = 3000 if int(rhs_mode) in {2, 3} else 0
     if low_memory_outputs:
@@ -6494,7 +6551,7 @@ def solve_v3_transport_matrix_linear_gmres(
         # since iterative Krylov often stalls for the E_parallel RHS.
         dense_fallback = int(rhs_mode) == 3
         if dense_fallback and not dense_fallback_max_env:
-            dense_fallback_max = 3000
+            dense_fallback_max = 6000
     if low_memory_outputs:
         dense_fallback = False
     if int(rhs_mode) in {2, 3}:
