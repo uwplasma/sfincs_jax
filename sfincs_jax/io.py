@@ -2224,6 +2224,9 @@ def write_sfincs_jax_output_h5(
             )
             _mark("rhs1_solve_done")
             xs = x_hist if x_hist else [result.x]
+            if use_frozen_linearization:
+                x0_diag = x0_state if x0_state is not None else jnp.zeros_like(result.x)
+                xs = [jnp.asarray(x0_diag, dtype=jnp.float64), *xs]
             # Optional override: force a minimum number of recorded nonlinear iterates.
             # By default keep the naturally accepted-iterate history, which aligns
             # better with upstream SNES output dimensionality across reduced examples.
