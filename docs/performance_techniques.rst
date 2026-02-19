@@ -284,6 +284,14 @@ See ``docs/references.rst`` for Woodbury/low-rank update references.
 fine-grid collision-diagonal smoothing plus a coarse x-grid solve per species/L.
 Set ``SFINCS_JAX_XMG_STRIDE`` to control the coarsening.
 
+**JAX sparse Jacobi (optional).**
+
+``SFINCS_JAX_TRANSPORT_PRECOND=sparse_jax`` builds a sparsified operator and applies
+a few weighted Jacobi sweeps in JAX. This can reduce memory relative to dense
+preconditioners while staying differentiable. Controls mirror the RHSMode=1
+``sparse_jax`` options (``SFINCS_JAX_TRANSPORT_SPARSE_JAX_*`` and
+``SFINCS_JAX_TRANSPORT_SPARSE_DROP_*``).
+
 **Implementation.**
 
 - ``_build_rhsmode23_sxblock_preconditioner`` in ``sfincs_jax.v3_driver``.

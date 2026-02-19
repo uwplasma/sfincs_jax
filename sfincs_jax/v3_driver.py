@@ -7085,6 +7085,7 @@ def solve_v3_transport_matrix_linear_gmres(
         "species_x",
         "xmg",
         "multigrid",
+        "sparse_jax",
     }:
         transport_precond_kind = transport_precond_env
     else:
@@ -7095,6 +7096,37 @@ def solve_v3_transport_matrix_linear_gmres(
     strong_precond_kind: str | None = None
     default_solver_kind = _solver_kind(solve_method_use)[0]
     precond_kind_used: str | None = None
+    transport_sparse_drop_tol_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DROP_TOL", "").strip()
+    transport_sparse_drop_rel_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DROP_REL", "").strip()
+    try:
+        transport_sparse_drop_tol = float(transport_sparse_drop_tol_env) if transport_sparse_drop_tol_env else 0.0
+    except ValueError:
+        transport_sparse_drop_tol = 0.0
+    try:
+        transport_sparse_drop_rel = float(transport_sparse_drop_rel_env) if transport_sparse_drop_rel_env else 1.0e-6
+    except ValueError:
+        transport_sparse_drop_rel = 1.0e-6
+    transport_sparse_reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_JAX_REG", "").strip()
+    try:
+        transport_sparse_reg = float(transport_sparse_reg_env) if transport_sparse_reg_env else 1e-10
+    except ValueError:
+        transport_sparse_reg = 1e-10
+    transport_sparse_omega_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_JAX_OMEGA", "").strip()
+    try:
+        transport_sparse_omega = float(transport_sparse_omega_env) if transport_sparse_omega_env else 0.8
+    except ValueError:
+        transport_sparse_omega = 0.8
+    transport_sparse_sweeps_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_JAX_SWEEPS", "").strip()
+    try:
+        transport_sparse_sweeps = int(transport_sparse_sweeps_env) if transport_sparse_sweeps_env else 2
+    except ValueError:
+        transport_sparse_sweeps = 2
+    transport_sparse_sweeps = max(1, transport_sparse_sweeps)
+    transport_sparse_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_JAX_MAX_MB", "").strip()
+    try:
+        transport_sparse_max_mb = float(transport_sparse_max_env) if transport_sparse_max_env else 128.0
+    except ValueError:
+        transport_sparse_max_mb = 128.0
     if transport_precond_kind is not None and int(rhs_mode) in {2, 3}:
         precond_kind = transport_precond_kind
         if precond_kind == "auto":
@@ -7140,6 +7172,56 @@ def solve_v3_transport_matrix_linear_gmres(
                 preconditioner_reduced = _build_rhsmode23_xmg_preconditioner(
                     op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+        elif precond_kind == "sparse_jax":
+            precond_dtype = _precond_dtype(int(active_size) if use_active_dof_mode else int(op0.total_size))
+            bytes_per = 4.0 if precond_dtype == jnp.float32 else 8.0
+            size_est = int(active_size) if use_active_dof_mode else int(op0.total_size)
+            est_mb = (size_est**2) * bytes_per / 1.0e6
+            if transport_sparse_max_mb > 0.0 and est_mb > transport_sparse_max_mb:
+                preconditioner_full = _build_rhsmode23_collision_preconditioner(op=op0)
+                if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                    preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
+                        op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_transport_matrix_linear_gmres: sparse_jax preconditioner disabled "
+                        f"(est_mem={est_mb:.1f} MB > max_mb={transport_sparse_max_mb:.1f})",
+                    )
+            else:
+                cache_key_full = _transport_precond_cache_key(op0, f"sparse_jax_{size_est}")
+                def _mv_sparse_full(x: jnp.ndarray, op=op0) -> jnp.ndarray:
+                    return apply_v3_full_system_operator_cached(op, x)
+                preconditioner_full = _build_sparse_jax_preconditioner_from_matvec(
+                    matvec=_mv_sparse_full,
+                    n=int(op0.total_size),
+                    dtype=precond_dtype,
+                    cache_key=cache_key_full,
+                    drop_tol=transport_sparse_drop_tol,
+                    drop_rel=transport_sparse_drop_rel,
+                    reg=transport_sparse_reg,
+                    omega=transport_sparse_omega,
+                    sweeps=transport_sparse_sweeps,
+                    emit=emit,
+                )
+                if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                    cache_key_reduced = _transport_precond_cache_key(op0, f"sparse_jax_active_{int(active_size)}")
+                    def _mv_sparse_reduced(x_reduced: jnp.ndarray, op=op0) -> jnp.ndarray:
+                        y_full = apply_v3_full_system_operator_cached(op, expand_reduced(x_reduced))
+                        return reduce_full(y_full)
+                    preconditioner_reduced = _build_sparse_jax_preconditioner_from_matvec(
+                        matvec=_mv_sparse_reduced,
+                        n=int(active_size),
+                        dtype=precond_dtype,
+                        cache_key=cache_key_reduced,
+                        drop_tol=transport_sparse_drop_tol,
+                        drop_rel=transport_sparse_drop_rel,
+                        reg=transport_sparse_reg,
+                        omega=transport_sparse_omega,
+                        sweeps=transport_sparse_sweeps,
+                        emit=emit,
+                    )
         elif precond_kind in {"sxblock", "block_sx", "species_x"}:
             preconditioner_full = _build_rhsmode23_sxblock_preconditioner(op=op0)
             if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
