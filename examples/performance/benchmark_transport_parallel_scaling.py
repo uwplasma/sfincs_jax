@@ -45,7 +45,7 @@ def _run_once(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark parallel whichRHS scaling.")
     repo_root = Path(__file__).resolve().parents[2]
-    default_input = repo_root / "examples" / "performance" / "transport_parallel_large.input.namelist"
+    default_input = repo_root / "examples" / "performance" / "transport_parallel_xlarge.input.namelist"
     default_out = repo_root / "examples" / "performance" / "output" / "transport_parallel_scaling"
     default_cache = default_out / "jax_cache"
 
@@ -59,8 +59,8 @@ def main() -> None:
         "--workers",
         type=int,
         nargs="+",
-        default=list(range(1, 11)),
-        help="Worker counts to benchmark (default 1..10).",
+        default=list(range(1, 5)),
+        help="Worker counts to benchmark (default 1..4).",
     )
     parser.add_argument("--repeats", type=int, default=2, help="Repeats per worker count.")
     parser.add_argument("--warmup", type=int, default=0, help="Warmup runs per worker count.")

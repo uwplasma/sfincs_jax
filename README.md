@@ -57,26 +57,36 @@ reduce overhead in tiny PAS/transport cases while keeping large systems compiled
 
 ## Parallel Scaling (Macbook M3 Max)
 
-Parallel `whichRHS` scaling for a larger RHSMode=2 transport‑matrix case
-(`examples/performance/transport_parallel_large.input.namelist`, geometryScheme=2).
+Parallel `whichRHS` scaling for an extra‑large RHSMode=2 transport‑matrix case
+(`examples/performance/transport_parallel_xlarge.input.namelist`, geometryScheme=2).
 Benchmark uses `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the single‑worker runtime
-in the 30–45 s range.
+in the 1–2 minute range.
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
 Reproduce the scaling figure and JSON summary:
 
 ```bash
-python examples/performance/benchmark_transport_parallel_scaling.py --repeats 1
+python examples/performance/benchmark_transport_parallel_scaling.py \
+  --workers 1 2 3 4 \
+  --repeats 1 \
+  --warmup 1 \
+  --global-warmup 1
 ```
 
 Run with explicit worker counts and a custom input:
 
 ```bash
 python examples/performance/benchmark_transport_parallel_scaling.py \
-  --input examples/performance/transport_parallel_large.input.namelist \
-  --workers 1 2 4 6 8 10 \
-  --repeats 1
+  --input examples/performance/transport_parallel_xlarge.input.namelist \
+  --workers 1 2 3 4 \
+  --repeats 1 \
+  --warmup 1 \
+  --global-warmup 1
+
+JIT note: the benchmark performs a global warm‑up and a per‑worker warm‑up so
+timings exclude compilation. A persistent JAX cache is used automatically.
+Override the transport preconditioner with `--precond` if needed.
 ```
 
 Enable parallel whichRHS solves in normal runs:

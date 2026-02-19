@@ -133,17 +133,22 @@ so worker processes can import the main module cleanly.
 
 **Measured scaling (Macbook M3 Max, 14‑core)**
 
-Benchmark case: `examples/performance/transport_parallel_large.input.namelist`
-(RHSMode=2, geometryScheme=2, Nxi=6, Nx=4).
+Benchmark case: `examples/performance/transport_parallel_xlarge.input.namelist`
+(RHSMode=2, geometryScheme=2, Ntheta=15, Nzeta=15, Nxi=6, Nx=4).
 
 Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
-single‑worker runtime in the 30‑45 s range while preserving parity.
+single‑worker runtime in the 1–2 minute range while preserving parity.
+You can override this via `--precond` in the benchmark script.
 
 Command:
 
 .. code-block:: bash
 
-   python examples/performance/benchmark_transport_parallel_scaling.py --repeats 1
+   python examples/performance/benchmark_transport_parallel_scaling.py \
+     --workers 1 2 3 4 \
+     --repeats 1 \
+     --warmup 1 \
+     --global-warmup 1
 
 Results (single run per worker count, JAX cache warm‑up enabled):
 
@@ -154,34 +159,16 @@ Results (single run per worker count, JAX cache warm‑up enabled):
      - Mean time (s)
      - Speedup
    * - 1
-     - 45.48
+     - 62.00
      - 1.00
    * - 2
-     - 32.12
-     - 1.42
+     - 43.09
+     - 1.44
    * - 3
-     - 16.94
-     - 2.68
+     - 22.67
+     - 2.73
    * - 4
-     - 16.86
-     - 2.70
-   * - 5
-     - 16.92
-     - 2.69
-   * - 6
-     - 16.93
-     - 2.69
-   * - 7
-     - 16.90
-     - 2.69
-   * - 8
-     - 16.83
-     - 2.70
-   * - 9
-     - 16.89
-     - 2.69
-   * - 10
-     - 16.85
+     - 22.94
      - 2.70
 
 .. figure:: _static/figures/parallel/transport_parallel_scaling.png
@@ -194,6 +181,23 @@ For this larger case, scaling reaches ~2.7× by 3–4 workers before flattening.
 The plateau reflects process overhead and shared‑resource contention on a
 laptop‑class CPU. Larger multi‑RHS runs on server‑class nodes should show
 stronger scaling.
+
+Earlier runs (smaller grids)
+----------------------------
+
+We also benchmarked smaller RHSMode=2 cases (7–45 s single‑worker time). These
+showed weaker scaling because process startup and JIT overheads dominate at
+small problem sizes. The longer xlarge case above is required to observe clear
+speedup on laptop CPUs.
+
+JIT/compilation notes
+---------------------
+
+To avoid skew from compilation:
+
+- The benchmark script performs a **global warm‑up** run (workers=1).
+- Each worker count performs a **per‑worker warm‑up** (not timed).
+- A persistent `JAX_CACHE_DIR` is used so processes can reuse compiled kernels.
 
 
 Step (2): Parallel cases / scans
