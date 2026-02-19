@@ -1153,6 +1153,24 @@ def _run_case(
             reductions += 1
             continue
 
+        if target_runtime_s is not None and fortran_runtime is not None:
+            target_cap = target_runtime_max_s if target_runtime_max_s is not None else target_runtime_s
+            if (
+                target_cap is not None
+                and float(fortran_runtime) > float(target_cap)
+                and scale_iters < int(target_runtime_max_iters)
+            ):
+                ratio = float(target_cap) / float(fortran_runtime)
+                factor = max(0.2, min(0.8, ratio**0.8))
+                new_res = _scale_resolution_in_place(dst_input, factor=factor)
+                if new_res != final_res:
+                    scale_iters += 1
+                    note = (
+                        f"Scaled resolution down by {factor:.2f} to keep Fortran runtime under "
+                        f"cap {float(target_cap):.2f}s."
+                    )
+                    continue
+
         jax_h5 = case_out_dir / "sfincsOutput_jax.h5"
         jax_log = case_out_dir / "sfincs_jax.log"
         jax_log_path = jax_log

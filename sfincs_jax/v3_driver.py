@@ -4127,6 +4127,7 @@ def solve_v3_full_system_linear_gmres(
             "xblock_tz",
             "sxblock_tz",
             "species_block",
+            "schur",
         }
         if (
             pas_probe_enabled
