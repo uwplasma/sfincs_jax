@@ -87,6 +87,8 @@ python examples/performance/benchmark_transport_parallel_scaling.py \
 JIT note: the benchmark performs a global warm‑up and a per‑worker warm‑up so
 timings exclude compilation. A persistent JAX cache is used automatically.
 Override the transport preconditioner with `--precond` if needed.
+
+RHSMode=2 has only 3 `whichRHS` solves, so scaling naturally saturates near 3 workers.
 ```
 
 Enable parallel whichRHS solves in normal runs:

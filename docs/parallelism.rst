@@ -182,6 +182,9 @@ The plateau reflects process overhead and shared‑resource contention on a
 laptop‑class CPU. Larger multi‑RHS runs on server‑class nodes should show
 stronger scaling.
 
+Note: RHSMode=2 has only **3** right‑hand sides. A 4th worker has no extra RHS
+to solve, so speedup naturally saturates near 3 workers.
+
 Earlier runs (smaller grids)
 ----------------------------
 
