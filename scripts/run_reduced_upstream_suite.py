@@ -1534,6 +1534,18 @@ def main() -> int:
         help="Number of cases to run in parallel (processes).",
     )
     parser.add_argument(
+        "--case-index",
+        type=int,
+        default=None,
+        help="Optional case index for job-array slicing (0-based).",
+    )
+    parser.add_argument(
+        "--case-stride",
+        type=int,
+        default=1,
+        help="Stride for job-array slicing (default: 1).",
+    )
+    parser.add_argument(
         "--no-collect-iterations",
         action="store_true",
         help="Disable solver-iteration stats collection in sfincs_jax logs.",
@@ -1555,6 +1567,14 @@ def main() -> int:
         inputs = [p for p in inputs if rx.search(str(p.parent))]
     if not inputs:
         raise SystemExit("No input.namelist files matched.")
+    stride_val = max(1, int(args.case_stride))
+    if args.case_index is not None:
+        idx = int(args.case_index)
+        if idx < 0 or idx >= stride_val:
+            raise SystemExit(f"--case-index={idx} out of range for --case-stride={stride_val}")
+        inputs = [p for i, p in enumerate(inputs) if i % stride_val == idx]
+        if not inputs:
+            raise SystemExit("No input.namelist files matched after case-index filtering.")
     report_json = out_root / "suite_report.json"
     merged_results: dict[str, CaseResult] = {} if args.reset_report else _load_existing_results(report_json)
     current_run_results: list[CaseResult] = []

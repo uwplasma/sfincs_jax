@@ -83,19 +83,46 @@ python examples/performance/benchmark_transport_parallel_scaling.py \
   --repeats 1 \
   --warmup 1 \
   --global-warmup 1
+```
 
 JIT note: the benchmark performs a global warm‑up and a per‑worker warm‑up so
 timings exclude compilation. A persistent JAX cache is used automatically.
 Override the transport preconditioner with `--precond` if needed.
 
 RHSMode=2 has only 3 `whichRHS` solves, so scaling naturally saturates near 3 workers.
-```
 
 Enable parallel whichRHS solves in normal runs:
 
 ```bash
 export SFINCS_JAX_TRANSPORT_PARALLEL=process
 export SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS=8
+```
+
+## Scaling Beyond 3 Workers
+
+To scale to dozens or hundreds of workers, use **case‑level** or **scan‑point**
+parallelism via job arrays:
+
+Suite array (cases):
+
+```bash
+#SBATCH --array=0-63
+python scripts/run_reduced_upstream_suite.py \
+  --case-index ${SLURM_ARRAY_TASK_ID} \
+  --case-stride 64 \
+  --reuse-fortran
+```
+
+Scan array (Er scan):
+
+```bash
+#SBATCH --array=0-63
+sfincs_jax scan-er \
+  --input input.namelist \
+  --out-dir scan_dir \
+  --min -2 --max 2 --n 401 \
+  --index ${SLURM_ARRAY_TASK_ID} \
+  --stride 64
 ```
 
 ## Installation

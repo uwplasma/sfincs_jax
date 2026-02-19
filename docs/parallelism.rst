@@ -215,6 +215,52 @@ The reduced suite runner can now execute multiple cases in parallel:
 Each case runs in its own process, with independent Fortran and JAX runs.
 This is the highest‑ROI parallel mode for large test campaigns.
 
+**Scan parallelism (E_r scans)**
+
+For scans with many values, use `--jobs` to parallelize scan points:
+
+.. code-block:: bash
+
+   sfincs_jax scan-er \
+     --input input.namelist \
+     --out-dir scan_dir \
+     --min -2 --max 2 --n 41 \
+     --jobs 8
+
+Parallel scan mode disables Krylov recycle between points. Use this when you
+care more about throughput than per‑point warm‑start.
+
+Scaling to dozens/hundreds (job arrays)
+--------------------------------------
+
+For large ensembles, use job arrays on clusters and slice the work with
+`--case-index`/`--case-stride` (suite) or `--index`/`--stride` (scan).
+
+**Suite array (N cases across M array tasks)**
+
+.. code-block:: bash
+
+   #SBATCH --array=0-63
+   python scripts/run_reduced_upstream_suite.py \
+     --case-index ${SLURM_ARRAY_TASK_ID} \
+     --case-stride 64 \
+     --reuse-fortran
+
+**Scan array (N scan points across M array tasks)**
+
+.. code-block:: bash
+
+   #SBATCH --array=0-63
+   sfincs_jax scan-er \
+     --input input.namelist \
+     --out-dir scan_dir \
+     --min -2 --max 2 --n 401 \
+     --index ${SLURM_ARRAY_TASK_ID} \
+     --stride 64
+
+This gives near‑linear scaling to dozens or hundreds of workers, since each
+task is independent.
+
 
 Step (3): Sharded matvec (SPMD)
 -------------------------------

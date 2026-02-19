@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import concurrent.futures
 
 import numpy as np
 
@@ -87,6 +88,9 @@ def run_er_scan(
     values: Sequence[float],
     compute_transport_matrix: bool = False,
     compute_solution: bool = False,
+    jobs: int | None = None,
+    index: int | None = None,
+    stride: int | None = None,
     emit: EmitFn | None = None,
 ) -> ScanResult:
     """Run an E_r (or dPhiHatd*) scan using `sfincs_jax` and write `sfincsOutput.h5` in each run dir.
@@ -106,6 +110,13 @@ def run_er_scan(
     # Use a deterministic order that matches upstream `sfincsScan_2`, which generates values
     # via linspace(max, min, N).
     vals = sorted([float(v) for v in values], reverse=True)
+    stride_val = max(1, int(stride) if stride is not None else 1)
+    if index is not None:
+        idx = int(index)
+        if idx < 0 or idx >= stride_val:
+            raise ValueError(f"scan-er: index={idx} out of range for stride={stride_val}")
+        vals = [v for i, v in enumerate(vals) if i % stride_val == idx]
+    jobs_val = max(1, int(jobs) if jobs is not None else 1)
     if emit is not None:
         emit(0, f"scan-er: input={input_namelist}")
         emit(0, f"scan-er: out_dir={out_dir}")
@@ -113,6 +124,10 @@ def run_er_scan(
             0,
             f"scan-er: variable={var} n={len(vals)} compute_solution={bool(compute_solution)} compute_transport_matrix={bool(compute_transport_matrix)}",
         )
+        if index is not None:
+            emit(1, f"scan-er: subset index={index} stride={stride_val}")
+        if jobs_val > 1:
+            emit(1, f"scan-er: jobs={jobs_val} (parallel)")
 
     # Write a scan-style `input.namelist` in the scan directory so vendored upstream
     # `utils/sfincsScanPlot_*` scripts can infer the directory list.
@@ -129,19 +144,15 @@ def run_er_scan(
     scan_recycle_env = os.environ.get("SFINCS_JAX_SCAN_RECYCLE", "").strip().lower()
     scan_recycle_enabled = scan_recycle_env in {"1", "true", "yes", "on"}
     prev_run_dir: Path | None = None
-    for i, v in enumerate(vals, start=1):
+    def _run_one(v: float, i: int) -> tuple[Path, Path]:
         run_dir = out_dir / f"{var}{v:.4g}"
         run_dir.mkdir(parents=True, exist_ok=True)
-        run_dirs.append(run_dir)
         if emit is not None:
             emit(0, f"scan-er: [{i}/{len(vals)}] {run_dir.name} {var}={v:.16g}")
 
-        # Patch input.namelist for this run:
         txt2 = _patch_scalar_in_group(txt=template_txt, group="physicsParameters", key=var, value=float(v))
         w_input = run_dir / "input.namelist"
         w_input.write_text(txt2)
-
-        # Ensure equilibriumFile is runnable from the run dir:
         localize_equilibrium_file_in_place(input_namelist=w_input, overwrite=False)
 
         if scan_recycle_enabled:
@@ -165,8 +176,35 @@ def run_er_scan(
             compute_solution=bool(compute_solution),
             emit=emit,
         )
-        outputs.append(out_path)
-        prev_run_dir = run_dir
+        return run_dir, out_path
+
+    def _run_one_parallel(payload: tuple[float, int]) -> tuple[Path, Path]:
+        # Disable scan recycling across processes.
+        os.environ["SFINCS_JAX_SCAN_RECYCLE"] = "0"
+        os.environ.pop("SFINCS_JAX_STATE_IN", None)
+        os.environ.pop("SFINCS_JAX_STATE_OUT", None)
+        v, i = payload
+        return _run_one(v, i)
+
+    if jobs_val > 1 and len(vals) > 1:
+        scan_recycle_enabled = False
+        if emit is not None:
+            emit(1, "scan-er: scan recycle disabled for parallel execution")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs_val) as pool:
+            payloads = [(v, i) for i, v in enumerate(vals, start=1)]
+            futures = [pool.submit(_run_one_parallel, payload) for payload in payloads]
+            results: list[tuple[Path, Path]] = []
+            for fut in concurrent.futures.as_completed(futures):
+                results.append(fut.result())
+            results.sort(key=lambda item: item[0].name)
+            run_dirs = [r for r, _ in results]
+            outputs = [o for _, o in results]
+    else:
+        for i, v in enumerate(vals, start=1):
+            run_dir, out_path = _run_one(v, i)
+            run_dirs.append(run_dir)
+            outputs.append(out_path)
+            prev_run_dir = run_dir
 
     return ScanResult(
         scan_dir=out_dir,

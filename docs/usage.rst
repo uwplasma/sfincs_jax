@@ -551,6 +551,27 @@ This creates subdirectories like ``Er0.1/``, each containing ``input.namelist`` 
 plus a scan-style ``input.namelist`` in the scan directory with ``!ss`` directives so the upstream
 scan plotting scripts can infer the directory list.
 
+For large scans, you can parallelize scan points:
+
+.. code-block:: bash
+
+   sfincs_jax scan-er \
+     --input /path/to/input.namelist \
+     --out-dir /path/to/scan_dir \
+     --min -0.1 --max 0.1 --n 41 \
+     --jobs 8
+
+For job arrays, slice the scan values with ``--index`` and ``--stride``:
+
+.. code-block:: bash
+
+   sfincs_jax scan-er \
+     --input /path/to/input.namelist \
+     --out-dir /path/to/scan_dir \
+     --min -0.1 --max 0.1 --n 401 \
+     --index ${SLURM_ARRAY_TASK_ID} \
+     --stride 64
+
 Running upstream postprocessing scripts (utils/)
 ------------------------------------------------
 
