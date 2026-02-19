@@ -39,7 +39,7 @@ Key tradeoffs for `sfincs_jax`:
   solves, but it requires multi‑device setups and careful sharding constraints.
 
 Parallelism in SFINCS (Fortran v3)
----------------------------------
+----------------------------------
 
 SFINCS v3 uses **MPI + PETSc**:
 
@@ -231,7 +231,7 @@ Parallel scan mode disables Krylov recycle between points. Use this when you
 care more about throughput than per‑point warm‑start.
 
 Scaling to dozens/hundreds (job arrays)
---------------------------------------
+------------------------------------------------------------
 
 For large ensembles, use job arrays on clusters and slice the work with
 `--case-index`/`--case-stride` (suite) or `--index`/`--stride` (scan).

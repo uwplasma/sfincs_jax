@@ -2162,6 +2162,20 @@ def write_sfincs_jax_output_h5(
             if emit is not None:
                 emit(0, "write_sfincs_jax_output_h5: includePhi1=true -> Newton–Krylov solve with history")
             nk_solve_method = "incremental" if int(op0.total_size) <= 5000 else "batched"
+            include_phi1_in_collisions = bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False))
+            dense_cutoff_env = os.environ.get("SFINCS_JAX_PHI1_NK_DENSE_CUTOFF", "").strip()
+            try:
+                dense_cutoff = int(dense_cutoff_env) if dense_cutoff_env else 5000
+            except ValueError:
+                dense_cutoff = 5000
+            if include_phi1_in_collisions and int(active_total_size) <= int(dense_cutoff):
+                nk_solve_method = "dense"
+                if emit is not None:
+                    emit(
+                        1,
+                        "write_sfincs_jax_output_h5: includePhi1InCollisionOperator -> "
+                        f"using dense Newton step (active_n={active_total_size})",
+                    )
             env_nk_method = os.environ.get("SFINCS_JAX_PHI1_NK_SOLVE_METHOD", "").strip().lower()
             if env_nk_method in {"dense", "incremental", "batched"}:
                 nk_solve_method = env_nk_method

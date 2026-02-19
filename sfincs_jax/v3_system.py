@@ -405,26 +405,38 @@ def apply_v3_full_system_operator(
     rest = x_full[op.f_size :]
     f = f_flat.reshape(op.fblock.f_shape)
     shard_axis = _matvec_shard_axis()
-    if shard_axis == "theta":
+    use_sharding = shard_axis in {"theta", "zeta"} and (jax.device_count() > 1)
+    if use_sharding and shard_axis == "theta":
         f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, "p", None))
-    elif shard_axis == "zeta":
+    elif use_sharding and shard_axis == "zeta":
         f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, None, "p"))
 
-    y_f = apply_v3_fblock_operator(op.fblock, f, phi1_hat_base=op.phi1_hat_base if op.fblock.fp_phi1 is not None else None)
+    phi1 = None
+    lam = None
+    extra = rest
+    if op.include_phi1:
+        phi1_flat = rest[: op.n_theta * op.n_zeta]
+        lam = rest[op.n_theta * op.n_zeta]
+        extra = rest[op.phi1_size :]
+        phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
+        if use_sharding and shard_axis == "theta":
+            phi1 = jax.lax.with_sharding_constraint(phi1, PartitionSpec("p", None))
+        elif use_sharding and shard_axis == "zeta":
+            phi1 = jax.lax.with_sharding_constraint(phi1, PartitionSpec(None, "p"))
+
+    phi1_for_collisions = None
+    if op.fblock.fp_phi1 is not None:
+        if include_jacobian_terms:
+            phi1_for_collisions = op.phi1_hat_base
+        else:
+            phi1_for_collisions = phi1 if phi1 is not None else op.phi1_hat_base
+
+    y_f = apply_v3_fblock_operator(op.fblock, f, phi1_hat_base=phi1_for_collisions)
     factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
     ix0 = _ix_min(op.point_at_x0)
 
     y_phi1 = jnp.zeros((0,), dtype=jnp.float64)
     if op.include_phi1:
-        phi1_flat = rest[: op.n_theta * op.n_zeta]
-        lam = rest[op.n_theta * op.n_zeta]
-        extra = rest[op.phi1_size :]
-
-        phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
-        if shard_axis == "theta":
-            phi1 = jax.lax.with_sharding_constraint(phi1, PartitionSpec("p", None))
-        elif shard_axis == "zeta":
-            phi1 = jax.lax.with_sharding_constraint(phi1, PartitionSpec(None, "p"))
 
         # Quasineutrality equation block (in v3, this is appended after the DKE rows).
         # For the linear subset we currently support, this block includes:
