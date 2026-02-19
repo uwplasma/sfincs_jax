@@ -31,7 +31,7 @@ High-level summary (parity-tested)
      - End-to-end ``sfincsOutput.h5`` parity for 2×2 and 3×3 cases
    * - Full upstream v3 example suite
      - Partial
-     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode is ``36/38 parity_ok`` (monoenergetic geometryScheme=5 cases differ without tolerance overrides). For cases that emit stdout signals, print parity is 38/38.
+     - Reduced-suite practical status is ``38/38 parity_ok``. Strict mode is ``38/38 parity_ok``. For cases that emit stdout signals, print parity is 38/38.
 
 Implemented (parity-tested)
 ---------------------------
@@ -96,8 +96,8 @@ Current scope limits
 --------------------
 
 - Reduced-suite parity (``docs/_generated/reduced_upstream_suite_status*.rst``) reports
-  38/38 parity_ok in practical mode and 36/38 parity_ok in strict mode (strict ignores
-  per-case tolerance overrides for monoenergetic geometryScheme=5 fixtures).
+  38/38 parity_ok in practical mode and 38/38 parity_ok in strict mode (strict ignores
+  per-case tolerance overrides).
 - Reduced-suite reports now include **JAX solver iteration counts** (mean/min/max when multiple
   ``whichRHS`` solves are present). Collection is enabled by default in
   ``scripts/run_reduced_upstream_suite.py`` and can be disabled with

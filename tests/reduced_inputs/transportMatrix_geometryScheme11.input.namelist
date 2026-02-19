@@ -71,7 +71,7 @@
 !ss NxiMaxFactor = 2
 !ss NxiNumRuns = 6
 
-  Nx = 3
+  Nx = 6
 !ss NxMinFactor = 0.8
 !ss NxMaxFactor = 2
 !ss NxNumRuns = 3

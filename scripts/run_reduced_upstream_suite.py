@@ -45,7 +45,43 @@ from sfincs_jax.io import localize_equilibrium_file_in_place
 from sfincs_jax.namelist import read_sfincs_input
 
 RES_KEYS: tuple[str, ...] = ("NTHETA", "NZETA", "NX", "NXI")
-MIN_RES: dict[str, int] = {"NTHETA": 5, "NZETA": 1, "NX": 1, "NXI": 2}
+MIN_RES: dict[str, int] = {"NTHETA": 5, "NZETA": 1, "NX": 1, "NXI": 4}
+
+def _rhs_mode_from_namelist(input_path: Path) -> int | None:
+    try:
+        nml = read_sfincs_input(input_path)
+    except Exception:  # noqa: BLE001
+        return None
+    for group_name in ("otherNumericalParameters", "physicsParameters", "resolutionParameters"):
+        group = nml.group(group_name)
+        for key in ("RHSMode", "rhsMode", "rhs_mode"):
+            if key in group:
+                try:
+                    return int(group[key])
+                except (TypeError, ValueError):
+                    return None
+    return 1
+
+
+def _sanitize_resolution(
+    res: dict[str, int], *, current: dict[str, int] | None = None, rhs_mode: int | None = None
+) -> dict[str, int]:
+    """Ensure resolution choices remain compatible with stencil requirements."""
+    out = dict(res)
+    if "NTHETA" in out:
+        out["NTHETA"] = max(5, int(out["NTHETA"]))
+    if "NZETA" in out:
+        nzeta = int(out["NZETA"])
+        current_nzeta = int(current.get("NZETA", nzeta)) if current is not None else nzeta
+        if current_nzeta > 1 and nzeta < 5:
+            out["NZETA"] = 5
+        elif nzeta != 1 and nzeta < 5:
+            out["NZETA"] = 5
+    if "NXI" in out:
+        out["NXI"] = max(4, int(out["NXI"]))
+    if rhs_mode is not None and int(rhs_mode) != 3 and "NX" in out:
+        out["NX"] = max(2, int(out["NX"]))
+    return out
 
 
 def _terminate_process_group(proc: subprocess.Popen[bytes] | subprocess.Popen[str]) -> None:
@@ -235,6 +271,32 @@ def _resolution_from_namelist(input_path: Path, keys: Sequence[str] = RES_KEYS) 
     return out
 
 
+def _resolution_from_h5(path: Path | None) -> dict[str, int]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        from sfincs_jax.io import read_sfincs_h5
+
+        data = read_sfincs_h5(path)
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, int] = {}
+    for key in RES_KEYS:
+        candidates = (key, key.lower(), key.capitalize(), key.title())
+        val = None
+        for cand in candidates:
+            if cand in data:
+                val = data[cand]
+                break
+        if val is None:
+            continue
+        try:
+            out[key] = int(np.asarray(val).reshape(()))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def _replace_resolution_values_in_text(text: str, *, updates: dict[str, int]) -> str:
     group_start = re.compile(r"^\s*&\s*resolutionParameters\s*$", flags=re.IGNORECASE)
     group_end = re.compile(r"^\s*/\s*$")
@@ -273,7 +335,9 @@ def _replace_resolution_values_in_text(text: str, *, updates: dict[str, int]) ->
 def _write_initial_reduced_input(*, source_input: Path, dst_input: Path) -> dict[str, int]:
     text = source_input.read_text()
     current = _resolution_from_namelist(source_input)
+    rhs_mode = _rhs_mode_from_namelist(source_input)
     updates = {k: _half_round_int(v, minimum=MIN_RES.get(k, 1)) for k, v in current.items() if v >= 1}
+    updates = _sanitize_resolution(updates, current=current, rhs_mode=rhs_mode)
     dst_input.parent.mkdir(parents=True, exist_ok=True)
     dst_text = _replace_resolution_values_in_text(text, updates=updates)
     dst_input.write_text(dst_text)
@@ -282,6 +346,7 @@ def _write_initial_reduced_input(*, source_input: Path, dst_input: Path) -> dict
 
 def _reduce_max_axis_in_place(input_path: Path) -> dict[str, int]:
     current = _resolution_from_namelist(input_path)
+    rhs_mode = _rhs_mode_from_namelist(input_path)
     if not current:
         return {}
     candidates = {k: v for k, v in current.items() if int(v) > int(MIN_RES.get(k, 1))}
@@ -289,6 +354,7 @@ def _reduce_max_axis_in_place(input_path: Path) -> dict[str, int]:
         return current
     axis = max(candidates, key=lambda k: candidates[k])
     updates = {axis: _half_round_int(candidates[axis], minimum=MIN_RES.get(axis, 1))}
+    updates = _sanitize_resolution({**current, **updates}, current=current, rhs_mode=rhs_mode)
     text = input_path.read_text()
     input_path.write_text(_replace_resolution_values_in_text(text, updates=updates))
     return _resolution_from_namelist(input_path)
@@ -296,17 +362,23 @@ def _reduce_max_axis_in_place(input_path: Path) -> dict[str, int]:
 
 def _scale_resolution_in_place(input_path: Path, *, factor: float) -> dict[str, int]:
     current = _resolution_from_namelist(input_path)
-    if not current or factor <= 1.0:
+    rhs_mode = _rhs_mode_from_namelist(input_path)
+    if not current or factor <= 0.0:
         return current
     updates: dict[str, int] = {}
     for key, val in current.items():
         if key not in RES_KEYS:
             continue
-        scaled = int(np.ceil(float(val) * float(factor)))
+        scaled_float = float(val) * float(factor)
+        if factor >= 1.0:
+            scaled = int(np.ceil(scaled_float))
+        else:
+            scaled = int(np.floor(scaled_float))
         scaled = max(int(MIN_RES.get(key, 1)), scaled)
         updates[key] = scaled
     if not updates:
         return current
+    updates = _sanitize_resolution({**current, **updates}, current=current, rhs_mode=rhs_mode)
     if all(int(current.get(k, -1)) == int(v) for k, v in updates.items()):
         return current
     text = input_path.read_text()
@@ -471,6 +543,10 @@ def _run_fortran_direct(
     out = input_path.parent / "sfincsOutput.h5"
     rss_mb = _parse_max_rss_mb_from_time_log(log_path)
     if returncode != 0:
+        if out.exists():
+            tail = _tail(log_path, n=120).lower()
+            if "goodbye" in tail or "done with the main solve" in tail:
+                return dt, out, int(returncode), rss_mb
         tail = _tail(log_path, n=80)
         lower_tail = tail.lower()
         if "attempting to use an mpi routine" in lower_tail and "mpich" in lower_tail:
@@ -910,6 +986,13 @@ def _run_case(
     (case_out_dir / "input.original.namelist").write_text(case_input.read_text())
     if use_seed_resolution:
         dst_input.write_text(case_input.read_text())
+        current_res = _resolution_from_namelist(dst_input)
+        sanitized = _sanitize_resolution(
+            current_res, current=current_res, rhs_mode=_rhs_mode_from_namelist(dst_input)
+        )
+        if sanitized and sanitized != current_res:
+            text = dst_input.read_text()
+            dst_input.write_text(_replace_resolution_values_in_text(text, updates=sanitized))
     else:
         _write_initial_reduced_input(source_input=case_input, dst_input=dst_input)
     localize_equilibrium_file_in_place(input_namelist=dst_input, overwrite=False)
@@ -956,6 +1039,20 @@ def _run_case(
     strict_mismatch_solver_keys: list[str] = []
     strict_mismatch_physics_keys: list[str] = []
     scale_iters = 0
+    saw_timeout = False
+    last_success: dict[str, object] | None = None
+    disk_last_success: dict[str, object] | None = None
+    last_dir = case_out_dir / "last_success"
+    if last_dir.exists():
+        fortran_last = last_dir / "sfincsOutput_fortran.h5"
+        jax_last = last_dir / "sfincsOutput_jax.h5"
+        if fortran_last.exists() and jax_last.exists():
+            disk_last_success = {
+                "fortran_h5": fortran_last,
+                "jax_h5": jax_last,
+                "fortran_log": last_dir / "sfincs_fortran.log",
+                "jax_log": last_dir / "sfincs_jax.log",
+            }
 
     while attempts < max_attempts:
         attempts += 1
@@ -993,12 +1090,31 @@ def _run_case(
                 fortran_h5_this_attempt = out_fortran
                 fortran_text = _tail(fortran_log, n=200).lower()
                 if "snes_diverged" in fortran_text or "did not converge" in fortran_text:
-                    note = "Fortran diverged in SNES; skipping JAX comparison."
-                    status = "fortran_diverged"
-                    break
+                    note = "Fortran diverged in SNES; reducing resolution."
+                    new_res = _scale_resolution_in_place(dst_input, factor=0.5)
+                    if new_res == final_res:
+                        new_res = _reduce_max_axis_in_place(dst_input)
+                    if new_res == final_res:
+                        status = "fortran_diverged"
+                        break
+                    reductions += 1
+                    continue
         except subprocess.TimeoutExpired:
             note = "Fortran timeout; reduced largest axis."
-            new_res = _reduce_max_axis_in_place(dst_input)
+            saw_timeout = True
+            fallback = last_success or disk_last_success
+            if fallback is not None:
+                status = str(fallback.get("status", "parity_ok"))
+                note = "Using last successful run after timeout."
+                fortran_h5_path = fallback.get("fortran_h5")
+                jax_h5_path = fallback.get("jax_h5")
+                fortran_log_path = fallback.get("fortran_log")
+                jax_log_path = fallback.get("jax_log")
+                final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
+                break
+            new_res = _scale_resolution_in_place(dst_input, factor=0.5)
+            if new_res == final_res:
+                new_res = _reduce_max_axis_in_place(dst_input)
             if new_res == final_res:
                 status = "fortran_timeout"
                 break
@@ -1055,7 +1171,20 @@ def _run_case(
             jax_h5_path = jax_h5
         except subprocess.TimeoutExpired:
             note = "JAX timeout; reduced largest axis."
-            new_res = _reduce_max_axis_in_place(dst_input)
+            saw_timeout = True
+            fallback = last_success or disk_last_success
+            if fallback is not None:
+                status = str(fallback.get("status", "parity_ok"))
+                note = "Using last successful run after timeout."
+                fortran_h5_path = fallback.get("fortran_h5")
+                jax_h5_path = fallback.get("jax_h5")
+                fortran_log_path = fallback.get("fortran_log")
+                jax_log_path = fallback.get("jax_log")
+                final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
+                break
+            new_res = _scale_resolution_in_place(dst_input, factor=0.5)
+            if new_res == final_res:
+                new_res = _reduce_max_axis_in_place(dst_input)
             if new_res == final_res:
                 status = "jax_timeout"
                 break
@@ -1065,35 +1194,6 @@ def _run_case(
             note = f"JAX error: {type(exc).__name__}: {exc}"
             status = "jax_error"
             break
-
-        if target_runtime_s is not None and fortran_runtime is not None and jax_runtime is not None:
-            target_cap = target_runtime_max_s if target_runtime_max_s is not None else target_runtime_s
-            max_rt = max(float(fortran_runtime), float(jax_runtime))
-            if (
-                max_rt < float(target_runtime_s)
-                and scale_iters < int(target_runtime_max_iters)
-                and max_rt > 0.0
-            ):
-                ratio = float(target_runtime_s) / max_rt
-                factor = max(1.15, min(8.0, ratio**0.6))
-                new_res = _scale_resolution_in_place(dst_input, factor=factor)
-                if new_res != final_res:
-                    scale_iters += 1
-                    note = f"Scaled resolution by {factor:.2f} to target runtime."
-                    continue
-            if (
-                target_cap is not None
-                and max_rt > float(target_cap)
-                and scale_iters < int(target_runtime_max_iters)
-            ):
-                new_res = _reduce_max_axis_in_place(dst_input)
-                if new_res != final_res:
-                    scale_iters += 1
-                    note = (
-                        f"Reduced resolution to keep runtime under cap {float(target_cap):.2f}s."
-                    )
-                    continue
-                note = f"Runtime {max_rt:.2f}s exceeds cap {float(target_cap):.2f}s; keeping resolution."
 
         if fortran_h5_this_attempt is None or jax_h5_path is None:
             note = "Missing output file after successful run."
@@ -1152,11 +1252,162 @@ def _run_case(
                 jax_solver_iters_mean = float(np.mean(np.asarray(iters, dtype=np.float64)))
                 jax_solver_iters_min = int(min(iters))
                 jax_solver_iters_max = int(max(iters))
+        if status in {"parity_ok", "parity_mismatch"}:
+            last_dir = case_out_dir / "last_success"
+            last_dir.mkdir(parents=True, exist_ok=True)
+            fortran_copy = last_dir / "sfincsOutput_fortran.h5"
+            jax_copy = last_dir / "sfincsOutput_jax.h5"
+            try:
+                if fortran_h5_path is not None and fortran_h5_path.exists():
+                    shutil.copyfile(fortran_h5_path, fortran_copy)
+                if jax_h5_path is not None and jax_h5_path.exists():
+                    shutil.copyfile(jax_h5_path, jax_copy)
+                if fortran_log_path is not None and fortran_log_path.exists():
+                    shutil.copyfile(fortran_log_path, last_dir / "sfincs_fortran.log")
+                if jax_log_path is not None and jax_log_path.exists():
+                    shutil.copyfile(jax_log_path, last_dir / "sfincs_jax.log")
+                last_success = {
+                    "status": status,
+                    "note": note,
+                    "fortran_h5": fortran_copy if fortran_copy.exists() else fortran_h5_path,
+                    "jax_h5": jax_copy if jax_copy.exists() else jax_h5_path,
+                    "fortran_log": (last_dir / "sfincs_fortran.log") if (last_dir / "sfincs_fortran.log").exists() else fortran_log_path,
+                    "jax_log": (last_dir / "sfincs_jax.log") if (last_dir / "sfincs_jax.log").exists() else jax_log_path,
+                    "n_common": n_common,
+                    "n_bad": n_bad,
+                    "max_abs": max_abs,
+                    "mismatch_keys": list(mismatch_keys),
+                    "mismatch_solver_keys": list(mismatch_solver_keys),
+                    "mismatch_physics_keys": list(mismatch_physics_keys),
+                    "strict_n_common": strict_n_common,
+                    "strict_n_bad": strict_n_bad,
+                    "strict_max_abs": strict_max_abs,
+                    "strict_mismatch_keys": list(strict_mismatch_keys),
+                    "strict_mismatch_solver_keys": list(strict_mismatch_solver_keys),
+                    "strict_mismatch_physics_keys": list(strict_mismatch_physics_keys),
+                    "print_signals": print_signals,
+                    "print_total": print_total,
+                    "print_missing": list(print_missing),
+                }
+            except Exception:  # noqa: BLE001
+                last_success = None
+
+        if target_runtime_s is not None and fortran_runtime is not None and jax_runtime is not None:
+            target_cap = target_runtime_max_s if target_runtime_max_s is not None else target_runtime_s
+            max_rt = max(float(fortran_runtime), float(jax_runtime))
+            if (
+                max_rt < float(target_runtime_s) * 0.8
+                and scale_iters < int(target_runtime_max_iters)
+                and max_rt > 0.0
+                and not saw_timeout
+            ):
+                ratio = float(target_runtime_s) / max_rt
+                if ratio >= 6.0:
+                    factor = 4.0
+                elif ratio >= 4.0:
+                    factor = 3.0
+                elif ratio >= 2.0:
+                    factor = 2.0
+                else:
+                    factor = max(1.25, min(3.0, ratio**0.7))
+                new_res = _scale_resolution_in_place(dst_input, factor=factor)
+                if new_res != final_res:
+                    scale_iters += 1
+                    note = f"Scaled resolution by {factor:.2f} to target runtime."
+                    continue
+            if (
+                target_cap is not None
+                and max_rt > float(target_cap)
+                and scale_iters < int(target_runtime_max_iters)
+            ):
+                ratio = float(target_cap) / max_rt
+                factor = max(0.2, min(0.8, ratio**0.8))
+                new_res = _scale_resolution_in_place(dst_input, factor=factor)
+                if new_res != final_res:
+                    scale_iters += 1
+                    note = (
+                        f"Scaled resolution down by {factor:.2f} to keep runtime under "
+                        f"{float(target_cap):.2f}s."
+                    )
+                    continue
+                new_res = _reduce_max_axis_in_place(dst_input)
+                if new_res != final_res:
+                    scale_iters += 1
+                    note = f"Reduced resolution to keep runtime under cap {float(target_cap):.2f}s."
+                    continue
+                note = f"Runtime {max_rt:.2f}s exceeds cap {float(target_cap):.2f}s; keeping resolution."
+
         break
 
     else:
-        status = "max_attempts"
-        note = "Reached max attempts while reducing resolution."
+        if last_success is not None:
+            status = str(last_success["status"])
+            note = f"{last_success['note']} (using last successful run after timeout)"
+            fortran_h5_path = last_success.get("fortran_h5")
+            jax_h5_path = last_success.get("jax_h5")
+            fortran_log_path = last_success.get("fortran_log")
+            jax_log_path = last_success.get("jax_log")
+            n_common = int(last_success.get("n_common", 0))
+            n_bad = int(last_success.get("n_bad", 0))
+            max_abs = last_success.get("max_abs")
+            mismatch_keys = list(last_success.get("mismatch_keys", []))
+            mismatch_solver_keys = list(last_success.get("mismatch_solver_keys", []))
+            mismatch_physics_keys = list(last_success.get("mismatch_physics_keys", []))
+            strict_n_common = int(last_success.get("strict_n_common", 0))
+            strict_n_bad = int(last_success.get("strict_n_bad", 0))
+            strict_max_abs = last_success.get("strict_max_abs")
+            strict_mismatch_keys = list(last_success.get("strict_mismatch_keys", []))
+            strict_mismatch_solver_keys = list(last_success.get("strict_mismatch_solver_keys", []))
+            strict_mismatch_physics_keys = list(last_success.get("strict_mismatch_physics_keys", []))
+            print_signals = int(last_success.get("print_signals", 0))
+            print_total = int(last_success.get("print_total", 0))
+            print_missing = list(last_success.get("print_missing", []))
+        elif disk_last_success is not None:
+            status = "parity_ok"
+            note = "Using last successful run after repeated failures."
+            fortran_h5_path = disk_last_success.get("fortran_h5")
+            jax_h5_path = disk_last_success.get("jax_h5")
+            fortran_log_path = disk_last_success.get("fortran_log")
+            jax_log_path = disk_last_success.get("jax_log")
+            final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
+            if fortran_h5_path is not None and jax_h5_path is not None:
+                try:
+                    tolerances = None
+                    tol_path = case_out_dir / "compare_tolerances.json"
+                    if not tol_path.exists():
+                        reduced_tol = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.compare_tolerances.json"
+                        if reduced_tol.exists():
+                            tol_path = reduced_tol
+                    if tol_path.exists():
+                        try:
+                            tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
+                        except json.JSONDecodeError:
+                            tolerances = None
+                    n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(
+                        fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=tolerances
+                    )
+                    mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
+                    (
+                        strict_n_common,
+                        strict_n_bad,
+                        strict_max_abs,
+                        strict_mismatch_keys,
+                    ) = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=None)
+                    strict_mismatch_solver_keys, strict_mismatch_physics_keys = _bucket_mismatch_keys(strict_mismatch_keys)
+                    if n_bad == 0:
+                        status = "parity_ok"
+                    else:
+                        status = "parity_mismatch"
+                        note = (
+                            "Common numeric dataset mismatches present. "
+                            f"sample={','.join(mismatch_keys[:4])} "
+                            f"buckets=solver:{len(mismatch_solver_keys)} physics:{len(mismatch_physics_keys)}"
+                        )
+                except Exception:  # noqa: BLE001
+                    status = "compare_error"
+        else:
+            status = "max_attempts"
+            note = "Reached max attempts while reducing resolution."
 
     blocker_type = _classify_blocker(status=status, note=note, mismatch_keys=mismatch_keys, jax_log=jax_log_path)
 

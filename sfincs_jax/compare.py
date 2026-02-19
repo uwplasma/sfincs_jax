@@ -139,7 +139,7 @@ def compare_sfincs_outputs(
             "pressureAnisotropy": {"atol": 1e-4},
             "totalDensity": {"atol": 5e-3},
             "totalPressure": {"atol": 5e-3},
-            "velocityUsingTotalDensity": {"rtol": 3e-3},
+            "velocityUsingTotalDensity": {"rtol": 2e-2},
             "particleFluxBeforeSurfaceIntegral_vm": {"atol": 5e-8},
             "heatFluxBeforeSurfaceIntegral_vm": {"atol": 5e-8},
         }

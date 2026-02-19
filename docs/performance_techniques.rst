@@ -601,7 +601,7 @@ rescue transport-matrix solves that stall.
 
 Controls:
 
-- ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX`` (default: ``3000``).
+- ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX`` (default: ``4000``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO`` (default: ``1e2``). Dense fallback
   only triggers when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always
   allow the fallback).

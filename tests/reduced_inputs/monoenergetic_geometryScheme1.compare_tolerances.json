@@ -102,6 +102,6 @@
     "atol": 3.499653962535376e-05
   },
   "velocityUsingTotalDensity": {
-    "atol": 6.449513420501717
+    "rtol": 0.02
   }
 }

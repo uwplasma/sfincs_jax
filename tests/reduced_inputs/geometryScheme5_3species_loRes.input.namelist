@@ -69,17 +69,17 @@
 !ss NthetaMaxFactor = 2
 !ss NthetaNumRuns = 5
 
-  Nzeta = 9
+  Nzeta = 7
 !ss NzetaMinFactor = 0.8
 !ss NzetaMaxFactor = 2
 !ss NzetaNumRuns = 5
 
-  Nxi = 9
+  Nxi = 7
 !ss NxiMinFactor = 0.8
 !ss NxiMaxFactor = 2
 !ss NxiNumRuns = 6
   
-  Nx = 2
+  Nx = 6
 !ss NxMinFactor = 0.8
 !ss NxMaxFactor = 2
 !ss NxNumRuns = 3
