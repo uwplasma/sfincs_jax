@@ -1379,7 +1379,7 @@ def _run_case(
             print_signals = int(last_success.get("print_signals", 0))
             print_total = int(last_success.get("print_total", 0))
             print_missing = list(last_success.get("print_missing", []))
-        elif disk_last_success is not None:
+        elif disk_last_success is not None and target_runtime_s is None:
             status = "parity_ok"
             note = "Using last successful run after repeated failures."
             fortran_h5_path = disk_last_success.get("fortran_h5")
