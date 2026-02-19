@@ -1324,7 +1324,7 @@ def _run_case(
             target_cap = target_runtime_max_s if target_runtime_max_s is not None else target_runtime_s
             max_rt = max(float(fortran_runtime), float(jax_runtime))
             if (
-                max_rt < float(target_runtime_s) * 0.8
+                max_rt < float(target_runtime_s)
                 and scale_iters < int(target_runtime_max_iters)
                 and max_rt > 0.0
                 and not saw_timeout
