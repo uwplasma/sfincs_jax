@@ -370,6 +370,9 @@ def _scale_resolution_in_place(input_path: Path, *, factor: float) -> dict[str, 
     for key, val in current.items():
         if key not in RES_KEYS:
             continue
+        if key == "NZETA" and int(val) <= 1 and float(factor) > 1.0:
+            updates[key] = int(val)
+            continue
         scaled_float = float(val) * float(factor)
         if factor >= 1.0:
             scaled = int(np.ceil(scaled_float))
