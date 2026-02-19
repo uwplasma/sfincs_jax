@@ -1040,7 +1040,6 @@ def _run_case(
     strict_mismatch_solver_keys: list[str] = []
     strict_mismatch_physics_keys: list[str] = []
     scale_iters = 0
-    saw_timeout = False
     last_success: dict[str, object] | None = None
     disk_last_success: dict[str, object] | None = None
     last_dir = case_out_dir / "last_success"
@@ -1057,6 +1056,7 @@ def _run_case(
 
     while attempts < max_attempts:
         attempts += 1
+        saw_timeout = False
         final_res = _resolution_from_namelist(dst_input)
         fortran_dir = case_out_dir / "fortran_run"
         fortran_log = fortran_dir / "sfincs.log"
