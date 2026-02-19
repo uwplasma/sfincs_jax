@@ -14,6 +14,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import tree_util as jtu
+from jax.sharding import Mesh, PartitionSpec
+try:  # JAX>=0.4
+    from jax import pjit as _pjit
+except Exception:  # pragma: no cover
+    from jax.experimental import pjit as _pjit  # type: ignore[no-redef]
 
 from .boozer_bc import read_boozer_bc_header, selected_r_n_from_bc
 from .diagnostics import b0_over_bbar as b0_over_bbar_jax
@@ -399,6 +404,11 @@ def apply_v3_full_system_operator(
     f_flat = x_full[: op.f_size]
     rest = x_full[op.f_size :]
     f = f_flat.reshape(op.fblock.f_shape)
+    shard_axis = _matvec_shard_axis()
+    if shard_axis == "theta":
+        f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, "p", None))
+    elif shard_axis == "zeta":
+        f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, None, "p"))
 
     y_f = apply_v3_fblock_operator(op.fblock, f, phi1_hat_base=op.phi1_hat_base if op.fblock.fp_phi1 is not None else None)
     factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
@@ -411,6 +421,10 @@ def apply_v3_full_system_operator(
         extra = rest[op.phi1_size :]
 
         phi1 = phi1_flat.reshape((op.n_theta, op.n_zeta))
+        if shard_axis == "theta":
+            phi1 = jax.lax.with_sharding_constraint(phi1, PartitionSpec("p", None))
+        elif shard_axis == "zeta":
+            phi1 = jax.lax.with_sharding_constraint(phi1, PartitionSpec(None, "p"))
 
         # Quasineutrality equation block (in v3, this is appended after the DKE rows).
         # For the linear subset we currently support, this block includes:
@@ -810,6 +824,24 @@ def _operator_signature_cached(op: V3FullSystemOperator) -> tuple[object, ...]:
     return sig
 
 
+def _matvec_shard_axis() -> str | None:
+    env = os.environ.get("SFINCS_JAX_MATVEC_SHARD_AXIS", "").strip().lower()
+    if env in {"", "off", "none", "0", "false", "no"}:
+        return None
+    if env in {"theta", "zeta"}:
+        return env
+    return None
+
+
+@lru_cache(maxsize=1)
+def _get_matvec_mesh() -> Mesh | None:
+    devices = jax.local_devices()
+    if len(devices) <= 1:
+        return None
+    mesh_devices = np.array(devices)
+    return Mesh(mesh_devices, ("p",))
+
+
 @lru_cache(maxsize=32)
 def _get_apply_full_system_operator_jit(_signature: tuple[object, ...]):
     def _apply(op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True) -> jnp.ndarray:
@@ -818,9 +850,31 @@ def _get_apply_full_system_operator_jit(_signature: tuple[object, ...]):
     return jax.jit(_apply, static_argnames=("include_jacobian_terms",))
 
 
+@lru_cache(maxsize=32)
+def _get_apply_full_system_operator_pjit(_signature: tuple[object, ...], shard_axis: str):
+    def _apply(op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True) -> jnp.ndarray:
+        return apply_v3_full_system_operator(op, x_full, include_jacobian_terms=include_jacobian_terms)
+
+    if _pjit is None:
+        return jax.jit(_apply, static_argnames=("include_jacobian_terms",))
+    return _pjit.pjit(
+        _apply,
+        in_shardings=(None, PartitionSpec("p")),
+        out_shardings=PartitionSpec("p"),
+        static_argnames=("include_jacobian_terms",),
+    )
+
+
 def apply_v3_full_system_operator_cached(
     op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True
 ) -> jnp.ndarray:
+    shard_axis = _matvec_shard_axis()
+    if shard_axis is not None:
+        mesh = _get_matvec_mesh()
+        if mesh is not None:
+            fn = _get_apply_full_system_operator_pjit(_operator_signature_cached(op), shard_axis)
+            with mesh:
+                return fn(op, x_full, include_jacobian_terms=include_jacobian_terms)
     fn = _get_apply_full_system_operator_jit(_operator_signature_cached(op))
     return fn(op, x_full, include_jacobian_terms=include_jacobian_terms)
 

@@ -106,6 +106,18 @@ Detailed parity inventory and dataset coverage:
 - `docs/outputs.rst`
 - `docs/fortran_examples.rst`
 
+## Parallelism
+
+Multi-core and multi-device usage is documented in:
+
+- `docs/parallelism.rst`
+
+Highlights:
+
+- Parallel `whichRHS` transport solves via `SFINCS_JAX_TRANSPORT_PARALLEL=process`.
+- Parallel suite/scan runs via `python scripts/run_reduced_upstream_suite.py --jobs N`.
+- Experimental sharded matvec via `SFINCS_JAX_MATVEC_SHARD_AXIS=theta|zeta`.
+
 ## Quick start (Python)
 
 ```python

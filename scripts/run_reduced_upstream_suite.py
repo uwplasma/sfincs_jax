@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 from dataclasses import asdict, dataclass
 import json
 import os
@@ -1527,6 +1528,12 @@ def main() -> int:
         help="Number of sfincs_jax repeats per case (>=2 records warm runtime from repeats after the first).",
     )
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of cases to run in parallel (processes).",
+    )
+    parser.add_argument(
         "--no-collect-iterations",
         action="store_true",
         help="Disable solver-iteration stats collection in sfincs_jax logs.",
@@ -1552,35 +1559,9 @@ def main() -> int:
     merged_results: dict[str, CaseResult] = {} if args.reset_report else _load_existing_results(report_json)
     current_run_results: list[CaseResult] = []
 
-    for index, input_path in enumerate(inputs, start=1):
-        case = input_path.parent.name
-        print(f"[{index}/{len(inputs)}] {case}")
-        reduced_seed = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
-        case_input = reduced_seed if reduced_seed.exists() else input_path
-        use_seed_resolution = case_input == reduced_seed
-        if case_input == reduced_seed:
-            print(f"  using reduced seed -> {reduced_seed}")
-        case_out = out_root / case
-        result = _run_case(
-            case_name=case,
-            case_input=case_input,
-            case_out_dir=case_out,
-            fortran_exe=fortran_exe,
-            timeout_s=float(args.timeout_s),
-            rtol=float(args.rtol),
-            atol=float(args.atol),
-            max_attempts=int(args.max_attempts),
-            target_runtime_s=args.target_runtime_s,
-            target_runtime_max_s=args.target_runtime_max_s,
-            target_runtime_max_iters=int(args.target_runtime_max_iters),
-            use_seed_resolution=use_seed_resolution,
-            reuse_fortran=bool(args.reuse_fortran),
-            collect_iterations=not bool(args.no_collect_iterations),
-            jax_repeats=int(args.jax_repeats),
-            jax_cache_dir=(REPO_ROOT / args.jax_cache_dir),
-        )
+    def _handle_result(result: CaseResult) -> None:
         if result.status in {"parity_ok", "parity_mismatch"} and result.n_common_keys > 0:
-            reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
+            reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{result.case}.input.namelist"
             reduced_fixture.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(result.input_path), reduced_fixture)
             result.promoted_input_path = _repo_rel(reduced_fixture)
@@ -1593,6 +1574,74 @@ def main() -> int:
             f"strict={result.strict_n_mismatch_common}/{result.strict_n_common_keys} "
             f"printParity={result.print_parity_signals}/{result.print_parity_total} blocker={result.blocker_type}"
         )
+
+    jobs = max(1, int(args.jobs))
+    if jobs <= 1:
+        for index, input_path in enumerate(inputs, start=1):
+            case = input_path.parent.name
+            print(f"[{index}/{len(inputs)}] {case}")
+            reduced_seed = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
+            case_input = reduced_seed if reduced_seed.exists() else input_path
+            use_seed_resolution = case_input == reduced_seed
+            if case_input == reduced_seed:
+                print(f"  using reduced seed -> {reduced_seed}")
+            case_out = out_root / case
+            result = _run_case(
+                case_name=case,
+                case_input=case_input,
+                case_out_dir=case_out,
+                fortran_exe=fortran_exe,
+                timeout_s=float(args.timeout_s),
+                rtol=float(args.rtol),
+                atol=float(args.atol),
+                max_attempts=int(args.max_attempts),
+                target_runtime_s=args.target_runtime_s,
+                target_runtime_max_s=args.target_runtime_max_s,
+                target_runtime_max_iters=int(args.target_runtime_max_iters),
+                use_seed_resolution=use_seed_resolution,
+                reuse_fortran=bool(args.reuse_fortran),
+                collect_iterations=not bool(args.no_collect_iterations),
+                jax_repeats=int(args.jax_repeats),
+                jax_cache_dir=(REPO_ROOT / args.jax_cache_dir),
+            )
+            _handle_result(result)
+    else:
+        print(f"Running {len(inputs)} cases with --jobs={jobs}")
+        futures = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=jobs) as pool:
+            for index, input_path in enumerate(inputs, start=1):
+                case = input_path.parent.name
+                print(f"[{index}/{len(inputs)}] {case}")
+                reduced_seed = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.input.namelist"
+                case_input = reduced_seed if reduced_seed.exists() else input_path
+                use_seed_resolution = case_input == reduced_seed
+                if case_input == reduced_seed:
+                    print(f"  using reduced seed -> {reduced_seed}")
+                case_out = out_root / case
+                futures.append(
+                    pool.submit(
+                        _run_case,
+                        case_name=case,
+                        case_input=case_input,
+                        case_out_dir=case_out,
+                        fortran_exe=fortran_exe,
+                        timeout_s=float(args.timeout_s),
+                        rtol=float(args.rtol),
+                        atol=float(args.atol),
+                        max_attempts=int(args.max_attempts),
+                        target_runtime_s=args.target_runtime_s,
+                        target_runtime_max_s=args.target_runtime_max_s,
+                        target_runtime_max_iters=int(args.target_runtime_max_iters),
+                        use_seed_resolution=use_seed_resolution,
+                        reuse_fortran=bool(args.reuse_fortran),
+                        collect_iterations=not bool(args.no_collect_iterations),
+                        jax_repeats=int(args.jax_repeats),
+                        jax_cache_dir=(REPO_ROOT / args.jax_cache_dir),
+                    )
+                )
+            for fut in concurrent.futures.as_completed(futures):
+                result = fut.result()
+                _handle_result(result)
 
     ordered = [merged_results[k] for k in sorted(merged_results)]
     report_json.write_text(json.dumps([asdict(r) for r in ordered], indent=2), encoding="utf-8")

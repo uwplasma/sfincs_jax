@@ -9,13 +9,15 @@ _jax_config.update("jax_enable_x64", True)
 
 from collections.abc import Callable, Sequence
 import os
+import concurrent.futures
+from pathlib import Path
 import numpy as np
 
 import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
-from .namelist import Namelist
+from .namelist import Namelist, read_sfincs_input
 from .solver import (
     GMRESSolveResult,
     assemble_dense_matrix_from_matvec,
@@ -32,7 +34,10 @@ from .solver import (
 )
 from .implicit_solve import linear_custom_solve, linear_custom_solve_with_residual
 from .transport_matrix import (
+    _flux_functions_from_op,
     transport_matrix_size_from_rhs_mode,
+    v3_rhsmode1_output_fields_vm_only_jit,
+    v3_transport_diagnostics_vm_only,
     v3_transport_diagnostics_vm_only_precompute,
     v3_transport_diagnostics_vm_only_batch_jit,
     v3_transport_diagnostics_vm_only_batch_remat_jit,
@@ -6484,6 +6489,52 @@ class V3TransportMatrixSolveResult:
     transport_output_fields: dict[str, np.ndarray] | None = None
 
 
+def _transport_parallel_worker(payload: dict[str, object]) -> dict[str, object]:
+    """Worker entry point for parallel whichRHS transport solves."""
+    input_path = Path(str(payload["input_path"]))
+    which_rhs_values = [int(v) for v in payload["which_rhs_values"]]  # type: ignore[assignment]
+    tol = float(payload.get("tol", 1e-10))
+    atol = float(payload.get("atol", 0.0))
+    restart = int(payload.get("restart", 80))
+    maxiter = payload.get("maxiter")
+    solve_method = str(payload.get("solve_method", "auto"))
+    identity_shift = float(payload.get("identity_shift", 0.0))
+    phi1_hat_base = payload.get("phi1_hat_base")
+    if phi1_hat_base is not None:
+        phi1_hat_base = jnp.asarray(phi1_hat_base, dtype=jnp.float64)
+
+    # Prevent recursive parallelism inside workers.
+    os.environ["SFINCS_JAX_TRANSPORT_PARALLEL"] = "off"
+    os.environ["SFINCS_JAX_TRANSPORT_PARALLEL_CHILD"] = "1"
+
+    nml = read_sfincs_input(input_path)
+    result = solve_v3_transport_matrix_linear_gmres(
+        nml=nml,
+        tol=tol,
+        atol=atol,
+        restart=restart,
+        maxiter=maxiter,
+        solve_method=solve_method,
+        identity_shift=identity_shift,
+        phi1_hat_base=phi1_hat_base,
+        input_namelist=input_path,
+        which_rhs_values=which_rhs_values,
+        force_stream_diagnostics=True,
+        force_store_state=False,
+        parallel_workers=1,
+    )
+    transport_fields = result.transport_output_fields or {}
+    return {
+        "which_rhs_values": which_rhs_values,
+        "particle_flux_vm_psi_hat": np.asarray(result.particle_flux_vm_psi_hat),
+        "heat_flux_vm_psi_hat": np.asarray(result.heat_flux_vm_psi_hat),
+        "fsab_flow": np.asarray(result.fsab_flow),
+        "transport_output_fields": {k: np.asarray(v) for k, v in transport_fields.items()},
+        "residual_norms_by_rhs": {int(k): float(np.asarray(v)) for k, v in result.residual_norms_by_rhs.items()},
+        "elapsed_time_s": np.asarray(result.elapsed_time_s, dtype=np.float64),
+    }
+
+
 def _transport_active_dof_indices(op: V3FullSystemOperator) -> np.ndarray:
     """Return full-vector indices for active transport solve DOFs.
 
@@ -6631,6 +6682,11 @@ def solve_v3_transport_matrix_linear_gmres(
     identity_shift: float = 0.0,
     phi1_hat_base: jnp.ndarray | None = None,
     emit: Callable[[int, str], None] | None = None,
+    input_namelist: Path | None = None,
+    which_rhs_values: Sequence[int] | None = None,
+    force_stream_diagnostics: bool | None = None,
+    force_store_state: bool | None = None,
+    parallel_workers: int | None = None,
 ) -> V3TransportMatrixSolveResult:
     """Compute a RHSMode=2/3 transport matrix by running all `whichRHS` solves matrix-free in JAX.
 
@@ -6666,6 +6722,126 @@ def solve_v3_transport_matrix_linear_gmres(
                 x0 = state.get("x_full")
     rhs_mode = int(op0.rhs_mode)
     n = transport_matrix_size_from_rhs_mode(rhs_mode)
+    if which_rhs_values is None:
+        which_rhs_values = list(range(1, n + 1))
+    else:
+        which_rhs_values = [int(v) for v in which_rhs_values]
+        which_rhs_values = [v for v in which_rhs_values if 1 <= v <= n]
+        which_rhs_values = sorted(set(which_rhs_values))
+    subset_mode = len(which_rhs_values) < n
+    parallel_child = os.environ.get("SFINCS_JAX_TRANSPORT_PARALLEL_CHILD", "").strip().lower() in {"1", "true", "yes", "on"}
+    parallel_env = os.environ.get("SFINCS_JAX_TRANSPORT_PARALLEL", "").strip().lower()
+    if parallel_workers is None:
+        workers_env = os.environ.get("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", "").strip()
+        try:
+            workers_val = int(workers_env) if workers_env else 0
+        except ValueError:
+            workers_val = 0
+        if parallel_env in {"", "0", "false", "no", "off"}:
+            parallel_workers = 1
+        elif parallel_env in {"process", "auto", "1", "true", "yes", "on"}:
+            if workers_val > 0:
+                parallel_workers = workers_val
+            else:
+                cpu_count = os.cpu_count() or 1
+                parallel_workers = min(cpu_count, n) if n > 1 else 1
+        else:
+            parallel_workers = 1
+    else:
+        parallel_workers = max(1, int(parallel_workers))
+
+    if (
+        (not parallel_child)
+        and parallel_workers > 1
+        and len(which_rhs_values) > 1
+        and (input_namelist is not None)
+    ):
+        if emit is not None:
+            emit(
+                0,
+                "solve_v3_transport_matrix_linear_gmres: parallel whichRHS "
+                f"(workers={int(parallel_workers)} rhs_count={len(which_rhs_values)}/{n})",
+            )
+
+        def _partition(values: list[int], workers: int) -> list[list[int]]:
+            chunks: list[list[int]] = [[] for _ in range(workers)]
+            for i, val in enumerate(values):
+                chunks[i % workers].append(val)
+            return [c for c in chunks if c]
+
+        chunks = _partition(list(which_rhs_values), int(parallel_workers))
+        payloads: list[dict[str, object]] = []
+        phi1_payload = np.asarray(phi1_hat_base) if phi1_hat_base is not None else None
+        for chunk in chunks:
+            payloads.append(
+                {
+                    "input_path": str(input_namelist),
+                    "which_rhs_values": chunk,
+                    "tol": tol,
+                    "atol": atol,
+                    "restart": restart,
+                    "maxiter": maxiter,
+                    "solve_method": solve_method,
+                    "identity_shift": identity_shift,
+                    "phi1_hat_base": phi1_payload,
+                }
+            )
+
+        results: list[dict[str, object]] = []
+        with concurrent.futures.ProcessPoolExecutor(max_workers=int(parallel_workers)) as pool:
+            futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
+            for fut in concurrent.futures.as_completed(futures):
+                results.append(fut.result())
+
+        s = int(op0.n_species)
+        diag_pf = np.zeros((s, n), dtype=np.float64)
+        diag_hf = np.zeros((s, n), dtype=np.float64)
+        diag_flow = np.zeros((s, n), dtype=np.float64)
+        transport_output_fields: dict[str, np.ndarray] = {}
+        residual_norms: dict[int, jnp.ndarray] = {}
+        elapsed_s = np.zeros((n,), dtype=np.float64)
+        for res in results:
+            rhs_vals = [int(v) for v in res.get("which_rhs_values", [])]
+            idxs = [v - 1 for v in rhs_vals]
+            pf = np.asarray(res["particle_flux_vm_psi_hat"], dtype=np.float64)
+            hf = np.asarray(res["heat_flux_vm_psi_hat"], dtype=np.float64)
+            fl = np.asarray(res["fsab_flow"], dtype=np.float64)
+            diag_pf[:, idxs] = pf[:, idxs]
+            diag_hf[:, idxs] = hf[:, idxs]
+            diag_flow[:, idxs] = fl[:, idxs]
+            elapsed_chunk = np.asarray(res.get("elapsed_time_s", np.zeros((n,))), dtype=np.float64)
+            elapsed_s[idxs] = elapsed_chunk[idxs]
+            residual_norms.update({int(k): jnp.asarray(v, dtype=jnp.float64) for k, v in res.get("residual_norms_by_rhs", {}).items()})
+
+            fields = res.get("transport_output_fields", {})
+            if isinstance(fields, dict):
+                for key, arr in fields.items():
+                    arr_np = np.asarray(arr)
+                    if key not in transport_output_fields:
+                        transport_output_fields[key] = np.zeros_like(arr_np)
+                    if arr_np.ndim > 0 and arr_np.shape[-1] == n:
+                        transport_output_fields[key][..., idxs] = arr_np[..., idxs]
+                    else:
+                        transport_output_fields[key] = arr_np
+
+        tm = v3_transport_matrix_from_flux_arrays(
+            op=op0,
+            geom=geometry_from_namelist(nml=nml, grids=grids_from_namelist(nml)),
+            particle_flux_vm_psi_hat=jnp.asarray(diag_pf, dtype=jnp.float64),
+            heat_flux_vm_psi_hat=jnp.asarray(diag_hf, dtype=jnp.float64),
+            fsab_flow=jnp.asarray(diag_flow, dtype=jnp.float64),
+        )
+        return V3TransportMatrixSolveResult(
+            op0=op0,
+            transport_matrix=tm,
+            state_vectors_by_rhs={},
+            residual_norms_by_rhs=residual_norms,
+            fsab_flow=jnp.asarray(diag_flow, dtype=jnp.float64),
+            particle_flux_vm_psi_hat=jnp.asarray(diag_pf, dtype=jnp.float64),
+            heat_flux_vm_psi_hat=jnp.asarray(diag_hf, dtype=jnp.float64),
+            elapsed_time_s=jnp.asarray(elapsed_s, dtype=jnp.float64),
+            transport_output_fields=transport_output_fields,
+        )
     if emit is not None:
         emit(1, f"solve_v3_transport_matrix_linear_gmres: rhs_mode={rhs_mode} whichRHS_count={n} total_size={int(op0.total_size)}")
 
@@ -6696,6 +6872,14 @@ def solve_v3_transport_matrix_linear_gmres(
         store_state_vectors = True
         if emit is not None:
             emit(1, "solve_v3_transport_matrix_linear_gmres: forcing state storage (streaming disabled)")
+    if force_stream_diagnostics is not None:
+        stream_diagnostics = bool(force_stream_diagnostics)
+    if force_store_state is not None:
+        store_state_vectors = bool(force_store_state)
+    if subset_mode and not stream_diagnostics:
+        stream_diagnostics = True
+        if emit is not None:
+            emit(1, "solve_v3_transport_matrix_linear_gmres: streaming diagnostics forced for subset whichRHS")
 
     solve_method_use = solve_method
     force_krylov_env = os.environ.get("SFINCS_JAX_TRANSPORT_FORCE_KRYLOV", "").strip().lower()
@@ -7328,8 +7512,7 @@ def solve_v3_transport_matrix_linear_gmres(
 
     state_vectors: dict[int, jnp.ndarray] = {}
     residual_norms: dict[int, jnp.ndarray] = {}
-    elapsed_s: list[jnp.ndarray] = []
-    which_rhs_values = list(range(1, n + 1))
+    elapsed_s = np.zeros((n,), dtype=np.float64)
     op_rhs_by_index = [with_transport_rhs_settings(op0, which_rhs=which_rhs) for which_rhs in which_rhs_values]
     rhs_by_index = [rhs_v3_full_system_jit(op_rhs) for op_rhs in op_rhs_by_index]
 
@@ -7454,6 +7637,101 @@ def solve_v3_transport_matrix_linear_gmres(
         sqrt_m = jnp.sqrt(m_hat)
         b0, _g, _i = _flux_functions_from_op(op0)
         fsab2 = jnp.asarray(op0.fsab_hat2, dtype=jnp.float64)
+
+        w2d_np = np.asarray(w2d, dtype=np.float64)
+        b0_val = float(np.asarray(b0, dtype=np.float64))
+        fsab2_val = float(np.asarray(fsab2, dtype=np.float64))
+        n_hat_np = np.asarray(op0.n_hat, dtype=np.float64)
+
+        def _collect_transport_outputs(which_rhs: int, x_full: jnp.ndarray) -> None:
+            """Populate streaming diagnostics for a single whichRHS solve."""
+            j = int(which_rhs) - 1
+            op_rhs = with_transport_rhs_settings(op0, which_rhs=int(which_rhs))
+            d = v3_rhsmode1_output_fields_vm_only_jit(op_rhs, x_full=x_full)
+            diag = v3_transport_diagnostics_vm_only(op_rhs, x_full=x_full)
+
+            dens[:, :, :, j] = np.asarray(jnp.transpose(d["densityPerturbation"], (2, 1, 0)), dtype=np.float64)
+            pres[:, :, :, j] = np.asarray(jnp.transpose(d["pressurePerturbation"], (2, 1, 0)), dtype=np.float64)
+            pres_aniso[:, :, :, j] = np.asarray(jnp.transpose(d["pressureAnisotropy"], (2, 1, 0)), dtype=np.float64)
+            flow[:, :, :, j] = np.asarray(jnp.transpose(d["flow"], (2, 1, 0)), dtype=np.float64)
+            total_dens[:, :, :, j] = np.asarray(jnp.transpose(d["totalDensity"], (2, 1, 0)), dtype=np.float64)
+            total_pres[:, :, :, j] = np.asarray(jnp.transpose(d["totalPressure"], (2, 1, 0)), dtype=np.float64)
+            vel_fsadens[:, :, :, j] = np.asarray(jnp.transpose(d["velocityUsingFSADensity"], (2, 1, 0)), dtype=np.float64)
+            vel_total[:, :, :, j] = np.asarray(jnp.transpose(d["velocityUsingTotalDensity"], (2, 1, 0)), dtype=np.float64)
+            mach[:, :, :, j] = np.asarray(jnp.transpose(d["MachUsingFSAThermalSpeed"], (2, 1, 0)), dtype=np.float64)
+            j_hat[:, :, j] = np.asarray(jnp.transpose(d["jHat"], (1, 0)), dtype=np.float64)
+            fsa_dens[:, j] = np.asarray(d["FSADensityPerturbation"], dtype=np.float64)
+            fsa_pres[:, j] = np.asarray(d["FSAPressurePerturbation"], dtype=np.float64)
+
+            mf_before_vm[:, :, :, j] = np.asarray(
+                jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm"], (2, 1, 0)), dtype=np.float64
+            )
+            mf_before_vm0[:, :, :, j] = np.asarray(
+                jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vm0"], (2, 1, 0)), dtype=np.float64
+            )
+            mf_before_vE[:, :, :, j] = np.asarray(
+                jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE"], (2, 1, 0)), dtype=np.float64
+            )
+            mf_before_vE0[:, :, :, j] = np.asarray(
+                jnp.transpose(d["momentumFluxBeforeSurfaceIntegral_vE0"], (2, 1, 0)), dtype=np.float64
+            )
+            mf_vm_psi_hat[:, j] = np.asarray(d["momentumFlux_vm_psiHat"], dtype=np.float64)
+            mf_vm0_psi_hat[:, j] = np.asarray(d["momentumFlux_vm0_psiHat"], dtype=np.float64)
+
+            pf_before_vm[:, :, :, j] = np.asarray(
+                jnp.transpose(diag.particle_flux_before_surface_integral_vm, (2, 1, 0)), dtype=np.float64
+            )
+            hf_before_vm[:, :, :, j] = np.asarray(
+                jnp.transpose(diag.heat_flux_before_surface_integral_vm, (2, 1, 0)), dtype=np.float64
+            )
+            pf_before_vm0[:, :, :, j] = np.asarray(
+                jnp.transpose(diag.particle_flux_before_surface_integral_vm0, (2, 1, 0)), dtype=np.float64
+            )
+            hf_before_vm0[:, :, :, j] = np.asarray(
+                jnp.transpose(diag.heat_flux_before_surface_integral_vm0, (2, 1, 0)), dtype=np.float64
+            )
+            pf_vs_x[:, :, j] = np.asarray(diag.particle_flux_vm_psi_hat_vs_x, dtype=np.float64)
+            hf_vs_x[:, :, j] = np.asarray(diag.heat_flux_vm_psi_hat_vs_x, dtype=np.float64)
+            fsab_flow_vs_x[:, :, j] = np.asarray(diag.fsab_flow_vs_x, dtype=np.float64)
+
+            pf_vm_psi_hat[:, j] = np.asarray(diag.particle_flux_vm_psi_hat, dtype=np.float64)
+            hf_vm_psi_hat[:, j] = np.asarray(diag.heat_flux_vm_psi_hat, dtype=np.float64)
+            fsab_flow[:, j] = np.asarray(diag.fsab_flow, dtype=np.float64)
+            diag_pf_arr[:, j] = pf_vm_psi_hat[:, j]
+            diag_hf_arr[:, j] = hf_vm_psi_hat[:, j]
+            diag_flow_arr[:, j] = fsab_flow[:, j]
+
+            pf_vm0_psi_hat[:, j] = np.einsum(
+                "tz,stz->s",
+                w2d_np,
+                np.asarray(diag.particle_flux_before_surface_integral_vm0, dtype=np.float64),
+            )
+            hf_vm0_psi_hat[:, j] = np.einsum(
+                "tz,stz->s",
+                w2d_np,
+                np.asarray(diag.heat_flux_before_surface_integral_vm0, dtype=np.float64),
+            )
+
+            if compute_ntv and int(op0.n_xi) > 2:
+                f_delta = np.asarray(x_full[: op0.f_size], dtype=np.float64).reshape(op0.fblock.f_shape)
+                sum_ntv = np.einsum("x,sxtz->stz", np.asarray(w_ntv, dtype=np.float64), f_delta[:, :, 2, :, :])
+                ntv_before_stz = (
+                    (4.0 * np.pi * (np.asarray(t_hat) ** 2) * np.asarray(sqrt_t) / (np.asarray(m_hat) * np.asarray(sqrt_m) * float(np.asarray(vprime_hat))))
+                )[:, None, None] * np.asarray(ntv_kernel, dtype=np.float64)[None, :, :] * sum_ntv
+                ntv_s = np.einsum("tz,stz->s", w2d_np, ntv_before_stz)
+            else:
+                ntv_before_stz = np.zeros((int(op0.n_species), int(op0.n_theta), int(op0.n_zeta)), dtype=np.float64)
+                ntv_s = np.zeros((int(op0.n_species),), dtype=np.float64)
+            ntv[:, j] = ntv_s
+            ntv_before[:, :, :, j] = np.asarray(np.transpose(ntv_before_stz, (2, 1, 0)), dtype=np.float64)
+
+            if sources is not None:
+                extra = np.asarray(x_full[op0.f_size + op0.phi1_size :], dtype=np.float64)
+                if int(op0.constraint_scheme) == 2:
+                    src = extra.reshape((int(op0.n_species), int(op0.n_x))).T
+                else:
+                    src = extra.reshape((int(op0.n_species), 2)).T
+                sources[:, :, j] = src
 
 
     matvec_full_cache: dict[tuple[object, ...], Callable[[jnp.ndarray], jnp.ndarray]] = {}
@@ -7718,7 +7996,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         if stream_diagnostics:
                             _collect_transport_outputs(int(which_rhs), x_col)
                         residual_norms[which_rhs] = res_norms[idx]
-                        elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
+                        elapsed_s[int(which_rhs) - 1] = float(t_dense.elapsed_s() / float(n))
                         if emit is not None:
                             emit(
                                 0,
@@ -7761,7 +8039,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         if stream_diagnostics:
                             _collect_transport_outputs(int(which_rhs), x_col)
                         residual_norms[which_rhs] = res_norms[idx]
-                        elapsed_s.append(jnp.asarray(t_dense.elapsed_s() / float(n), dtype=jnp.float64))
+                        elapsed_s[int(which_rhs) - 1] = float(t_dense.elapsed_s() / float(n))
                         if emit is not None:
                             emit(
                                 0,
@@ -8236,7 +8514,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     f"whichRHS={which_rhs}: residual_norm={float(residual_norms[which_rhs]):.6e} "
                     f"elapsed_s={t_rhs.elapsed_s():.3f}",
                 )
-            elapsed_s.append(jnp.asarray(t_rhs.elapsed_s(), dtype=jnp.float64))
+            elapsed_s[int(which_rhs) - 1] = float(t_rhs.elapsed_s())
 
     if emit is not None:
         emit(0, "solve_v3_transport_matrix_linear_gmres: computing whichRHS diagnostics (batched)")
@@ -8408,6 +8686,6 @@ def solve_v3_transport_matrix_linear_gmres(
         fsab_flow=diag_flow_jnp,
         particle_flux_vm_psi_hat=diag_pf_jnp,
         heat_flux_vm_psi_hat=diag_hf_jnp,
-        elapsed_time_s=jnp.stack(elapsed_s, axis=0),
+        elapsed_time_s=jnp.asarray(elapsed_s, dtype=jnp.float64),
         transport_output_fields=transport_output_fields,
     )

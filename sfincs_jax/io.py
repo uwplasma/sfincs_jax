@@ -3044,7 +3044,12 @@ def write_sfincs_jax_output_h5(
                     env_restore[key] = os.environ.get(key)
                     os.environ[key] = value
             try:
-                result = solve_v3_transport_matrix_linear_gmres(nml=nml, tol=float(solver_tol), emit=emit)
+                result = solve_v3_transport_matrix_linear_gmres(
+                    nml=nml,
+                    tol=float(solver_tol),
+                    emit=emit,
+                    input_namelist=input_namelist,
+                )
             finally:
                 if stream_transport_h5:
                     for key, old_val in env_restore.items():

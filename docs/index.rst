@@ -25,6 +25,7 @@ output compatibility, matrix-free performance, and differentiability.
    physics_reference
    paper_figures
    system_equations
+   parallelism
    performance_techniques
    usage
    inputs

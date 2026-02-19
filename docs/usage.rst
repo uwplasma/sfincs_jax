@@ -278,8 +278,17 @@ performance without changing the input file:
   when the system size is below the specified threshold (default: ``1600`` for RHSMode=2,
   ``600`` for RHSMode=3).
 
+- ``SFINCS_JAX_TRANSPORT_PARALLEL``: parallelize RHSMode=2/3 ``whichRHS`` solves
+  across processes (``off``/``process``/``auto``).
+
+- ``SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS``: number of worker processes for parallel
+  transport solves.
+
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE``: reuse saved Krylov recycle vectors across runs
   when ``SFINCS_JAX_STATE_IN`` is set (default: enabled; set to ``0`` to disable).
+
+- ``SFINCS_JAX_MATVEC_SHARD_AXIS``: enable experimental sharded matvecs (``theta`` or ``zeta``)
+  when multiple devices are available.
 
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE``: side for applying the preconditioner in GMRES.
 
