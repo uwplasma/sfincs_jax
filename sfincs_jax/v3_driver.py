@@ -278,6 +278,72 @@ def _build_sparse_ilu_from_matvec(
     return a_csr_full, a_csr_drop, ilu, a_dense, l_dense, u_dense, l_unit_diag
 
 
+def _build_sparse_jax_preconditioner_from_matvec(
+    *,
+    matvec: Callable[[jnp.ndarray], jnp.ndarray],
+    n: int,
+    dtype: jnp.dtype,
+    cache_key: tuple[object, ...],
+    drop_tol: float,
+    drop_rel: float,
+    reg: float,
+    omega: float,
+    sweeps: int,
+    emit: Callable[[int, str], None] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    cached = _RHSMODE1_SPARSE_JAX_CACHE.get(cache_key)
+    if cached is not None:
+        a_sp = cached.a_sp
+        d_inv = cached.d_inv
+        omega = cached.omega
+        sweeps = cached.sweeps
+    else:
+        if emit is not None:
+            emit(1, f"sparse_jax: assembling dense operator (n={n})")
+        a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
+        a_dense = jnp.asarray(a_dense, dtype=dtype)
+        max_abs = jnp.max(jnp.abs(a_dense)) if int(n) > 0 else jnp.asarray(0.0, dtype=dtype)
+        thresh = jnp.maximum(jnp.asarray(drop_tol, dtype=dtype), jnp.asarray(drop_rel, dtype=dtype) * max_abs)
+        if drop_tol > 0.0 or drop_rel > 0.0:
+            a_drop = jnp.where(jnp.abs(a_dense) >= thresh, a_dense, jnp.zeros_like(a_dense))
+        else:
+            a_drop = a_dense
+        diag_idx = jnp.arange(int(n), dtype=jnp.int32)
+        diag = a_dense[diag_idx, diag_idx]
+        diag_safe = diag + jnp.asarray(reg, dtype=dtype)
+        a_drop = a_drop.at[diag_idx, diag_idx].set(diag_safe)
+        d_inv = jnp.where(diag_safe != 0, 1.0 / diag_safe, jnp.asarray(0.0, dtype=dtype))
+        try:
+            from jax.experimental import sparse as jsparse  # noqa: PLC0415
+
+            a_sp = jsparse.BCOO.fromdense(a_drop)
+        except Exception as exc:  # noqa: BLE001
+            if emit is not None:
+                emit(1, f"sparse_jax: failed to build BCOO ({type(exc).__name__}: {exc})")
+            a_sp = None
+        if a_sp is None:
+            raise RuntimeError("sparse_jax: failed to build sparse operator")
+        _RHSMODE1_SPARSE_JAX_CACHE[cache_key] = _SparseJaxPrecondCache(
+            a_sp=a_sp,
+            d_inv=jnp.asarray(d_inv, dtype=dtype),
+            omega=float(omega),
+            sweeps=int(sweeps),
+        )
+
+    def _apply(v: jnp.ndarray) -> jnp.ndarray:
+        v = jnp.asarray(v, dtype=d_inv.dtype)
+        x0 = jnp.zeros_like(v)
+
+        def _body(i, x):
+            r = v - a_sp @ x
+            return x + omega * d_inv * r
+
+        x = jax.lax.fori_loop(0, int(sweeps), _body, x0)
+        return jnp.asarray(x, dtype=jnp.float64)
+
+    return _apply
+
+
 @dataclass(frozen=True)
 class _TransportPrecondCache:
     inv_diag_f: jnp.ndarray
@@ -303,6 +369,14 @@ class _TransportXmgPrecondCache:
     coarse_idx: jnp.ndarray
 
 
+@dataclass(frozen=True)
+class _SparseJaxPrecondCache:
+    a_sp: object
+    d_inv: jnp.ndarray
+    omega: float
+    sweeps: int
+
+
 _TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_DIAG_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
@@ -314,6 +388,7 @@ _RHSMODE1_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecon
 _TRANSPORT_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _RHSMODE23_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
+_RHSMODE1_SPARSE_JAX_CACHE: dict[tuple[object, ...], _SparseJaxPrecondCache] = {}
 
 
 def _precond_chunk_cols(total_size: int, n_cols: int) -> int:
@@ -3475,12 +3550,21 @@ def solve_v3_full_system_linear_gmres(
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
 
     sparse_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_PRECOND", "").strip().lower()
-    if sparse_precond_env in {"1", "true", "yes", "on"}:
+    if sparse_precond_env in {"jax", "jax_native", "native"}:
         sparse_precond_mode = "on"
+        sparse_precond_kind = "jax"
+    elif sparse_precond_env in {"scipy", "ilu", "spilu"}:
+        sparse_precond_mode = "on"
+        sparse_precond_kind = "scipy"
+    elif sparse_precond_env in {"1", "true", "yes", "on"}:
+        sparse_precond_mode = "on"
+        sparse_precond_kind = "auto"
     elif sparse_precond_env in {"0", "false", "no", "off"}:
         sparse_precond_mode = "off"
+        sparse_precond_kind = "auto"
     else:
         sparse_precond_mode = "auto"
+        sparse_precond_kind = "auto"
     sparse_allow_nondiff_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF", "").strip().lower()
     sparse_allow_nondiff = sparse_allow_nondiff_env in {"1", "true", "yes", "on"}
     sparse_matvec_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_MATVEC", "").strip().lower()
@@ -3532,6 +3616,27 @@ def solve_v3_full_system_linear_gmres(
         sparse_dense_cache_max = int(sparse_dense_cache_env) if sparse_dense_cache_env else 3000
     except ValueError:
         sparse_dense_cache_max = 3000
+    sparse_jax_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_JAX_MAX_MB", "").strip()
+    try:
+        sparse_jax_max_mb = float(sparse_jax_max_env) if sparse_jax_max_env else 128.0
+    except ValueError:
+        sparse_jax_max_mb = 128.0
+    sparse_jax_sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_JAX_SWEEPS", "").strip()
+    try:
+        sparse_jax_sweeps = int(sparse_jax_sweeps_env) if sparse_jax_sweeps_env else 2
+    except ValueError:
+        sparse_jax_sweeps = 2
+    sparse_jax_sweeps = max(1, sparse_jax_sweeps)
+    sparse_jax_omega_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_JAX_OMEGA", "").strip()
+    try:
+        sparse_jax_omega = float(sparse_jax_omega_env) if sparse_jax_omega_env else 0.8
+    except ValueError:
+        sparse_jax_omega = 0.8
+    sparse_jax_reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_JAX_REG", "").strip()
+    try:
+        sparse_jax_reg = float(sparse_jax_reg_env) if sparse_jax_reg_env else 1e-10
+    except ValueError:
+        sparse_jax_reg = 1e-10
 
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
@@ -4688,6 +4793,7 @@ def solve_v3_full_system_linear_gmres(
                             f"(ratio={res_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
                         )
 
+        sparse_kind_use = sparse_precond_kind
         sparse_enabled = False
         if sparse_precond_mode == "on":
             sparse_enabled = True
@@ -4698,130 +4804,207 @@ def solve_v3_full_system_linear_gmres(
         if sparse_enabled:
             if dense_shortcut:
                 sparse_enabled = False
-            if use_implicit and (not sparse_allow_nondiff) and int(active_size) > int(sparse_ilu_dense_max):
+            sparse_kind_use = sparse_precond_kind
+            if sparse_kind_use == "auto":
+                if use_implicit or (not sparse_allow_nondiff):
+                    sparse_kind_use = "jax"
+                else:
+                    sparse_kind_use = "scipy"
+            if sparse_kind_use == "scipy" and use_implicit and (not sparse_allow_nondiff):
                 sparse_enabled = False
                 if emit is not None:
                     emit(
                         1,
                         "sparse_ilu: disabled for implicit solves "
-                        f"(size={int(active_size)} > dense_max={int(sparse_ilu_dense_max)}; "
-                        "set SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF=1 to override)",
+                        "(set SFINCS_JAX_RHSMODE1_SPARSE_PRECOND=jax to enable a differentiable sparse preconditioner)",
                     )
             elif int(active_size) > sparse_max_size:
                 sparse_enabled = False
                 if emit is not None:
                     emit(1, f"sparse_ilu: disabled (size={int(active_size)} > max={int(sparse_max_size)})")
+            elif sparse_kind_use == "jax":
+                precond_dtype = _precond_dtype(int(active_size))
+                bytes_per = 4.0 if precond_dtype == jnp.float32 else 8.0
+                est_mb = (int(active_size) ** 2) * bytes_per / 1.0e6
+                if sparse_jax_max_mb > 0.0 and est_mb > sparse_jax_max_mb:
+                    sparse_enabled = False
+                    if emit is not None:
+                        emit(
+                            1,
+                            "sparse_jax: disabled "
+                            f"(est_mem={est_mb:.1f} MB > max_mb={sparse_jax_max_mb:.1f})",
+                        )
 
         dense_matrix_cache: np.ndarray | None = None
         if sparse_enabled and float(res_reduced.residual_norm) > target_reduced:
-            try:
-                _mark("rhs1_sparse_precond_build_start")
-                cache_key = _rhsmode1_sparse_cache_key(
-                    op,
-                    kind="sparse_ilu",
-                    active_size=int(active_size),
-                    use_active_dof_mode=True,
-                    use_pas_projection=use_pas_projection,
-                    drop_tol=sparse_drop_tol,
-                    drop_rel=sparse_drop_rel,
-                    ilu_drop_tol=sparse_ilu_drop_tol,
-                    fill_factor=sparse_ilu_fill,
-                )
-                build_dense_factors = bool(use_implicit) and int(active_size) <= int(sparse_ilu_dense_max)
-                store_dense = int(active_size) <= int(sparse_dense_cache_max)
-                a_csr_full, _a_csr_drop, ilu, a_dense_cache, l_dense, u_dense, l_unit_diag = _build_sparse_ilu_from_matvec(
-                    matvec=mv_reduced,
-                    n=int(active_size),
-                    dtype=rhs_reduced.dtype,
-                    cache_key=cache_key,
-                    drop_tol=sparse_drop_tol,
-                    drop_rel=sparse_drop_rel,
-                    ilu_drop_tol=sparse_ilu_drop_tol,
-                    fill_factor=sparse_ilu_fill,
-                    build_dense_factors=build_dense_factors,
-                    build_ilu=True,
-                    store_dense=store_dense,
-                    emit=emit,
-                )
-                dense_matrix_cache = a_dense_cache
-                _mark("rhs1_sparse_precond_build_done")
+            if sparse_kind_use == "jax":
+                try:
+                    _mark("rhs1_sparse_precond_build_start")
+                    cache_key = _rhsmode1_sparse_cache_key(
+                        op,
+                        kind="sparse_jax",
+                        active_size=int(active_size),
+                        use_active_dof_mode=True,
+                        use_pas_projection=use_pas_projection,
+                        drop_tol=sparse_drop_tol,
+                        drop_rel=sparse_drop_rel,
+                        ilu_drop_tol=sparse_ilu_drop_tol,
+                        fill_factor=sparse_ilu_fill,
+                    )
+                    precond_dtype = _precond_dtype(int(active_size))
+                    precond_sparse = _build_sparse_jax_preconditioner_from_matvec(
+                        matvec=mv_reduced,
+                        n=int(active_size),
+                        dtype=precond_dtype,
+                        cache_key=cache_key,
+                        drop_tol=sparse_drop_tol,
+                        drop_rel=sparse_drop_rel,
+                        reg=sparse_jax_reg,
+                        omega=sparse_jax_omega,
+                        sweeps=sparse_jax_sweeps,
+                        emit=emit,
+                    )
+                    _mark("rhs1_sparse_precond_build_done")
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: sparse JAX Jacobi fallback "
+                            f"(sweeps={int(sparse_jax_sweeps)} omega={float(sparse_jax_omega):.2f})",
+                        )
+                    res_sparse = _solve_linear(
+                        matvec_fn=mv_reduced,
+                        b_vec=rhs_reduced,
+                        precond_fn=precond_sparse,
+                        x0_vec=res_reduced.x,
+                        tol_val=tol,
+                        atol_val=atol,
+                        restart_val=restart,
+                        maxiter_val=maxiter,
+                        solve_method_val="incremental",
+                        precond_side=gmres_precond_side,
+                    )
+                    if res_sparse is not None and float(res_sparse.residual_norm) < float(res_reduced.residual_norm):
+                        res_reduced = res_sparse
+                        ksp_matvec = mv_reduced
+                        ksp_b = rhs_reduced
+                        ksp_precond = precond_sparse
+                        ksp_x0 = res_reduced.x
+                        ksp_restart = restart
+                        ksp_maxiter = maxiter
+                        ksp_precond_side = gmres_precond_side
+                        ksp_solver_kind = _solver_kind("incremental")[0]
+                except Exception as exc:  # noqa: BLE001
+                    if emit is not None:
+                        emit(1, f"sparse_jax: failed ({type(exc).__name__}: {exc})")
+            else:
+                try:
+                    _mark("rhs1_sparse_precond_build_start")
+                    cache_key = _rhsmode1_sparse_cache_key(
+                        op,
+                        kind="sparse_ilu",
+                        active_size=int(active_size),
+                        use_active_dof_mode=True,
+                        use_pas_projection=use_pas_projection,
+                        drop_tol=sparse_drop_tol,
+                        drop_rel=sparse_drop_rel,
+                        ilu_drop_tol=sparse_ilu_drop_tol,
+                        fill_factor=sparse_ilu_fill,
+                    )
+                    build_dense_factors = bool(use_implicit) and int(active_size) <= int(sparse_ilu_dense_max)
+                    store_dense = int(active_size) <= int(sparse_dense_cache_max)
+                    a_csr_full, _a_csr_drop, ilu, a_dense_cache, l_dense, u_dense, l_unit_diag = _build_sparse_ilu_from_matvec(
+                        matvec=mv_reduced,
+                        n=int(active_size),
+                        dtype=rhs_reduced.dtype,
+                        cache_key=cache_key,
+                        drop_tol=sparse_drop_tol,
+                        drop_rel=sparse_drop_rel,
+                        ilu_drop_tol=sparse_ilu_drop_tol,
+                        fill_factor=sparse_ilu_fill,
+                        build_dense_factors=build_dense_factors,
+                        build_ilu=True,
+                        store_dense=store_dense,
+                        emit=emit,
+                    )
+                    dense_matrix_cache = a_dense_cache
+                    _mark("rhs1_sparse_precond_build_done")
 
-                if use_implicit:
-                    if l_dense is None or u_dense is None:
-                        if emit is not None:
-                            emit(1, "sparse_ilu: dense factors unavailable for implicit solve; skipping")
-                        res_sparse = None
+                    if use_implicit:
+                        if l_dense is None or u_dense is None:
+                            if emit is not None:
+                                emit(1, "sparse_ilu: dense factors unavailable for implicit solve; skipping")
+                            res_sparse = None
+                        else:
+                            import jax.scipy.linalg as jla  # noqa: PLC0415
+
+                            l_jnp = jnp.asarray(l_dense, dtype=jnp.float64)
+                            u_jnp = jnp.asarray(u_dense, dtype=jnp.float64)
+
+                            def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
+                                y = jla.solve_triangular(l_jnp, v, lower=True, unit_diagonal=l_unit_diag)
+                                return jla.solve_triangular(u_jnp, y, lower=False)
+
+                            if emit is not None:
+                                emit(0, "solve_v3_full_system_linear_gmres: sparse ILU (JAX) fallback")
+                            res_sparse = _solve_linear(
+                                matvec_fn=mv_reduced,
+                                b_vec=rhs_reduced,
+                                precond_fn=_precond_sparse,
+                                x0_vec=res_reduced.x,
+                                tol_val=tol,
+                                atol_val=atol,
+                                restart_val=restart,
+                                maxiter_val=maxiter,
+                                solve_method_val="incremental",
+                                precond_side=gmres_precond_side,
+                            )
                     else:
-                        import jax.scipy.linalg as jla  # noqa: PLC0415
-
-                        l_jnp = jnp.asarray(l_dense, dtype=jnp.float64)
-                        u_jnp = jnp.asarray(u_dense, dtype=jnp.float64)
+                        if ilu is None:
+                            raise RuntimeError("sparse_ilu: ILU factors unavailable")
 
                         def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
-                            y = jla.solve_triangular(l_jnp, v, lower=True, unit_diagonal=l_unit_diag)
-                            return jla.solve_triangular(u_jnp, y, lower=False)
+                            x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                            y_np = ilu.solve(x_np)
+                            return jnp.asarray(y_np, dtype=jnp.float64)
+
+                        if sparse_use_matvec:
+                            def _mv_sparse(v: jnp.ndarray) -> jnp.ndarray:
+                                x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                                y_np = a_csr_full @ x_np
+                                return jnp.asarray(y_np, dtype=jnp.float64)
+                        else:
+                            _mv_sparse = mv_reduced
 
                         if emit is not None:
-                            emit(0, "solve_v3_full_system_linear_gmres: sparse ILU (JAX) fallback")
-                        res_sparse = _solve_linear(
-                            matvec_fn=mv_reduced,
-                            b_vec=rhs_reduced,
-                            precond_fn=_precond_sparse,
-                            x0_vec=res_reduced.x,
-                            tol_val=tol,
-                            atol_val=atol,
-                            restart_val=restart,
-                            maxiter_val=maxiter,
-                            solve_method_val="incremental",
-                            precond_side=gmres_precond_side,
+                            emit(0, "solve_v3_full_system_linear_gmres: sparse ILU GMRES fallback")
+                        x_np, rn_sparse, _history = gmres_solve_with_history_scipy(
+                            matvec=_mv_sparse,
+                            b=rhs_reduced,
+                            preconditioner=_precond_sparse,
+                            x0=res_reduced.x,
+                            tol=tol,
+                            atol=atol,
+                            restart=restart,
+                            maxiter=maxiter,
+                            precondition_side=gmres_precond_side,
                         )
-                else:
-                    if ilu is None:
-                        raise RuntimeError("sparse_ilu: ILU factors unavailable")
-
-                    def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
-                        x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
-                        y_np = ilu.solve(x_np)
-                        return jnp.asarray(y_np, dtype=jnp.float64)
-
-                    if sparse_use_matvec:
-                        def _mv_sparse(v: jnp.ndarray) -> jnp.ndarray:
-                            x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
-                            y_np = a_csr_full @ x_np
-                            return jnp.asarray(y_np, dtype=jnp.float64)
-                    else:
-                        _mv_sparse = mv_reduced
-
+                        res_sparse = GMRESSolveResult(
+                            x=jnp.asarray(x_np, dtype=jnp.float64),
+                            residual_norm=jnp.asarray(rn_sparse, dtype=jnp.float64),
+                        )
+                    if res_sparse is not None and float(res_sparse.residual_norm) < float(res_reduced.residual_norm):
+                        res_reduced = res_sparse
+                        ksp_matvec = mv_reduced if use_implicit else _mv_sparse
+                        ksp_b = rhs_reduced
+                        ksp_precond = _precond_sparse
+                        ksp_x0 = res_reduced.x
+                        ksp_restart = restart
+                        ksp_maxiter = maxiter
+                        ksp_precond_side = gmres_precond_side
+                        ksp_solver_kind = _solver_kind("incremental")[0]
+                except Exception as exc:  # noqa: BLE001
                     if emit is not None:
-                        emit(0, "solve_v3_full_system_linear_gmres: sparse ILU GMRES fallback")
-                    x_np, rn_sparse, _history = gmres_solve_with_history_scipy(
-                        matvec=_mv_sparse,
-                        b=rhs_reduced,
-                        preconditioner=_precond_sparse,
-                        x0=res_reduced.x,
-                        tol=tol,
-                        atol=atol,
-                        restart=restart,
-                        maxiter=maxiter,
-                        precondition_side=gmres_precond_side,
-                    )
-                    res_sparse = GMRESSolveResult(
-                        x=jnp.asarray(x_np, dtype=jnp.float64),
-                        residual_norm=jnp.asarray(rn_sparse, dtype=jnp.float64),
-                    )
-                if res_sparse is not None and float(res_sparse.residual_norm) < float(res_reduced.residual_norm):
-                    res_reduced = res_sparse
-                    ksp_matvec = mv_reduced if use_implicit else _mv_sparse
-                    ksp_b = rhs_reduced
-                    ksp_precond = _precond_sparse
-                    ksp_x0 = res_reduced.x
-                    ksp_restart = restart
-                    ksp_maxiter = maxiter
-                    ksp_precond_side = gmres_precond_side
-                    ksp_solver_kind = _solver_kind("incremental")[0]
-            except Exception as exc:  # noqa: BLE001
-                if emit is not None:
-                    emit(1, f"sparse_ilu: failed ({type(exc).__name__}: {exc})")
+                        emit(1, f"sparse_ilu: failed ({type(exc).__name__}: {exc})")
         residual_norm_check = float(res_reduced.residual_norm)
         residual_norm_true = residual_norm_check
         if ksp_precond is not None and ksp_precond_side == "left":

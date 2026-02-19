@@ -400,14 +400,22 @@ an ILU preconditioner :math:`M \approx \tilde{L}\tilde{U}` so that GMRES solves
 reducing iterations while keeping the exact operator :math:`A` in the matvec.
 When ``SFINCS_JAX_IMPLICIT_SOLVE=1`` (default), the ILU factors are converted to
 dense triangular factors and applied with JAX triangular solves to keep
-end‑to‑end differentiability. Explicit solves can apply SciPy’s sparse ILU and
-optionally use the sparse operator for matvecs. References: GMRES [#saad86]_,
-ILU/Preconditioning surveys [#benzi02]_.
+end‑to‑end differentiability. For fully JAX‑native runs (no SciPy), a sparse
+Jacobi preconditioner is available that builds a sparsified operator
+(:math:`\tilde{A}`) in JAX and applies a few weighted Jacobi sweeps,
+
+.. math::
+
+   x^{(k+1)} = x^{(k)} + \omega D^{-1} (b - \tilde{A} x^{(k)}),
+
+as a differentiable approximation to :math:`\tilde{A}^{-1}`. Explicit solves can
+apply SciPy’s sparse ILU and optionally use the sparse operator for matvecs.
+References: GMRES [#saad86]_, ILU/Preconditioning surveys [#benzi02]_.
 
 Implementation: ``sfincs_jax.v3_driver`` (``_build_sparse_ilu_from_matvec`` and
 the RHSMode=1 sparse fallback). Controls:
 
-- ``SFINCS_JAX_RHSMODE1_SPARSE_PRECOND`` (auto/on/off)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_PRECOND`` (auto/on/off/jax/scipy)
 - ``SFINCS_JAX_RHSMODE1_SPARSE_OPERATOR`` (optional sparse matvec path)
 - ``SFINCS_JAX_RHSMODE1_SPARSE_MATVEC`` (CSR matvec in explicit mode)
 - ``SFINCS_JAX_RHSMODE1_SPARSE_DROP_TOL`` / ``SFINCS_JAX_RHSMODE1_SPARSE_DROP_REL``
@@ -415,6 +423,10 @@ the RHSMode=1 sparse fallback). Controls:
 - ``SFINCS_JAX_RHSMODE1_SPARSE_ILU_DENSE_MAX`` (max size for JAX triangular apply)
 - ``SFINCS_JAX_RHSMODE1_SPARSE_DENSE_CACHE_MAX`` (reuse assembled dense operator for fallback solves)
 - ``SFINCS_JAX_RHSMODE1_SPARSE_ALLOW_NONDIFF`` (explicit-only override)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_JAX_MAX_MB`` (memory guard for JAX sparse assembly)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_JAX_SWEEPS`` / ``SFINCS_JAX_RHSMODE1_SPARSE_JAX_OMEGA``
+  (Jacobi sweep count and relaxation factor)
+- ``SFINCS_JAX_RHSMODE1_SPARSE_JAX_REG`` (diagonal regularization for the sparse Jacobi preconditioner)
 
 **PAS x-block :math:`(\theta,\zeta)` preconditioner.** For PAS cases with
 angular grids, ``sfincs_jax`` can build per‑species, per‑:math:`x` blocks over
