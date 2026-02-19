@@ -55,6 +55,35 @@ python examples/performance/profile_transport_compile_runtime_cache.py --repeats
 Small dense fallback assemblies now skip JIT for modest matrix sizes (`n<=800`) to
 reduce overhead in tiny PAS/transport cases while keeping large systems compiled.
 
+## Parallel Scaling (Macbook M3 Max)
+
+Parallel `whichRHS` scaling for a medium RHSMode=2 transport‑matrix case
+(`examples/performance/transport_parallel_medium.input.namelist`, geometryScheme=2).
+
+![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
+
+Reproduce the scaling figure and JSON summary:
+
+```bash
+python examples/performance/benchmark_transport_parallel_scaling.py --repeats 1
+```
+
+Run with explicit worker counts and a custom input:
+
+```bash
+python examples/performance/benchmark_transport_parallel_scaling.py \
+  --input examples/performance/transport_parallel_medium.input.namelist \
+  --workers 1 2 4 6 8 10 \
+  --repeats 1
+```
+
+Enable parallel whichRHS solves in normal runs:
+
+```bash
+export SFINCS_JAX_TRANSPORT_PARALLEL=process
+export SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS=8
+```
+
 ## Installation
 
 Install from PyPI:

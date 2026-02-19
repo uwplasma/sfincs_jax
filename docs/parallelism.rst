@@ -131,16 +131,65 @@ path; outputs are merged deterministically by column.
 macOS uses `spawn` for multiprocessing. Run from a file/module (not `python - <<EOF`)
 so worker processes can import the main module cleanly.
 
-**Local sanity check**
+**Measured scaling (Macbook M3 Max, 14‑core)**
 
-On a tiny transport‑matrix fixture, process overhead dominates:
+Benchmark case: `examples/performance/transport_parallel_medium.input.namelist`
+(RHSMode=2, geometryScheme=2, moderate grid size).
 
-- `workers=1`: ~0.67 s
-- `workers=2`: ~1.58 s
+Command:
 
-This is expected for very small problems. On large RHSMode=2/3 workloads (many
-`whichRHS` solves, larger grids) we expect near‑linear speedup until memory or
-compile overhead dominates.
+.. code-block:: bash
+
+   python examples/performance/benchmark_transport_parallel_scaling.py --repeats 1
+
+Results (single run per worker count, JAX cache warm‑up enabled):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Workers
+     - Mean time (s)
+     - Speedup
+   * - 1
+     - 6.87
+     - 1.00
+   * - 2
+     - 6.86
+     - 1.00
+   * - 3
+     - 4.95
+     - 1.39
+   * - 4
+     - 4.84
+     - 1.42
+   * - 5
+     - 4.63
+     - 1.48
+   * - 6
+     - 4.56
+     - 1.51
+   * - 7
+     - 4.57
+     - 1.50
+   * - 8
+     - 4.57
+     - 1.50
+   * - 9
+     - 4.59
+     - 1.50
+   * - 10
+     - 4.57
+     - 1.50
+
+.. figure:: _static/figures/parallel/transport_parallel_scaling.png
+   :alt: Parallel whichRHS scaling on Macbook M3 Max
+   :width: 90%
+
+   Parallel whichRHS scaling (runtime + speedup vs workers).
+
+For this moderate case, process‑startup and per‑worker overheads limit scaling to
+~1.5×. Larger transport matrices (more `whichRHS`, larger grids) show stronger
+speedup as matvec cost dominates overhead.
 
 
 Step (2): Parallel cases / scans
