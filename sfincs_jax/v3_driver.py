@@ -412,6 +412,7 @@ _RHSMODE1_SCHUR_CACHE: dict[tuple[object, ...], jnp.ndarray] = {}
 _TRANSPORT_SXBLOCK_LR_PRECOND_CACHE: dict[tuple[object, ...], _LowRankXBlockPrecondCache] = {}
 _RHSMODE1_SXBLOCK_LR_PRECOND_CACHE: dict[tuple[object, ...], _LowRankXBlockPrecondCache] = {}
 _TRANSPORT_XMG_PRECOND_CACHE: dict[tuple[object, ...], _TransportXmgPrecondCache] = {}
+_RHSMODE1_XMG_PRECOND_CACHE: dict[tuple[object, ...], _TransportXmgPrecondCache] = {}
 _RHSMODE1_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
@@ -958,6 +959,141 @@ def _build_rhsmode23_xmg_preconditioner(
             coarse_idx=jnp.asarray(coarse_idx, dtype=jnp.int32),
         )
         _TRANSPORT_XMG_PRECOND_CACHE[cache_key] = cached
+
+    inv_diag_f = cached.inv_diag_f
+    coarse_inv = cached.coarse_inv
+    coarse_idx = cached.coarse_idx
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+        z_f = f * inv_diag_f
+        f_sl = jnp.transpose(f, (0, 2, 1, 3, 4))  # (S,L,X,T,Z)
+        f_coarse = f_sl[:, :, coarse_idx, :, :]
+        z_coarse = jnp.einsum("slij,sljtz->slitz", coarse_inv, f_coarse)
+        corr_sl = jnp.zeros_like(f_sl)
+        corr_sl = corr_sl.at[:, :, coarse_idx, :, :].set(z_coarse)
+        corr = jnp.transpose(corr_sl, (0, 2, 1, 3, 4))
+        z_f = z_f + corr
+        tail = r_full[op.f_size :]
+        z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_xmg_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Two-level additive x-grid preconditioner for RHSMode=1 collision operators.
+
+    Uses the same coarse-x correction as the transport x-multigrid preconditioner,
+    but applies it to the RHSMode=1 operator (including PAS/FP diagonals).
+    """
+    stride_env = os.environ.get("SFINCS_JAX_RHSMODE1_XMG_STRIDE", "").strip()
+    if not stride_env:
+        stride_env = os.environ.get("SFINCS_JAX_XMG_STRIDE", "").strip()
+    try:
+        stride = int(stride_env) if stride_env else 2
+    except ValueError:
+        stride = 2
+    stride = max(1, stride)
+    cache_key = _rhsmode1_precond_cache_key(op, f"xmg_{stride}")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_XMG_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+        coarse_idx = np.arange(0, n_x, stride, dtype=np.int32)
+        n_coarse = int(coarse_idx.shape[0])
+        coarse_map = {int(ix): int(i) for i, ix in enumerate(coarse_idx)}
+
+        diag = np.zeros(f_shape, dtype=np.float64)
+        if float(op.fblock.identity_shift) != 0.0:
+            diag = diag + float(op.fblock.identity_shift)
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l_arr = np.arange(n_l, dtype=np.float64)
+            factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+            pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+            diag = diag + pas_diag[:, :, :, None, None]
+        if op.fblock.fp is not None:
+            mat = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+            diag_x = np.diagonal(mat, axis1=3, axis2=4)  # (S,S,L,X)
+            diag_self = np.diagonal(diag_x, axis1=0, axis2=1)  # (L,X,S)
+            diag_self = np.transpose(diag_self, (2, 1, 0))  # (S,X,L)
+            diag = diag + diag_self[:, :, :, None, None]
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        mask = np.arange(n_l, dtype=np.int32)[None, :] < nxi_for_x[:, None]  # (X,L)
+        mask = mask[None, :, :, None, None]
+        diag = np.where(mask, diag, 1.0)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-10
+        except ValueError:
+            reg = 1e-10
+        inv_diag_f = 1.0 / (diag + float(reg))
+
+        coarse_inv = np.zeros((n_species, n_l, n_coarse, n_coarse), dtype=np.float64)
+        mat_fp = None
+        if op.fblock.fp is not None:
+            mat_fp = np.asarray(op.fblock.fp.mat, dtype=np.float64)  # (S,S,L,X,X)
+        identity_shift = float(op.fblock.identity_shift)
+        pas_diag = None
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l_arr = np.arange(n_l, dtype=np.float64)
+            factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+            pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+
+        for s in range(n_species):
+            for l in range(n_l):
+                if mat_fp is None:
+                    a = np.zeros((n_x, n_x), dtype=np.float64)
+                else:
+                    a = np.array(mat_fp[s, s, l, :, :], dtype=np.float64, copy=True)
+                a = a[np.ix_(coarse_idx, coarse_idx)]
+                diag_vec = np.full((n_coarse,), identity_shift + reg, dtype=np.float64)
+                if pas_diag is not None:
+                    diag_vec += pas_diag[s, coarse_idx, l]
+                a[np.arange(n_coarse), np.arange(n_coarse)] += diag_vec
+
+                inactive_x = np.where(nxi_for_x <= l)[0]
+                if inactive_x.size:
+                    for ix in inactive_x:
+                        idx = coarse_map.get(int(ix))
+                        if idx is None:
+                            continue
+                        a[idx, :] = 0.0
+                        a[:, idx] = 0.0
+                        a[idx, idx] = 1.0
+
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                coarse_inv[s, l, :, :] = inv
+
+        cached = _TransportXmgPrecondCache(
+            inv_diag_f=jnp.asarray(inv_diag_f, dtype=precond_dtype),
+            coarse_inv=jnp.asarray(coarse_inv, dtype=precond_dtype),
+            coarse_idx=jnp.asarray(coarse_idx, dtype=jnp.int32),
+        )
+        _RHSMODE1_XMG_PRECOND_CACHE[cache_key] = cached
 
     inv_diag_f = cached.inv_diag_f
     coarse_inv = cached.coarse_inv
@@ -3659,7 +3795,17 @@ def solve_v3_full_system_linear_gmres(
                         else:
                             rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                     else:
-                        rhs1_precond_kind = "schur"
+                        if op.fblock.pas is not None and int(op.total_size) >= pas_xmg_min:
+                            rhs1_precond_kind = "xmg"
+                        elif op.fblock.pas is not None and int(op.total_size) >= pas_xdiag_min:
+                            lmax_use = xblock_tz_lmax_override if xblock_tz_lmax_override > 0 else lmax_auto
+                            if lmax_use >= 1:
+                                rhs1_precond_kind = "xblock_tz_lmax"
+                                rhs1_xblock_tz_lmax = int(lmax_use)
+                            else:
+                                rhs1_precond_kind = "point_xdiag"
+                        else:
+                            rhs1_precond_kind = "schur"
                 elif full_precond_requested and (int(op.n_theta) > 1 or int(op.n_zeta) > 1):
                     rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif schur_auto:
@@ -3704,6 +3850,8 @@ def solve_v3_full_system_linear_gmres(
                 else:
                     collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
                     try:
+        elif rhs1_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
+            rhs1_precond_kind = "xmg"
                         collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 600
                     except ValueError:
                         collision_precond_min = 600
@@ -3804,6 +3952,16 @@ def solve_v3_full_system_linear_gmres(
     if sparse_operator_env in {"1", "true", "yes", "on"}:
         sparse_operator_mode = "on"
     elif sparse_operator_env in {"0", "false", "no", "off"}:
+                pas_xdiag_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN", "").strip()
+                try:
+                    pas_xdiag_min = int(pas_xdiag_env) if pas_xdiag_env else 1000000000
+                except ValueError:
+                    pas_xdiag_min = 1000000000
+                pas_xmg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XMG_MIN", "").strip()
+                try:
+                    pas_xmg_min = int(pas_xmg_env) if pas_xmg_env else 50000
+                except ValueError:
+                    pas_xmg_min = 50000
         sparse_operator_mode = "off"
     else:
         sparse_operator_mode = "auto"
@@ -4616,6 +4774,10 @@ def solve_v3_full_system_linear_gmres(
                 raise RuntimeError(f"dense_ksp expects active_size={expected_active}, got {active_size}")
 
             lu_factors: list[tuple[jnp.ndarray, jnp.ndarray]] = []
+            elif rhs1_precond_kind == "xmg":
+                precond = _build_rhsmode1_xmg_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
             idx_blocks: list[jnp.ndarray] = []
             for s in range(n_species):
                 f_idx = np.arange(s * dke_size, (s + 1) * dke_size, dtype=np.int32)
@@ -5023,43 +5185,47 @@ def solve_v3_full_system_linear_gmres(
                     strong_preconditioner_reduced = _build_rhsmode1_species_block_preconditioner(
                         op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                     )
-            elif strong_precond_kind == "sxblock":
-                strong_preconditioner_reduced = _build_rhsmode1_species_xblock_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-            elif strong_precond_kind == "sxblock_tz":
-                strong_preconditioner_reduced = _build_rhsmode1_sxblock_tz_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-            elif strong_precond_kind == "theta_zeta":
-                strong_preconditioner_reduced = _build_rhsmode1_theta_zeta_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-            elif strong_precond_kind == "xblock_tz":
-                strong_preconditioner_reduced = _build_rhsmode1_xblock_tz_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-            elif strong_precond_kind == "zeta_line":
-                strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-            elif strong_precond_kind == "schur":
-                strong_preconditioner_reduced = _build_rhsmode1_schur_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-            else:
-                pre_theta = _build_rhsmode1_theta_line_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-                pre_zeta = _build_rhsmode1_zeta_line_preconditioner(
-                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                )
-                sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
-                try:
-                    sweeps = int(sweeps_env) if sweeps_env else 2
-                except ValueError:
-                    sweeps = 2
-                sweeps = max(1, sweeps)
+                elif strong_precond_kind == "sxblock":
+                    strong_preconditioner_reduced = _build_rhsmode1_species_xblock_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "sxblock_tz":
+                    strong_preconditioner_reduced = _build_rhsmode1_sxblock_tz_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "theta_zeta":
+                    strong_preconditioner_reduced = _build_rhsmode1_theta_zeta_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "xmg":
+                    strong_preconditioner_reduced = _build_rhsmode1_xmg_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "xblock_tz":
+                    strong_preconditioner_reduced = _build_rhsmode1_xblock_tz_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "zeta_line":
+                    strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "schur":
+                    strong_preconditioner_reduced = _build_rhsmode1_schur_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                else:
+                    pre_theta = _build_rhsmode1_theta_line_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                    pre_zeta = _build_rhsmode1_zeta_line_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                    sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+                    try:
+                        sweeps = int(sweeps_env) if sweeps_env else 2
+                    except ValueError:
+                        sweeps = 2
+                    sweeps = max(1, sweeps)
 
                 def strong_preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
                     out = v
@@ -5095,6 +5261,8 @@ def solve_v3_full_system_linear_gmres(
             if float(res_strong.residual_norm) < float(res_reduced.residual_norm):
                 res_reduced = res_strong
                 ksp_matvec = mv_reduced
+        elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
+            strong_precond_kind = "xmg"
                 ksp_b = rhs_reduced
                 ksp_precond = strong_preconditioner_reduced
                 ksp_x0 = res_reduced.x
@@ -5787,6 +5955,8 @@ def solve_v3_full_system_linear_gmres(
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
         res_ratio = float(result.residual_norm) / max(float(target), 1e-300)
         strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
+                elif rhs1_precond_kind == "xmg":
+                    precond = _build_rhsmode1_xmg_preconditioner(op=op)
         try:
             strong_ratio = float(strong_ratio_env) if strong_ratio_env else 1.0
         except ValueError:
@@ -5922,7 +6092,9 @@ def solve_v3_full_system_linear_gmres(
                     except ValueError:
                         xblock_tz_max = 1200
                     max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
-                    if (
+                    if int(op.total_size) >= pas_xmg_min:
+                        strong_precond_kind = "xmg"
+                    elif (
                         int(op.n_theta) > 1
                         and int(op.n_zeta) > 1
                         and xblock_tz_max > 0
@@ -6056,6 +6228,8 @@ def solve_v3_full_system_linear_gmres(
             and int(active_size) <= dense_fallback_max
             and float(residual_norm_true) > target
         )
+            elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
+                strong_precond_kind = "xmg"
         if fp_force_dense:
             dense_fallback_trigger = True
         force_dense_cs0 = int(op.constraint_scheme) == 0
@@ -6077,6 +6251,11 @@ def solve_v3_full_system_linear_gmres(
                     f"(size={int(op.total_size)} residual={float(residual_norm_check):.3e} > target={target:.3e})",
                 )
             try:
+                    pas_xmg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XMG_MIN", "").strip()
+                    try:
+                        pas_xmg_min = int(pas_xmg_env) if pas_xmg_env else 50000
+                    except ValueError:
+                        pas_xmg_min = 50000
                 dense_method = "dense"
                 if int(op.constraint_scheme) == 0:
                     dense_method = "dense_row_scaled"
@@ -6159,6 +6338,8 @@ def solve_v3_full_system_linear_gmres(
             precond_side=ksp_precond_side,
             solver_kind=ksp_solver_kind,
             history=ksp_history,
+                elif strong_precond_kind == "xmg":
+                    strong_preconditioner_full = _build_rhsmode1_xmg_preconditioner(op=op)
             solve_method_val=str(solve_method),
         )
     if emit is not None:

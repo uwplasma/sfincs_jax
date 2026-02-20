@@ -464,6 +464,11 @@ so scan points can reuse the same preconditioner blocks. Controls:
 computed via an additional SciPy solve (to match the PETSc text). For large Krylov
 counts this can dominate runtime, so the defaults now skip these when the estimated
 iteration count exceeds ``SFINCS_JAX_KSP_HISTORY_MAX_ITER`` /
+- ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (auto switch to the lightweight PAS x‑multigrid
+  preconditioner for large systems; default ``50000``)
+- ``SFINCS_JAX_RHSMODE1_XMG_STRIDE`` (coarse‑x stride for the PAS x‑multigrid preconditioner)
+- ``SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN`` (auto switch to point‑block x‑diagonal preconditioner for large PAS runs; default disabled)
+- ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX`` (truncate L in PAS x‑block :math:`(\theta,\zeta)` preconditioning)
 ``SFINCS_JAX_SOLVER_ITER_STATS_MAX_ITER``. Raise those caps (or set to ``none``)
 only when strict per-iteration history is required.
 

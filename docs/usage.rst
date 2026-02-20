@@ -167,6 +167,8 @@ performance without changing the input file:
 
   - ``point`` (or ``1``): point-block Jacobi on local (x,L) unknowns at each :math:`(\theta,\zeta)`.
   - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
+  - ``xmg``: coarse x-grid correction built from PAS/FP diagonals (lightweight; reduces
+    x‑coupling stiffness without full block setup).
   - ``sxblock``: species×(x,L) block at each :math:`(\theta,\zeta)` (includes inter-species coupling).
   - ``sxblock_tz``: per‑:math:`L` block over species×x×:math:`(\theta,\zeta)` (captures angular coupling).
   - ``xblock_tz``: PAS per‑:math:`x` block over :math:`(L,\theta,\zeta)` (captures angular coupling).
@@ -186,6 +188,13 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``: choose the collision preconditioner flavor
   when ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision`` or BiCGStab preconditioning is enabled.
+
+- ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN``: for large PAS systems that request full
+  preconditioning, switch to the lightweight x‑multigrid preconditioner when
+  ``total_size`` exceeds this threshold (default: ``50000``).
+
+- ``SFINCS_JAX_RHSMODE1_XMG_STRIDE``: coarse‑grid stride for the RHSMode=1 x‑multigrid
+  preconditioner (default: ``2``; falls back to ``SFINCS_JAX_XMG_STRIDE`` if unset).
 
   - ``xblock``: invert the per-species x-block for each L using the FP self-collision matrix
     (stronger for some FP cases, slightly higher apply cost).
