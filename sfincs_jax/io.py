@@ -2125,11 +2125,40 @@ def write_sfincs_jax_output_h5(
             dense_active_cutoff = int(dense_active_cutoff_env) if dense_active_cutoff_env else 5000
         except ValueError:
             dense_active_cutoff = 5000
+        dense_pas_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX", "").strip()
+        try:
+            dense_pas_cutoff = int(dense_pas_env) if dense_pas_env else 5000
+        except ValueError:
+            dense_pas_cutoff = dense_active_cutoff
+        phys_params = nml.group("physicsParameters")
+        use_dkes_val = (
+            phys_params.get("useDKESExBDrift", None)
+            if phys_params is not None
+            else None
+        )
+        if use_dkes_val is None and phys_params is not None:
+            use_dkes_val = phys_params.get("useDKESExBdrift", None)
+        if use_dkes_val is None and phys_params is not None:
+            use_dkes_val = phys_params.get("use_dkes_exb_drift", None)
+        if isinstance(use_dkes_val, str):
+            use_dkes = use_dkes_val.strip().lower() in {"t", "true", "1", "yes", ".true."}
+        else:
+            use_dkes = bool(use_dkes_val) if use_dkes_val is not None else False
         solve_method_env = os.environ.get("SFINCS_JAX_RHSMODE1_SOLVE_METHOD", "").strip().lower()
-        if solve_method_env in {"auto", "bicgstab", "dense", "dense_ksp", "incremental", "batched"}:
+        if solve_method_env in {"auto", "bicgstab", "dense", "dense_row_scaled", "dense_ksp", "incremental", "batched"}:
             solve_method = solve_method_env
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: solve method forced by env -> {solve_method}")
+        elif (
+            (not include_phi1)
+            and int(op0.constraint_scheme) == 2
+            and (op0.fblock.fp is None)
+            and use_dkes
+            and active_total_size <= dense_pas_cutoff
+        ):
+            solve_method = "dense"
+            if emit is not None:
+                emit(1, "write_sfincs_jax_output_h5: PAS constraintScheme=2 + DKES -> using dense solve")
         elif include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
             # For includePhi1 + linear kinetic equation runs, use a dense solve for
             # small systems to preserve fixture parity, otherwise fall back to GMRES.

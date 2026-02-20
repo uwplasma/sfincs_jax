@@ -44,7 +44,7 @@
 /
 
 &resolutionParameters
-  Ntheta = 36
+  Ntheta = 18
 !ss NthetaMinFactor = 1
 !ss NthetaMaxFactor = 2
 !ss NthetaNumRuns = 10

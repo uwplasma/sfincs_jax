@@ -337,7 +337,7 @@ theta-line preconditioner default.
 
 Implementation: ``sfincs_jax.v3_driver`` (``use_pas_projection`` and
 ``_project_pas_f``). Control: ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`` (auto on for
-``N_\zeta=1`` tokamak-like runs).
+``N_\zeta=1`` tokamak-like runs and DKES-trajectory PAS cases).
 
 **Constraint-aware Schur (constraintScheme=2).** With constraint variables
 :math:`c`, the linear system is partitioned as
@@ -630,6 +630,8 @@ Controls:
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX`` (default: ``400``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX`` (default: ``5000``) for full Fokker–Planck
   cases (``collisionOperator=0``).
+- ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` (default: ``5000``) for PAS/constraintScheme=2
+  cases (notably DKES trajectories).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO`` (default: ``1e2``). Dense fallback
   only triggers when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always
   allow the fallback).
@@ -653,6 +655,8 @@ Controls:
   Disables dense LU preconditioners when they would exceed the memory budget.
 - ``SFINCS_JAX_DENSE_ASSEMBLE_JIT``: JIT-compile dense matrix assembly
   (auto by default: off for ``n<=800``, on for larger matrices).
+- ``SFINCS_JAX_DENSE_MAX`` (default: ``8000``): guardrail for dense solves
+  (max vector size before dense solve is disallowed).
 - ``SFINCS_JAX_DENSE_BLOCK``: column block size for dense assembly (auto block size
   of ``128`` is used when ``n>=1000`` and no explicit block is set).
 - ``SFINCS_JAX_DENSE_BLOCK``: assemble dense matrices in column blocks to cap peak memory.

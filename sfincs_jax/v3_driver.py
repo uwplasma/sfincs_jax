@@ -465,7 +465,16 @@ def _rhsmode1_dense_fallback_max(op: V3FullSystemOperator) -> int:
     except ValueError:
         base_max = 0
     if op.fblock.fp is None:
-        return base_max
+        if int(op.constraint_scheme) != 2:
+            return base_max
+        dense_pas_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX", "").strip()
+        try:
+            dense_pas_max = int(dense_pas_env) if dense_pas_env else 5000
+        except ValueError:
+            dense_pas_max = base_max
+        if dense_pas_max <= 0:
+            return base_max
+        return max(base_max, dense_pas_max)
     dense_fp_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FP_MAX", "").strip()
     try:
         dense_fp_max = int(dense_fp_env) if dense_fp_env else 5000
@@ -3276,6 +3285,14 @@ def solve_v3_full_system_linear_gmres(
         pas_project_mode == "on"
         or (pas_project_mode == "auto" and int(op.n_zeta) == 1 and not full_precond_requested)
     )
+    if (
+        pas_project_mode == "auto"
+        and (not pas_project_enabled)
+        and op.fblock.pas is not None
+        and use_dkes
+        and (not full_precond_requested)
+    ):
+        pas_project_enabled = True
     use_pas_projection = bool(
         pas_project_enabled
         and int(op.rhs_mode) == 1
@@ -5180,6 +5197,15 @@ def solve_v3_full_system_linear_gmres(
         res_ratio = float(residual_norm_true) / max(float(target_reduced), 1e-300)
         dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
         dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
+        pas_force_dense = (
+            op.fblock.fp is None
+            and int(op.constraint_scheme) == 2
+            and dense_fallback_limit > 0
+            and int(active_size) <= dense_fallback_limit
+            and float(res_reduced.residual_norm) > target_reduced
+        )
+        if pas_force_dense:
+            dense_fallback_trigger = True
         fp_force_dense = (
             op.fblock.fp is not None
             and dense_fallback_max > 0
@@ -7652,6 +7678,7 @@ def solve_v3_transport_matrix_linear_gmres(
         import jax.scipy.linalg as jla  # noqa: PLC0415
 
         a_dense = assemble_dense_matrix_from_matvec(matvec=matvec_fn, n=n, dtype=dtype)
+        a_dense = jnp.asarray(a_dense, dtype=dtype)
         lu, piv = jla.lu_factor(a_dense)
 
         def solve(v: jnp.ndarray) -> jnp.ndarray:

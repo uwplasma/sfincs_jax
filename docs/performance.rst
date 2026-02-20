@@ -146,9 +146,15 @@ Solver defaults (Phi1 + sharding)
   The FP-specific cutoff is ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX`` (default: ``5000``),
   while generic RHSMode=1 dense fallbacks use ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``
   (default: ``400``).
+- **PAS dense fallback threshold (RHSMode=1)**: PAS/constraintScheme=2 cases use a
+  higher dense fallback ceiling (``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX``, default: ``5000``)
+  to match PETSc/MUMPS parity when Krylov stagnates on DKES trajectories.
 - **Transport dense retry memory cap**: dense transport retries are only allowed if the
   estimated dense matrix stays below ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB`` (default:
   ``128`` MB) to avoid excessive memory use.
+- **Dense solve guardrail**: ``SFINCS_JAX_DENSE_MAX`` caps the maximum vector size for
+  direct dense solves (default: ``8000``), keeping accidental large dense assemblies
+  from blowing up memory.
 - **Sharded matvec on single‑device runs**: if ``SFINCS_JAX_MATVEC_SHARD_AXIS`` is set
   but only one device is available, sharding constraints are skipped and the standard
   unsharded matvec path is used (no functional change, just a no‑op).

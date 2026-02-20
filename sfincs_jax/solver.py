@@ -481,7 +481,12 @@ def _gmres_solve_core(
         if b.ndim != 1:
             raise ValueError(f"dense solve requires a 1D vector b, got shape {b.shape}")
         # Guardrail: dense assembly is quadratic memory/time.
-        if n > 5000:
+        dense_max_env = os.environ.get("SFINCS_JAX_DENSE_MAX", "").strip()
+        try:
+            dense_max = int(dense_max_env) if dense_max_env else 8000
+        except ValueError:
+            dense_max = 8000
+        if n > dense_max:
             raise ValueError(f"dense solve is disabled for n={n} (too large). Use GMRES.")
 
         a = assemble_dense_matrix_from_matvec(matvec=matvec, n=n, dtype=b.dtype)
@@ -493,7 +498,12 @@ def _gmres_solve_core(
         if b.ndim != 1:
             raise ValueError(f"dense solve requires a 1D vector b, got shape {b.shape}")
         # Guardrail: dense assembly is quadratic memory/time.
-        if n > 5000:
+        dense_max_env = os.environ.get("SFINCS_JAX_DENSE_MAX", "").strip()
+        try:
+            dense_max = int(dense_max_env) if dense_max_env else 8000
+        except ValueError:
+            dense_max = 8000
+        if n > dense_max:
             raise ValueError(f"dense solve is disabled for n={n} (too large). Use GMRES.")
 
         a = assemble_dense_matrix_from_matvec(matvec=matvec, n=n, dtype=b.dtype)

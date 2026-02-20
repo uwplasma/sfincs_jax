@@ -384,6 +384,8 @@ performance without changing the input file:
   specified threshold (default: ``400``; see the FP-specific override below).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX``: override the RHSMode=1 dense fallback ceiling for
   full Fokker–Planck (``collisionOperator=0``) cases (default: ``5000``).
+- ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX``: override the RHSMode=1 dense fallback ceiling for
+  PAS/constraintScheme=2 cases (default: ``5000``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO``: only run the dense fallback when
   ``||r|| / target`` exceeds the given ratio (default: ``1e2``; set ``<= 0`` to always allow).
 - ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``: skip sparse ILU and other expensive
@@ -393,6 +395,7 @@ performance without changing the input file:
   one-step preconditioner probe (one matvec) and jump straight to the dense
   solve if the residual ratio still exceeds ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``.
   Disable with ``0``/``false`` if you want to always attempt full GMRES first.
+- ``SFINCS_JAX_DENSE_MAX``: guardrail for dense solves (max vector size, default: ``8000``).
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE``: constraintScheme=2 Schur preconditioner mode
   (``auto``/``diag``/``full``). ``auto`` selects a dense Schur complement when the
@@ -480,8 +483,8 @@ performance without changing the input file:
   normalized flux-surface-average constraint on ``L=0``; sources are recovered from the
   projected residual).
 
-  - ``auto`` (default): enable only for tokamak-like cases with ``N_zeta=1`` **unless**
-    a fully coupled preconditioner is requested
+  - ``auto`` (default): enable for tokamak-like cases with ``N_zeta=1`` **and** for
+    DKES-trajectory runs, unless a fully coupled preconditioner is requested
     (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``), since those
     cases converge without projection and match Fortran more strictly.
   - ``1``/``true``: force enable for all PAS ``constraintScheme=2`` cases.
