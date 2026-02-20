@@ -2130,6 +2130,11 @@ def write_sfincs_jax_output_h5(
             dense_pas_cutoff = int(dense_pas_env) if dense_pas_env else 5000
         except ValueError:
             dense_pas_cutoff = dense_active_cutoff
+        dense_fp_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF", "").strip()
+        try:
+            dense_fp_cutoff = int(dense_fp_env) if dense_fp_env else dense_active_cutoff
+        except ValueError:
+            dense_fp_cutoff = dense_active_cutoff
         phys_params = nml.group("physicsParameters")
         use_dkes_val = (
             phys_params.get("useDKESExBDrift", None)
@@ -2145,20 +2150,52 @@ def write_sfincs_jax_output_h5(
         else:
             use_dkes = bool(use_dkes_val) if use_dkes_val is not None else False
         solve_method_env = os.environ.get("SFINCS_JAX_RHSMODE1_SOLVE_METHOD", "").strip().lower()
+        force_krylov_env = os.environ.get("SFINCS_JAX_RHSMODE1_FORCE_KRYLOV", "").strip().lower()
+        force_krylov = force_krylov_env in {"1", "true", "yes", "on"}
         if solve_method_env in {"auto", "bicgstab", "dense", "dense_row_scaled", "dense_ksp", "incremental", "batched"}:
             solve_method = solve_method_env
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: solve method forced by env -> {solve_method}")
         elif (
-            (not include_phi1)
-            and int(op0.constraint_scheme) == 2
-            and (op0.fblock.fp is None)
-            and use_dkes
-            and active_total_size <= dense_pas_cutoff
+            op0.fblock.fp is not None
+            and (not include_phi1)
+            and active_total_size <= dense_fp_cutoff
+            and (not force_krylov)
         ):
             solve_method = "dense"
             if emit is not None:
-                emit(1, "write_sfincs_jax_output_h5: PAS constraintScheme=2 + DKES -> using dense solve")
+                emit(
+                    1,
+                    "write_sfincs_jax_output_h5: FP RHSMode=1 small system -> using dense solve",
+                )
+        elif op0.fblock.fp is not None and (not include_phi1):
+            epar_val = phys_params.get("EPARALLELHAT", phys_params.get("EParallelHat", None))
+            try:
+                epar_abs = abs(float(epar_val)) if epar_val is not None else 0.0
+            except (TypeError, ValueError):
+                epar_abs = 0.0
+            if epar_abs > 0.0:
+                solve_method = "bicgstab"
+                if emit is not None:
+                    emit(
+                        1,
+                        "write_sfincs_jax_output_h5: E_parallel FP case -> using BiCGStab "
+                        "(GMRES fallback enabled)",
+                    )
+        elif (
+            (not include_phi1)
+            and int(op0.constraint_scheme) == 2
+            and (op0.fblock.fp is None)
+            and op0.fblock.pas is not None
+            and active_total_size <= dense_pas_cutoff
+            and (not force_krylov)
+        ):
+            solve_method = "dense"
+            if emit is not None:
+                if use_dkes:
+                    emit(1, "write_sfincs_jax_output_h5: PAS constraintScheme=2 + DKES -> using dense solve")
+                else:
+                    emit(1, "write_sfincs_jax_output_h5: PAS RHSMode=1 small system -> using dense solve")
         elif include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
             # For includePhi1 + linear kinetic equation runs, use a dense solve for
             # small systems to preserve fixture parity, otherwise fall back to GMRES.
@@ -2170,7 +2207,7 @@ def write_sfincs_jax_output_h5(
                 solve_method = "incremental"
                 if emit is not None:
                     emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
-        elif os.environ.get("SFINCS_JAX_RHSMODE1_FORCE_KRYLOV", "").strip().lower() in {"1", "true", "yes", "on"}:
+        elif force_krylov:
             solve_method = "incremental"
             if emit is not None:
                 emit(
