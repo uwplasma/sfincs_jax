@@ -9,6 +9,11 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       JAX_ENABLE_X64: "True"
+      JAX_DISABLE_JIT: "1"
+      SFINCS_JAX_SOLVER_JIT: "0"
+      SFINCS_JAX_PRECOMPILE: "0"
+      SFINCS_JAX_PROFILE: "0"
+      SFINCS_JAX_CI: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,6 +31,11 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       JAX_ENABLE_X64: "True"
+      JAX_DISABLE_JIT: "1"
+      SFINCS_JAX_SOLVER_JIT: "0"
+      SFINCS_JAX_PRECOMPILE: "0"
+      SFINCS_JAX_PROFILE: "0"
+      SFINCS_JAX_CI: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

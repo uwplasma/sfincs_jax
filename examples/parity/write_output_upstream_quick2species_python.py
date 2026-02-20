@@ -9,6 +9,7 @@ Run:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -21,10 +22,21 @@ if str(_REPO_ROOT) not in sys.path:
 from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
 
 
-def main() -> int:
-    input_path = (
-        _REPO_ROOT / "examples" / "upstream" / "fortran_v3" / "quick_2species_FPCollisions_noEr" / "input.namelist"
+def _select_input_path() -> Path:
+    if os.environ.get("SFINCS_JAX_CI") == "1" or os.environ.get("SFINCS_JAX_FAST_EXAMPLES") == "1":
+        return _REPO_ROOT / "tests" / "reduced_inputs" / "quick_2species_FPCollisions_noEr.input.namelist"
+    return (
+        _REPO_ROOT
+        / "examples"
+        / "upstream"
+        / "fortran_v3"
+        / "quick_2species_FPCollisions_noEr"
+        / "input.namelist"
     )
+
+
+def main() -> int:
+    input_path = _select_input_path()
     out_dir = Path(__file__).with_suffix("").parent / "output"
     out_path = out_dir / "sfincsOutput_upstream_quick2species_python.h5"
 
