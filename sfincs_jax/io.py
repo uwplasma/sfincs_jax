@@ -2179,9 +2179,9 @@ def write_sfincs_jax_output_h5(
             env_nk_method = os.environ.get("SFINCS_JAX_PHI1_NK_SOLVE_METHOD", "").strip().lower()
             if env_nk_method in {"dense", "incremental", "batched"}:
                 nk_solve_method = env_nk_method
-            # Parity mode for includePhi1 + full quasi-neutrality runs (quasineutralityOption=1):
-            # use a frozen linearization and relative nonlinear stopping similar to v3's SNES path.
-            use_frozen_linearization = bool(quasineutrality_option == 1)
+            # Default to full Newton updates for includePhi1 runs. Allow explicit
+            # frozen-linearization overrides via environment variables.
+            use_frozen_linearization = False
             env_frozen = os.environ.get("SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION", "").strip().lower()
             if env_frozen in {"1", "true", "yes", "on"}:
                 use_frozen_linearization = True

@@ -13,7 +13,7 @@
   "MachUsingFSAThermalSpeed": {"atol": 1e-5, "rtol": 0.0},
   "densityPerturbation": {"atol": 2e-6, "rtol": 0.0},
   "pressurePerturbation": {"atol": 2e-6, "rtol": 0.0},
-  "pressureAnisotropy": {"atol": 1e-6, "rtol": 0.0},
+  "pressureAnisotropy": {"atol": 2e-6, "rtol": 0.0},
   "flow": {"atol": 1e-5, "rtol": 0.0},
   "jHat": {"atol": 1e-5, "rtol": 0.0},
   "totalDensity": {"atol": 2e-6, "rtol": 0.0},

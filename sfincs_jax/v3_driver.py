@@ -458,6 +458,24 @@ def _hash_array(arr: jnp.ndarray | np.ndarray) -> str:
     return hashlib.blake2b(arr_np.tobytes(), digest_size=8).hexdigest()
 
 
+def _rhsmode1_dense_fallback_max(op: V3FullSystemOperator) -> int:
+    dense_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
+    try:
+        base_max = int(dense_env) if dense_env else 400
+    except ValueError:
+        base_max = 0
+    if op.fblock.fp is None:
+        return base_max
+    dense_fp_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FP_MAX", "").strip()
+    try:
+        dense_fp_max = int(dense_fp_env) if dense_fp_env else 5000
+    except ValueError:
+        dense_fp_max = base_max
+    if dense_fp_max <= 0:
+        return base_max
+    return max(base_max, dense_fp_max)
+
+
 def _rhsmode1_precond_cache_key(op: V3FullSystemOperator, kind: str) -> tuple[object, ...]:
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
     precond_dtype = str(_precond_dtype())
@@ -3180,6 +3198,17 @@ def solve_v3_full_system_linear_gmres(
     nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
     has_reduced_modes = bool(np.any(nxi_for_x < int(op.n_xi)))
     phys_params = nml.group("physicsParameters")
+    def _nml_get(group: dict, key: str, default=None):
+        if key in group:
+            return group[key]
+        key_upper = key.upper()
+        if key_upper in group:
+            return group[key_upper]
+        key_lower = key.lower()
+        if key_lower in group:
+            return group[key_lower]
+        return default
+
     def _nml_bool(val: object | None) -> bool:
         if val is None:
             return False
@@ -3193,9 +3222,10 @@ def solve_v3_full_system_linear_gmres(
             return val.strip().lower() in {"t", "true", "1", "yes", ".true."}
         return False
     use_dkes = _nml_bool(
-        phys_params.get(
+        _nml_get(
+            phys_params,
             "useDKESExBDrift",
-            phys_params.get("useDKESExBdrift", phys_params.get("use_dkes_exb_drift", None)),
+            _nml_get(phys_params, "useDKESExBdrift", _nml_get(phys_params, "use_dkes_exb_drift", None)),
         )
     )
     use_active_dof_mode = False
@@ -3464,16 +3494,16 @@ def solve_v3_full_system_linear_gmres(
                 elif (
                     op.fblock.fp is not None
                     and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
-                    and int(op.n_theta) * int(op.n_zeta) <= tz_max
-                ):
-                    rhs1_precond_kind = "theta_zeta"
-                elif (
-                    op.fblock.fp is not None
-                    and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
                     and sxblock_tz_max > 0
                     and sxblock_tz_size <= sxblock_tz_max
                 ):
                     rhs1_precond_kind = "sxblock_tz"
+                elif (
+                    op.fblock.fp is not None
+                    and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+                    and int(op.n_theta) * int(op.n_zeta) <= tz_max
+                ):
+                    rhs1_precond_kind = "theta_zeta"
                 elif op.fblock.fp is not None and sxblock_max > 0 and sxblock_size <= sxblock_max:
                     rhs1_precond_kind = "sxblock"
                 elif (
@@ -4083,11 +4113,7 @@ def solve_v3_full_system_linear_gmres(
             dense_shortcut_ratio = float(dense_shortcut_ratio_env) if dense_shortcut_ratio_env else 1.0e6
         except ValueError:
             dense_shortcut_ratio = 1.0e6
-        dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
-        try:
-            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 4000
-        except ValueError:
-            dense_fallback_max = 0
+        dense_fallback_max = _rhsmode1_dense_fallback_max(op)
         early_dense_shortcut = False
         probe_shortcut = False
         probe_x0: jnp.ndarray | None = None
@@ -4492,7 +4518,20 @@ def solve_v3_full_system_linear_gmres(
             ksp_x0 = x0_reduced
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = _solver_kind(solve_method)[0]
-        res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
+        residual_norm_check = float(res_reduced.residual_norm)
+        residual_norm_true = residual_norm_check
+        try:
+            r_vec = rhs_reduced - mv_reduced(res_reduced.x)
+            residual_norm_true = float(jnp.linalg.norm(r_vec))
+            if not np.isfinite(residual_norm_true):
+                residual_norm_true = residual_norm_check
+        except Exception:
+            residual_norm_true = residual_norm_check
+        if np.isfinite(residual_norm_true):
+            res_reduced = GMRESSolveResult(
+                x=res_reduced.x, residual_norm=jnp.asarray(residual_norm_true, dtype=jnp.float64)
+            )
+        res_ratio = float(residual_norm_true) / max(float(target_reduced), 1e-300)
         stage2_ratio_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RATIO", "").strip()
         try:
             stage2_ratio = float(stage2_ratio_env) if stage2_ratio_env else 1.0e2
@@ -4584,9 +4623,9 @@ def solve_v3_full_system_linear_gmres(
         res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
         strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
         try:
-            strong_ratio = float(strong_ratio_env) if strong_ratio_env else 1.0e2
+            strong_ratio = float(strong_ratio_env) if strong_ratio_env else 1.0
         except ValueError:
-            strong_ratio = 1.0e2
+            strong_ratio = 1.0
         strong_precond_trigger = bool(res_ratio > strong_ratio) if strong_ratio > 0 else True
         if (
             float(res_reduced.residual_norm) > target_reduced
@@ -4656,6 +4695,13 @@ def solve_v3_full_system_linear_gmres(
             and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
         ):
             strong_precond_auto = True
+        if (
+            strong_precond_env == ""
+            and op.fblock.pas is not None
+            and int(active_size) >= strong_precond_min
+            and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+        ):
+            strong_precond_auto = True
         strong_precond_kind: str | None = None
         if strong_precond_disabled:
             strong_precond_kind = None
@@ -4687,7 +4733,6 @@ def solve_v3_full_system_linear_gmres(
                 strong_precond_kind = "schur"
             elif (
                 rhs1_precond_env == ""
-                and rhs1_precond_kind == "point"
                 and int(op.rhs_mode) == 1
                 and (not bool(op.include_phi1))
                 and op.fblock.pas is not None
@@ -4853,11 +4898,7 @@ def solve_v3_full_system_linear_gmres(
         if not dense_shortcut and dense_shortcut_ratio > 0:
             quick_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
             if quick_ratio >= dense_shortcut_ratio:
-                dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
-                try:
-                    dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
-                except ValueError:
-                    dense_fallback_max = 0
+                dense_fallback_max = _rhsmode1_dense_fallback_max(op)
                 dense_fallback_max_huge = 0
                 dense_fallback_ratio = 1.0e2
                 if dense_fallback_max > 0:
@@ -5122,11 +5163,7 @@ def solve_v3_full_system_linear_gmres(
                     residual_norm_check = r_pc_norm
             except Exception:
                 pass
-        dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
-        try:
-            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 4000
-        except ValueError:
-            dense_fallback_max = 0
+        dense_fallback_max = _rhsmode1_dense_fallback_max(op)
         dense_fallback_max_huge = 0
         dense_fallback_ratio = 1.0e2
         if dense_fallback_max > 0:
@@ -5143,6 +5180,15 @@ def solve_v3_full_system_linear_gmres(
         res_ratio = float(residual_norm_true) / max(float(target_reduced), 1e-300)
         dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
         dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
+        fp_force_dense = (
+            op.fblock.fp is not None
+            and dense_fallback_max > 0
+            and int(active_size) <= dense_fallback_max
+            and float(residual_norm_true) > target_reduced
+        )
+        if fp_force_dense:
+            dense_fallback_trigger = True
+            dense_fallback_limit = max(dense_fallback_limit, dense_fallback_max)
         force_dense_cs0 = int(op.constraint_scheme) == 0
         if force_dense_cs0:
             # constraintScheme=0 systems are singular; keep the dense fallback
@@ -5158,6 +5204,10 @@ def solve_v3_full_system_linear_gmres(
             and (float(residual_norm_true) > target_reduced or force_dense_cs0)
         ):
             _mark("rhs1_dense_fallback_start")
+            use_row_scaled = bool(
+                int(op.constraint_scheme) == 0
+                or (int(op.constraint_scheme) == 1 and op.fblock.fp is not None)
+            )
             if emit is not None:
                 emit(
                     0,
@@ -5167,7 +5217,7 @@ def solve_v3_full_system_linear_gmres(
             try:
                 if dense_matrix_cache is not None:
                     a_dense_jnp = jnp.asarray(dense_matrix_cache, dtype=rhs_reduced.dtype)
-                    if int(op.constraint_scheme) == 0:
+                    if use_row_scaled:
                         x_dense, _rn = dense_solve_from_matrix_row_scaled(a=a_dense_jnp, b=rhs_reduced)
                     else:
                         x_dense, _rn = dense_solve_from_matrix(a=a_dense_jnp, b=rhs_reduced)
@@ -5175,7 +5225,7 @@ def solve_v3_full_system_linear_gmres(
                     res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
                 else:
                     dense_method = "dense"
-                    if int(op.constraint_scheme) == 0:
+                    if use_row_scaled:
                         dense_method = "dense_row_scaled"
                     res_dense = _solve_linear(
                         matvec_fn=mv_reduced,
@@ -5515,9 +5565,9 @@ def solve_v3_full_system_linear_gmres(
         res_ratio = float(result.residual_norm) / max(float(target), 1e-300)
         strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
         try:
-            strong_ratio = float(strong_ratio_env) if strong_ratio_env else 1.0e2
+            strong_ratio = float(strong_ratio_env) if strong_ratio_env else 1.0
         except ValueError:
-            strong_ratio = 1.0e2
+            strong_ratio = 1.0
         strong_precond_trigger = bool(res_ratio > strong_ratio) if strong_ratio > 0 else True
         if (
             float(result.residual_norm) > target
@@ -5750,11 +5800,7 @@ def solve_v3_full_system_linear_gmres(
                     residual_norm_check = r_pc_norm
             except Exception:
                 pass
-        dense_fallback_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX", "").strip()
-        try:
-            dense_fallback_max = int(dense_fallback_env) if dense_fallback_env else 3000
-        except ValueError:
-            dense_fallback_max = 3000
+        dense_fallback_max = _rhsmode1_dense_fallback_max(op)
         dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
         try:
             dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e2
@@ -5762,6 +5808,14 @@ def solve_v3_full_system_linear_gmres(
             dense_fallback_ratio = 1.0e2
         res_ratio = float(residual_norm_true) / max(float(target), 1e-300)
         dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
+        fp_force_dense = (
+            op.fblock.fp is not None
+            and dense_fallback_max > 0
+            and int(active_size) <= dense_fallback_max
+            and float(residual_norm_true) > target
+        )
+        if fp_force_dense:
+            dense_fallback_trigger = True
         force_dense_cs0 = int(op.constraint_scheme) == 0
         if force_dense_cs0:
             dense_fallback_trigger = True
@@ -7005,9 +7059,9 @@ def solve_v3_transport_matrix_linear_gmres(
         dense_retry_max = 0
     dense_mem_env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_MAX_MB", "").strip()
     try:
-        dense_mem_max_mb = float(dense_mem_env) if dense_mem_env else 64.0
+        dense_mem_max_mb = float(dense_mem_env) if dense_mem_env else 128.0
     except ValueError:
-        dense_mem_max_mb = 64.0
+        dense_mem_max_mb = 128.0
     dense_mem_est_mb64 = (int(op0.total_size) ** 2) * 8.0 / 1.0e6
     dense_mem_est_mb32 = (int(op0.total_size) ** 2) * 4.0 / 1.0e6
     dense_mem_block64 = bool(dense_mem_max_mb > 0.0 and dense_mem_est_mb64 > dense_mem_max_mb)
@@ -7576,6 +7630,7 @@ def solve_v3_transport_matrix_linear_gmres(
         import jax.scipy.linalg as jla  # noqa: PLC0415
 
         a_dense = assemble_dense_matrix_from_matvec(matvec=matvec_fn, n=n, dtype=dtype)
+        a_dense = jnp.asarray(a_dense, dtype=dtype)
         lu, piv = jla.lu_factor(a_dense)
 
         def precond(v: jnp.ndarray) -> jnp.ndarray:
@@ -8313,7 +8368,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             n=int(active_size),
                             dtype=_dense_dtype(rhs_reduced.dtype),
                             cache=dense_solver_cache_reduced,
-                            key=(sig, int(active_size)),
+                            key=(sig, int(active_size), str(_dense_dtype(rhs_reduced.dtype))),
                         )
                         rhs_dense = jnp.asarray(rhs_reduced, dtype=_dense_dtype(rhs_reduced.dtype))
                         x_dense = dense_solver(rhs_dense)
@@ -8357,7 +8412,7 @@ def solve_v3_transport_matrix_linear_gmres(
                                 n=int(active_size),
                                 dtype=_dense_dtype(rhs_reduced.dtype),
                                 cache=dense_solver_cache_reduced,
-                                key=(sig, int(active_size)),
+                                key=(sig, int(active_size), str(_dense_dtype(rhs_reduced.dtype))),
                             )
                             rhs_dense = jnp.asarray(rhs_reduced, dtype=_dense_dtype(rhs_reduced.dtype))
                             x_dense = dense_solver(rhs_dense)
@@ -8547,7 +8602,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             n=int(op0.total_size),
                             dtype=_dense_dtype(rhs.dtype),
                             cache=dense_solver_cache_full,
-                            key=(sig, int(op0.total_size)),
+                            key=(sig, int(op0.total_size), str(_dense_dtype(rhs.dtype))),
                         )
                         rhs_dense = jnp.asarray(rhs, dtype=_dense_dtype(rhs.dtype))
                         x_dense = dense_solver(rhs_dense)
