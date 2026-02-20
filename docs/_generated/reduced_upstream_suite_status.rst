@@ -33,10 +33,10 @@
      - NTHETA=7,NX=6,NXI=7,NZETA=10
      - 1
      - 0
-     - 0.178
-     - 3.785
-     - 141.6
-     - 3500.8
+     - 8.884
+     - 3.313
+     - 142.6
+     - 620.2
      - 0/193
      - S:0 P:0
      - 9/9
@@ -47,10 +47,10 @@
      - NTHETA=8,NX=4,NXI=8,NZETA=6
      - 1
      - 0
-     - 0.189
-     - 3.431
-     - 95.5
-     - 2011.8
+     - 0.870
+     - 3.048
+     - 99.1
+     - 584.7
      - 0/193
      - S:0 P:0
      - 9/9
@@ -58,27 +58,27 @@
    * - HSX_PASCollisions_DKESTrajectories
      - parity_ok
      - none
-     - NTHETA=12,NX=12,NXI=10,NZETA=8
+     - NTHETA=7,NX=7,NXI=6,NZETA=7
      - 1
      - 0
-     - -
-     - 18.685
-     - -
-     - 687.6
-     - 0/122
+     - 0.313
+     - 2.843
+     - 111.6
+     - 905.1
+     - 0/193
      - S:0 P:0
-     - 4/4
-     - All common numeric datasets matched tolerance. strict=0/122
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_PASCollisions_fullTrajectories
      - parity_ok
      - none
      - NTHETA=5,NX=5,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.037
-     - 2.605
-     - 103.3
-     - 618.9
+     - 0.208
+     - 2.648
+     - 103.0
+     - 594.3
      - 0/193
      - S:0 P:0
      - 9/9
@@ -89,10 +89,10 @@
      - NTHETA=6,NX=4,NXI=5,NZETA=6
      - 1
      - 0
-     - 0.112
-     - 2.020
-     - 126.4
-     - 1168.0
+     - 0.642
+     - 1.733
+     - 121.9
+     - 943.5
      - 0/193
      - S:0 P:0
      - 9/9
@@ -100,41 +100,41 @@
    * - filteredW7XNetCDF_2species_magneticDrifts_withEr
      - parity_ok
      - none
-     - NTHETA=9,NX=9,NXI=11,NZETA=7
+     - NTHETA=5,NX=5,NXI=6,NZETA=6
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 0.647
+     - 1.885
+     - 123.2
+     - 548.0
+     - 0/193
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_noEr
      - parity_ok
      - none
-     - NTHETA=20,NX=8,NXI=26,NZETA=14
+     - NTHETA=7,NX=3,NXI=8,NZETA=7
      - 1
      - 0
-     - -
-     - 110.076
-     - -
-     - 711.7
-     - 0/122
+     - 0.762
+     - 1.472
+     - 118.8
+     - 689.2
+     - 0/193
      - S:0 P:0
-     - 7/7
-     - All common numeric datasets matched tolerance. strict=0/122
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/193
    * - geometryScheme4_1species_PAS_withEr_DKESTrajectories
      - parity_ok
      - none
      - NTHETA=8,NX=4,NXI=14,NZETA=14
      - 1
      - 0
-     - 0.103
-     - 1.770
-     - 121.6
-     - 527.9
+     - 0.424
+     - 1.837
+     - 123.0
+     - 533.7
      - 0/207
      - S:0 P:0
      - 9/9
@@ -142,69 +142,69 @@
    * - geometryScheme4_2species_PAS_noEr
      - parity_ok
      - none
-     - NTHETA=5,NX=3,NXI=6,NZETA=7
+     - NTHETA=7,NX=5,NXI=12,NZETA=7
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 0.261
+     - 1.772
+     - 112.6
+     - 546.7
+     - 0/207
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/207
    * - geometryScheme4_2species_noEr
      - parity_ok
      - none
-     - NTHETA=7,NX=5,NXI=6,NZETA=7
+     - NTHETA=7,NX=5,NXI=11,NZETA=9
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 0.679
+     - 1.965
+     - 126.0
+     - 618.1
+     - 0/207
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/207
    * - geometryScheme4_2species_noEr_withPhi1InDKE
      - parity_ok
      - none
-     - NTHETA=5,NX=4,NXI=9,NZETA=5
+     - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.241
-     - -
-     - 138.3
-     - -
-     - -
+     - 0.794
+     - 1.668
+     - 120.7
+     - 482.9
+     - 0/265
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/265
    * - geometryScheme4_2species_noEr_withQN
      - parity_ok
      - none
-     - NTHETA=7,NX=4,NXI=7,NZETA=7
+     - NTHETA=5,NX=2,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.108
-     - -
-     - 122.7
-     - -
-     - -
+     - 0.615
+     - 1.602
+     - 111.0
+     - 458.0
+     - 0/265
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/265
    * - geometryScheme4_2species_withEr_fullTrajectories
      - parity_ok
      - none
      - NTHETA=5,NX=4,NXI=4,NZETA=7
      - 1
      - 0
-     - 0.045
-     - 14.399
-     - 108.4
-     - 860.3
+     - 0.692
+     - 1.679
+     - 109.3
+     - 614.3
      - 0/193
      - S:0 P:0
      - 9/9
@@ -212,27 +212,27 @@
    * - geometryScheme4_2species_withEr_fullTrajectories_withQN
      - parity_ok
      - none
-     - NTHETA=5,NX=4,NXI=4,NZETA=5
+     - NTHETA=5,NX=2,NXI=5,NZETA=5
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 0.590
+     - 1.724
+     - 117.2
+     - 521.8
+     - 0/251
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/251
    * - geometryScheme5_3species_loRes
      - parity_ok
      - none
      - NTHETA=5,NX=6,NXI=7,NZETA=7
      - 1
      - 0
-     - 0.139
-     - 2.895
-     - 149.0
-     - 2141.8
+     - 0.759
+     - 2.297
+     - 151.5
+     - 575.1
      - 0/193
      - S:0 P:0
      - 9/9
@@ -243,10 +243,10 @@
      - NTHETA=7,NX=5,NXI=5,NZETA=7
      - 1
      - 0
-     - 0.068
-     - 32.012
-     - 117.2
-     - 1634.6
+     - 0.625
+     - 1.662
+     - 118.4
+     - 844.6
      - 0/207
      - S:0 P:0
      - 9/9
@@ -257,10 +257,10 @@
      - NTHETA=15,NX=16,NXI=18,NZETA=15
      - 1
      - 0
-     - 0.116
-     - 1.853
-     - 129.2
-     - 1519.2
+     - 0.465
+     - 1.878
+     - 130.0
+     - 1519.7
      - 0/203
      - S:0 P:0
      - 9/9
@@ -268,55 +268,55 @@
    * - monoenergetic_geometryScheme11
      - parity_ok
      - none
-     - NTHETA=9,NX=1,NXI=12,NZETA=19
+     - NTHETA=7,NX=6,NXI=10,NZETA=7
      - 1
-     - 1
-     - 0.729
-     - -
-     - 186.6
-     - -
+     - 0
+     - 0.302
+     - 2.067
+     - 97.5
+     - 468.7
      - 0/208
      - S:0 P:0
-     - -
-     - Using last successful run after repeated failures.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/208
    * - monoenergetic_geometryScheme5_ASCII
      - parity_ok
      - none
-     - NTHETA=11,NX=1,NXI=12,NZETA=17
+     - NTHETA=18,NX=16,NXI=12,NZETA=16
      - 1
-     - 1
-     - -
-     - -
-     - -
-     - -
+     - 0
+     - 0.692
+     - 1.591
+     - 165.6
+     - 1428.1
      - 0/208
      - S:0 P:0
-     - -
-     - Using last successful run after repeated failures.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/208
    * - monoenergetic_geometryScheme5_netCDF
      - parity_ok
      - none
-     - NTHETA=17,NX=1,NXI=12,NZETA=17
+     - NTHETA=18,NX=16,NXI=12,NZETA=16
      - 1
-     - 1
-     - -
-     - -
-     - -
-     - -
+     - 0
+     - 0.594
+     - 1.560
+     - 160.0
+     - 1428.6
      - 0/208
      - S:0 P:0
-     - -
-     - Using last successful run after repeated failures.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/208
    * - quick_2species_FPCollisions_noEr
      - parity_ok
      - none
      - NTHETA=7,NX=5,NXI=5,NZETA=7
      - 1
      - 0
-     - 0.107
-     - 32.108
-     - 115.7
-     - 1585.3
+     - 0.469
+     - 1.671
+     - 116.6
+     - 843.1
      - 0/207
      - S:0 P:0
      - 9/9
@@ -324,55 +324,55 @@
    * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories
      - parity_ok
      - none
-     - NTHETA=8,NX=9,NXI=6,NZETA=6
+     - NTHETA=5,NX=4,NXI=4,NZETA=5
      - 1
      - 0
-     - -
-     - 18.573
-     - -
-     - 1553.9
-     - 0/134
+     - 0.361
+     - 1.487
+     - 108.7
+     - 468.1
+     - 0/207
      - S:0 P:0
-     - 4/4
-     - All common numeric datasets matched tolerance. strict=0/134
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/207
    * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories
      - parity_ok
      - none
-     - NTHETA=8,NX=9,NXI=6,NZETA=6
+     - NTHETA=7,NX=5,NXI=5,NZETA=7
      - 1
      - 0
-     - -
-     - 20.747
-     - -
-     - 1880.8
-     - 0/134
+     - 0.769
+     - 1.933
+     - 115.9
+     - 526.0
+     - 0/207
      - S:0 P:0
-     - 4/4
-     - All common numeric datasets matched tolerance. strict=0/134
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/207
    * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories
      - parity_ok
      - none
-     - NTHETA=8,NX=9,NXI=6,NZETA=6
+     - NTHETA=8,NX=5,NXI=6,NZETA=6
      - 1
      - 0
-     - -
-     - 4.619
-     - -
-     - 1559.6
-     - 0/134
+     - 0.260
+     - 1.800
+     - 110.8
+     - 827.2
+     - 0/207
      - S:0 P:0
-     - 4/4
-     - All common numeric datasets matched tolerance. strict=0/134
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/207
    * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories
      - parity_ok
      - none
      - NTHETA=5,NX=4,NXI=4,NZETA=5
      - 1
      - 0
-     - 0.014
-     - 1.490
-     - 97.1
-     - 511.3
+     - 0.207
+     - 1.537
+     - 98.4
+     - 514.0
      - 0/207
      - S:0 P:0
      - 9/9
@@ -380,69 +380,69 @@
    * - tokamak_1species_FPCollisions_noEr
      - parity_ok
      - none
-     - NTHETA=5,NX=3,NXI=6,NZETA=7
+     - NTHETA=11,NX=3,NXI=16,NZETA=5
      - 1
      - 0
-     - 2.478
-     - -
-     - 778.1
-     - -
-     - -
+     - 0.499
+     - 1.447
+     - 110.8
+     - 572.1
+     - 0/202
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/202
    * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
      - parity_ok
      - none
-     - NTHETA=9,NX=8,NXI=7,NZETA=11
+     - NTHETA=5,NX=3,NXI=4,NZETA=5
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 1.472
+     - 1.758
+     - 125.3
+     - 483.3
+     - 0/275
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/275
    * - tokamak_1species_FPCollisions_noEr_withQN
      - parity_ok
      - none
-     - NTHETA=20,NX=8,NXI=16,NZETA=5
+     - NTHETA=6,NX=2,NXI=5,NZETA=5
      - 1
      - 0
-     - -
-     - 105.906
-     - -
-     - 914.5
-     - 0/145
+     - 0.583
+     - 1.555
+     - 111.4
+     - 535.1
+     - 0/275
      - S:0 P:0
-     - 4/4
-     - All common numeric datasets matched tolerance. strict=0/145
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/275
    * - tokamak_1species_FPCollisions_withEr_DKESTrajectories
      - parity_ok
      - none
-     - NTHETA=7,NX=4,NXI=5,NZETA=7
+     - NTHETA=6,NX=4,NXI=4,NZETA=5
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 0.370
+     - 1.421
+     - 105.6
+     - 441.1
+     - 0/214
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/214
    * - tokamak_1species_FPCollisions_withEr_fullTrajectories
      - parity_ok
      - none
      - NTHETA=6,NX=8,NXI=8,NZETA=12
      - 1
      - 0
-     - 0.308
-     - 2.678
-     - 204.5
-     - 3853.8
+     - 1.502
+     - 2.388
+     - 208.5
+     - 630.1
      - 0/214
      - S:0 P:0
      - 9/9
@@ -453,10 +453,10 @@
      - NTHETA=26,NX=16,NXI=20,NZETA=1
      - 1
      - 0
-     - 0.042
-     - 11.078
-     - 127.0
-     - 6497.5
+     - 0.244
+     - 11.166
+     - 128.7
+     - 6914.1
      - 0/139
      - S:0 P:0
      - 7/7
@@ -464,83 +464,83 @@
    * - tokamak_1species_PASCollisions_noEr_Nx1
      - parity_ok
      - none
-     - NTHETA=44,NX=4,NXI=64,NZETA=5
+     - NTHETA=21,NX=2,NXI=30,NZETA=5
      - 1
      - 0
-     - -
-     - 28.520
-     - -
-     - 579.3
-     - 0/139
+     - 1.743
+     - 1.766
+     - 111.6
+     - 498.7
+     - 0/212
      - S:0 P:0
-     - 4/4
-     - All common numeric datasets matched tolerance. strict=0/139
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_1species_PASCollisions_noEr_withQN
      - parity_ok
      - none
-     - NTHETA=7,NX=5,NXI=7,NZETA=7
+     - NTHETA=5,NX=5,NXI=8,NZETA=8
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 0.520
+     - 1.925
+     - 109.0
+     - 688.8
+     - 0/275
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/275
    * - tokamak_1species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none
-     - NTHETA=33,NX=12,NXI=48,NZETA=5
+     - NTHETA=9,NX=6,NXI=12,NZETA=5
      - 1
      - 0
-     - 1.335
-     - 93.876
-     - 439.7
-     - 1636.7
-     - 0/139
+     - 1.586
+     - 1.973
+     - 125.0
+     - 601.2
+     - 0/212
      - S:0 P:0
-     - 7/7
-     - All common numeric datasets matched tolerance. strict=0/139
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_noEr
      - parity_ok
      - none
-     - NTHETA=9,NX=4,NXI=12,NZETA=9
+     - NTHETA=9,NX=2,NXI=14,NZETA=5
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 0.355
+     - 1.729
+     - 101.0
+     - 646.9
+     - 0/212
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none
-     - NTHETA=5,NX=3,NXI=6,NZETA=7
+     - NTHETA=7,NX=7,NXI=10,NZETA=7
      - 1
      - 0
-     - -
-     - -
-     - -
-     - -
-     - -
+     - 4.640
+     - 2.496
+     - 168.8
+     - 607.0
+     - 0/212
      - S:0 P:0
-     - -
-     - Using last successful run after timeout.
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/212
    * - transportMatrix_geometryScheme11
      - parity_ok
      - none
      - NTHETA=7,NX=6,NXI=12,NZETA=8
      - 1
      - 0
-     - 0.143
-     - 8.567
-     - 120.1
-     - 878.4
+     - 6.444
+     - 5.637
+     - 120.2
+     - 1166.7
      - 0/194
      - S:0 P:0
      - 9/9
@@ -551,10 +551,10 @@
      - NTHETA=5,NX=8,NXI=8,NZETA=10
      - 1
      - 0
-     - 0.142
-     - 7.634
+     - 0.624
+     - 5.106
      - 115.4
-     - 850.1
+     - 1025.9
      - 0/194
      - S:0 P:0
      - 9/9
