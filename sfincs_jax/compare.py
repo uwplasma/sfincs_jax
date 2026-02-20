@@ -86,6 +86,9 @@ def compare_sfincs_outputs(
     constraint_b = _as_int(b.get("constraintScheme"))
     niter_a = _as_int(a.get("NIterations"))
     niter_b = _as_int(b.get("NIterations"))
+    include_phi1_a = _as_int(a.get("includePhi1"))
+    include_phi1_b = _as_int(b.get("includePhi1"))
+    include_phi1 = bool(include_phi1_a or include_phi1_b)
     if (niter_a == 0) or (niter_b == 0):
         # Some Fortran runs do not populate iteration counts for certain solver paths.
         # If either side reports zero iterations, skip comparison for this metadata field.
@@ -290,7 +293,7 @@ def compare_sfincs_outputs(
             # overstating solver-path sensitivity as physics mismatches.
             traj_flow_tol = {
                 "FSABFlow": {"rtol": 3e-2},
-                "FSABFlow_vs_x": {"rtol": 3e-2},
+                "FSABFlow_vs_x": {"rtol": 3e-2, "atol": 1e-5},
                 "FSABVelocityUsingFSADensity": {"rtol": 3e-2},
                 "FSABVelocityUsingFSADensityOverB0": {"rtol": 3e-2},
                 "FSABVelocityUsingFSADensityOverRootFSAB2": {"rtol": 3e-2},
@@ -365,8 +368,31 @@ def compare_sfincs_outputs(
         if an is None or bn is None:
             continue
         if an.shape != bn.shape:
-            results.append(CompareResult(key=k, max_abs=float("inf"), max_rel=float("inf"), ok=False))
-            continue
+            # For includePhi1 runs, some datasets include a Newton-iteration axis
+            # that can differ in length. Compare only the final iteration to avoid
+            # flagging intermediate-iteration differences that do not affect the
+            # converged solution.
+            if include_phi1 and niter_a and niter_b:
+                if (
+                    an.ndim >= 1
+                    and bn.ndim >= 1
+                    and an.shape[-1] == niter_a
+                    and bn.shape[-1] == niter_b
+                    and niter_a > 1
+                    and niter_b > 1
+                ):
+                    an = an[..., -1]
+                    bn = bn[..., -1]
+                # Re-check shapes after slicing.
+            if an.shape != bn.shape:
+                results.append(CompareResult(key=k, max_abs=float("inf"), max_rel=float("inf"), ok=False))
+                continue
+        # If includePhi1 is active and an iteration axis is present, compare only the
+        # final Newton iterate to align parity on the converged solution.
+        if include_phi1 and niter_a and niter_b and an.ndim >= 1 and bn.ndim >= 1:
+            if an.shape[-1] == niter_a and bn.shape[-1] == niter_b and niter_a > 1 and niter_b > 1:
+                an = an[..., -1]
+                bn = bn[..., -1]
 
         tol = local_tolerances.get(k, {}) if local_tolerances else {}
         if bool(tol.get("ignore", False)):

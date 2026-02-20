@@ -132,10 +132,10 @@ JAX-native performance patterns used in `sfincs_jax`
 Solver defaults (Phi1 + sharding)
 ---------------------------------
 
-- **Dense Newton step for small Phi1-collision systems**: when
-  ``includePhi1InCollisionOperator = .true.`` and the linearized system is modest,
-  the Newton–Krylov inner solve uses a dense Newton step instead of GMRES. This
-  removes Krylov setup overhead and matches v3 parity for Phi1‑collision fixtures.
+- **Dense Newton step for small Phi1 systems**: when ``includePhi1 = .true.`` and
+  the linearized system is modest, the Newton–Krylov inner solve uses a dense
+  Newton step instead of GMRES. This removes Krylov setup overhead and matches
+  v3 parity for small Phi1 fixtures.
   The cutoff is ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF`` (default: ``5000``) and is applied
   in ``sfincs_jax/io.py``.
 - **Full Newton updates for Phi1 by default**: includePhi1 runs now update the
@@ -146,9 +146,17 @@ Solver defaults (Phi1 + sharding)
   The FP-specific cutoff is ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX`` (default: ``5000``),
   while generic RHSMode=1 dense fallbacks use ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``
   (default: ``400``).
-- **PAS dense fallback threshold (RHSMode=1)**: PAS/constraintScheme=2 cases use a
-  higher dense fallback ceiling (``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX``, default: ``5000``)
-  to match PETSc/MUMPS parity when Krylov stagnates on DKES trajectories.
+- **Small FP dense defaults (RHSMode=1)**: for modest system sizes, `sfincs_jax`
+  defaults to a direct dense solve for full Fokker–Planck systems to avoid expensive
+  Krylov + fallback paths while matching v3 parity. The FP cutoff is
+  ``SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF`` (default: same as
+  ``SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF``). PAS uses Krylov by default to
+  preserve parity and can be forced into dense fallback by setting
+  ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` explicitly.
+- **PAS dense fallback threshold (RHSMode=1)**: PAS/constraintScheme=2 cases now
+  disable dense fallback unless explicitly enabled via
+  ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` (or unless ``constraintScheme=0``), since
+  the dense branch can drift from PETSc-style approximate solutions in small PAS runs.
 - **Transport dense retry memory cap**: dense transport retries are only allowed if the
   estimated dense matrix stays below ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB`` (default:
   ``128`` MB) to avoid excessive memory use.
@@ -158,6 +166,60 @@ Solver defaults (Phi1 + sharding)
 - **Sharded matvec on single‑device runs**: if ``SFINCS_JAX_MATVEC_SHARD_AXIS`` is set
   but only one device is available, sharding constraints are skipped and the standard
   unsharded matvec path is used (no functional change, just a no‑op).
+
+Profiling snapshots (Feb 2026)
+------------------------------
+
+The reduced-suite profiling runs below capture the current hot spots and
+highlight where further solver work provides the best ROI. The timings were
+captured with ``SFINCS_JAX_PROFILE=1`` (wall time for the JAX run, cold start)
+and compared to the Fortran runtime from the same reduced-suite run.
+
+**PAS, tokamak, no Er (``tokamak_1species_PASCollisions_noEr``)**:
+
+- Fortran: ~0.042 s; JAX: ~3.83 s.
+- Dominant cost: RHSMode=1 solve (``rhs1_solve_done`` ~5.96 s) with PAS
+  ``xblock_tz`` preconditioner (build ~1.9 s).
+- Cheaper theta-line preconditioning was **slower** and increased peak RSS
+  (``~4.7 GB`` vs ``~1.4 GB``), so the default ``xblock_tz`` is retained.
+- Design note: the PAS collision preconditioner probe indicates weak collision-only
+  residual reduction, so the stronger x‑block preconditioner is necessary for parity.
+
+**PAS, tokamak, with Er, full trajectories
+(``tokamak_1species_PASCollisions_withEr_fullTrajectories``)**:
+
+- Fortran: ~1.34 s; JAX: ~90–95 s (current).
+- Dominant cost: RHSMode=1 GMRES with **collision preconditioner only**.
+  The PAS probe is skipped at large size (``total_size≈95k``), so no stronger
+  block preconditioner is built. The solve terminates with residual above the
+  target, but still yields parity in the reduced suite.
+- Attempts to force large block preconditioners (theta‑line, theta‑zeta, full
+  preconditioner builds) **increased runtime** or **blew up peak RSS** (>8–10 GB).
+  Experimental lighter PAS options (``point_xdiag`` and truncated‑L
+  ``xblock_tz_lmax``) are implemented but did **not** improve this case in
+  profiling; they are therefore opt‑in only. This case remains the top PAS
+  preconditioning target (see :doc:`performance_techniques`).
+
+**PAS, W7‑X paper Fig. 3 case
+(``sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories``)**:
+
+- Fortran: ~0.014 s; JAX: ~1.75 s.
+- Dominant cost: **dense RHSMode=1 solve** for a small system (``n=808``).
+  The dense shortcut improves parity and robustness but is still dominated by
+  Python/JAX overhead relative to Fortran for tiny runs.
+
+**Transport matrix, W7‑X geometryScheme=11
+(``transportMatrix_geometryScheme11``)**:
+
+- Fortran: ~0.143 s; JAX: ~8.26 s.
+- Dominant cost: RHSMode=2 ``whichRHS`` loop, each RHS falling back to a dense
+  solve after BiCGStab/GMRES retries. Dense solver caching is already active,
+  so the remaining cost is per‑RHS dense apply + matvec fallback.
+- **Update**: the new **dense batch fallback** now solves all RHS in one dense
+  factorization once a dense fallback is triggered, reducing this case to
+  ~5.1 s on the same input (single-device, cold start).
+- Next optimization target: a stronger transport preconditioner to avoid dense
+  fallbacks entirely on W7‑X geometryScheme=11 cases.
 
 Krylov solver strategy (memory + recycling)
 -------------------------------------------

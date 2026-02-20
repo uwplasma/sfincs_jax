@@ -272,6 +272,47 @@ def _resolution_from_namelist(input_path: Path, keys: Sequence[str] = RES_KEYS) 
     return out
 
 
+def _estimate_active_size_from_namelist(input_path: Path) -> int | None:
+    """Estimate active system size from resolution/species parameters."""
+    try:
+        nml = read_sfincs_input(input_path)
+    except Exception:  # noqa: BLE001
+        return None
+    res = nml.group("resolutionParameters")
+    species = nml.group("speciesParameters")
+    zs = species.get("Zs", species.get("ZS", None))
+    mhats = species.get("mHats", species.get("MHATS", None))
+    if isinstance(zs, list):
+        n_species = len(zs)
+    elif zs is not None:
+        n_species = 1
+    elif isinstance(mhats, list):
+        n_species = len(mhats)
+    elif mhats is not None:
+        n_species = 1
+    else:
+        n_species = 1
+    try:
+        n_theta = int(res.get("NTHETA", res.get("Ntheta", res.get("nTheta", 0))))
+        n_zeta = int(res.get("NZETA", res.get("Nzeta", res.get("nZeta", 0))))
+        n_x = int(res.get("NX", res.get("Nx", res.get("nX", 0))))
+        n_xi = int(res.get("NXI", res.get("Nxi", res.get("nXi", 0))))
+    except Exception:  # noqa: BLE001
+        return None
+    if n_theta <= 0 or n_zeta <= 0 or n_x <= 0 or n_xi <= 0:
+        return None
+    est = int(n_species) * n_theta * n_zeta * n_x * n_xi
+    phys = nml.group("physicsParameters")
+    use_dkes_val = phys.get("useDKESExBDrift", phys.get("useDKESExBdrift", phys.get("use_dkes_exb_drift", None)))
+    if isinstance(use_dkes_val, str):
+        use_dkes = use_dkes_val.strip().lower() in {"t", "true", "1", "yes", ".true."}
+    else:
+        use_dkes = bool(use_dkes_val) if use_dkes_val is not None else False
+    if use_dkes:
+        est *= 4
+    return est
+
+
 def _resolution_from_h5(path: Path | None) -> dict[str, int]:
     if path is None or not path.exists():
         return {}
@@ -1033,6 +1074,8 @@ def _run_case(
     strict_mismatch_solver_keys: list[str] = []
     strict_mismatch_physics_keys: list[str] = []
     scale_iters = 0
+    pre_scale_note = ""
+    pre_scale_iters = 0
     last_success: dict[str, object] | None = None
     disk_last_success: dict[str, object] | None = None
     last_dir = case_out_dir / "last_success"
@@ -1046,6 +1089,24 @@ def _run_case(
                 "fortran_log": last_dir / "sfincs_fortran.log",
                 "jax_log": last_dir / "sfincs_jax.log",
             }
+
+    if target_runtime_max_s is not None and target_runtime_max_iters > 0:
+        size_cap_env = os.environ.get("SFINCS_JAX_SUITE_SIZE_CAP", "").strip()
+        try:
+            size_cap = int(size_cap_env) if size_cap_env else (2500 if float(target_runtime_max_s) <= 20.0 else 8000)
+        except ValueError:
+            size_cap = 2500 if float(target_runtime_max_s) <= 20.0 else 8000
+        est_size = _estimate_active_size_from_namelist(dst_input)
+        while est_size is not None and est_size > size_cap and pre_scale_iters < int(target_runtime_max_iters):
+            new_res = _scale_resolution_in_place(dst_input, factor=0.7)
+            if new_res == final_res:
+                break
+            pre_scale_iters += 1
+            reductions += 1
+            final_res = new_res
+            est_size = _estimate_active_size_from_namelist(dst_input)
+        if pre_scale_iters > 0:
+            pre_scale_note = f"Pre-scaled resolution to keep estimated size <= {size_cap}."
 
     while attempts < max_attempts:
         attempts += 1
@@ -1266,6 +1327,8 @@ def _run_case(
                 jax_solver_iters_mean = float(np.mean(np.asarray(iters, dtype=np.float64)))
                 jax_solver_iters_min = int(min(iters))
                 jax_solver_iters_max = int(max(iters))
+        if pre_scale_note:
+            note = f"{note} {pre_scale_note}".strip()
         if status in {"parity_ok", "parity_mismatch"}:
             last_dir = case_out_dir / "last_success"
             last_dir.mkdir(parents=True, exist_ok=True)

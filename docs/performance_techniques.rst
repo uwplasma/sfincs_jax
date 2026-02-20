@@ -337,7 +337,8 @@ theta-line preconditioner default.
 
 Implementation: ``sfincs_jax.v3_driver`` (``use_pas_projection`` and
 ``_project_pas_f``). Control: ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`` (auto on for
-``N_\zeta=1`` tokamak-like runs and DKES-trajectory PAS cases).
+``N_\zeta=1`` tokamak-like runs **except** ``geometryScheme=1`` analytic tokamak
+cases, plus DKES-trajectory PAS cases).
 
 **Constraint-aware Schur (constraintScheme=2).** With constraint variables
 :math:`c`, the linear system is partitioned as
@@ -388,6 +389,14 @@ so difficult FP cases attempt a stronger angular block preconditioner before den
 The fallback now uses a residual-ratio gate; tune
 ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO`` (default: ``1e2``) to avoid expensive
 fallbacks when the residual is only slightly above target.
+
+For **small FP systems**, ``sfincs_jax`` now defaults to a direct dense solve
+instead of running GMRES first. This avoids JIT/Krylov overhead in cases where a
+direct solve is both faster and more robust for parity. The FP threshold is
+``SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF`` (default: same as
+``SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF``). PAS uses Krylov by default to
+preserve parity; set ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` explicitly if you want
+to re-enable dense PAS fallbacks.
 
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
@@ -456,7 +465,13 @@ so scan points can reuse the same preconditioner blocks. Controls:
 - ``SFINCS_JAX_RHSMODE1_COLLISION_SXBLOCK_MAX`` / ``SFINCS_JAX_RHSMODE1_COLLISION_XBLOCK_MAX``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN`` (auto Schur cutoff by total size)
+- ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (auto switch to the lightweight PAS x‑multigrid preconditioner for large systems; default ``50000``)
+- ``SFINCS_JAX_RHSMODE1_XMG_STRIDE`` (coarse‑x stride for the PAS x‑multigrid preconditioner)
+- ``SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN`` (auto switch to point‑block x‑diagonal preconditioner for large PAS runs; default disabled)
+- ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX`` (truncate L in PAS x‑block :math:`(\theta,\zeta)` preconditioning)
 - ``SFINCS_JAX_PRECOND_MAX_MB`` / ``SFINCS_JAX_PRECOND_CHUNK`` (cap memory during block assembly)
+- ``SFINCS_JAX_PRECOND_PAS_MAX_COLS`` (additional column cap for PAS block assembly;
+  reduces peak RSS by chunking :math:`(\theta,\zeta)` blocks)
 - ``SFINCS_JAX_PRECOND_DTYPE`` (default ``auto``; ``float32`` or ``float64`` to override)
 - ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)
 
@@ -464,11 +479,6 @@ so scan points can reuse the same preconditioner blocks. Controls:
 computed via an additional SciPy solve (to match the PETSc text). For large Krylov
 counts this can dominate runtime, so the defaults now skip these when the estimated
 iteration count exceeds ``SFINCS_JAX_KSP_HISTORY_MAX_ITER`` /
-- ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (auto switch to the lightweight PAS x‑multigrid
-  preconditioner for large systems; default ``50000``)
-- ``SFINCS_JAX_RHSMODE1_XMG_STRIDE`` (coarse‑x stride for the PAS x‑multigrid preconditioner)
-- ``SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN`` (auto switch to point‑block x‑diagonal preconditioner for large PAS runs; default disabled)
-- ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX`` (truncate L in PAS x‑block :math:`(\theta,\zeta)` preconditioning)
 ``SFINCS_JAX_SOLVER_ITER_STATS_MAX_ITER``. Raise those caps (or set to ``none``)
 only when strict per-iteration history is required.
 
@@ -486,13 +496,13 @@ construction, strong-preconditioner fallback). The output looks like:
 
    profiling: operator_built dt_s=0.42 total_s=0.42 rss_mb=512.0 drss_mb=35.0 device_mb=na
    profiling: rhs_assembled dt_s=0.08 total_s=0.50 rss_mb=515.0 drss_mb=38.0 device_mb=na
+   profiling: rhs1_precond_build_start dt_s=0.00 total_s=0.50 ...
+   profiling: rhs1_precond_build_done dt_s=1.25 total_s=1.75 ...
 
 .. [#saad86] Y. Saad and M. Schultz, “GMRES: A generalized minimal residual algorithm for
    solving nonsymmetric linear systems,” *SIAM J. Sci. Stat. Comput.* 7(3), 1986.
 .. [#benzi02] M. Benzi, “Preconditioning techniques for large linear systems: a survey,”
    *J. Comput. Phys.* 182(2), 2002.
-   profiling: rhs1_precond_build_start dt_s=0.00 total_s=0.50 ...
-   profiling: rhs1_precond_build_done dt_s=1.25 total_s=1.75 ...
 
 This is intentionally low overhead and does not require external profilers. For
 detailed JAX tracing, use ``jax.profiler`` or standard tools, but keep them off
@@ -620,10 +630,11 @@ rescue transport-matrix solves that stall.
 **Current default:**
 
 - RHSMode=1 dense fallback is **enabled for modest systems** (``total_size <= 3000``)
-  when Krylov iterations stagnate. The trigger uses the **true (unpreconditioned)**
-  residual norm so the fallback still fires even if a left-preconditioned norm
-  appears small (parity-first behavior).
-- For RHSMode=1 runs with ``includePhi1InCollisionOperator = .true.``, small systems
+  when Krylov iterations stagnate in FP cases. The trigger uses the **true
+  (unpreconditioned)** residual norm so the fallback still fires even if a
+  left-preconditioned norm appears small (parity-first behavior). PAS fallbacks
+  are disabled by default unless ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` is set.
+- For RHSMode=1 runs with ``includePhi1 = .true.``, small systems
   bypass the Newton–Krylov inner GMRES step and take a dense Newton step instead.
   This avoids GMRES setup cost and matches Fortran parity for Phi1‑collision fixtures.
   The cutoff is controlled by ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF`` (default: ``5000``).
@@ -635,8 +646,8 @@ Controls:
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX`` (default: ``400``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX`` (default: ``5000``) for full Fokker–Planck
   cases (``collisionOperator=0``).
-- ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` (default: ``5000``) for PAS/constraintScheme=2
-  cases (notably DKES trajectories).
+- ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` (default: disabled) for PAS/constraintScheme=2
+  cases (notably DKES trajectories); set a positive value to enable.
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO`` (default: ``1e2``). Dense fallback
   only triggers when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always
   allow the fallback).

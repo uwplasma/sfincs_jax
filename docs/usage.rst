@@ -172,6 +172,9 @@ performance without changing the input file:
   - ``sxblock``: species×(x,L) block at each :math:`(\theta,\zeta)` (includes inter-species coupling).
   - ``sxblock_tz``: per‑:math:`L` block over species×x×:math:`(\theta,\zeta)` (captures angular coupling).
   - ``xblock_tz``: PAS per‑:math:`x` block over :math:`(L,\theta,\zeta)` (captures angular coupling).
+  - ``xblock_tz_lmax``: PAS per‑:math:`x` block over :math:`(L,\theta,\zeta)` using only the lowest
+    ``L`` modes (see ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX``).
+  - ``point_xdiag``: point-block Jacobi with **x‑diagonal** blocks (retains xi coupling, drops x coupling).
   - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
   - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
   - ``adi``: apply the theta-line and zeta-line preconditioners sequentially (strongest of the built-ins,
@@ -186,15 +189,15 @@ performance without changing the input file:
   (:math:`L \times N_\theta \times N_\zeta`) before the PAS xblock_tz preconditioner
   is disabled in auto mode (default: ``1200``).
 
-- ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``: choose the collision preconditioner flavor
-  when ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision`` or BiCGStab preconditioning is enabled.
-
 - ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN``: for large PAS systems that request full
   preconditioning, switch to the lightweight x‑multigrid preconditioner when
   ``total_size`` exceeds this threshold (default: ``50000``).
 
 - ``SFINCS_JAX_RHSMODE1_XMG_STRIDE``: coarse‑grid stride for the RHSMode=1 x‑multigrid
   preconditioner (default: ``2``; falls back to ``SFINCS_JAX_XMG_STRIDE`` if unset).
+
+- ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_KIND``: choose the collision preconditioner flavor
+  when ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=collision`` or BiCGStab preconditioning is enabled.
 
   - ``xblock``: invert the per-species x-block for each L using the FP self-collision matrix
     (stronger for some FP cases, slightly higher apply cost).
@@ -305,11 +308,10 @@ performance without changing the input file:
   - ``right``: solve :math:`A P^{-1} y = b` and set :math:`x = P^{-1} y` (PETSc-like default for GMRES).
   - ``none``: ignore any preconditioner (debugging).
 
-- ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF``: when
-  ``includePhi1InCollisionOperator = .true.``, use a dense Newton step instead of
-  GMRES inside the Newton–Krylov solve for systems with ``total_size`` below this
-  cutoff (default: ``5000``). This improves parity and runtime for small Phi1‑collision
-  fixtures.
+- ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF``: when ``includePhi1 = .true.``, use a dense Newton
+  step instead of GMRES inside the Newton–Krylov solve for systems with ``total_size``
+  below this cutoff (default: ``5000``). This improves parity and runtime for small
+  Phi1 fixtures.
 
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1 when GMRES is selected).
@@ -381,6 +383,10 @@ performance without changing the input file:
 - ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB``: memory cap (MB) for dense transport retries. Dense
   transport solves are skipped once the estimated dense matrix exceeds this limit (default:
   ``128``).
+- ``SFINCS_JAX_TRANSPORT_DENSE_BATCH_FALLBACK``: when a dense retry is triggered for any
+  ``whichRHS`` in RHSMode=2/3 and the operator is identical across RHS, solve **all RHS in a
+  single dense batch** (default: on). Disable with ``0``/``false`` if you want per‑RHS dense
+  retries only.
 
 - ``SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE``: control constraintScheme=1 nullspace projection
   for linear RHSMode=1 solves.
@@ -391,10 +397,16 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``: enable a dense fallback solve for RHSMode=1
   when GMRES stagnates. This is only applied when the active system size is below the
   specified threshold (default: ``400``; see the FP-specific override below).
+- ``SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF``: for small full FP systems (``collisionOperator=0``),
+  `sfincs_jax` now **defaults to a direct dense solve** instead of Krylov to match
+  Fortran and avoid expensive fallback paths. This cutoff controls the active-size
+  threshold for that default (default: same as
+  ``SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX``: override the RHSMode=1 dense fallback ceiling for
   full Fokker–Planck (``collisionOperator=0``) cases (default: ``5000``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX``: override the RHSMode=1 dense fallback ceiling for
-  PAS/constraintScheme=2 cases (default: ``5000``).
+  PAS/constraintScheme=2 cases. Dense PAS fallback is **disabled by default** to
+  preserve parity; set this explicitly (e.g. ``5000``) to enable it.
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO``: only run the dense fallback when
   ``||r|| / target`` exceeds the given ratio (default: ``1e2``; set ``<= 0`` to always allow).
 - ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``: skip sparse ILU and other expensive
@@ -405,6 +417,20 @@ performance without changing the input file:
   solve if the residual ratio still exceeds ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``.
   Disable with ``0``/``false`` if you want to always attempt full GMRES first.
 - ``SFINCS_JAX_DENSE_MAX``: guardrail for dense solves (max vector size, default: ``8000``).
+- ``SFINCS_JAX_RHSMODE1_FORCE_KRYLOV``: force RHSMode=1 to stay in Krylov mode even when the
+  small-system dense defaults (FP/PAS) would otherwise trigger.
+- ``SFINCS_JAX_PRECOND_PAS_MAX_COLS``: cap the column chunk size used when assembling
+  PAS RHSMode=1 block preconditioners from matvecs. Lowering this reduces peak
+  RSS during preconditioner assembly at the cost of extra matvecs (default: ``64``).
+
+- ``SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN``: for large PAS systems that request a full
+  preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
+  prefer a **point‑block x‑diagonal** preconditioner over collision‑only when
+  ``total_size`` exceeds this threshold (default: ``1e9``; effectively disabled unless
+  you opt in). This is an experimental cheaper alternative to full PAS block preconditioners.
+- ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX``: truncate the L dimension used by the
+  PAS ``xblock_tz`` preconditioner (or ``xblock_tz_lmax``), reducing block size.
+  This is used automatically for large PAS runs when ``xblock_tz_lmax`` is selected.
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE``: constraintScheme=2 Schur preconditioner mode
   (``auto``/``diag``/``full``). ``auto`` selects a dense Schur complement when the
@@ -492,8 +518,9 @@ performance without changing the input file:
   normalized flux-surface-average constraint on ``L=0``; sources are recovered from the
   projected residual).
 
-  - ``auto`` (default): enable for tokamak-like cases with ``N_zeta=1`` **and** for
-    DKES-trajectory runs, unless a fully coupled preconditioner is requested
+  - ``auto`` (default): enable for tokamak-like cases with ``N_zeta=1`` (excluding
+    ``geometryScheme=1`` analytic tokamak inputs) **and** for DKES-trajectory runs,
+    unless a fully coupled preconditioner is requested
     (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``), since those
     cases converge without projection and match Fortran more strictly.
   - ``1``/``true``: force enable for all PAS ``constraintScheme=2`` cases.

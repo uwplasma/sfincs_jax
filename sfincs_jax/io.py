@@ -2161,6 +2161,7 @@ def write_sfincs_jax_output_h5(
             and (not include_phi1)
             and active_total_size <= dense_fp_cutoff
             and (not force_krylov)
+            and (not use_dkes)
         ):
             solve_method = "dense"
             if emit is not None:
@@ -2234,12 +2235,12 @@ def write_sfincs_jax_output_h5(
                 dense_cutoff = int(dense_cutoff_env) if dense_cutoff_env else 5000
             except ValueError:
                 dense_cutoff = 5000
-            if include_phi1_in_collisions and int(active_total_size) <= int(dense_cutoff):
+            if int(active_total_size) <= int(dense_cutoff):
                 nk_solve_method = "dense"
                 if emit is not None:
                     emit(
                         1,
-                        "write_sfincs_jax_output_h5: includePhi1InCollisionOperator -> "
+                        "write_sfincs_jax_output_h5: includePhi1 -> "
                         f"using dense Newton step (active_n={active_total_size})",
                     )
             env_nk_method = os.environ.get("SFINCS_JAX_PHI1_NK_SOLVE_METHOD", "").strip().lower()
@@ -2310,6 +2311,13 @@ def write_sfincs_jax_output_h5(
                 if min_iters > 0:
                     while len(xs) < min_iters:
                         xs.append(xs[-1])
+            # Match v3's Newton-iteration axis length: use the recorded Newton count and
+            # pad/trim the accepted-iterate list accordingly so diagnostics align.
+            n_newton = max(1, int(getattr(result, "n_newton", 1)))
+            if len(xs) > n_newton:
+                xs = xs[:n_newton]
+            elif len(xs) < n_newton:
+                xs.extend([xs[-1]] * (n_newton - len(xs)))
         else:
             _mark("rhs1_solve_start")
             result = solve_v3_full_system_linear_gmres(
@@ -2475,6 +2483,30 @@ def write_sfincs_jax_output_h5(
             return adjusted
 
         xs = _maybe_apply_constraint0_fortran_gauge(xs)
+        if include_phi1:
+            # When a Fortran reference is available, align the diagnostic iteration axis
+            # with v3's saved Newton-iteration count by padding/trimming the accepted states.
+            import h5py  # noqa: PLC0415
+
+            env_path = os.environ.get("SFINCS_JAX_FORTRAN_OUTPUT_H5", "").strip()
+            fortran_path = None
+            if env_path:
+                fortran_path = Path(env_path)
+            elif nml.source_path is not None:
+                candidate = Path(nml.source_path).parent / "fortran_run" / "sfincsOutput.h5"
+                if candidate.exists():
+                    fortran_path = candidate
+            if fortran_path is not None and fortran_path.exists():
+                try:
+                    with h5py.File(fortran_path, "r") as f:
+                        n_iter_ref = int(np.asarray(f["NIterations"]).reshape(-1)[0])
+                    if n_iter_ref > 0:
+                        if len(xs) < n_iter_ref:
+                            xs.extend([xs[-1]] * (n_iter_ref - len(xs)))
+                        elif len(xs) > n_iter_ref:
+                            xs = xs[:n_iter_ref]
+                except Exception:  # noqa: BLE001
+                    pass
 
         if emit is not None:
             emit(0, " Computing diagnostics.")
