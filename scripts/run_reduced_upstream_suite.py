@@ -902,7 +902,7 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         lines.append("- Tolerances: practical mode applies per-case `*.compare_tolerances.json` when present.\n\n")
     lines.append(".. list-table:: Reduced-resolution upstream suite parity status\n")
     lines.append("   :header-rows: 1\n")
-    lines.append("   :widths: 23 9 16 10 7 7 10 10 9 9 10 11 13 12 16\n\n")
+    lines.append("   :widths: 23 9 16 10 7 7 10 10 9 9 11 13 12 16\n\n")
     lines.append("   * - Case\n")
     lines.append("     - Status\n")
     lines.append("     - Blocker\n")
@@ -913,7 +913,6 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
     lines.append("     - JAX(s)\n")
     lines.append("     - Fortran MB\n")
     lines.append("     - JAX MB\n")
-    lines.append("     - JAX iters\n")
     lines.append("     - Mismatches\n")
     lines.append("     - Buckets\n")
     lines.append("     - Print parity\n")
@@ -939,14 +938,6 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         mm = f"{n_bad}/{n_common}" if n_common > 0 else "-"
         buckets = f"S:{n_solver} P:{n_physics}"
         pp = f"{row.print_parity_signals}/{row.print_parity_total}" if row.print_parity_total > 0 else "-"
-        iters = "-"
-        if row.jax_solver_iters_n > 0 and row.jax_solver_iters_mean is not None:
-            if row.jax_solver_iters_n == 1:
-                iters = f"{int(round(row.jax_solver_iters_mean))}"
-            else:
-                min_iter = row.jax_solver_iters_min if row.jax_solver_iters_min is not None else 0
-                max_iter = row.jax_solver_iters_max if row.jax_solver_iters_max is not None else 0
-                iters = f"{row.jax_solver_iters_mean:.1f} ({min_iter}-{max_iter})"
         lines.append(f"   * - {row.case}\n")
         lines.append(f"     - {mode_status}\n")
         lines.append(f"     - {row.blocker_type}\n")
@@ -957,7 +948,6 @@ def _write_rst(rows: list[CaseResult], out_path: Path, *, strict: bool) -> None:
         lines.append(f"     - {jt}\n")
         lines.append(f"     - {fm}\n")
         lines.append(f"     - {jm}\n")
-        lines.append(f"     - {iters}\n")
         lines.append(f"     - {mm}\n")
         lines.append(f"     - {buckets}\n")
         lines.append(f"     - {pp}\n")

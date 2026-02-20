@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
+import html
 import json
 from pathlib import Path
 
@@ -19,7 +20,36 @@ def _load(path: Path) -> dict[str, dict]:
     return {row["case"]: row for row in data}
 
 
-def _format_row(case: str, row: dict, row_strict: dict | None) -> str:
+def _short_case(case: str) -> str:
+    short = case
+    replacements = [
+        ("sfincsPaperFigure3", "paper3"),
+        ("transportMatrix", "TM"),
+        ("geometryScheme", "geom"),
+        ("FPCollisions", "FP"),
+        ("PASCollisions", "PAS"),
+        ("DKESTrajectories", "DKES"),
+        ("fullTrajectories", "full"),
+        ("magneticDrifts", "magDrift"),
+        ("filteredW7XNetCDF", "W7XnetCDF"),
+        ("monoenergetic", "mono"),
+        ("tokamak", "toka"),
+        ("1species", "1sp"),
+        ("2species", "2sp"),
+        ("3species", "3sp"),
+        ("withPhi1InDKE", "Phi1"),
+        ("withEr", "Er"),
+        ("noEr", "noEr"),
+        ("withQN", "QN"),
+        ("_geometryScheme", "_geom"),
+        ("scheme", "sch"),
+    ]
+    for old, new in replacements:
+        short = short.replace(old, new)
+    return short
+
+
+def _format_row(case: str, row: dict, row_strict: dict | None, *, short_case: str) -> str:
     n_common = int(row.get("n_common_keys", 0))
     n_bad = int(row.get("n_mismatch_common", 0))
     if row_strict is None:
@@ -49,23 +79,11 @@ def _format_row(case: str, row: dict, row_strict: dict | None) -> str:
     fm_s = "-" if fm is None else f"{float(fm):.1f}"
     jm_s = "-" if jm is None else f"{float(jm):.1f}"
 
-    iters_n = int(row.get("jax_solver_iters_n", 0) or 0)
-    iters_mean = row.get("jax_solver_iters_mean")
-    iters_min = row.get("jax_solver_iters_min")
-    iters_max = row.get("jax_solver_iters_max")
-    if iters_n > 0 and iters_mean is not None:
-        if iters_n == 1:
-            iters_s = f"{int(round(float(iters_mean)))}"
-        else:
-            min_val = int(iters_min) if iters_min is not None else 0
-            max_val = int(iters_max) if iters_max is not None else 0
-            iters_s = f"{float(iters_mean):.1f} ({min_val}-{max_val})"
-    else:
-        iters_s = "-"
-
+    label = html.escape(short_case)
+    full = html.escape(case)
+    case_cell = label if label == full else f'<span title="{full}">{label}</span>'
     return (
-        f"| {case} | sfincsOutput.h5, sfincs.log | sfincsOutput_jax.h5, sfincs_jax.log | "
-        f"{ft_s} | {jt_s} | {fm_s} | {jm_s} | {iters_s} | {mismatch} | {pp} |"
+        f"| {case_cell} | {ft_s} | {jt_s} | {fm_s} | {jm_s} | {mismatch} | {pp} |"
     )
 
 
@@ -75,12 +93,21 @@ def main() -> int:
     rows = _load(REPORT)
     rows_strict = _load(REPORT_STRICT) if REPORT_STRICT.exists() else {}
 
+    short_names = {case: _short_case(case) for case in rows}
+    collisions: dict[str, list[str]] = {}
+    for case, short in short_names.items():
+        collisions.setdefault(short, []).append(case)
+    for short, cases in collisions.items():
+        if len(cases) > 1:
+            for case in cases:
+                short_names[case] = case
+
     table_lines = [
-        "| Case | Fortran outputs | sfincs_jax outputs | Fortran(s) | sfincs_jax(s) | Fortran MB | sfincs_jax MB | JAX iters | Mismatches (practical/strict) | Print parity |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+        "| Case | Fortran(s) | sfincs_jax(s) | Fortran MB | sfincs_jax MB | Mismatches (practical/strict) | Print parity |",
+        "| --- | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for case in sorted(rows):
-        table_lines.append(_format_row(case, rows[case], rows_strict.get(case)))
+        table_lines.append(_format_row(case, rows[case], rows_strict.get(case), short_case=short_names[case]))
 
     readme = README.read_text()
     if BEGIN not in readme or END not in readme:
