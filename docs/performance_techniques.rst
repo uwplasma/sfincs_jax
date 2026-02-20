@@ -127,6 +127,7 @@ and enable persistent compilation caching for repeated runs.
   persistent cache via ``--jax-cache-dir``.
 - The CLI defaults to a user cache directory (``~/.cache/sfincs_jax/jax_compilation_cache``)
   and enables ``jax.experimental.compilation_cache`` automatically unless disabled.
+- You can override the default directory with ``SFINCS_JAX_COMPILATION_CACHE_DIR``.
 - Command-line subcommands lazily import heavy modules to reduce startup overhead.
 
 **Why it’s fast.**
@@ -143,6 +144,31 @@ workflow-style runs (parameter scans, repeated transport matrices).
 
 Fortran has no JIT overhead but also no fusion; JAX replaces repeated Python-side
 dispatch with compiled kernels.
+
+Geometry/output caching
+-----------------------
+
+**Technique.** Cache geometry arrays and expensive output-only quantities on disk
+so repeated cases that share the same equilibrium file reuse the computed data.
+
+**Implementation.**
+
+- ``sfincs_jax.v3.geometry_from_namelist`` persists the full ``BoozerGeometry`` arrays
+  to ``~/.cache/sfincs_jax/geometry_cache`` by default.
+- ``sfincs_jax.io.sfincs_jax_output_dict`` caches expensive output-only fields
+  (``gpsiHatpsiHat``, ``uHat``, ``diotadpsiHat``) in
+  ``~/.cache/sfincs_jax/output_cache``.
+- Disable with ``SFINCS_JAX_GEOMETRY_CACHE=0`` / ``SFINCS_JAX_OUTPUT_CACHE=0`` or
+  skip disk persistence with ``SFINCS_JAX_GEOMETRY_CACHE_PERSIST=0`` /
+  ``SFINCS_JAX_OUTPUT_CACHE_PERSIST=0``.
+- Override cache roots with ``SFINCS_JAX_GEOMETRY_CACHE_DIR`` and
+  ``SFINCS_JAX_OUTPUT_CACHE_DIR``.
+
+**Impact.**
+
+Reduces ``sfincs_jax_output_dict`` time substantially for repeated runs on the
+same equilibrium, especially HSX/W7-X cases where ``gpsiHatpsiHat`` and ``uHat``
+are otherwise recomputed each run.
 
 Active-DOF reduction (sparse pitch grid)
 ----------------------------------------

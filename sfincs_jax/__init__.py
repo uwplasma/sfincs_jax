@@ -10,12 +10,30 @@ from __future__ import annotations
 # user explicitly disables it. This improves cold-start performance without
 # requiring environment configuration.
 import os
+import tempfile
 
 _disable_cache = os.environ.get("SFINCS_JAX_DISABLE_COMPILATION_CACHE", "").strip().lower()
 if _disable_cache not in {"1", "true", "yes", "on"}:
     if not os.environ.get("JAX_COMPILATION_CACHE_DIR", "").strip():
-        default_cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "sfincs_jax", "jax_compilation_cache")
-        os.environ["JAX_COMPILATION_CACHE_DIR"] = default_cache_dir
+        cache_override = os.environ.get("SFINCS_JAX_COMPILATION_CACHE_DIR", "").strip()
+        if cache_override:
+            default_cache_dir = cache_override
+        else:
+            xdg_cache = os.environ.get("XDG_CACHE_HOME", "").strip()
+            if xdg_cache:
+                default_cache_dir = os.path.join(xdg_cache, "sfincs_jax", "jax_compilation_cache")
+            else:
+                default_cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "sfincs_jax", "jax_compilation_cache")
+        try:
+            os.makedirs(default_cache_dir, exist_ok=True)
+        except OSError:
+            default_cache_dir = os.path.join(tempfile.gettempdir(), "sfincs_jax", "jax_compilation_cache")
+            try:
+                os.makedirs(default_cache_dir, exist_ok=True)
+            except OSError:
+                default_cache_dir = ""
+        if default_cache_dir:
+            os.environ["JAX_COMPILATION_CACHE_DIR"] = default_cache_dir
         os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
         os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
 

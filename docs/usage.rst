@@ -369,6 +369,22 @@ performance without changing the input file:
 
 - ``JAX_COMPILATION_CACHE_DIR``: set a persistent compilation cache directory to reuse compiled
   artifacts across runs (recommended for reduced-suite and batch runs).
+- ``SFINCS_JAX_COMPILATION_CACHE_DIR``: convenience override for the default cache path when
+  ``JAX_COMPILATION_CACHE_DIR`` is not set.
+
+- ``SFINCS_JAX_GEOMETRY_CACHE``: enable/disable the geometry cache in ``geometry_from_namelist``
+  (default: enabled).
+- ``SFINCS_JAX_GEOMETRY_CACHE_PERSIST``: control persistent on‑disk geometry caching
+  (default: enabled).
+- ``SFINCS_JAX_GEOMETRY_CACHE_DIR``: override the geometry cache directory
+  (default: ``~/.cache/sfincs_jax/geometry_cache``).
+
+- ``SFINCS_JAX_OUTPUT_CACHE``: enable/disable caching of expensive output-only geometry fields
+  (default: enabled).
+- ``SFINCS_JAX_OUTPUT_CACHE_PERSIST``: control persistent on‑disk output caching
+  (default: enabled).
+- ``SFINCS_JAX_OUTPUT_CACHE_DIR``: override the output cache directory
+  (default: ``~/.cache/sfincs_jax/output_cache``).
 
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_K``: recycle up to ``k`` previous Krylov solution vectors across
   successive ``whichRHS`` solves in transport-matrix runs. Set to ``0`` to disable.

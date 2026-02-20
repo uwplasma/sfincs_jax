@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -38,6 +39,100 @@ class ExportFConfig:
     n_export_x: int
     n_export_xi: int
     map_theta: np.ndarray
+
+
+_OUTPUT_GEOM_CACHE: dict[tuple[object, ...], dict[str, np.ndarray]] = {}
+_OUTPUT_CACHE_FIELDS = ("gpsiHatpsiHat", "uHat", "diotadpsiHat")
+
+
+def _output_cache_enabled() -> bool:
+    cache_env = os.environ.get("SFINCS_JAX_OUTPUT_CACHE", "").strip().lower()
+    if cache_env in {"0", "false", "no", "off"}:
+        return False
+    persist_env = os.environ.get("SFINCS_JAX_OUTPUT_CACHE_PERSIST", "").strip().lower()
+    if persist_env in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _output_cache_dir() -> Path | None:
+    cache_dir_env = os.environ.get("SFINCS_JAX_OUTPUT_CACHE_DIR", "").strip()
+    if cache_dir_env:
+        cache_dir = Path(cache_dir_env).expanduser()
+    else:
+        xdg_cache = os.environ.get("XDG_CACHE_HOME", "").strip()
+        if xdg_cache:
+            cache_dir = Path(xdg_cache) / "sfincs_jax" / "output_cache"
+        else:
+            cache_dir = Path.home() / ".cache" / "sfincs_jax" / "output_cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return cache_dir
+
+
+def _output_cache_path(cache_key: tuple[object, ...]) -> Path | None:
+    cache_dir = _output_cache_dir()
+    if cache_dir is None:
+        return None
+    digest = hashlib.blake2b(repr(cache_key).encode("utf-8"), digest_size=16).hexdigest()
+    return cache_dir / f"output_geom_{digest}.npz"
+
+
+def _hashable_value(val) -> object:
+    if isinstance(val, list):
+        return tuple(_hashable_value(v) for v in val)
+    if isinstance(val, dict):
+        return tuple(sorted((str(k), _hashable_value(v)) for k, v in val.items()))
+    return val
+
+
+def _output_geom_cache_key(*, nml: Namelist, grids: V3Grids) -> tuple[object, ...] | None:
+    geom_params = nml.group("geometryParameters")
+    geometry_scheme = int(_get_int(geom_params, "geometryScheme", -1))
+    geom_key = tuple(sorted((str(k).upper(), _hashable_value(v)) for k, v in geom_params.items()))
+    grid_key = (int(grids.theta.size), int(grids.zeta.size))
+    eq_key = None
+    if geometry_scheme in {5, 11, 12}:
+        try:
+            eq_path = _resolve_equilibrium_file_from_namelist(nml=nml)
+            st = eq_path.stat()
+            eq_key = (str(eq_path), int(st.st_mtime_ns), int(st.st_size))
+        except Exception:  # noqa: BLE001
+            eq_key = None
+    return ("output_geom", geometry_scheme, geom_key, eq_key, grid_key)
+
+
+def _load_output_cache(cache_key: tuple[object, ...]) -> dict[str, np.ndarray] | None:
+    if not _output_cache_enabled():
+        return None
+    path = _output_cache_path(cache_key)
+    if path is None or not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if int(np.asarray(data.get("cache_version", 0)).reshape(())) != 1:
+                return None
+            return {k: np.asarray(data[k]) for k in data.files if k in _OUTPUT_CACHE_FIELDS}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_output_cache(cache_key: tuple[object, ...], payload: dict[str, np.ndarray]) -> None:
+    if not _output_cache_enabled():
+        return
+    path = _output_cache_path(cache_key)
+    if path is None:
+        return
+    try:
+        data = {"cache_version": np.asarray(1, dtype=np.int32)}
+        for field in _OUTPUT_CACHE_FIELDS:
+            if field in payload:
+                data[field] = np.asarray(payload[field])
+        np.savez_compressed(path, **data)
+    except Exception:
+        return
     map_zeta: np.ndarray
     map_x: np.ndarray
     map_xi: np.ndarray
@@ -1325,6 +1420,20 @@ def sfincs_jax_output_dict(
             "sfincs_jax sfincsOutput writing currently supports geometryScheme in {1,2,4,5,11,12} only."
         )
 
+    output_cache_key = _output_geom_cache_key(nml=nml, grids=grids) if _output_cache_enabled() else None
+    output_cache_payload: dict[str, np.ndarray] | None = None
+    output_cache_dirty = False
+    if output_cache_key is not None:
+        output_cache_payload = _OUTPUT_GEOM_CACHE.get(output_cache_key)
+        if output_cache_payload is None:
+            output_cache_payload = _load_output_cache(output_cache_key)
+            if output_cache_payload is not None:
+                _OUTPUT_GEOM_CACHE[output_cache_key] = output_cache_payload
+        if output_cache_payload is not None:
+            output_cache_payload = dict(output_cache_payload)
+        else:
+            output_cache_payload = {}
+
     if geom is None:
         geom = geometry_from_namelist(nml=nml, grids=grids)
     geom_for_uhat = geom
@@ -1695,27 +1804,36 @@ def sfincs_jax_output_dict(
         out["IHat"] = np.asarray(float(geom.i_hat), dtype=np.float64)
     out["VPrimeHat"] = np.asarray(float(np.asarray(vprime_hat_jax(grids=grids, geom=geom), dtype=np.float64)), dtype=np.float64)
     out["FSABHat2"] = np.asarray(float(np.asarray(fsab_hat2_jax(grids=grids, geom=geom), dtype=np.float64)), dtype=np.float64)
-    if geometry_scheme in {11, 12}:
-        r_n_wish = float(r_n_wish)
-        vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
-        out["gpsiHatpsiHat"] = _gpsipsi_from_bc_file(
-            nml=nml,
-            grids=grids,
-            geom=geom,
-            r_n_wish=r_n_wish,
-            vmecradial_option=int(vmecradial_option),
-            geometry_scheme=int(geometry_scheme),
-        )
-    elif geometry_scheme == 5:
-        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
-        out["gpsiHatpsiHat"] = _gpsipsi_from_wout_file(
-            nml=nml,
-            grids=grids,
-            psi_n_wish=float(psi_n_wish),
-            vmec_radial_option=int(vmec_radial_option),
-        )
+    cached_gpsi = None
+    if output_cache_payload is not None:
+        cached_gpsi = output_cache_payload.get("gpsiHatpsiHat")
+    if cached_gpsi is not None:
+        out["gpsiHatpsiHat"] = np.asarray(cached_gpsi, dtype=np.float64)
     else:
-        out["gpsiHatpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+        if geometry_scheme in {11, 12}:
+            r_n_wish = float(r_n_wish)
+            vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
+            out["gpsiHatpsiHat"] = _gpsipsi_from_bc_file(
+                nml=nml,
+                grids=grids,
+                geom=geom,
+                r_n_wish=r_n_wish,
+                vmecradial_option=int(vmecradial_option),
+                geometry_scheme=int(geometry_scheme),
+            )
+        elif geometry_scheme == 5:
+            vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
+            out["gpsiHatpsiHat"] = _gpsipsi_from_wout_file(
+                nml=nml,
+                grids=grids,
+                psi_n_wish=float(psi_n_wish),
+                vmec_radial_option=int(vmec_radial_option),
+            )
+        else:
+            out["gpsiHatpsiHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+        if output_cache_key is not None and output_cache_payload is not None:
+            output_cache_payload["gpsiHatpsiHat"] = out["gpsiHatpsiHat"]
+            output_cache_dirty = True
 
     bdotcurlb = (
         np.asarray(geom.d_hat, dtype=np.float64)
@@ -1749,33 +1867,55 @@ def sfincs_jax_output_dict(
     out["BHat_sup_zeta"] = np.asarray(geom.b_hat_sup_zeta, dtype=np.float64)
     out["dBHat_sup_zeta_dpsiHat"] = np.asarray(geom.db_hat_sup_zeta_dpsi_hat, dtype=np.float64)
     out["dBHat_sup_zeta_dtheta"] = np.asarray(geom.db_hat_sup_zeta_dtheta, dtype=np.float64)
-    diotadpsi_hat = 0.0
-    if geometry_scheme in {11, 12}:
-        # Compute diotadpsiHat from the bracketing surfaces (v3 uses nearby radii for 11/12).
-        p = _resolve_equilibrium_file_from_namelist(nml=nml)
-        header, surf_old, surf_new = read_boozer_bc_bracketing_surfaces(
-            path=p, geometry_scheme=int(geometry_scheme), r_n_wish=float(r_n_wish)
-        )
-        delta_psi_hat = float(header.psi_a_hat) * (
-            float(surf_new.r_n) * float(surf_new.r_n) - float(surf_old.r_n) * float(surf_old.r_n)
-        )
-        # Toroidal direction sign switch: iota -> -iota, matching v3.
-        diotadpsi_hat = (-(float(surf_new.iota)) - (-(float(surf_old.iota)))) / float(delta_psi_hat)
-    elif geometry_scheme == 5:
-        if w_vmec is None:
-            raise RuntimeError("Internal error: missing VMEC wout handle for geometryScheme=5.")
-        vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
-        interp = vmec_interpolation(w=w_vmec, psi_n_wish=float(psi_n_wish), vmec_radial_option=int(vmec_radial_option))
-        j0, j1 = interp.index_half
-        dpsi_n = float(interp.psi_n_half[j1 - 1] - interp.psi_n_half[j0 - 1])
-        if dpsi_n != 0.0:
-            diotadpsi_hat = float(w_vmec.iotas[j1] - w_vmec.iotas[j0]) / dpsi_n / float(psi_a_hat)
-    out["diotadpsiHat"] = np.asarray(float(diotadpsi_hat), dtype=np.float64)
-
-    if compute_u_hat:
-        out["uHat"] = np.asarray(u_hat_np(grids=grids, geom=geom_for_uhat), dtype=np.float64)
+    cached_diotadpsi = None
+    if output_cache_payload is not None:
+        cached_diotadpsi = output_cache_payload.get("diotadpsiHat")
+    if cached_diotadpsi is not None:
+        out["diotadpsiHat"] = np.asarray(cached_diotadpsi, dtype=np.float64)
     else:
-        out["uHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+        diotadpsi_hat = 0.0
+        if geometry_scheme in {11, 12}:
+            # Compute diotadpsiHat from the bracketing surfaces (v3 uses nearby radii for 11/12).
+            p = _resolve_equilibrium_file_from_namelist(nml=nml)
+            header, surf_old, surf_new = read_boozer_bc_bracketing_surfaces(
+                path=p, geometry_scheme=int(geometry_scheme), r_n_wish=float(r_n_wish)
+            )
+            delta_psi_hat = float(header.psi_a_hat) * (
+                float(surf_new.r_n) * float(surf_new.r_n) - float(surf_old.r_n) * float(surf_old.r_n)
+            )
+            # Toroidal direction sign switch: iota -> -iota, matching v3.
+            diotadpsi_hat = (-(float(surf_new.iota)) - (-(float(surf_old.iota)))) / float(delta_psi_hat)
+        elif geometry_scheme == 5:
+            if w_vmec is None:
+                raise RuntimeError("Internal error: missing VMEC wout handle for geometryScheme=5.")
+            vmec_radial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
+            interp = vmec_interpolation(w=w_vmec, psi_n_wish=float(psi_n_wish), vmec_radial_option=int(vmec_radial_option))
+            j0, j1 = interp.index_half
+            dpsi_n = float(interp.psi_n_half[j1 - 1] - interp.psi_n_half[j0 - 1])
+            if dpsi_n != 0.0:
+                diotadpsi_hat = float(w_vmec.iotas[j1] - w_vmec.iotas[j0]) / dpsi_n / float(psi_a_hat)
+        out["diotadpsiHat"] = np.asarray(float(diotadpsi_hat), dtype=np.float64)
+        if output_cache_key is not None and output_cache_payload is not None:
+            output_cache_payload["diotadpsiHat"] = out["diotadpsiHat"]
+            output_cache_dirty = True
+
+    cached_uhat = None
+    if output_cache_payload is not None:
+        cached_uhat = output_cache_payload.get("uHat")
+    if cached_uhat is not None:
+        out["uHat"] = np.asarray(cached_uhat, dtype=np.float64)
+    else:
+        if compute_u_hat:
+            out["uHat"] = np.asarray(u_hat_np(grids=grids, geom=geom_for_uhat), dtype=np.float64)
+        else:
+            out["uHat"] = np.zeros_like(np.asarray(geom.b_hat, dtype=np.float64))
+        if output_cache_key is not None and output_cache_payload is not None and compute_u_hat:
+            output_cache_payload["uHat"] = out["uHat"]
+            output_cache_dirty = True
+
+    if output_cache_key is not None and output_cache_payload is not None and output_cache_dirty:
+        _OUTPUT_GEOM_CACHE[output_cache_key] = output_cache_payload
+        _save_output_cache(output_cache_key, output_cache_payload)
 
     # Classical transport (v3 `classicalTransport.F90`).
     #

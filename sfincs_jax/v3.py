@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 from dataclasses import dataclass
@@ -103,6 +104,125 @@ def _equilibrium_file_key(*, nml: Namelist, geometry_scheme: int, geom_group: di
 
 _GRIDS_CACHE: dict[tuple[object, ...], V3Grids] = {}
 _GEOMETRY_CACHE: dict[tuple[object, ...], BoozerGeometry] = {}
+
+_GEOMETRY_CACHE_FIELDS = (
+    "b_hat",
+    "db_hat_dtheta",
+    "db_hat_dzeta",
+    "d_hat",
+    "b_hat_sup_theta",
+    "b_hat_sup_zeta",
+    "b_hat_sub_theta",
+    "b_hat_sub_zeta",
+    "b_hat_sub_psi",
+    "db_hat_dpsi_hat",
+    "db_hat_sub_psi_dtheta",
+    "db_hat_sub_psi_dzeta",
+    "db_hat_sub_theta_dpsi_hat",
+    "db_hat_sub_zeta_dpsi_hat",
+    "db_hat_sub_theta_dzeta",
+    "db_hat_sub_zeta_dtheta",
+    "db_hat_sup_theta_dpsi_hat",
+    "db_hat_sup_theta_dzeta",
+    "db_hat_sup_zeta_dpsi_hat",
+    "db_hat_sup_zeta_dtheta",
+)
+
+
+def _geometry_cache_dir() -> Path | None:
+    cache_dir_env = os.environ.get("SFINCS_JAX_GEOMETRY_CACHE_DIR", "").strip()
+    if cache_dir_env:
+        cache_dir = Path(cache_dir_env).expanduser()
+    else:
+        xdg_cache = os.environ.get("XDG_CACHE_HOME", "").strip()
+        if xdg_cache:
+            cache_dir = Path(xdg_cache) / "sfincs_jax" / "geometry_cache"
+        else:
+            cache_dir = Path.home() / ".cache" / "sfincs_jax" / "geometry_cache"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return cache_dir
+
+
+def _geometry_cache_enabled() -> bool:
+    cache_env = os.environ.get("SFINCS_JAX_GEOMETRY_CACHE", "").strip().lower()
+    if cache_env in {"0", "false", "no", "off"}:
+        return False
+    persist_env = os.environ.get("SFINCS_JAX_GEOMETRY_CACHE_PERSIST", "").strip().lower()
+    if persist_env in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _geometry_cache_path(cache_key: tuple[object, ...]) -> Path | None:
+    cache_dir = _geometry_cache_dir()
+    if cache_dir is None:
+        return None
+    digest = hashlib.blake2b(repr(cache_key).encode("utf-8"), digest_size=16).hexdigest()
+    return cache_dir / f"geom_{digest}.npz"
+
+
+def _geometry_to_cache_payload(geom: BoozerGeometry, cache_key: tuple[object, ...]) -> dict[str, np.ndarray]:
+    payload: dict[str, np.ndarray] = {
+        "cache_version": np.asarray(1, dtype=np.int32),
+        "cache_key": np.asarray(repr(cache_key)),
+        "n_periods": np.asarray(int(geom.n_periods), dtype=np.int32),
+        "b0_over_bbar": np.asarray(float(geom.b0_over_bbar), dtype=np.float64),
+        "iota": np.asarray(float(geom.iota), dtype=np.float64),
+        "g_hat": np.asarray(float(geom.g_hat), dtype=np.float64),
+        "i_hat": np.asarray(float(geom.i_hat), dtype=np.float64),
+    }
+    for field in _GEOMETRY_CACHE_FIELDS:
+        payload[field] = np.asarray(getattr(geom, field), dtype=np.float64)
+    return payload
+
+
+def _geometry_from_cache_payload(data: dict[str, np.ndarray]) -> BoozerGeometry | None:
+    if int(np.asarray(data.get("cache_version", 0)).reshape(())) != 1:
+        return None
+    try:
+        geom_kwargs = {
+            "n_periods": int(np.asarray(data["n_periods"]).reshape(())),
+            "b0_over_bbar": float(np.asarray(data["b0_over_bbar"]).reshape(())),
+            "iota": float(np.asarray(data["iota"]).reshape(())),
+            "g_hat": float(np.asarray(data["g_hat"]).reshape(())),
+            "i_hat": float(np.asarray(data["i_hat"]).reshape(())),
+        }
+    except Exception:  # noqa: BLE001
+        return None
+    for field in _GEOMETRY_CACHE_FIELDS:
+        if field not in data:
+            return None
+        geom_kwargs[field] = jnp.asarray(data[field], dtype=jnp.float64)
+    return BoozerGeometry(**geom_kwargs)
+
+
+def _load_geometry_cache(cache_key: tuple[object, ...]) -> BoozerGeometry | None:
+    if not _geometry_cache_enabled():
+        return None
+    path = _geometry_cache_path(cache_key)
+    if path is None or not path.exists():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            return _geometry_from_cache_payload({k: data[k] for k in data.files})
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_geometry_cache(cache_key: tuple[object, ...], geom: BoozerGeometry) -> None:
+    if not _geometry_cache_enabled():
+        return
+    path = _geometry_cache_path(cache_key)
+    if path is None:
+        return
+    try:
+        payload = _geometry_to_cache_payload(geom, cache_key)
+        np.savez_compressed(path, **payload)
+    except Exception:
+        return
 
 
 @dataclass(frozen=True)
@@ -432,6 +552,10 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         cached = _GEOMETRY_CACHE.get(cache_key)
         if cached is not None:
             return cached
+        disk_cached = _load_geometry_cache(cache_key)
+        if disk_cached is not None:
+            _GEOMETRY_CACHE[cache_key] = disk_cached
+            return disk_cached
     if geometry_scheme == 1:
         from .geometry import boozer_geometry_scheme1
 
@@ -452,6 +576,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         )
         if use_cache:
             _GEOMETRY_CACHE[cache_key] = geom_out
+            _save_geometry_cache(cache_key, geom_out)
         return geom_out
     if geometry_scheme == 2:
         from .geometry import boozer_geometry_scheme2
@@ -459,11 +584,13 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         geom_out = boozer_geometry_scheme2(theta=grids.theta, zeta=grids.zeta)
         if use_cache:
             _GEOMETRY_CACHE[cache_key] = geom_out
+            _save_geometry_cache(cache_key, geom_out)
         return geom_out
     if geometry_scheme == 4:
         geom_out = boozer_geometry_scheme4(theta=grids.theta, zeta=grids.zeta)
         if use_cache:
             _GEOMETRY_CACHE[cache_key] = geom_out
+            _save_geometry_cache(cache_key, geom_out)
         return geom_out
     if geometry_scheme in {11, 12}:
         equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
@@ -486,6 +613,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         )
         if use_cache:
             _GEOMETRY_CACHE[cache_key] = geom_out
+            _save_geometry_cache(cache_key, geom_out)
         return geom_out
     if geometry_scheme == 5:
         equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
@@ -519,5 +647,6 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         )
         if use_cache:
             _GEOMETRY_CACHE[cache_key] = geom_out
+            _save_geometry_cache(cache_key, geom_out)
         return geom_out
     raise NotImplementedError("Only geometryScheme in {1,2,4,5,11,12} is implemented so far.")
