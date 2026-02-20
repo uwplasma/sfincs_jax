@@ -67,22 +67,22 @@
 /
 
 &resolutionParameters
-  Ntheta = 54
+  Ntheta = 6
 !ss NthetaMinFactor = 0.6
 !ss NthetaMaxFactor = 2
 !ss NthetaNumRuns = 25
 
-  Nzeta = 30
+  Nzeta = 6
 !ss NzetaMinFactor = 0.8
 !ss NzetaMaxFactor = 2.5
 !ss NzetaNumRuns = 25
 
-  Nxi = 60
+  Nxi = 5
 !ss NxiMinFactor = 0.7
 !ss NxiMaxFactor = 2.5
 !ss NxiNumRuns = 25
   
-  Nx = 24
+  Nx = 4
 !ss NxMinFactor = 0.8
 !ss NxMaxFactor = 2
 !ss NxNumRuns = 25

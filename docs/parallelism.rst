@@ -39,7 +39,7 @@ Key tradeoffs for `sfincs_jax`:
   solves, but it requires multi‑device setups and careful sharding constraints.
 
 Parallelism in SFINCS (Fortran v3)
-----------------------------------
+---------------------------------------
 
 SFINCS v3 uses **MPI + PETSc**:
 

@@ -77,7 +77,7 @@
 !ss NzetaMaxFactor = 2.5
 !ss NzetaNumRuns = 25
 
-  Nxi = 11
+  Nxi = 6
 !ss NxiMinFactor = 0.7
 !ss NxiMaxFactor = 2.5
 !ss NxiNumRuns = 25

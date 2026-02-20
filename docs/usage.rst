@@ -369,6 +369,9 @@ performance without changing the input file:
 - ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX``: enable a dense retry when transport-matrix Krylov
   solves stagnate. The dense retry is applied only when the active system size is below the
   specified threshold (default: ``3000`` for RHSMode=2/3, ``0`` otherwise).
+- ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB``: memory cap (MB) for dense transport retries. Dense
+  transport solves are skipped once the estimated dense matrix exceeds this limit (default:
+  ``128``).
 
 - ``SFINCS_JAX_RHSMODE1_PROJECT_NULLSPACE``: control constraintScheme=1 nullspace projection
   for linear RHSMode=1 solves.
@@ -378,7 +381,9 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``: enable a dense fallback solve for RHSMode=1
   when GMRES stagnates. This is only applied when the active system size is below the
-  specified threshold (default: ``3000``).
+  specified threshold (default: ``400``; see the FP-specific override below).
+- ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX``: override the RHSMode=1 dense fallback ceiling for
+  full Fokker–Planck (``collisionOperator=0``) cases (default: ``5000``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO``: only run the dense fallback when
   ``||r|| / target`` exceeds the given ratio (default: ``1e2``; set ``<= 0`` to always allow).
 - ``SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO``: skip sparse ILU and other expensive
@@ -397,7 +402,8 @@ performance without changing the input file:
   complement in ``auto`` mode (default: ``256``).
 
 - ``SFINCS_JAX_PHI1_PRECOND_KIND``: Newton–Krylov preconditioner for includePhi1 solves
-  (active when ``SFINCS_JAX_PHI1_USE_PRECONDITIONER`` is enabled and frozen linearization is used).
+  (active when ``SFINCS_JAX_PHI1_USE_PRECONDITIONER`` is enabled and frozen linearization is used;
+  frozen linearization is now opt‑in via ``SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION``).
 
   - ``collision`` (default for includePhi1): collision-diagonal preconditioner.
   - ``block``/``block_jacobi``: RHSMode=1 block-Jacobi preconditioner (stronger).

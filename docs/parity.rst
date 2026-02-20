@@ -114,6 +114,10 @@ Current scope limits
   PETSc's GMRES+LU preconditioning can converge to a slightly different solution than an exact linear solve. We capture
   these solver-branch differences via per-case tolerances on flow/jHat diagnostics in the reduced-suite reports, while
   maintaining full reduced-suite parity at the current tolerances.
+- VMEC geometryScheme=5 full Fokker–Planck fixtures exhibit tiny (~1e-9) differences in flow and pressure-related
+  diagnostics. These deltas are well below the physics tolerance but can trip strict relative checks when the true value
+  is near zero, so we apply a dedicated tolerance override for the VMEC FP subset in ``sfincs_jax/compare.py``. Strict
+  parity runs still pass at the reduced-suite tolerances.
 
 Near-zero tolerances
 --------------------

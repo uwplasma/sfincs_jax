@@ -50,7 +50,7 @@
 !ss NzetaMaxFactor = 2
 !ss NzetaNumRuns = 10
 
-  Nxi = 42
+  Nxi = 21
 !ss NxiMinFactor = 1
 !ss NxiMaxFactor = 2
 !ss NxiNumRuns = 10

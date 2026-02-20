@@ -138,6 +138,17 @@ Solver defaults (Phi1 + sharding)
   removes Krylov setup overhead and matches v3 parity for Phi1‑collision fixtures.
   The cutoff is ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF`` (default: ``5000``) and is applied
   in ``sfincs_jax/io.py``.
+- **Full Newton updates for Phi1 by default**: includePhi1 runs now update the
+  Jacobian each Newton step (mirroring v3). Frozen linearization is opt‑in via
+  ``SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION``.
+- **FP dense fallback threshold (RHSMode=1)**: full Fokker–Planck cases use a higher
+  dense fallback ceiling to recover Fortran convergence when Krylov stagnates.
+  The FP-specific cutoff is ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX`` (default: ``5000``),
+  while generic RHSMode=1 dense fallbacks use ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX``
+  (default: ``400``).
+- **Transport dense retry memory cap**: dense transport retries are only allowed if the
+  estimated dense matrix stays below ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB`` (default:
+  ``128`` MB) to avoid excessive memory use.
 - **Sharded matvec on single‑device runs**: if ``SFINCS_JAX_MATVEC_SHARD_AXIS`` is set
   but only one device is available, sharding constraints are skipped and the standard
   unsharded matvec path is used (no functional change, just a no‑op).

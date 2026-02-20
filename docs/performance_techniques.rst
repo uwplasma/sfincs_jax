@@ -627,7 +627,9 @@ rescue transport-matrix solves that stall.
 
 Controls:
 
-- ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX`` (default: ``4000``).
+- ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX`` (default: ``400``).
+- ``SFINCS_JAX_RHSMODE1_DENSE_FP_MAX`` (default: ``5000``) for full Fokker–Planck
+  cases (``collisionOperator=0``).
 - ``SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO`` (default: ``1e2``). Dense fallback
   only triggers when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always
   allow the fallback).
@@ -643,7 +645,7 @@ Controls:
   when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always allow).
 - ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX`` (default: ``3000`` for RHSMode=2/3).
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK`` / ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX``.
-- ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB`` (default: ``64``). Disable dense transport
+- ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB`` (default: ``128``). Disable dense transport
   fallbacks when the dense matrix would exceed this memory budget. If float64
   exceeds the limit but float32 does not, the fallback switches to float32 with
   one refinement step.
