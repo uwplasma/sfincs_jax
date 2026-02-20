@@ -132,7 +132,7 @@ Solving a supported v3 linear run (matrix-free)
    (point-block Jacobi unless line preconditioners are requested). For ``constraintScheme=2``,
    ``sfincs_jax`` will auto-try a Schur-complement strong preconditioner if the initial solve
    stalls, preserving the source constraints. For PAS tokamak-like ``N_zeta=1`` cases with
-   constraint projection enabled, ``sfincs_jax`` upgrades to the theta-line preconditioner by
+   constraint projection enabled, ``sfincs_jax`` upgrades to the ``xblock_tz`` preconditioner by
    default to reduce Krylov iterations. For strict PETSc-style iteration histories, use
    ``--solve-method incremental``.
 

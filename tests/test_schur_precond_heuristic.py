@@ -84,14 +84,14 @@ def test_full_precond_uses_schur_for_constraint_scheme2(tmp_path: Path, monkeypa
     assert "building RHSMode=1 preconditioner=schur" in joined
 
 
-def test_full_precond_tokamak_defaults_to_theta_line(tmp_path: Path, monkeypatch) -> None:
+def test_full_precond_tokamak_defaults_to_xblock_tz(tmp_path: Path, monkeypatch) -> None:
     input_path = Path(__file__).parent / "reduced_inputs" / "tokamak_1species_PASCollisions_noEr_Nx1.input.namelist"
     out_path = tmp_path / "sfincsOutput_jax.h5"
 
     txt = input_path.read_text()
     txt = _patch_resolution_block(txt, ntheta=7, nzeta=1, nxi=4, nx=1, solver_tol=1e-6)
     txt = _patch_export_block(txt)
-    patched = tmp_path / "input_theta_line_tiny.namelist"
+    patched = tmp_path / "input_xblock_tz_tiny.namelist"
     patched.write_text(txt)
 
     logs: list[str] = []
@@ -113,7 +113,7 @@ def test_full_precond_tokamak_defaults_to_theta_line(tmp_path: Path, monkeypatch
     )
 
     joined = "\n".join(logs)
-    assert "building RHSMode=1 preconditioner=theta_line" in joined
+    assert "building RHSMode=1 preconditioner=xblock_tz" in joined
 
 
 def test_schur_auto_min_for_pas(tmp_path: Path, monkeypatch) -> None:

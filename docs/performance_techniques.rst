@@ -333,7 +333,7 @@ flux-surface average. We remove it before Krylov iterations:
 
 applied per species and :math:`x` using the same :math:`(\theta,\zeta)` weights
 as diagnostics. This stabilizes PAS tokamak-like cases and pairs with the
-theta-line preconditioner default.
+``xblock_tz`` preconditioner default.
 
 Implementation: ``sfincs_jax.v3_driver`` (``use_pas_projection`` and
 ``_project_pas_f``). Control: ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`` (auto on for
@@ -402,7 +402,7 @@ When the input requests a fully coupled preconditioner (``preconditioner_species
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while
 preserving the constraint coupling. For tokamak-like cases (``N_zeta=1``) with
 ``|Er|`` below ``SFINCS_JAX_RHSMODE1_SCHUR_ER_ABS_MIN`` (default: ``0``),
-the default switches to the cheaper theta-line preconditioner to reduce setup time.
+the default switches to the cheaper ``xblock_tz`` preconditioner to reduce setup time.
 Set ``SFINCS_JAX_RHSMODE1_SCHUR_TOKAMAK=1`` to force Schur in these cases.
 
 **Sparse ILU (FP-heavy RHSMode=1).** For FP-heavy RHSMode=1 systems, a PETSc‑like
@@ -638,8 +638,13 @@ rescue transport-matrix solves that stall.
   bypass the Newton–Krylov inner GMRES step and take a dense Newton step instead.
   This avoids GMRES setup cost and matches Fortran parity for Phi1‑collision fixtures.
   The cutoff is controlled by ``SFINCS_JAX_PHI1_NK_DENSE_CUTOFF`` (default: ``5000``).
-- Transport dense fallback is **disabled** unless explicitly requested, but a
-  dense retry is enabled for RHSMode=2/3 when the active system size is modest.
+- For RHSMode=2 transport matrices with multiple RHS, ``sfincs_jax`` now
+  auto‑selects a **dense batched solve** when the active system size is modest
+  (``n \le min(3000, SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX)``) and the dense
+  memory budget allows it. This avoids spending time on Krylov retries when a
+  dense solve is likely anyway. For other transport cases, dense fallback remains
+  **disabled** unless explicitly requested, but a dense retry is enabled for
+  RHSMode=2/3 when the active system size is modest.
 
 Controls:
 
@@ -661,7 +666,7 @@ Controls:
   and proceed directly to the dense fallback.
 - ``SFINCS_JAX_LINEAR_STAGE2_RATIO`` (default: ``1e2``). Stage-2 GMRES only runs
   when ``||r|| / target`` exceeds this ratio (set ``<= 0`` to always allow).
-- ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX`` (default: ``3000`` for RHSMode=2/3).
+- ``SFINCS_JAX_TRANSPORT_DENSE_RETRY_MAX`` (default: ``6000`` for RHSMode=2/3).
 - ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK`` / ``SFINCS_JAX_TRANSPORT_DENSE_FALLBACK_MAX``.
 - ``SFINCS_JAX_TRANSPORT_DENSE_MAX_MB`` (default: ``128``). Disable dense transport
   fallbacks when the dense matrix would exceed this memory budget. If float64

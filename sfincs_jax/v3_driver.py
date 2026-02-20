@@ -3972,9 +3972,7 @@ def solve_v3_full_system_linear_gmres(
                 tokamak_like = int(op.n_zeta) == 1
                 if full_precond_requested and int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
                     if tokamak_like and (not schur_tokamak) and er_abs <= schur_er_min:
-                        if geom_scheme == 1:
-                            rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
-                        elif (
+                        if (
                             int(op.n_theta) > 1
                             and xblock_tz_max > 0
                             and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
@@ -5443,11 +5441,11 @@ def solve_v3_full_system_linear_gmres(
                         sweeps = 2
                     sweeps = max(1, sweeps)
 
-                def strong_preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
-                    out = v
-                    for _ in range(sweeps):
-                        out = pre_zeta(pre_theta(out))
-                    return out
+                    def strong_preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
+                        out = v
+                        for _ in range(sweeps):
+                            out = pre_zeta(pre_theta(out))
+                        return out
             _mark("rhs1_strong_precond_build_done")
             if use_pas_projection:
                 strong_preconditioner_reduced = _wrap_pas_precond(strong_preconditioner_reduced)
@@ -7988,7 +7986,10 @@ def solve_v3_transport_matrix_linear_gmres(
         and str(solve_method_use).lower() in {"auto", "default", "batched", "incremental"}
     ):
         auto_dense_size = int(active_size) if use_active_dof_mode else int(op0.total_size)
-        if auto_dense_size <= 1500 and (not dense_mem_block):
+        auto_dense_limit = 1500
+        if int(n) > 1 and dense_retry_max > 0:
+            auto_dense_limit = max(auto_dense_limit, min(3000, int(dense_retry_max)))
+        if auto_dense_size <= auto_dense_limit and (not dense_mem_block):
             solve_method_use = "dense"
             if emit is not None:
                 emit(
