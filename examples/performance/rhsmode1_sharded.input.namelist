@@ -1,7 +1,7 @@
-! Extra-extra-large RHSMode=2 transport-matrix case for strong-scaling benchmarks.
+! RHSMode=1 case for sharded-solve scaling benchmarks.
 
 &general
-  RHSMode = 2
+  RHSMode = 1
   saveMatricesAndVectorsInBinary = .false.
 /
 
@@ -19,10 +19,8 @@
 &physicsParameters
   Delta = 4.5694d-3
   alpha = 1.0d+0
-
   nu_n = 0.15d+0
   Er = 0.0d+0
-
   collisionOperator = 1
   includeXDotTerm = .false.
   includeElectricFieldTermInXiDot = .false.
@@ -31,11 +29,11 @@
 /
 
 &resolutionParameters
-  Ntheta = 24
-  Nzeta = 24
-  Nxi = 8
-  NL = 4
-  Nx = 8
+  Ntheta = 64
+  Nzeta = 64
+  Nxi = 10
+  NL = 6
+  Nx = 10
   solverTolerance = 1d-10
 /
 

@@ -159,8 +159,8 @@ Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
 single‑worker runtime near ~1 minute while preserving parity.
 
 Latest cache‑warm sweep (1–8 workers):
-1 worker 62.3s, 2 workers 47.2s, 3 workers 24.8s, 4 workers 25.2s,
-5 workers 25.3s, 6 workers 25.6s, 7 workers 25.4s, 8 workers 25.4s.
+1 worker 65.6s, 2 workers 46.0s, 3 workers 25.7s, 4 workers 26.0s,
+5 workers 25.8s, 6 workers 25.5s, 7 workers 25.4s, 8 workers 25.6s.
 
 Process‑parallel workers automatically disable sharded matvec and cap
 XLA CPU threads per worker to avoid oversubscription when `SFINCS_JAX_CORES`
@@ -182,7 +182,7 @@ Reproduce:
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this larger case, scaling reaches ~2.5× by 3–4 workers before flattening.
+For this larger case, scaling reaches ~2.6× by 3–4 workers before flattening.
 The plateau reflects process overhead and shared‑resource contention on a
 laptop‑class CPU. Larger multi‑RHS runs on server‑class nodes should show
 stronger scaling.
@@ -275,11 +275,13 @@ Step (3): Sharded matvec (SPMD)
 Sharded matvec splits the *state vector* across devices for a **single solve**.
 This is the closest analogue to the MPI / DMDA strategy in Fortran.
 
-Enable sharding by selecting the axis:
+Enable sharding by selecting the axis (theta/zeta) or the full flat state vector:
 
 .. code-block:: bash
 
    export SFINCS_JAX_MATVEC_SHARD_AXIS=zeta  # or theta
+   # Optional flat sharding for distributed GMRES:
+   # export SFINCS_JAX_MATVEC_SHARD_AXIS=flat
 
 On CPUs, you can create multiple host devices with:
 
@@ -295,6 +297,18 @@ On GPUs, JAX will automatically see all local devices.
   are visible.
 - When only one device is available, the code falls back to the standard JIT path
   and skips sharding constraints (no functional change).
+- Sharded matvec requires the sharded dimension (``Ntheta`` or ``Nzeta``) to be
+  divisible by the device count. Otherwise it falls back to the single‑device path.
+- For stronger scaling on a **single RHS**, use flat sharding with distributed GMRES:
+
+  .. code-block:: bash
+
+     export SFINCS_JAX_MATVEC_SHARD_AXIS=flat
+     export SFINCS_JAX_GMRES_DISTRIBUTED=1
+- When sharding is active and no explicit RHSMode=1 preconditioner is requested,
+  `sfincs_jax` defaults to a **local line preconditioner** along the sharded
+  axis (theta‑line or zeta‑line). This keeps the preconditioner apply local
+  to each shard, mirroring PETSc-style block‑Jacobi behavior.
 - This mirrors Fortran DMDA splitting along :math:`\theta` or :math:`\zeta`,
   with the same intent: distribute matvec and preconditioner cost.
 
@@ -305,8 +319,8 @@ We also benchmarked sharded matvec performance for a larger single‑RHS operato
 `examples/performance/transport_parallel_sharded.input.namelist`.
 
 Latest run (cache warm, Macbook M3 Max):
-1 device 0.28 ms, 2 devices 0.39 ms, 3 devices 0.50 ms, 4 devices 0.50 ms,
-5 devices 0.84 ms, 6 devices 0.81 ms, 7 devices 1.23 ms, 8 devices 1.34 ms.
+1 device 0.30 ms, 2 devices 0.30 ms, 3 devices 0.29 ms, 4 devices 0.28 ms,
+5 devices 0.45 ms, 6 devices 0.28 ms, 7 devices 0.28 ms, 8 devices 0.25 ms.
 CPU sharding overhead dominates at this size; this mode is primarily intended
 for **very large grids** or multi‑GPU nodes.
 
@@ -324,6 +338,36 @@ Reproduce:
      --repeats 1 \
      --nrep 10 \
      --global-warmup 1
+
+Sharded solve scaling (distributed GMRES)
+----------------------------------------
+
+We also benchmarked a **single RHSMode=1 solve** with flat sharding and distributed
+GMRES enabled:
+
+.. code-block:: bash
+
+   python examples/performance/benchmark_sharded_solve_scaling.py \
+     --devices 1 2 3 4 5 6 7 8 \
+     --repeats 1 \
+     --global-warmup 1
+
+Input: `examples/performance/rhsmode1_sharded.input.namelist`
+(``Ntheta=64, Nzeta=64, Nxi=10, NL=6, Nx=10``).
+
+Latest run (cache warm, Macbook M3 Max):
+1 device 1.23 s, 2 devices 4.39 s, 3 devices 4.35 s, 4 devices 4.63 s,
+5 devices 4.39 s, 6 devices 4.61 s, 7 devices 4.50 s, 8 devices 4.66 s.
+
+This confirms that **flat sharding + distributed GMRES on CPU is still
+overhead‑dominated** for medium cases. Achieving strong scaling for a *single*
+RHS will require a true domain‑decomposition GMRES (theta/zeta) with
+local preconditioning and communication‑avoiding reductions. That is
+the next step for multi‑node scaling.
+
+.. figure:: _static/figures/parallel/transport_sharded_solve_scaling.png
+   :alt: Sharded RHSMode=1 solve scaling on Macbook M3 Max
+   :width: 90%
 
 Verification
 ------------
@@ -353,6 +397,16 @@ Recommended workflows
   concurrency.
 - Multi‑GPU: run a few `whichRHS` workers, one per GPU, or use
   `SFINCS_JAX_MATVEC_SHARD_AXIS=zeta` for single‑RHS sharding.
+- Multi‑node: enable JAX distributed initialization so sharded matvecs can span
+  multiple hosts. Provide process count/id and coordinator address:
+
+  .. code-block:: bash
+
+     export SFINCS_JAX_DISTRIBUTED=1
+     export SFINCS_JAX_PROCESS_COUNT=$SLURM_NTASKS
+     export SFINCS_JAX_PROCESS_ID=$SLURM_PROCID
+     export SFINCS_JAX_COORDINATOR_ADDRESS=$SLURM_NODELIST
+     export SFINCS_JAX_COORDINATOR_PORT=1234
 
 
 Parity and determinism

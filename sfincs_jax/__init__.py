@@ -12,6 +12,32 @@ from __future__ import annotations
 import os
 import tempfile
 
+# Optional JAX multi-host bootstrap (must run before any JAX device use).
+_distributed_env = os.environ.get("SFINCS_JAX_DISTRIBUTED", "").strip().lower()
+if _distributed_env in {"1", "true", "yes", "on"}:
+    try:
+        import jax.distributed as _jax_distributed  # noqa: PLC0415
+
+        _process_id_env = os.environ.get("SFINCS_JAX_PROCESS_ID", "").strip()
+        _process_count_env = os.environ.get("SFINCS_JAX_PROCESS_COUNT", "").strip()
+        _coord_addr = os.environ.get("SFINCS_JAX_COORDINATOR_ADDRESS", "").strip()
+        _coord_port_env = os.environ.get("SFINCS_JAX_COORDINATOR_PORT", "").strip()
+
+        _process_id = int(_process_id_env) if _process_id_env else 0
+        _process_count = int(_process_count_env) if _process_count_env else 1
+        _coord_port = int(_coord_port_env) if _coord_port_env else 1234
+
+        if _coord_addr:
+            _jax_distributed.initialize(
+                coordinator_address=_coord_addr,
+                coordinator_port=_coord_port,
+                num_processes=_process_count,
+                process_id=_process_id,
+            )
+    except Exception:
+        # Best-effort: avoid hard failures when distributed runtime is unavailable.
+        pass
+
 # High-level cores knob: set this before importing JAX to request N CPU devices
 # and enable parallel whichRHS + auto-sharding by default.
 _cores_env = os.environ.get("SFINCS_JAX_CORES", "").strip()
@@ -24,10 +50,12 @@ if _cores_env:
         if _cores_val > 1:
             os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL", "process")
             os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", str(_cores_val))
-        _xla_flags = os.environ.get("XLA_FLAGS", "")
-        if "--xla_cpu_parallelism_threads" not in _xla_flags:
-            flag = f"--xla_cpu_parallelism_threads={_cores_val}"
-            os.environ["XLA_FLAGS"] = f"{_xla_flags} {flag}".strip()
+        _threads_env = os.environ.get("SFINCS_JAX_XLA_THREADS", "").strip().lower()
+        if _threads_env in {"1", "true", "yes", "on"}:
+            _xla_flags = os.environ.get("XLA_FLAGS", "")
+            if "--xla_cpu_parallelism_threads" not in _xla_flags:
+                flag = f"--xla_cpu_parallelism_threads={_cores_val}"
+                os.environ["XLA_FLAGS"] = f"{_xla_flags} {flag}".strip()
         shard_env = os.environ.get("SFINCS_JAX_SHARD", "").strip().lower()
         if _cores_val > 1 and shard_env not in {"0", "false", "no", "off"}:
             os.environ.setdefault("SFINCS_JAX_CPU_DEVICES", str(_cores_val))

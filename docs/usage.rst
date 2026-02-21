@@ -301,6 +301,9 @@ performance without changing the input file:
   host devices for optional sharded matvecs. This gives a single user‑facing knob
   for "use N cores". Set ``SFINCS_JAX_SHARD=0`` to disable sharded matvecs while
   keeping process parallelism.
+- ``SFINCS_JAX_XLA_THREADS``: opt‑in to setting the XLA CPU thread count based on
+  ``SFINCS_JAX_CORES``. Some JAX builds do not recognize the
+  ``--xla_cpu_parallelism_threads`` flag, so this is disabled by default.
 
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE``: reuse saved Krylov recycle vectors across runs
   when ``SFINCS_JAX_STATE_IN`` is set (default: enabled; set to ``0`` to disable).
@@ -382,13 +385,26 @@ performance without changing the input file:
   Must be set **before** importing JAX (i.e., before running `python -m sfincs_jax`).
 
 - ``SFINCS_JAX_MATVEC_SHARD_AXIS``: control SPMD sharding of the matvec along ``theta``,
-  ``zeta``, or ``auto``. ``auto`` chooses the larger of ``Ntheta``/``Nzeta`` when
-  multiple devices are present.
+  ``zeta``, ``flat``, or ``auto``. ``auto`` chooses the larger of ``Ntheta``/``Nzeta``
+  when multiple devices are present. ``flat`` shards the full state vector evenly
+  across devices.
 - ``SFINCS_JAX_MATVEC_SHARD_MIN_TZ``: minimum ``Ntheta * Nzeta`` before enabling
   auto sharding (default: ``128``).
 - ``SFINCS_JAX_AUTO_SHARD``: set to ``0`` to disable auto sharding.
 - ``SFINCS_JAX_SHARD``: shorthand to disable auto sharding even when
   ``SFINCS_JAX_CORES`` is set. Use ``0``/``false`` to keep single‑device matvecs.
+
+- ``SFINCS_JAX_GMRES_DISTRIBUTED``: enable distributed GMRES when using ``flat``
+  sharding. Set to ``1`` to run the Krylov solver under `pjit`, keeping vectors
+  sharded across devices. Default: off (fall back to single‑device GMRES).
+
+- ``SFINCS_JAX_DISTRIBUTED``: enable JAX multi‑host initialization (default: off).
+  When set, also provide:
+
+  - ``SFINCS_JAX_PROCESS_ID``: this process rank (0‑based).
+  - ``SFINCS_JAX_PROCESS_COUNT``: total number of processes.
+  - ``SFINCS_JAX_COORDINATOR_ADDRESS``: host:port (or host) of the coordinator.
+  - ``SFINCS_JAX_COORDINATOR_PORT``: port for the coordinator (default: 1234).
 
 - ``SFINCS_JAX_GEOMETRY_CACHE``: enable/disable the geometry cache in ``geometry_from_namelist``
   (default: enabled).

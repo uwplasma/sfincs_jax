@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 import os
 import numpy as np
 
@@ -13,6 +14,14 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 from jax import vmap
 from jax.scipy.sparse.linalg import bicgstab, gmres
+
+try:  # pragma: no cover - optional for distributed GMRES
+    from jax.experimental import pjit as _pjit  # noqa: PLC0415
+    from jax.sharding import Mesh, PartitionSpec  # noqa: PLC0415
+except Exception:  # noqa: BLE001
+    _pjit = None
+    Mesh = None
+    PartitionSpec = None
 from scipy.sparse.linalg import LinearOperator as _LinearOperator
 from scipy.sparse.linalg import gmres as _scipy_gmres
 from scipy.sparse.linalg import bicgstab as _scipy_bicgstab
@@ -619,3 +628,173 @@ gmres_solve_with_residual_jit = jax.jit(
     gmres_solve_with_residual,
     static_argnames=("matvec", "preconditioner", "tol", "atol", "restart", "maxiter", "solve_method", "precondition_side"),
 )
+
+
+def _distributed_gmres_axis() -> str | None:
+    env = os.environ.get("SFINCS_JAX_GMRES_DISTRIBUTED", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return None
+    shard_axis = os.environ.get("SFINCS_JAX_MATVEC_SHARD_AXIS", "").strip().lower()
+    if shard_axis in {"flat", "vector", "p"}:
+        return "p"
+    if env in {"1", "true", "yes", "on"} and shard_axis in {"auto", ""}:
+        return "p"
+    return None
+
+
+@lru_cache(maxsize=4)
+def _get_gmres_mesh(axis_name: str) -> Mesh | None:
+    if Mesh is None:
+        return None
+    devices = jax.local_devices()
+    if len(devices) <= 1:
+        return None
+    mesh_devices = np.array(devices)
+    return Mesh(mesh_devices, (axis_name,))
+
+
+def distributed_gmres_enabled() -> bool:
+    axis_name = _distributed_gmres_axis()
+    if axis_name is None or _pjit is None or PartitionSpec is None:
+        return False
+    return _get_gmres_mesh(axis_name) is not None
+
+
+def gmres_solve_distributed(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 50,
+    maxiter: int | None = None,
+    solve_method: str = "batched",
+    precondition_side: str = "left",
+) -> GMRESSolveResult:
+    axis_name = _distributed_gmres_axis()
+    if axis_name is None or _pjit is None or PartitionSpec is None:
+        return gmres_solve(
+            matvec=matvec,
+            b=b,
+            preconditioner=preconditioner,
+            x0=x0,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        )
+    mesh = _get_gmres_mesh(axis_name)
+    if mesh is None:
+        return gmres_solve(
+            matvec=matvec,
+            b=b,
+            preconditioner=preconditioner,
+            x0=x0,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        )
+
+    b_use = jnp.asarray(b)
+    x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
+
+    def _solve(b_in: jnp.ndarray, x0_in: jnp.ndarray):
+        res = gmres_solve(
+            matvec=matvec,
+            b=b_in,
+            preconditioner=preconditioner,
+            x0=x0_in,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        )
+        return res.x, res.residual_norm
+
+    solve_pjit = _pjit.pjit(
+        _solve,
+        in_shardings=(PartitionSpec(axis_name), PartitionSpec(axis_name)),
+        out_shardings=(PartitionSpec(axis_name), None),
+    )
+    with mesh:
+        x, rn = solve_pjit(b_use, x0_use)
+    return GMRESSolveResult(x=x, residual_norm=rn)
+
+
+def gmres_solve_with_residual_distributed(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner=None,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 50,
+    maxiter: int | None = None,
+    solve_method: str = "batched",
+    precondition_side: str = "left",
+) -> tuple[GMRESSolveResult, jnp.ndarray]:
+    axis_name = _distributed_gmres_axis()
+    if axis_name is None or _pjit is None or PartitionSpec is None:
+        return gmres_solve_with_residual(
+            matvec=matvec,
+            b=b,
+            preconditioner=preconditioner,
+            x0=x0,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        )
+    mesh = _get_gmres_mesh(axis_name)
+    if mesh is None:
+        return gmres_solve_with_residual(
+            matvec=matvec,
+            b=b,
+            preconditioner=preconditioner,
+            x0=x0,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        )
+
+    b_use = jnp.asarray(b)
+    x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
+
+    def _solve(b_in: jnp.ndarray, x0_in: jnp.ndarray):
+        res, r = gmres_solve_with_residual(
+            matvec=matvec,
+            b=b_in,
+            preconditioner=preconditioner,
+            x0=x0_in,
+            tol=tol,
+            atol=atol,
+            restart=restart,
+            maxiter=maxiter,
+            solve_method=solve_method,
+            precondition_side=precondition_side,
+        )
+        return res.x, res.residual_norm, r
+
+    solve_pjit = _pjit.pjit(
+        _solve,
+        in_shardings=(PartitionSpec(axis_name), PartitionSpec(axis_name)),
+        out_shardings=(PartitionSpec(axis_name), None, PartitionSpec(axis_name)),
+    )
+    with mesh:
+        x, rn, r = solve_pjit(b_use, x0_use)
+    return GMRESSolveResult(x=x, residual_norm=rn), r

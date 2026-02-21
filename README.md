@@ -61,8 +61,8 @@ Parallel `whichRHS` scaling for an extra‑large RHSMode=2 transport‑matrix ca
 (`examples/performance/transport_parallel_xxlarge.input.namelist`, geometryScheme=2).
 Benchmark uses `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the single‑worker runtime
 in the ~1 minute range.
-Latest run (cache warm): 1 worker 62.3s, 2 workers 47.2s, 3 workers 24.8s,
-4 workers 25.2s, 5 workers 25.3s, 6 workers 25.6s, 7 workers 25.4s, 8 workers 25.4s.
+Latest run (cache warm): 1 worker 65.6s, 2 workers 46.0s, 3 workers 25.7s,
+4 workers 26.0s, 5 workers 25.8s, 6 workers 25.5s, 7 workers 25.4s, 8 workers 25.6s.
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
@@ -74,6 +74,11 @@ export SFINCS_JAX_CORES=8
 
 Process‑parallel workers auto‑disable sharded matvec and cap XLA threads per
 worker to avoid oversubscription.
+Enable XLA thread control explicitly if your JAX build supports it:
+
+```bash
+export SFINCS_JAX_XLA_THREADS=1
+```
 
 Reproduce the scaling figure and JSON summary (cache‑warm run):
 
@@ -114,10 +119,11 @@ Sharded matvec scaling for a larger single‑RHS operator (derived from the same
 transport case, with higher resolution to stress the matvec):
 `examples/performance/transport_parallel_sharded.input.namelist`.
 
-Latest run (cache warm): per‑matvec time 0.28 ms (1 device), 0.39 ms (2),
-0.50 ms (3), 0.50 ms (4), 0.84 ms (5), 0.81 ms (6), 1.23 ms (7), 1.34 ms (8).
+Latest run (cache warm): per‑matvec time 0.30 ms (1 device), 0.30 ms (2),
+0.29 ms (3), 0.28 ms (4), 0.45 ms (5), 0.28 ms (6), 0.28 ms (7), 0.25 ms (8).
 CPU sharding overhead dominates at this size; this mode is mainly intended for
-very large grids or multi‑GPU nodes.
+very large grids or multi‑GPU nodes. The sharded dimension (``Ntheta`` or ``Nzeta``)
+must be divisible by the device count; otherwise it falls back to the single‑device path.
 
 ![Sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_scaling.png)
 
@@ -131,6 +137,10 @@ python examples/performance/benchmark_sharded_matvec_scaling.py \
   --nrep 10 \
   --global-warmup 1
 ```
+
+Sharded **solve** scaling (flat sharding + distributed GMRES) currently shows
+CPU overhead dominance for medium RHSMode=1 cases. See
+`docs/parallelism.rst` for the full benchmark and figure.
 
 Enable parallel whichRHS solves in normal runs:
 

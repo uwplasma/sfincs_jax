@@ -31,6 +31,9 @@ from .solver import (
     gmres_solve_jit,
     gmres_solve_with_residual,
     gmres_solve_with_residual_jit,
+    gmres_solve_distributed,
+    gmres_solve_with_residual_distributed,
+    distributed_gmres_enabled,
     gmres_solve_with_history_scipy,
 )
 from .implicit_solve import linear_custom_solve, linear_custom_solve_with_residual
@@ -48,7 +51,7 @@ from .transport_matrix import (
     v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit,
     v3_transport_matrix_from_flux_arrays,
 )
-from .v3_system import _fs_average_factor, _ix_min, _source_basis_constraint_scheme_1
+from .v3_system import _fs_average_factor, _ix_min, _source_basis_constraint_scheme_1, _matvec_shard_axis
 from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
@@ -116,6 +119,8 @@ def _precond_dtype(size_hint: int | None = None) -> jnp.dtype:
 
 
 def _gmres_solve_dispatch(**kwargs):
+    if distributed_gmres_enabled():
+        return gmres_solve_distributed(**kwargs)
     solver_fn = gmres_solve_jit if _use_solver_jit() else gmres_solve
     return solver_fn(**kwargs)
 
@@ -4073,6 +4078,10 @@ def solve_v3_full_system_linear_gmres(
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
         rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+    if rhs1_precond_env == "" and rhs1_precond_kind in {None, "point"}:
+        shard_axis = _matvec_shard_axis(op)
+        if shard_axis in {"theta", "zeta"} and jax.device_count() > 1:
+            rhs1_precond_kind = "theta_line" if shard_axis == "theta" else "zeta_line"
     if str(solve_method).strip().lower() in {"dense", "dense_ksp", "dense_row_scaled"}:
         rhs1_precond_kind = None
     rhs1_precond_enabled = (
@@ -4325,7 +4334,10 @@ def solve_v3_full_system_linear_gmres(
                 maxiter=maxiter_val,
                 precondition_side=precond_side,
             )
-        solver_fn = gmres_solve_with_residual_jit if _use_solver_jit() else gmres_solve_with_residual
+        if distributed_gmres_enabled():
+            solver_fn = gmres_solve_with_residual_distributed
+        else:
+            solver_fn = gmres_solve_with_residual_jit if _use_solver_jit() else gmres_solve_with_residual
         return solver_fn(
             matvec=matvec_fn,
             b=b_vec,
@@ -7318,8 +7330,10 @@ def _transport_parallel_worker_env(parallel_workers: int):
     _set("SFINCS_JAX_MATVEC_SHARD_AXIS", "off")
     _set("SFINCS_JAX_AUTO_SHARD", "0")
     _set("SFINCS_JAX_CPU_DEVICES", "1")
-    flags = _rewrite_xla_flags(os.environ.get("XLA_FLAGS", ""), cpu_threads=threads, host_devices=1)
-    _set("XLA_FLAGS", flags or None)
+    _threads_env = os.environ.get("SFINCS_JAX_XLA_THREADS", "").strip().lower()
+    if _threads_env in {"1", "true", "yes", "on"}:
+        flags = _rewrite_xla_flags(os.environ.get("XLA_FLAGS", ""), cpu_threads=threads, host_devices=1)
+        _set("XLA_FLAGS", flags or None)
 
     try:
         yield
@@ -7948,7 +7962,10 @@ def solve_v3_transport_matrix_linear_gmres(
                 maxiter=maxiter_val,
                 precondition_side=precondition_side_val,
             )
-        solver_fn = gmres_solve_with_residual_jit if use_solver_jit else gmres_solve_with_residual
+        if distributed_gmres_enabled():
+            solver_fn = gmres_solve_with_residual_distributed
+        else:
+            solver_fn = gmres_solve_with_residual_jit if use_solver_jit else gmres_solve_with_residual
         return solver_fn(
             matvec=matvec_fn,
             b=b_vec,
