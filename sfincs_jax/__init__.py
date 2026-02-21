@@ -12,6 +12,28 @@ from __future__ import annotations
 import os
 import tempfile
 
+# High-level cores knob: set this before importing JAX to request N CPU devices
+# and enable parallel whichRHS + auto-sharding by default.
+_cores_env = os.environ.get("SFINCS_JAX_CORES", "").strip()
+if _cores_env:
+    try:
+        _cores_val = int(_cores_env)
+    except ValueError:
+        _cores_val = 0
+    if _cores_val > 0:
+        if _cores_val > 1:
+            os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL", "process")
+            os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", str(_cores_val))
+        _xla_flags = os.environ.get("XLA_FLAGS", "")
+        if "--xla_cpu_parallelism_threads" not in _xla_flags:
+            flag = f"--xla_cpu_parallelism_threads={_cores_val}"
+            os.environ["XLA_FLAGS"] = f"{_xla_flags} {flag}".strip()
+        shard_env = os.environ.get("SFINCS_JAX_SHARD", "").strip().lower()
+        if _cores_val > 1 and shard_env not in {"0", "false", "no", "off"}:
+            os.environ.setdefault("SFINCS_JAX_CPU_DEVICES", str(_cores_val))
+            os.environ.setdefault("SFINCS_JAX_MATVEC_SHARD_AXIS", "auto")
+            os.environ.setdefault("SFINCS_JAX_AUTO_SHARD", "1")
+
 # Allow users to request multiple CPU devices for JAX SPMD/pjit on host platforms.
 # This must be set before importing JAX.
 _cpu_devices_env = os.environ.get("SFINCS_JAX_CPU_DEVICES", "").strip()

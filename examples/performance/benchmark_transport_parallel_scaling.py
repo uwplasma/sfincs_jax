@@ -24,7 +24,7 @@ def _run_once(
     if precond:
         os.environ["SFINCS_JAX_TRANSPORT_PRECOND"] = precond
     if cache_dir is not None:
-        os.environ["JAX_CACHE_DIR"] = str(cache_dir)
+        os.environ["JAX_COMPILATION_CACHE_DIR"] = str(cache_dir)
     if workers > 1:
         os.environ["SFINCS_JAX_TRANSPORT_PARALLEL"] = "process"
         os.environ["SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS"] = str(workers)

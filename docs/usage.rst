@@ -296,6 +296,12 @@ performance without changing the input file:
 - ``SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS``: number of worker processes for parallel
   transport solves.
 
+- ``SFINCS_JAX_CORES``: high‑level CPU parallelism knob. When set to ``N`` > 1,
+  ``sfincs_jax`` enables process‑parallel ``whichRHS`` solves **and** exposes ``N``
+  host devices for optional sharded matvecs. This gives a single user‑facing knob
+  for "use N cores". Set ``SFINCS_JAX_SHARD=0`` to disable sharded matvecs while
+  keeping process parallelism.
+
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE``: reuse saved Krylov recycle vectors across runs
   when ``SFINCS_JAX_STATE_IN`` is set (default: enabled; set to ``0`` to disable).
 
@@ -381,6 +387,8 @@ performance without changing the input file:
 - ``SFINCS_JAX_MATVEC_SHARD_MIN_TZ``: minimum ``Ntheta * Nzeta`` before enabling
   auto sharding (default: ``128``).
 - ``SFINCS_JAX_AUTO_SHARD``: set to ``0`` to disable auto sharding.
+- ``SFINCS_JAX_SHARD``: shorthand to disable auto sharding even when
+  ``SFINCS_JAX_CORES`` is set. Use ``0``/``false`` to keep single‑device matvecs.
 
 - ``SFINCS_JAX_GEOMETRY_CACHE``: enable/disable the geometry cache in ``geometry_from_namelist``
   (default: enabled).

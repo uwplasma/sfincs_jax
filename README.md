@@ -61,10 +61,19 @@ Parallel `whichRHS` scaling for an extra‑large RHSMode=2 transport‑matrix ca
 (`examples/performance/transport_parallel_xxlarge.input.namelist`, geometryScheme=2).
 Benchmark uses `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the single‑worker runtime
 in the ~1 minute range.
-Latest run (cache warm): 1 worker 63.6s, 2 workers 46.8s, 3 workers 30.6s,
-4 workers 30.8s, 5 workers 30.5s, 6 workers 29.5s, 7 workers 30.2s, 8 workers 33.7s.
+Latest run (cache warm): 1 worker 62.3s, 2 workers 47.2s, 3 workers 24.8s,
+4 workers 25.2s, 5 workers 25.3s, 6 workers 25.6s, 7 workers 25.4s, 8 workers 25.4s.
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
+
+Quick-start knob (auto parallel + sharded matvec when helpful):
+
+```bash
+export SFINCS_JAX_CORES=8
+```
+
+Process‑parallel workers auto‑disable sharded matvec and cap XLA threads per
+worker to avoid oversubscription.
 
 Reproduce the scaling figure and JSON summary (cache‑warm run):
 
@@ -99,11 +108,36 @@ Override the transport preconditioner with `--precond` if needed.
 
 RHSMode=2 has only 3 `whichRHS` solves, so scaling naturally saturates near 3 workers.
 
+### Sharded Matvec Scaling (SPMD)
+
+Sharded matvec scaling for a larger single‑RHS operator (derived from the same
+transport case, with higher resolution to stress the matvec):
+`examples/performance/transport_parallel_sharded.input.namelist`.
+
+Latest run (cache warm): per‑matvec time 0.28 ms (1 device), 0.39 ms (2),
+0.50 ms (3), 0.50 ms (4), 0.84 ms (5), 0.81 ms (6), 1.23 ms (7), 1.34 ms (8).
+CPU sharding overhead dominates at this size; this mode is mainly intended for
+very large grids or multi‑GPU nodes.
+
+![Sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_scaling.png)
+
+Reproduce the sharded matvec scaling figure:
+
+```bash
+python examples/performance/benchmark_sharded_matvec_scaling.py \
+  --input examples/performance/transport_parallel_sharded.input.namelist \
+  --devices 1 2 3 4 5 6 7 8 \
+  --repeats 1 \
+  --nrep 10 \
+  --global-warmup 1
+```
+
 Enable parallel whichRHS solves in normal runs:
 
 ```bash
-export SFINCS_JAX_TRANSPORT_PARALLEL=process
-export SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS=8
+export SFINCS_JAX_CORES=8
+# Optional: disable sharded matvec while keeping process parallelism.
+# export SFINCS_JAX_SHARD=0
 ```
 
 ## Scaling Beyond 3 Workers
@@ -228,6 +262,7 @@ Multi-core and multi-device usage is documented in:
 Highlights:
 
 - Parallel `whichRHS` transport solves via `SFINCS_JAX_TRANSPORT_PARALLEL=process`.
+- Single‑knob CPU parallelism via `SFINCS_JAX_CORES=N` (auto process parallel + sharded matvec).
 - Parallel suite/scan runs via `python scripts/run_reduced_upstream_suite.py --jobs N`.
 - Experimental sharded matvec via `SFINCS_JAX_MATVEC_SHARD_AXIS=theta|zeta`.
 

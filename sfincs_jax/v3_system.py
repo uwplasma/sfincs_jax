@@ -876,24 +876,42 @@ def _get_matvec_mesh() -> Mesh | None:
 
 @lru_cache(maxsize=32)
 def _get_apply_full_system_operator_jit(_signature: tuple[object, ...]):
-    def _apply(op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True) -> jnp.ndarray:
-        return apply_v3_full_system_operator(op, x_full, include_jacobian_terms=include_jacobian_terms)
+    def _apply(
+        op: V3FullSystemOperator,
+        x_full: jnp.ndarray,
+        include_jacobian_terms: bool = True,
+        pad: int = 0,
+    ) -> jnp.ndarray:
+        x_use = x_full[: int(op.total_size)] if pad else x_full
+        y = apply_v3_full_system_operator(op, x_use, include_jacobian_terms=include_jacobian_terms)
+        if pad:
+            y = jnp.pad(y, (0, int(pad)))
+        return y
 
-    return jax.jit(_apply, static_argnames=("include_jacobian_terms",))
+    return jax.jit(_apply, static_argnums=(2, 3))
 
 
 @lru_cache(maxsize=32)
 def _get_apply_full_system_operator_pjit(_signature: tuple[object, ...], shard_axis: str):
-    def _apply(op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True) -> jnp.ndarray:
-        return apply_v3_full_system_operator(op, x_full, include_jacobian_terms=include_jacobian_terms)
+    def _apply(
+        op: V3FullSystemOperator,
+        x_full: jnp.ndarray,
+        include_jacobian_terms: bool = True,
+        pad: int = 0,
+    ) -> jnp.ndarray:
+        x_use = x_full[: int(op.total_size)] if pad else x_full
+        y = apply_v3_full_system_operator(op, x_use, include_jacobian_terms=include_jacobian_terms)
+        if pad:
+            y = jnp.pad(y, (0, int(pad)))
+        return y
 
     if _pjit is None:
-        return jax.jit(_apply, static_argnames=("include_jacobian_terms",))
+        return jax.jit(_apply, static_argnums=(2, 3))
     return _pjit.pjit(
         _apply,
         in_shardings=(None, PartitionSpec("p")),
         out_shardings=PartitionSpec("p"),
-        static_argnames=("include_jacobian_terms",),
+        static_argnums=(2, 3),
     )
 
 
@@ -905,10 +923,16 @@ def apply_v3_full_system_operator_cached(
         mesh = _get_matvec_mesh()
         if mesh is not None:
             fn = _get_apply_full_system_operator_pjit(_operator_signature_cached(op), shard_axis)
+            n_devices = int(np.prod(mesh.devices.shape))
+            n = int(x_full.shape[0])
+            pad = (-n) % n_devices if n_devices > 0 else 0
+            x_use = jnp.pad(x_full, (0, pad)) if pad else x_full
             with mesh:
-                return fn(op, x_full, include_jacobian_terms=include_jacobian_terms)
+                x_use = jax.lax.with_sharding_constraint(x_use, PartitionSpec("p"))
+                y = fn(op, x_use, include_jacobian_terms, pad)
+            return y[:n] if pad else y
     fn = _get_apply_full_system_operator_jit(_operator_signature_cached(op))
-    return fn(op, x_full, include_jacobian_terms=include_jacobian_terms)
+    return fn(op, x_full, include_jacobian_terms, 0)
 
 
 def rhs_v3_full_system(op: V3FullSystemOperator) -> jnp.ndarray:

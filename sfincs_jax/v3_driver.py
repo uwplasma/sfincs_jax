@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import contextlib
 import hashlib
 
 from jax import config as _jax_config
@@ -7277,6 +7278,59 @@ class V3TransportMatrixSolveResult:
     transport_output_fields: dict[str, np.ndarray] | None = None
 
 
+def _rewrite_xla_flags(flags: str, *, cpu_threads: int | None, host_devices: int | None) -> str:
+    parts = []
+    for token in flags.split():
+        if token.startswith("--xla_cpu_parallelism_threads="):
+            continue
+        if token.startswith("--xla_force_host_platform_device_count="):
+            continue
+        parts.append(token)
+    if cpu_threads is not None:
+        parts.append(f"--xla_cpu_parallelism_threads={int(cpu_threads)}")
+    if host_devices is not None:
+        parts.append(f"--xla_force_host_platform_device_count={int(host_devices)}")
+    return " ".join(parts).strip()
+
+
+@contextlib.contextmanager
+def _transport_parallel_worker_env(parallel_workers: int):
+    """Cap XLA threads + disable sharding in transport worker processes."""
+    saved: dict[str, str | None] = {}
+
+    def _set(key: str, value: str | None) -> None:
+        saved[key] = os.environ.get(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+    try:
+        cores_env = os.environ.get("SFINCS_JAX_CORES", "").strip()
+        total_cores = int(cores_env) if cores_env else 0
+    except ValueError:
+        total_cores = 0
+    if total_cores <= 0:
+        total_cores = os.cpu_count() or 1
+    threads = max(1, int(total_cores) // max(1, int(parallel_workers)))
+
+    _set("SFINCS_JAX_SHARD", "0")
+    _set("SFINCS_JAX_MATVEC_SHARD_AXIS", "off")
+    _set("SFINCS_JAX_AUTO_SHARD", "0")
+    _set("SFINCS_JAX_CPU_DEVICES", "1")
+    flags = _rewrite_xla_flags(os.environ.get("XLA_FLAGS", ""), cpu_threads=threads, host_devices=1)
+    _set("XLA_FLAGS", flags or None)
+
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _transport_parallel_worker(payload: dict[str, object]) -> dict[str, object]:
     """Worker entry point for parallel whichRHS transport solves."""
     input_path = Path(str(payload["input_path"]))
@@ -7537,6 +7591,8 @@ def solve_v3_transport_matrix_linear_gmres(
             parallel_workers = 1
     else:
         parallel_workers = max(1, int(parallel_workers))
+    if parallel_workers > 1:
+        parallel_workers = min(int(parallel_workers), len(which_rhs_values))
 
     if (
         (not parallel_child)
@@ -7576,10 +7632,11 @@ def solve_v3_transport_matrix_linear_gmres(
             )
 
         results: list[dict[str, object]] = []
-        with concurrent.futures.ProcessPoolExecutor(max_workers=int(parallel_workers)) as pool:
-            futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
-            for fut in concurrent.futures.as_completed(futures):
-                results.append(fut.result())
+        with _transport_parallel_worker_env(int(parallel_workers)):
+            with concurrent.futures.ProcessPoolExecutor(max_workers=int(parallel_workers)) as pool:
+                futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
+                for fut in concurrent.futures.as_completed(futures):
+                    results.append(fut.result())
 
         s = int(op0.n_species)
         diag_pf = np.zeros((s, n), dtype=np.float64)

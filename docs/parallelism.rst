@@ -84,17 +84,23 @@ preserving differentiability:
    `sfincs_jax.v3_system` with `pjit` + `with_sharding_constraint`.
 
    **Host‑device setup (CPU).** To emulate MPI‑style domain decomposition on a
-   multi‑core CPU, request multiple host devices *before importing JAX*:
+   multi‑core CPU, request multiple host devices *before importing JAX*. The
+   simplest user‑facing knob is ``SFINCS_JAX_CORES``:
 
    .. code-block:: bash
 
-      export SFINCS_JAX_CPU_DEVICES=8
-      export SFINCS_JAX_MATVEC_SHARD_AXIS=auto
+      export SFINCS_JAX_CORES=8
 
    `sfincs_jax` will then shard the state vector along :math:`\\theta` or
    :math:`\\zeta` (whichever is larger) once the :math:`N_\\theta N_\\zeta`
    grid is large enough. This mirrors the Fortran DMDA split across angular
    coordinates.
+
+   To disable sharding while keeping process parallelism, set:
+
+   .. code-block:: bash
+
+      export SFINCS_JAX_SHARD=0
 
 Design choices and parity
 -------------------------
@@ -153,66 +159,22 @@ Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
 single‑worker runtime near ~1 minute while preserving parity.
 
 Latest cache‑warm sweep (1–8 workers):
-1 worker 63.6s, 2 workers 46.8s, 3 workers 30.6s, 4 workers 30.8s,
-5 workers 30.5s, 6 workers 29.5s, 7 workers 30.2s, 8 workers 33.7s.
+1 worker 62.3s, 2 workers 47.2s, 3 workers 24.8s, 4 workers 25.2s,
+5 workers 25.3s, 6 workers 25.6s, 7 workers 25.4s, 8 workers 25.4s.
 
-Step (2): Sharded matvec (single RHS)
--------------------------------------
+Process‑parallel workers automatically disable sharded matvec and cap
+XLA CPU threads per worker to avoid oversubscription when `SFINCS_JAX_CORES`
+is set.
 
-Use sharded matvec when a **single** RHS is large enough to benefit from
-domain decomposition:
-
-.. code-block:: bash
-
-   export SFINCS_JAX_CPU_DEVICES=12
-   export SFINCS_JAX_MATVEC_SHARD_AXIS=auto
-
-Optional controls:
-
-- ``SFINCS_JAX_MATVEC_SHARD_AXIS``: ``auto`` (default when multi‑device), ``theta``,
-  ``zeta``, or ``off``.
-- ``SFINCS_JAX_MATVEC_SHARD_MIN_TZ``: minimum ``N_theta * N_zeta`` before sharding
-  (default: ``128``).
-- ``SFINCS_JAX_AUTO_SHARD``: set to ``0`` to disable auto sharding.
-
-**Notes**
-
-- Set ``SFINCS_JAX_CPU_DEVICES`` *before* importing JAX (i.e., before running
-  `python -m sfincs_jax ...`), otherwise the device count is fixed to 1.
-- For GPU nodes, JAX automatically exposes multiple devices; set
-  ``SFINCS_JAX_MATVEC_SHARD_AXIS`` to choose the domain split.
-You can override this via `--precond` in the benchmark script.
-
-Command:
+Reproduce:
 
 .. code-block:: bash
 
    python examples/performance/benchmark_transport_parallel_scaling.py \
-     --workers 1 2 3 4 \
+     --workers 1 2 3 4 5 6 7 8 \
      --repeats 1 \
-     --warmup 1 \
+     --warmup 0 \
      --global-warmup 1
-
-Results (single run per worker count, JAX cache warm‑up enabled):
-
-.. list-table::
-   :header-rows: 1
-
-   * - Workers
-     - Mean time (s)
-     - Speedup
-   * - 1
-     - 74.84
-     - 1.00
-   * - 2
-     - 49.31
-     - 1.52
-   * - 3
-     - 25.37
-     - 2.95
-   * - 4
-     - 25.42
-     - 2.95
 
 .. figure:: _static/figures/parallel/transport_parallel_scaling.png
    :alt: Parallel whichRHS scaling on Macbook M3 Max
@@ -220,7 +182,7 @@ Results (single run per worker count, JAX cache warm‑up enabled):
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this larger case, scaling reaches ~3.0× by 3–4 workers before flattening.
+For this larger case, scaling reaches ~2.5× by 3–4 workers before flattening.
 The plateau reflects process overhead and shared‑resource contention on a
 laptop‑class CPU. Larger multi‑RHS runs on server‑class nodes should show
 stronger scaling.
@@ -336,6 +298,33 @@ On GPUs, JAX will automatically see all local devices.
 - This mirrors Fortran DMDA splitting along :math:`\theta` or :math:`\zeta`,
   with the same intent: distribute matvec and preconditioner cost.
 
+Sharded matvec scaling (single RHS)
+-----------------------------------
+
+We also benchmarked sharded matvec performance for a larger single‑RHS operator:
+`examples/performance/transport_parallel_sharded.input.namelist`.
+
+Latest run (cache warm, Macbook M3 Max):
+1 device 0.28 ms, 2 devices 0.39 ms, 3 devices 0.50 ms, 4 devices 0.50 ms,
+5 devices 0.84 ms, 6 devices 0.81 ms, 7 devices 1.23 ms, 8 devices 1.34 ms.
+CPU sharding overhead dominates at this size; this mode is primarily intended
+for **very large grids** or multi‑GPU nodes.
+
+.. figure:: _static/figures/parallel/transport_sharded_matvec_scaling.png
+   :alt: Sharded matvec scaling on Macbook M3 Max
+   :width: 90%
+
+Reproduce:
+
+.. code-block:: bash
+
+   python examples/performance/benchmark_sharded_matvec_scaling.py \
+     --input examples/performance/transport_parallel_sharded.input.namelist \
+     --devices 1 2 3 4 5 6 7 8 \
+     --repeats 1 \
+     --nrep 10 \
+     --global-warmup 1
+
 Verification
 ------------
 
@@ -354,14 +343,14 @@ Recommended workflows
 
    .. code-block:: bash
 
-      export SFINCS_JAX_TRANSPORT_PARALLEL=process
-      export SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS=4
+      export SFINCS_JAX_CORES=4
 
 2. Use `--jobs` in the suite runner for concurrent cases.
 
 **Perlmutter (multi‑CPU / multi‑GPU)**
 
-- Multi‑CPU: set `--jobs` to the number of CPU tasks per node.
+- Multi‑CPU: set `SFINCS_JAX_CORES=<tasks-per-node>` and use `--jobs` for case‑level
+  concurrency.
 - Multi‑GPU: run a few `whichRHS` workers, one per GPU, or use
   `SFINCS_JAX_MATVEC_SHARD_AXIS=zeta` for single‑RHS sharding.
 
