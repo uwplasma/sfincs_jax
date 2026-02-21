@@ -7,6 +7,10 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
     env:
       JAX_ENABLE_X64: "True"
       JAX_DISABLE_JIT: "0"
@@ -26,7 +30,7 @@ jobs:
           pip install -e ".[dev]"
       - name: Tests
         run: |
-          python -m pytest -q
+          python -m pytest -q -n auto --dist=loadscope --splits 3 --group ${{ matrix.group }}
 
   examples-smoke:
     runs-on: ubuntu-22.04

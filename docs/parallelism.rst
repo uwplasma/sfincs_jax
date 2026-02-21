@@ -460,6 +460,12 @@ global synchronization and keep most work local:
 These steps mirror PETSc‑style strong‑scaling strategies and are the path to
 meaningful speedups for single‑RHS runs on large CPU/GPU counts.
 
+Prototype status: a **block‑diagonal theta/zeta preconditioner** is available
+for experimentation via ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_dd`` or
+``zeta_dd`` (block size controlled by ``SFINCS_JAX_RHSMODE1_DD_BLOCK_T`` /
+``SFINCS_JAX_RHSMODE1_DD_BLOCK_Z``). It is a stepping stone toward true
+overlapping Schwarz and is not enabled by default.
+
 .. figure:: _static/figures/parallel/transport_sharded_solve_scaling.png
    :alt: Sharded RHSMode=1 solve scaling on Macbook M3 Max
    :width: 90%

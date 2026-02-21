@@ -177,10 +177,15 @@ performance without changing the input file:
   - ``point_xdiag``: point-block Jacobi with **x‑diagonal** blocks (retains xi coupling, drops x coupling).
   - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
   - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
+  - ``theta_dd``: block-diagonal theta preconditioner (domain-decomposition prototype).
+  - ``zeta_dd``: block-diagonal zeta preconditioner (domain-decomposition prototype).
   - ``adi``: apply the theta-line and zeta-line preconditioners sequentially (strongest of the built-ins,
     but also the most expensive).
   - ``schur``: Schur-complement preconditioner for ``constraintScheme=2`` that keeps source constraints.
   - ``0``: disable.
+
+- ``SFINCS_JAX_RHSMODE1_DD_BLOCK_T``: theta-block size for ``theta_dd`` (default: ``8``).
+- ``SFINCS_JAX_RHSMODE1_DD_BLOCK_Z``: zeta-block size for ``zeta_dd`` (default: ``8``).
 
 - ``SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN``: minimum ``total_size`` before the default
   RHSMode=1 preconditioner switches to the collision-diagonal option (default: ``600``).

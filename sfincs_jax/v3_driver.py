@@ -1534,6 +1534,20 @@ def _diag_only(m: jnp.ndarray) -> jnp.ndarray:
     return jnp.diag(jnp.diag(m))
 
 
+def _block_diag_only(m: jnp.ndarray, block: int) -> jnp.ndarray:
+    """Return a block-diagonal copy of a square matrix (block size in indices)."""
+    if int(block) <= 1:
+        return _diag_only(m)
+    mat_np = np.asarray(m, dtype=np.float64)
+    n = int(mat_np.shape[0])
+    mask = np.zeros((n, n), dtype=bool)
+    for start in range(0, n, int(block)):
+        end = min(n, start + int(block))
+        mask[start:end, start:end] = True
+    mat_np = np.where(mask, mat_np, 0.0)
+    return jnp.asarray(mat_np, dtype=m.dtype)
+
+
 def _build_rhsmode1_preconditioner_operator_point(op: V3FullSystemOperator) -> V3FullSystemOperator:
     """Return a simplified RHSMode=1 operator for point-block preconditioning.
 
@@ -1664,6 +1678,48 @@ def _build_rhsmode1_preconditioner_operator_theta_line(op: V3FullSystemOperator)
     return replace(op, fblock=fblock_pc)
 
 
+def _build_rhsmode1_preconditioner_operator_theta_dd(
+    op: V3FullSystemOperator, *, block: int
+) -> V3FullSystemOperator:
+    """Return a theta-block domain-decomposition operator for preconditioning."""
+    if int(op.rhs_mode) != 1:
+        return op
+
+    fblock = op.fblock
+    coll = replace(
+        fblock.collisionless,
+        ddtheta=_block_diag_only(fblock.collisionless.ddtheta, block),
+        ddzeta=_diag_only(fblock.collisionless.ddzeta),
+    )
+    exb_theta = fblock.exb_theta
+    exb_zeta = None if fblock.exb_zeta is None else replace(
+        fblock.exb_zeta, ddzeta=_diag_only(fblock.exb_zeta.ddzeta)
+    )
+    mag_theta = fblock.magdrift_theta
+    if mag_theta is not None:
+        mag_theta = replace(
+            mag_theta,
+            ddtheta_plus=_block_diag_only(mag_theta.ddtheta_plus, block),
+            ddtheta_minus=_block_diag_only(mag_theta.ddtheta_minus, block),
+        )
+    mag_zeta = None
+    if fblock.magdrift_zeta is not None:
+        mag_zeta = replace(
+            fblock.magdrift_zeta,
+            ddzeta_plus=_diag_only(fblock.magdrift_zeta.ddzeta_plus),
+            ddzeta_minus=_diag_only(fblock.magdrift_zeta.ddzeta_minus),
+        )
+    fblock_pc = replace(
+        fblock,
+        collisionless=coll,
+        exb_theta=exb_theta,
+        exb_zeta=exb_zeta,
+        magdrift_theta=mag_theta,
+        magdrift_zeta=mag_zeta,
+    )
+    return replace(op, fblock=fblock_pc)
+
+
 def _build_rhsmode1_preconditioner_operator_zeta_line(op: V3FullSystemOperator) -> V3FullSystemOperator:
     """Return a simplified RHSMode=1 operator for zeta-line preconditioning.
 
@@ -1690,6 +1746,48 @@ def _build_rhsmode1_preconditioner_operator_zeta_line(op: V3FullSystemOperator) 
             ddtheta_minus=_diag_only(fblock.magdrift_theta.ddtheta_minus),
         )
     mag_zeta = fblock.magdrift_zeta
+    fblock_pc = replace(
+        fblock,
+        collisionless=coll,
+        exb_theta=exb_theta,
+        exb_zeta=exb_zeta,
+        magdrift_theta=mag_theta,
+        magdrift_zeta=mag_zeta,
+    )
+    return replace(op, fblock=fblock_pc)
+
+
+def _build_rhsmode1_preconditioner_operator_zeta_dd(
+    op: V3FullSystemOperator, *, block: int
+) -> V3FullSystemOperator:
+    """Return a zeta-block domain-decomposition operator for preconditioning."""
+    if int(op.rhs_mode) != 1:
+        return op
+
+    fblock = op.fblock
+    coll = replace(
+        fblock.collisionless,
+        ddtheta=_diag_only(fblock.collisionless.ddtheta),
+        ddzeta=_block_diag_only(fblock.collisionless.ddzeta, block),
+    )
+    exb_theta = None if fblock.exb_theta is None else replace(
+        fblock.exb_theta, ddtheta=_diag_only(fblock.exb_theta.ddtheta)
+    )
+    exb_zeta = fblock.exb_zeta
+    mag_theta = None
+    if fblock.magdrift_theta is not None:
+        mag_theta = replace(
+            fblock.magdrift_theta,
+            ddtheta_plus=_diag_only(fblock.magdrift_theta.ddtheta_plus),
+            ddtheta_minus=_diag_only(fblock.magdrift_theta.ddtheta_minus),
+        )
+    mag_zeta = fblock.magdrift_zeta
+    if mag_zeta is not None:
+        mag_zeta = replace(
+            mag_zeta,
+            ddzeta_plus=_block_diag_only(mag_zeta.ddzeta_plus, block),
+            ddzeta_minus=_block_diag_only(mag_zeta.ddzeta_minus, block),
+        )
     fblock_pc = replace(
         fblock,
         collisionless=coll,
@@ -2162,8 +2260,12 @@ def _build_rhsmode1_schur_preconditioner(
     base_kind_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_BASE", "").strip().lower()
     if base_kind_env in {"theta", "theta_line", "line_theta"}:
         base_kind = "theta_line"
+    elif base_kind_env in {"theta_dd", "theta_block", "dd_theta", "dd_t"}:
+        base_kind = "theta_dd"
     elif base_kind_env in {"zeta", "zeta_line", "line_zeta"}:
         base_kind = "zeta_line"
+    elif base_kind_env in {"zeta_dd", "zeta_block", "dd_zeta", "dd_z"}:
+        base_kind = "zeta_dd"
     elif base_kind_env in {"adi", "adi_line", "theta_zeta", "zeta_theta"}:
         base_kind = "adi"
     elif base_kind_env in {"species", "species_block", "speciesblock"}:
@@ -2220,6 +2322,13 @@ def _build_rhsmode1_schur_preconditioner(
 
     if base_kind == "theta_line":
         base_precond = _build_rhsmode1_theta_line_preconditioner(op=op)
+    elif base_kind == "theta_dd":
+        dd_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_DD_BLOCK_T", "").strip()
+        try:
+            dd_block = int(dd_block_env) if dd_block_env else 8
+        except ValueError:
+            dd_block = 8
+        base_precond = _build_rhsmode1_theta_dd_preconditioner(op=op, block=dd_block)
     elif base_kind == "species_block":
         base_precond = _build_rhsmode1_species_block_preconditioner(op=op)
     elif base_kind == "sxblock_tz":
@@ -2230,6 +2339,13 @@ def _build_rhsmode1_schur_preconditioner(
         base_precond = _build_rhsmode1_theta_zeta_preconditioner(op=op)
     elif base_kind == "zeta_line":
         base_precond = _build_rhsmode1_zeta_line_preconditioner(op=op)
+    elif base_kind == "zeta_dd":
+        dd_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_DD_BLOCK_Z", "").strip()
+        try:
+            dd_block = int(dd_block_env) if dd_block_env else 8
+        except ValueError:
+            dd_block = 8
+        base_precond = _build_rhsmode1_zeta_dd_preconditioner(op=op, block=dd_block)
     elif base_kind == "adi":
         pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
         pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
@@ -2504,6 +2620,266 @@ def _build_rhsmode1_theta_line_preconditioner(
         r_full = jnp.asarray(r_full, dtype=precond_dtype)
         r_loc = r_full[flat_idx_jnp].reshape((n_species, n_zeta, line_size))
         z_loc = jnp.einsum("szab,szb->sza", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_theta_dd_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Domain-decomposition theta-block preconditioner (block-diagonal in theta)."""
+    cache_key = _rhsmode1_precond_cache_key(op, f"theta_dd_{int(block)}")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = _build_rhsmode1_preconditioner_operator_theta_dd(op, block=int(block))
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+        line_size = int(n_theta * local_per_species)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        idx_map = np.zeros((n_species, n_zeta, line_size), dtype=np.int32)
+        for s in range(n_species):
+            for iz in range(n_zeta):
+                k = 0
+                for it in range(n_theta):
+                    for ix in range(n_x):
+                        max_l = int(nxi_for_x[ix])
+                        for il in range(max_l):
+                            idx_map[s, iz, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz)
+                            )
+                            k += 1
+
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
+
+        block_inv = np.zeros((n_species, n_zeta, line_size, line_size), dtype=np.float64)
+        for s in range(n_species):
+            for iz in range(n_zeta):
+                rep_idx = np.asarray(idx_map[s, iz, :], dtype=np.int32)
+                chunk_cols = _precond_chunk_cols(total_size, int(rep_idx.shape[0]))
+                y_sub = _matvec_submatrix(
+                    op_pc,
+                    col_idx=rep_idx,
+                    row_idx=rep_idx,
+                    total_size=total_size,
+                    chunk_cols=chunk_cols,
+                )
+                a = np.asarray(y_sub.T, dtype=np.float64)
+                a = a + reg * np.eye(line_size, dtype=np.float64)
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                block_inv[s, iz, :, :] = inv
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_CACHE[cache_key] = cached
+
+    n_species = int(op.n_species)
+    n_zeta = int(op.n_zeta)
+    line_size = int(cached.block_inv_jnp.shape[-1])
+    flat_idx_jnp = cached.flat_idx_jnp
+    block_inv_jnp = cached.block_inv_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        r_loc = r_full[flat_idx_jnp].reshape((n_species, n_zeta, line_size))
+        z_loc = jnp.einsum("szab,szb->sza", block_inv_jnp, r_loc)
+        z_full = jnp.zeros_like(r_full)
+        z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_zeta_dd_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Domain-decomposition zeta-block preconditioner (block-diagonal in zeta)."""
+    cache_key = _rhsmode1_precond_cache_key(op, f"zeta_dd_{int(block)}")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        op_pc = _build_rhsmode1_preconditioner_operator_zeta_dd(op, block=int(block))
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        local_per_species = int(np.sum(nxi_for_x))
+        line_size = int(n_zeta * local_per_species)
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        idx_map = np.zeros((n_species, n_theta, line_size), dtype=np.int32)
+        for s in range(n_species):
+            for it in range(n_theta):
+                k = 0
+                for iz in range(n_zeta):
+                    for ix in range(n_x):
+                        max_l = int(nxi_for_x[ix])
+                        for il in range(max_l):
+                            idx_map[s, it, k] = int(
+                                ((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz)
+                            )
+                            k += 1
+
+        idx_map_jnp = jnp.asarray(idx_map, dtype=jnp.int32)
+        flat_idx_jnp = idx_map_jnp.reshape((-1,))
+
+        block_inv = np.zeros((n_species, n_theta, line_size, line_size), dtype=np.float64)
+        for s in range(n_species):
+            for it in range(n_theta):
+                rep_idx = np.asarray(idx_map[s, it, :], dtype=np.int32)
+                chunk_cols = _precond_chunk_cols(total_size, int(rep_idx.shape[0]))
+                y_sub = _matvec_submatrix(
+                    op_pc,
+                    col_idx=rep_idx,
+                    row_idx=rep_idx,
+                    total_size=total_size,
+                    chunk_cols=chunk_cols,
+                )
+                a = np.asarray(y_sub.T, dtype=np.float64)
+                a = a + reg * np.eye(line_size, dtype=np.float64)
+                try:
+                    inv = np.linalg.inv(a)
+                except np.linalg.LinAlgError:
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=1e-12)
+                block_inv[s, it, :, :] = inv
+        block_inv_jnp = jnp.asarray(block_inv, dtype=precond_dtype)
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1PrecondCache(
+            idx_map_jnp=idx_map_jnp,
+            flat_idx_jnp=flat_idx_jnp,
+            block_inv_jnp=block_inv_jnp,
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_CACHE[cache_key] = cached
+
+    n_species = int(op.n_species)
+    n_theta = int(op.n_theta)
+    line_size = int(cached.block_inv_jnp.shape[-1])
+    flat_idx_jnp = cached.flat_idx_jnp
+    block_inv_jnp = cached.block_inv_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        r_loc = r_full[flat_idx_jnp].reshape((n_species, n_theta, line_size))
+        z_loc = jnp.einsum("stab,stb->sta", block_inv_jnp, r_loc)
         z_full = jnp.zeros_like(r_full)
         z_full = z_full.at[flat_idx_jnp].set(z_loc.reshape((-1,)), unique_indices=True)
         if extra_inv_jnp is not None:
@@ -3881,6 +4257,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = None
         elif rhs1_precond_env in {"theta", "theta_line", "line_theta"}:
             rhs1_precond_kind = "theta_line"
+        elif rhs1_precond_env in {"theta_dd", "theta_block", "dd_theta", "dd_t"}:
+            rhs1_precond_kind = "theta_dd"
         elif rhs1_precond_env in {"theta_line_xdiag", "theta_xdiag", "theta_line_diagx"}:
             rhs1_precond_kind = "theta_line_xdiag"
         elif rhs1_precond_env in {"xdiag", "point_xdiag", "block_xdiag"}:
@@ -3901,6 +4279,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "theta_zeta"
         elif rhs1_precond_env in {"zeta", "zeta_line", "line_zeta"}:
             rhs1_precond_kind = "zeta_line"
+        elif rhs1_precond_env in {"zeta_dd", "zeta_block", "dd_zeta", "dd_z"}:
+            rhs1_precond_kind = "zeta_dd"
         elif rhs1_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
             rhs1_precond_kind = "adi"
         elif rhs1_precond_env in {"1", "true", "yes", "on", "point", "point_block"}:
@@ -4818,6 +5198,15 @@ def solve_v3_full_system_linear_gmres(
                 precond = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+            elif rhs1_precond_kind == "theta_dd":
+                dd_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_DD_BLOCK_T", "").strip()
+                try:
+                    dd_block = int(dd_block_env) if dd_block_env else 8
+                except ValueError:
+                    dd_block = 8
+                precond = _build_rhsmode1_theta_dd_preconditioner(
+                    op=op, block=dd_block, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
             elif rhs1_precond_kind == "theta_line_xdiag":
                 precond = _build_rhsmode1_theta_line_xdiag_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
@@ -4875,6 +5264,15 @@ def solve_v3_full_system_linear_gmres(
             elif rhs1_precond_kind == "zeta_line":
                 precond = _build_rhsmode1_zeta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif rhs1_precond_kind == "zeta_dd":
+                dd_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_DD_BLOCK_Z", "").strip()
+                try:
+                    dd_block = int(dd_block_env) if dd_block_env else 8
+                except ValueError:
+                    dd_block = 8
+                precond = _build_rhsmode1_zeta_dd_preconditioner(
+                    op=op, block=dd_block, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             elif rhs1_precond_kind == "schur":
                 precond = _build_rhsmode1_schur_preconditioner(

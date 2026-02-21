@@ -18,6 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest>=7.0",
+  "pytest-xdist>=3.5",
+  "pytest-split>=0.9",
 ]
 docs = [
   "sphinx>=7.0",
