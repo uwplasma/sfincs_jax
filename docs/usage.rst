@@ -399,8 +399,9 @@ performance without changing the input file:
 - ``SFINCS_JAX_SHARD``: shorthand to disable auto sharding even when
   ``SFINCS_JAX_CORES`` is set. Use ``0``/``false`` to keep single‑device matvecs.
 - ``SFINCS_JAX_SHARD_PAD``: pad odd ``Ntheta``/``Nzeta`` internally so theta/zeta
-  sharding can use even device counts (default: enabled). Padding adds ghost planes
-  with zero weights and does not change outputs.
+  sharding can use even device counts, and pad ``Nx`` when x‑sharding is requested
+  but ``Nx`` is not divisible by the device count (default: enabled). Padding adds
+  ghost planes with zero weights and does not change outputs.
 
 - ``SFINCS_JAX_GMRES_DISTRIBUTED``: enable distributed GMRES when using ``flat``
   sharding. Set to ``1`` to run the Krylov solver under `pjit`, keeping vectors

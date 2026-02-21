@@ -145,8 +145,9 @@ python examples/performance/benchmark_sharded_matvec_scaling.py \
 
 `SFINCS_JAX_MATVEC_SHARD_AXIS=x` provides an alternate sharding axis when odd
 ``Ntheta``/``Nzeta`` grids limit theta/zeta sharding; see `docs/parallelism.rst`
-for details and usage notes. For the same input (``Nx=12``), device counts that
-do not divide 12 fall back to the unsharded path.
+for details and usage notes. With `SFINCS_JAX_SHARD_PAD=1` (default), `sfincs_jax`
+pads ``Nx`` to the next multiple of the device count so x‑sharding does not
+fallback on non‑divisible ``Nx``.
 
 ![X-sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_x_scaling.png)
 
@@ -156,6 +157,7 @@ Reproduce the x‑sharded scaling figure:
 python examples/performance/benchmark_sharded_matvec_scaling.py \
   --input examples/performance/transport_parallel_sharded.input.namelist \
   --axis x \
+  --pad \
   --devices 1 2 3 4 5 6 7 8 \
   --repeats 1 \
   --nrep 2000 \

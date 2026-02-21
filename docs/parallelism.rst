@@ -304,8 +304,9 @@ On GPUs, JAX will automatically see all local devices.
   can still shard without changing outputs.
 - ``x`` sharding is available as a fallback when odd ``Ntheta``/``Nzeta`` block
   theta/zeta sharding. Use ``SFINCS_JAX_MATVEC_SHARD_AXIS=x`` or set
-  ``SFINCS_JAX_MATVEC_SHARD_PREFER_X=1`` with a large ``Nx``. (``Nx`` must be
-  divisible by the device count; no padding is applied on the x axis.)
+  ``SFINCS_JAX_MATVEC_SHARD_PREFER_X=1`` with a large ``Nx``. With
+  ``SFINCS_JAX_SHARD_PAD=1`` (default), `sfincs_jax` pads ``Nx`` to the next
+  multiple of the device count so x‑sharding can still activate.
 - When sharding is active and no explicit RHSMode=1 preconditioner is requested,
   `sfincs_jax` defaults to a **local line preconditioner** along the sharded
   axis (theta‑line or zeta‑line). This keeps the preconditioner apply local
@@ -342,14 +343,13 @@ for **very large grids** or multi‑GPU nodes.
 X‑sharded matvec scaling (single RHS)
 -------------------------------------
 
-X‑sharding avoids the odd‑grid constraint but requires ``Nx`` to be divisible
-by the device count. For the same input (``Nx=12``), device counts 5, 7, and 8
-fall back to the unsharded path and therefore match single‑device timings.
+X‑sharding avoids the odd‑grid constraint. With ``SFINCS_JAX_SHARD_PAD=1``
+(default), `sfincs_jax` pads ``Nx`` to the next multiple of the device count,
+so all device counts can shard without falling back.
 
-Latest run (cache warm, Macbook M3 Max, x‑sharded):
-1 device 1.65 ms, 2 devices 3.13 ms, 3 devices 5.00 ms, 4 devices 6.81 ms,
-5 devices 1.72 ms (fallback), 6 devices 9.77 ms,
-7 devices 1.84 ms (fallback), 8 devices 1.89 ms (fallback).
+Latest run (cache warm, Macbook M3 Max, x‑sharded with padding):
+1 device 1.70 ms, 2 devices 3.43 ms, 3 devices 4.98 ms, 4 devices 6.69 ms,
+5 devices 11.00 ms, 6 devices 9.57 ms, 7 devices 14.44 ms, 8 devices 18.36 ms.
 
 .. figure:: _static/figures/parallel/transport_sharded_matvec_x_scaling.png
    :alt: X-sharded matvec scaling on Macbook M3 Max
@@ -399,13 +399,14 @@ Reproduce:
    python examples/performance/benchmark_sharded_matvec_scaling.py \
      --input examples/performance/transport_parallel_sharded.input.namelist \
      --axis x \
+     --pad \
      --devices 1 2 3 4 5 6 7 8 \
      --repeats 1 \
      --nrep 2000 \
      --global-warmup 1
 
 Sharded solve scaling (distributed GMRES)
-----------------------------------------
+-----------------------------------------
 
 We also benchmarked a **single RHSMode=1 solve** with theta‑sharded matvecs and
 distributed GMRES enabled:
@@ -418,11 +419,11 @@ distributed GMRES enabled:
      --global-warmup 1
 
 Input: `examples/performance/rhsmode1_sharded.input.namelist`
-(``Ntheta=63, Nzeta=63, Nxi=10, NL=6, Nx=10``).
+(``Ntheta=95, Nzeta=95, Nxi=12, NL=8, Nx=16``).
 
 Latest run (cache warm, Macbook M3 Max):
-1 device 0.75 s, 2 devices 3.28 s, 3 devices 4.58 s, 4 devices 3.54 s,
-5 devices 3.56 s, 6 devices 3.63 s, 7 devices 5.00 s, 8 devices 4.25 s.
+1 device 0.90 s, 2 devices 5.13 s, 3 devices 5.15 s, 4 devices 5.29 s,
+5 devices 6.36 s, 6 devices 5.48 s, 7 devices 7.50 s, 8 devices 5.55 s.
 
 Because SFINCS enforces **odd** ``Ntheta``/``Nzeta``, theta/zeta sharding only
 activates when the device count divides the sharded dimension (e.g. 1, 3, 7 for

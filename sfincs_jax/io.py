@@ -39,6 +39,9 @@ class ExportFConfig:
     n_export_x: int
     n_export_xi: int
     map_theta: np.ndarray
+    map_zeta: np.ndarray
+    map_x: np.ndarray
+    map_xi: np.ndarray
 
 
 _OUTPUT_GEOM_CACHE: dict[tuple[object, ...], dict[str, np.ndarray]] = {}

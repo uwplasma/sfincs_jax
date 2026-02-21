@@ -36,6 +36,11 @@ from .magnetic_drifts import (
     MagneticDriftZetaV3Operator,
     MagneticDriftXiDotV3Operator,
 )
+from .collisions import (
+    PitchAngleScatteringV3Operator,
+    FokkerPlanckV3Operator,
+    FokkerPlanckV3Phi1Operator,
+)
 from .v3_fblock import V3FBlockOperator, apply_v3_fblock_operator, fblock_operator_from_namelist
 from .vmec_wout import psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
 
@@ -919,6 +924,14 @@ def _pad_2d(arr: jnp.ndarray, *, axis: str, pad: int, fill: float = 0.0) -> jnp.
     return arr
 
 
+def _pad_x_1d(arr: jnp.ndarray, pad: int, *, fill: float = 0.0) -> jnp.ndarray:
+    return _pad_1d(arr, pad, fill=fill)
+
+
+def _pad_x_square(arr: jnp.ndarray, pad: int) -> jnp.ndarray:
+    return _pad_square(arr, pad)
+
+
 def _pad_collisionless(op: CollisionlessV3Operator, *, axis: str, pad: int) -> CollisionlessV3Operator:
     if pad <= 0:
         return op
@@ -941,6 +954,12 @@ def _pad_collisionless(op: CollisionlessV3Operator, *, axis: str, pad: int) -> C
             b_hat_sup_zeta=_pad_2d_zeta(op.b_hat_sup_zeta, pad, fill=0.0),
             db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
             db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
+        )
+    if axis == "x":
+        return replace(
+            op,
+            x=_pad_x_1d(op.x, pad, fill=1.0),
+            n_xi_for_x=_pad_x_1d(op.n_xi_for_x, pad, fill=0),
         )
     return op
 
@@ -1084,6 +1103,8 @@ def _pad_magdrift_xidot(
             db_hat_sub_theta_dpsi_hat=_pad_2d_zeta(op.db_hat_sub_theta_dpsi_hat, pad, fill=0.0),
             db_hat_sub_psi_dtheta=_pad_2d_zeta(op.db_hat_sub_psi_dtheta, pad, fill=0.0),
         )
+    if axis == "x":
+        return replace(op, n_xi_for_x=_pad_x_1d(op.n_xi_for_x, pad, fill=0))
     return op
 
 
@@ -1110,6 +1131,8 @@ def _pad_er_xidot(op: ErXiDotV3Operator, *, axis: str, pad: int) -> ErXiDotV3Ope
             db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
             db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
         )
+    if axis == "x":
+        return replace(op, n_xi_for_x=_pad_x_1d(op.n_xi_for_x, pad, fill=0))
     return op
 
 
@@ -1139,6 +1162,42 @@ def _pad_er_xdot(op: ErXDotV3Operator, *, axis: str, pad: int) -> ErXDotV3Operat
     return op
 
 
+def _pad_pas(op: PitchAngleScatteringV3Operator, pad: int) -> PitchAngleScatteringV3Operator:
+    if pad <= 0:
+        return op
+    return replace(
+        op,
+        nu_d_hat=jnp.pad(op.nu_d_hat, ((0, 0), (0, pad)), constant_values=0.0),
+        n_xi_for_x=_pad_x_1d(op.n_xi_for_x, pad, fill=0),
+        coef=jnp.pad(op.coef, ((0, 0), (0, pad), (0, 0)), constant_values=0.0),
+        mask_xi=jnp.pad(op.mask_xi, ((0, pad), (0, 0)), constant_values=0.0),
+    )
+
+
+def _pad_fp(op: FokkerPlanckV3Operator, pad: int) -> FokkerPlanckV3Operator:
+    if pad <= 0:
+        return op
+    return replace(
+        op,
+        mat=jnp.pad(op.mat, ((0, 0), (0, 0), (0, 0), (0, pad), (0, pad)), constant_values=0.0),
+        n_xi_for_x=_pad_x_1d(op.n_xi_for_x, pad, fill=0),
+        mask_xi=jnp.pad(op.mask_xi, ((0, pad), (0, 0)), constant_values=0.0),
+    )
+
+
+def _pad_fp_phi1(op: FokkerPlanckV3Phi1Operator, pad: int) -> FokkerPlanckV3Phi1Operator:
+    if pad <= 0:
+        return op
+    return replace(
+        op,
+        k_nu=jnp.pad(op.k_nu, ((0, 0), (0, 0), (0, pad)), constant_values=0.0),
+        k_cd=jnp.pad(op.k_cd, ((0, 0), (0, 0), (0, pad), (0, pad)), constant_values=0.0),
+        k_ce=jnp.pad(op.k_ce, ((0, 0), (0, 0), (0, pad), (0, pad)), constant_values=0.0),
+        k_rosen=jnp.pad(op.k_rosen, ((0, 0), (0, 0), (0, 0), (0, pad), (0, pad)), constant_values=0.0),
+        n_xi_for_x=_pad_x_1d(op.n_xi_for_x, pad, fill=0),
+    )
+
+
 def _pad_fblock_operator(
     op: V3FBlockOperator, *, axis: str, pad: int
 ) -> V3FBlockOperator:
@@ -1158,8 +1217,12 @@ def _pad_fblock_operator(
     )
     er_xidot = _pad_er_xidot(op.er_xidot, axis=axis, pad=pad) if op.er_xidot is not None else None
     er_xdot = _pad_er_xdot(op.er_xdot, axis=axis, pad=pad) if op.er_xdot is not None else None
+    pas = _pad_pas(op.pas, pad) if (axis == "x" and op.pas is not None) else op.pas
+    fp = _pad_fp(op.fp, pad) if (axis == "x" and op.fp is not None) else op.fp
+    fp_phi1 = _pad_fp_phi1(op.fp_phi1, pad) if (axis == "x" and op.fp_phi1 is not None) else op.fp_phi1
     n_theta = int(op.n_theta + pad) if axis == "theta" else int(op.n_theta)
     n_zeta = int(op.n_zeta + pad) if axis == "zeta" else int(op.n_zeta)
+    n_x = int(op.n_x + pad) if axis == "x" else int(op.n_x)
     return replace(
         op,
         collisionless=collisionless,
@@ -1170,6 +1233,10 @@ def _pad_fblock_operator(
         magdrift_xidot=magdrift_xidot,
         er_xidot=er_xidot,
         er_xdot=er_xdot,
+        pas=pas,
+        fp=fp,
+        fp_phi1=fp_phi1,
+        n_x=n_x,
         n_theta=n_theta,
         n_zeta=n_zeta,
     )
@@ -1188,6 +1255,9 @@ def _pad_full_system_operator(op: V3FullSystemOperator, *, axis: str, pad: int) 
     fblock = _pad_fblock_operator(op.fblock, axis=axis, pad=pad)
     theta_weights = _pad_1d(op.theta_weights, pad, fill=0.0) if axis == "theta" else op.theta_weights
     zeta_weights = _pad_1d(op.zeta_weights, pad, fill=0.0) if axis == "zeta" else op.zeta_weights
+    x = _pad_x_1d(op.x, pad, fill=1.0) if axis == "x" else op.x
+    x_weights = _pad_x_1d(op.x_weights, pad, fill=0.0) if axis == "x" else op.x_weights
+    ddx = _pad_x_square(op.ddx, pad) if axis == "x" else op.ddx
     # d_hat appears in denominators for flux-surface averaging; use 1.0 to avoid 0/0.
     d_hat = _pad_2d(op.d_hat, axis=axis, pad=pad, fill=1.0)
     b_hat = _pad_2d(op.b_hat, axis=axis, pad=pad, fill=1.0)
@@ -1212,6 +1282,9 @@ def _pad_full_system_operator(op: V3FullSystemOperator, *, axis: str, pad: int) 
         b_hat_sub_theta=b_hat_sub_theta,
         b_hat_sub_zeta=b_hat_sub_zeta,
         phi1_hat_base=phi1_hat_base,
+        x=x,
+        x_weights=x_weights,
+        ddx=ddx,
     )
     _PADDED_OPERATOR_CACHE[key] = (weakref.ref(op), padded)
     return padded
@@ -1230,8 +1303,10 @@ def _pad_full_vector(
     f = x_full[: op.f_size].reshape(op.fblock.f_shape)
     if axis == "theta":
         f_pad = jnp.pad(f, ((0, 0), (0, 0), (0, 0), (0, pad), (0, 0)))
-    else:
+    elif axis == "zeta":
         f_pad = jnp.pad(f, ((0, 0), (0, 0), (0, 0), (0, 0), (0, pad)))
+    else:
+        f_pad = jnp.pad(f, ((0, 0), (0, pad), (0, 0), (0, 0), (0, 0)))
     f_pad_flat = f_pad.reshape((-1,))
     rest = x_full[op.f_size :]
     if op.include_phi1:
@@ -1239,14 +1314,25 @@ def _pad_full_vector(
         phi1 = rest[:phi1_size].reshape((op.n_theta, op.n_zeta))
         if axis == "theta":
             phi1_pad = jnp.pad(phi1, ((0, pad), (0, 0)))
-        else:
+        elif axis == "zeta":
             phi1_pad = jnp.pad(phi1, ((0, 0), (0, pad)))
+        else:
+            phi1_pad = phi1
         phi1_pad_flat = phi1_pad.reshape((-1,))
         lam = rest[phi1_size : phi1_size + 1]
         extra = rest[op.phi1_size :]
+        if axis == "x" and int(op.constraint_scheme) == 2:
+            extra = extra.reshape((op.n_species, op.n_x))
+            extra = jnp.pad(extra, ((0, 0), (0, pad)))
+            extra = extra.reshape((-1,))
         rest_pad = jnp.concatenate([phi1_pad_flat, lam, extra])
     else:
-        rest_pad = rest
+        if axis == "x" and int(op.constraint_scheme) == 2:
+            extra = rest.reshape((op.n_species, op.n_x))
+            extra = jnp.pad(extra, ((0, 0), (0, pad)))
+            rest_pad = extra.reshape((-1,))
+        else:
+            rest_pad = rest
     return jnp.concatenate([f_pad_flat, rest_pad])
 
 
@@ -1263,8 +1349,10 @@ def _unpad_full_vector(
     f_pad = x_pad[: op_pad.f_size].reshape(op_pad.fblock.f_shape)
     if axis == "theta":
         f = f_pad[:, :, :, : op.n_theta, :]
-    else:
+    elif axis == "zeta":
         f = f_pad[:, :, :, :, : op.n_zeta]
+    else:
+        f = f_pad[:, : op.n_x, :, :, :]
     f_flat = f.reshape((-1,))
     rest_pad = x_pad[op_pad.f_size :]
     if op.include_phi1:
@@ -1272,14 +1360,23 @@ def _unpad_full_vector(
         phi1_pad = rest_pad[:phi1_size_pad].reshape((op_pad.n_theta, op_pad.n_zeta))
         if axis == "theta":
             phi1 = phi1_pad[: op.n_theta, :]
-        else:
+        elif axis == "zeta":
             phi1 = phi1_pad[:, : op.n_zeta]
+        else:
+            phi1 = phi1_pad
         phi1_flat = phi1.reshape((-1,))
         lam = rest_pad[phi1_size_pad : phi1_size_pad + 1]
         extra = rest_pad[op_pad.phi1_size :]
+        if axis == "x" and int(op.constraint_scheme) == 2:
+            extra = extra.reshape((op.n_species, op_pad.n_x))
+            extra = extra[:, : op.n_x].reshape((-1,))
         rest = jnp.concatenate([phi1_flat, lam, extra])
     else:
-        rest = rest_pad
+        if axis == "x" and int(op.constraint_scheme) == 2:
+            extra = rest_pad.reshape((op.n_species, op_pad.n_x))
+            rest = extra[:, : op.n_x].reshape((-1,))
+        else:
+            rest = rest_pad
     return jnp.concatenate([f_flat, rest])
 
 
@@ -1426,7 +1523,7 @@ def apply_v3_full_system_operator_cached(
                 else:
                     n_dim = int(op.n_x)
                 pad = (-n_dim) % max(1, n_devices)
-                if pad != 0 and shard_axis in {"theta", "zeta"} and _shard_pad_enabled():
+                if pad != 0 and shard_axis in {"theta", "zeta", "x"} and _shard_pad_enabled():
                     op_pad = _pad_full_system_operator(op, axis=shard_axis, pad=pad)
                     x_pad = _pad_full_vector(x_full, op=op, op_pad=op_pad, axis=shard_axis, pad=pad)
                     fn = _get_apply_full_system_operator_pjit(_operator_signature_cached(op_pad), shard_axis)
