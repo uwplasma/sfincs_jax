@@ -204,13 +204,25 @@ Reduced‑suite parallel sanity checks
 We also timed a pair of reduced‑suite examples using `SFINCS_JAX_CORES` to see
 whether CPU parallelism helps at the ~1–3 s scale. Results (cache‑warm, second run):
 
-+----------------------------------------+---------+---------+---------+---------+
-| Case                                   | 1 core  | 2 cores | 4 cores | 8 cores |
-+========================================+=========+=========+=========+=========+
-| HSX_PASCollisions_DKESTrajectories     | 2.825 s | 2.747 s | 2.787 s | 3.043 s |
-+----------------------------------------+---------+---------+---------+---------+
-| transportMatrix_geometryScheme11      | 1.599 s | 2.404 s | 2.691 s | 2.485 s |
-+----------------------------------------+---------+---------+---------+---------+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 12 12 12 12
+
+   * - Case
+     - 1 core
+     - 2 cores
+     - 4 cores
+     - 8 cores
+   * - HSX_PASCollisions_DKESTrajectories
+     - 2.825 s
+     - 2.747 s
+     - 2.787 s
+     - 3.043 s
+   * - transportMatrix_geometryScheme11
+     - 1.599 s
+     - 2.404 s
+     - 2.691 s
+     - 2.485 s
 
 At these tiny sizes, per‑process startup, JIT cache synchronization, and
 inter‑process overhead dominate the solve time, so additional cores do not help.
