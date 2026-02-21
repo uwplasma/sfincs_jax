@@ -308,8 +308,8 @@ performance without changing the input file:
 - ``SFINCS_JAX_TRANSPORT_RECYCLE_STATE``: reuse saved Krylov recycle vectors across runs
   when ``SFINCS_JAX_STATE_IN`` is set (default: enabled; set to ``0`` to disable).
 
-- ``SFINCS_JAX_MATVEC_SHARD_AXIS``: enable experimental sharded matvecs (``theta`` or ``zeta``)
-  when multiple devices are available.
+- ``SFINCS_JAX_MATVEC_SHARD_AXIS``: enable experimental sharded matvecs
+  (``theta``, ``zeta``, ``x``, ``flat``, or ``auto``) when multiple devices are available.
 
 - ``SFINCS_JAX_GMRES_PRECONDITION_SIDE``: side for applying the preconditioner in GMRES.
 
@@ -385,14 +385,22 @@ performance without changing the input file:
   Must be set **before** importing JAX (i.e., before running `python -m sfincs_jax`).
 
 - ``SFINCS_JAX_MATVEC_SHARD_AXIS``: control SPMD sharding of the matvec along ``theta``,
-  ``zeta``, ``flat``, or ``auto``. ``auto`` chooses the larger of ``Ntheta``/``Nzeta``
-  when multiple devices are present. ``flat`` shards the full state vector evenly
-  across devices.
+  ``zeta``, ``x``, ``flat``, or ``auto``. ``auto`` chooses the larger of ``Ntheta``/``Nzeta``
+  when multiple devices are present. ``x`` is a fallback for cases where odd
+  ``Ntheta``/``Nzeta`` block theta/zeta sharding. ``flat`` shards the full state
+  vector evenly across devices.
 - ``SFINCS_JAX_MATVEC_SHARD_MIN_TZ``: minimum ``Ntheta * Nzeta`` before enabling
   auto sharding (default: ``128``).
+- ``SFINCS_JAX_MATVEC_SHARD_MIN_X``: minimum ``Nx`` before auto selecting ``x``
+  sharding (default: ``16``).
+- ``SFINCS_JAX_MATVEC_SHARD_PREFER_X``: set to ``1`` to prefer ``x`` sharding when
+  ``Nx`` exceeds the minimum.
 - ``SFINCS_JAX_AUTO_SHARD``: set to ``0`` to disable auto sharding.
 - ``SFINCS_JAX_SHARD``: shorthand to disable auto sharding even when
   ``SFINCS_JAX_CORES`` is set. Use ``0``/``false`` to keep single‑device matvecs.
+- ``SFINCS_JAX_SHARD_PAD``: pad odd ``Ntheta``/``Nzeta`` internally so theta/zeta
+  sharding can use even device counts (default: enabled). Padding adds ghost planes
+  with zero weights and does not change outputs.
 
 - ``SFINCS_JAX_GMRES_DISTRIBUTED``: enable distributed GMRES when using ``flat``
   sharding. Set to ``1`` to run the Krylov solver under `pjit`, keeping vectors

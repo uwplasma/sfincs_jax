@@ -21,6 +21,7 @@ def _run_once(input_path: Path) -> float:
     os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] = "1"
     os.environ["SFINCS_JAX_AUTO_SHARD"] = "0"
     os.environ["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
+    os.environ["SFINCS_JAX_SHARD_PAD"] = "1"
     nml = read_sfincs_input(input_path)
     t0 = time.perf_counter()
     solve_v3_full_system_linear_gmres(
@@ -37,6 +38,7 @@ def _run_once_subprocess(*, input_path: Path, devices: int, cache_dir: Path | No
     env["SFINCS_JAX_GMRES_DISTRIBUTED"] = "1"
     env["SFINCS_JAX_AUTO_SHARD"] = "0"
     env["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
+    env["SFINCS_JAX_SHARD_PAD"] = "1"
     env["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     env["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
     if cache_dir is not None:
@@ -155,6 +157,9 @@ def main() -> None:
     json_path.write_text(json.dumps(payload, indent=2))
 
     try:
+        import matplotlib  # noqa: PLC0415
+
+        matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt  # noqa: PLC0415
 
         d = np.array([r["devices"] for r in results], dtype=int)

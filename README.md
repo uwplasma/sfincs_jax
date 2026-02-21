@@ -119,12 +119,14 @@ Sharded matvec scaling for a larger single‑RHS operator (derived from the same
 transport case, with higher resolution to stress the matvec):
 `examples/performance/transport_parallel_sharded.input.namelist`.
 
-Latest run (cache warm): per‑matvec time 0.30 ms (1 device), 0.30 ms (2),
-0.29 ms (3), 0.28 ms (4), 0.45 ms (5), 0.28 ms (6), 0.28 ms (7), 0.25 ms (8).
-CPU sharding overhead dominates at this size; this mode is mainly intended for
-very large grids or multi‑GPU nodes. The sharded dimension (``Ntheta`` or ``Nzeta``)
-must be divisible by the device count. Because v3 forces odd sizes, even device
-counts often fall back to the single‑device path unless the grid is adjusted.
+Latest run (cache warm, theta‑sharded with padding): per‑matvec time 1.74 ms
+(1 device), 4.08 ms (2), 6.26 ms (3), 8.06 ms (4), 8.01 ms (5),
+11.24 ms (6), 13.81 ms (7), 15.53 ms (8). CPU sharding overhead dominates at
+this size; this mode is mainly intended for very large grids or multi‑GPU nodes.
+The sharded dimension (``Ntheta`` or ``Nzeta``) must be divisible by the device
+count. Because v3 forces odd sizes, even device counts often fall back to the
+single‑device path unless `SFINCS_JAX_SHARD_PAD=1` (default) pads ghost planes
+to make sharding possible without changing outputs.
 
 ![Sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_scaling.png)
 
@@ -133,16 +135,38 @@ Reproduce the sharded matvec scaling figure:
 ```bash
 python examples/performance/benchmark_sharded_matvec_scaling.py \
   --input examples/performance/transport_parallel_sharded.input.namelist \
+  --axis theta \
+  --pad \
   --devices 1 2 3 4 5 6 7 8 \
   --repeats 1 \
-  --nrep 10 \
+  --nrep 2000 \
+  --global-warmup 1
+```
+
+`SFINCS_JAX_MATVEC_SHARD_AXIS=x` provides an alternate sharding axis when odd
+``Ntheta``/``Nzeta`` grids limit theta/zeta sharding; see `docs/parallelism.rst`
+for details and usage notes. For the same input (``Nx=12``), device counts that
+do not divide 12 fall back to the unsharded path.
+
+![X-sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_x_scaling.png)
+
+Reproduce the x‑sharded scaling figure:
+
+```bash
+python examples/performance/benchmark_sharded_matvec_scaling.py \
+  --input examples/performance/transport_parallel_sharded.input.namelist \
+  --axis x \
+  --devices 1 2 3 4 5 6 7 8 \
+  --repeats 1 \
+  --nrep 2000 \
   --global-warmup 1
 ```
 
 Sharded **solve** scaling (theta‑sharded GMRES) currently shows CPU overhead
 dominance for medium RHSMode=1 cases. Because v3 enforces **odd** ``Ntheta`` and
-``Nzeta``, sharding only activates when the device count divides those odd sizes.
-See `docs/parallelism.rst` for the full benchmark and figure.
+``Nzeta``, sharding only activates when the device count divides those odd sizes
+unless `SFINCS_JAX_SHARD_PAD=1` is enabled. See `docs/parallelism.rst` for the
+full benchmark and figure.
 
 Enable parallel whichRHS solves in normal runs:
 

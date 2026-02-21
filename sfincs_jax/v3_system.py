@@ -28,6 +28,14 @@ from .diagnostics import g_hat_i_hat as g_hat_i_hat_jax
 from .namelist import Namelist
 from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
+from .collisionless import CollisionlessV3Operator
+from .collisionless_er import ErXiDotV3Operator, ErXDotV3Operator
+from .collisionless_exb import ExBThetaV3Operator, ExBZetaV3Operator
+from .magnetic_drifts import (
+    MagneticDriftThetaV3Operator,
+    MagneticDriftZetaV3Operator,
+    MagneticDriftXiDotV3Operator,
+)
 from .v3_fblock import V3FBlockOperator, apply_v3_fblock_operator, fblock_operator_from_namelist
 from .vmec_wout import psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
 
@@ -35,6 +43,16 @@ _THRESHOLD_FOR_INCLUSION = 1e-12  # Matches v3 `sparsify.F90`.
 _V3_DEFAULT_DELTA = 4.5694e-3  # v3 `globalVariables.F90`
 
 _SHARDING_CONSTRAINTS_ENABLED = False
+
+
+def _shard_pad_enabled() -> bool:
+    env = os.environ.get("SFINCS_JAX_SHARD_PAD", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    # Default on: allow padding to make odd grids divisible by device count.
+    return True
 
 
 @contextlib.contextmanager
@@ -423,7 +441,7 @@ def apply_v3_full_system_operator(
     rest = x_full[op.f_size :]
     f = f_flat.reshape(op.fblock.f_shape)
     shard_axis = _matvec_shard_axis(op) if (allow_sharding and _SHARDING_CONSTRAINTS_ENABLED) else None
-    use_sharding = shard_axis in {"theta", "zeta"} and (jax.device_count() > 1)
+    use_sharding = shard_axis in {"theta", "zeta", "x"} and (jax.device_count() > 1)
     if use_sharding:
         n_devices = jax.local_device_count()
         if n_devices <= 1:
@@ -432,10 +450,14 @@ def apply_v3_full_system_operator(
             use_sharding = False
         elif shard_axis == "zeta" and int(op.n_zeta) % n_devices != 0:
             use_sharding = False
+        elif shard_axis == "x" and int(op.n_x) % n_devices != 0:
+            use_sharding = False
     if use_sharding and shard_axis == "theta":
         f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, "theta", None))
     elif use_sharding and shard_axis == "zeta":
         f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, None, "zeta"))
+    elif use_sharding and shard_axis == "x":
+        f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, "x", None, None, None))
 
     phi1 = None
     lam = None
@@ -848,6 +870,9 @@ def _operator_signature(op: V3FullSystemOperator) -> tuple[object, ...]:
 
 
 _OPERATOR_SIGNATURE_CACHE: dict[int, tuple[weakref.ReferenceType[V3FullSystemOperator], tuple[object, ...]]] = {}
+_PADDED_OPERATOR_CACHE: dict[
+    tuple[int, str, int], tuple[weakref.ReferenceType[V3FullSystemOperator], V3FullSystemOperator]
+] = {}
 
 
 def _operator_signature_cached(op: V3FullSystemOperator) -> tuple[object, ...]:
@@ -862,13 +887,409 @@ def _operator_signature_cached(op: V3FullSystemOperator) -> tuple[object, ...]:
     return sig
 
 
+def _pad_1d(arr: jnp.ndarray, pad: int, *, fill: float = 0.0) -> jnp.ndarray:
+    if pad <= 0:
+        return arr
+    return jnp.pad(arr, ((0, pad),), constant_values=fill)
+
+
+def _pad_square(arr: jnp.ndarray, pad: int) -> jnp.ndarray:
+    if pad <= 0:
+        return arr
+    return jnp.pad(arr, ((0, pad), (0, pad)), constant_values=0.0)
+
+
+def _pad_2d_theta(arr: jnp.ndarray, pad: int, *, fill: float = 0.0) -> jnp.ndarray:
+    if pad <= 0:
+        return arr
+    return jnp.pad(arr, ((0, pad), (0, 0)), constant_values=fill)
+
+
+def _pad_2d_zeta(arr: jnp.ndarray, pad: int, *, fill: float = 0.0) -> jnp.ndarray:
+    if pad <= 0:
+        return arr
+    return jnp.pad(arr, ((0, 0), (0, pad)), constant_values=fill)
+
+
+def _pad_2d(arr: jnp.ndarray, *, axis: str, pad: int, fill: float = 0.0) -> jnp.ndarray:
+    if axis == "theta":
+        return _pad_2d_theta(arr, pad, fill=fill)
+    if axis == "zeta":
+        return _pad_2d_zeta(arr, pad, fill=fill)
+    return arr
+
+
+def _pad_collisionless(op: CollisionlessV3Operator, *, axis: str, pad: int) -> CollisionlessV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "theta":
+        return replace(
+            op,
+            ddtheta=_pad_square(op.ddtheta, pad),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            b_hat_sup_theta=_pad_2d_theta(op.b_hat_sup_theta, pad, fill=0.0),
+            b_hat_sup_zeta=_pad_2d_theta(op.b_hat_sup_zeta, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_theta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_theta(op.db_hat_dzeta, pad, fill=0.0),
+        )
+    if axis == "zeta":
+        return replace(
+            op,
+            ddzeta=_pad_square(op.ddzeta, pad),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            b_hat_sup_theta=_pad_2d_zeta(op.b_hat_sup_theta, pad, fill=0.0),
+            b_hat_sup_zeta=_pad_2d_zeta(op.b_hat_sup_zeta, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_exb_theta(op: ExBThetaV3Operator, *, axis: str, pad: int) -> ExBThetaV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "theta":
+        return replace(
+            op,
+            ddtheta=_pad_square(op.ddtheta, pad),
+            d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_zeta=_pad_2d_theta(op.b_hat_sub_zeta, pad, fill=0.0),
+        )
+    if axis == "zeta":
+        return replace(
+            op,
+            d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_zeta=_pad_2d_zeta(op.b_hat_sub_zeta, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_exb_zeta(op: ExBZetaV3Operator, *, axis: str, pad: int) -> ExBZetaV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "zeta":
+        return replace(
+            op,
+            ddzeta=_pad_square(op.ddzeta, pad),
+            d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_zeta(op.b_hat_sub_theta, pad, fill=0.0),
+        )
+    if axis == "theta":
+        return replace(
+            op,
+            d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_theta(op.b_hat_sub_theta, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_magdrift_theta(
+    op: MagneticDriftThetaV3Operator, *, axis: str, pad: int
+) -> MagneticDriftThetaV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "theta":
+        return replace(
+            op,
+            ddtheta_plus=_pad_square(op.ddtheta_plus, pad),
+            ddtheta_minus=_pad_square(op.ddtheta_minus, pad),
+            d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_zeta=_pad_2d_theta(op.b_hat_sub_zeta, pad, fill=0.0),
+            b_hat_sub_psi=_pad_2d_theta(op.b_hat_sub_psi, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_theta(op.db_hat_dzeta, pad, fill=0.0),
+            db_hat_dpsi_hat=_pad_2d_theta(op.db_hat_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_psi_dzeta=_pad_2d_theta(op.db_hat_sub_psi_dzeta, pad, fill=0.0),
+            db_hat_sub_zeta_dpsi_hat=_pad_2d_theta(op.db_hat_sub_zeta_dpsi_hat, pad, fill=0.0),
+        )
+    if axis == "zeta":
+        return replace(
+            op,
+            d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_zeta=_pad_2d_zeta(op.b_hat_sub_zeta, pad, fill=0.0),
+            b_hat_sub_psi=_pad_2d_zeta(op.b_hat_sub_psi, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
+            db_hat_dpsi_hat=_pad_2d_zeta(op.db_hat_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_psi_dzeta=_pad_2d_zeta(op.db_hat_sub_psi_dzeta, pad, fill=0.0),
+            db_hat_sub_zeta_dpsi_hat=_pad_2d_zeta(op.db_hat_sub_zeta_dpsi_hat, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_magdrift_zeta(
+    op: MagneticDriftZetaV3Operator, *, axis: str, pad: int
+) -> MagneticDriftZetaV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "zeta":
+        return replace(
+            op,
+            ddzeta_plus=_pad_square(op.ddzeta_plus, pad),
+            ddzeta_minus=_pad_square(op.ddzeta_minus, pad),
+            d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_zeta(op.b_hat_sub_theta, pad, fill=0.0),
+            b_hat_sub_psi=_pad_2d_zeta(op.b_hat_sub_psi, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dpsi_hat=_pad_2d_zeta(op.db_hat_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_theta_dpsi_hat=_pad_2d_zeta(op.db_hat_sub_theta_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_psi_dtheta=_pad_2d_zeta(op.db_hat_sub_psi_dtheta, pad, fill=0.0),
+        )
+    if axis == "theta":
+        return replace(
+            op,
+            d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_theta(op.b_hat_sub_theta, pad, fill=0.0),
+            b_hat_sub_psi=_pad_2d_theta(op.b_hat_sub_psi, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_theta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dpsi_hat=_pad_2d_theta(op.db_hat_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_theta_dpsi_hat=_pad_2d_theta(op.db_hat_sub_theta_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_psi_dtheta=_pad_2d_theta(op.db_hat_sub_psi_dtheta, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_magdrift_xidot(
+    op: MagneticDriftXiDotV3Operator, *, axis: str, pad: int
+) -> MagneticDriftXiDotV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "theta":
+        return replace(
+            op,
+            d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            db_hat_dtheta=_pad_2d_theta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_theta(op.db_hat_dzeta, pad, fill=0.0),
+            db_hat_sub_psi_dzeta=_pad_2d_theta(op.db_hat_sub_psi_dzeta, pad, fill=0.0),
+            db_hat_sub_zeta_dpsi_hat=_pad_2d_theta(op.db_hat_sub_zeta_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_theta_dpsi_hat=_pad_2d_theta(op.db_hat_sub_theta_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_psi_dtheta=_pad_2d_theta(op.db_hat_sub_psi_dtheta, pad, fill=0.0),
+        )
+    if axis == "zeta":
+        return replace(
+            op,
+            d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
+            db_hat_sub_psi_dzeta=_pad_2d_zeta(op.db_hat_sub_psi_dzeta, pad, fill=0.0),
+            db_hat_sub_zeta_dpsi_hat=_pad_2d_zeta(op.db_hat_sub_zeta_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_theta_dpsi_hat=_pad_2d_zeta(op.db_hat_sub_theta_dpsi_hat, pad, fill=0.0),
+            db_hat_sub_psi_dtheta=_pad_2d_zeta(op.db_hat_sub_psi_dtheta, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_er_xidot(op: ErXiDotV3Operator, *, axis: str, pad: int) -> ErXiDotV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "theta":
+        return replace(
+            op,
+            d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_theta(op.b_hat_sub_theta, pad, fill=0.0),
+            b_hat_sub_zeta=_pad_2d_theta(op.b_hat_sub_zeta, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_theta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_theta(op.db_hat_dzeta, pad, fill=0.0),
+        )
+    if axis == "zeta":
+        return replace(
+            op,
+            d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_zeta(op.b_hat_sub_theta, pad, fill=0.0),
+            b_hat_sub_zeta=_pad_2d_zeta(op.b_hat_sub_zeta, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_er_xdot(op: ErXDotV3Operator, *, axis: str, pad: int) -> ErXDotV3Operator:
+    if pad <= 0:
+        return op
+    if axis == "theta":
+        return replace(
+            op,
+            d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_theta(op.b_hat_sub_theta, pad, fill=0.0),
+            b_hat_sub_zeta=_pad_2d_theta(op.b_hat_sub_zeta, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_theta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_theta(op.db_hat_dzeta, pad, fill=0.0),
+        )
+    if axis == "zeta":
+        return replace(
+            op,
+            d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
+            b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
+            b_hat_sub_theta=_pad_2d_zeta(op.b_hat_sub_theta, pad, fill=0.0),
+            b_hat_sub_zeta=_pad_2d_zeta(op.b_hat_sub_zeta, pad, fill=0.0),
+            db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
+            db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
+        )
+    return op
+
+
+def _pad_fblock_operator(
+    op: V3FBlockOperator, *, axis: str, pad: int
+) -> V3FBlockOperator:
+    if pad <= 0:
+        return op
+    collisionless = _pad_collisionless(op.collisionless, axis=axis, pad=pad)
+    exb_theta = _pad_exb_theta(op.exb_theta, axis=axis, pad=pad) if op.exb_theta is not None else None
+    exb_zeta = _pad_exb_zeta(op.exb_zeta, axis=axis, pad=pad) if op.exb_zeta is not None else None
+    magdrift_theta = (
+        _pad_magdrift_theta(op.magdrift_theta, axis=axis, pad=pad) if op.magdrift_theta is not None else None
+    )
+    magdrift_zeta = (
+        _pad_magdrift_zeta(op.magdrift_zeta, axis=axis, pad=pad) if op.magdrift_zeta is not None else None
+    )
+    magdrift_xidot = (
+        _pad_magdrift_xidot(op.magdrift_xidot, axis=axis, pad=pad) if op.magdrift_xidot is not None else None
+    )
+    er_xidot = _pad_er_xidot(op.er_xidot, axis=axis, pad=pad) if op.er_xidot is not None else None
+    er_xdot = _pad_er_xdot(op.er_xdot, axis=axis, pad=pad) if op.er_xdot is not None else None
+    n_theta = int(op.n_theta + pad) if axis == "theta" else int(op.n_theta)
+    n_zeta = int(op.n_zeta + pad) if axis == "zeta" else int(op.n_zeta)
+    return replace(
+        op,
+        collisionless=collisionless,
+        exb_theta=exb_theta,
+        exb_zeta=exb_zeta,
+        magdrift_theta=magdrift_theta,
+        magdrift_zeta=magdrift_zeta,
+        magdrift_xidot=magdrift_xidot,
+        er_xidot=er_xidot,
+        er_xdot=er_xdot,
+        n_theta=n_theta,
+        n_zeta=n_zeta,
+    )
+
+
+def _pad_full_system_operator(op: V3FullSystemOperator, *, axis: str, pad: int) -> V3FullSystemOperator:
+    key = (id(op), axis, pad)
+    cached = _PADDED_OPERATOR_CACHE.get(key)
+    if cached is not None:
+        ref, value = cached
+        if ref() is op:
+            return value
+    if pad <= 0:
+        _PADDED_OPERATOR_CACHE[key] = (weakref.ref(op), op)
+        return op
+    fblock = _pad_fblock_operator(op.fblock, axis=axis, pad=pad)
+    theta_weights = _pad_1d(op.theta_weights, pad, fill=0.0) if axis == "theta" else op.theta_weights
+    zeta_weights = _pad_1d(op.zeta_weights, pad, fill=0.0) if axis == "zeta" else op.zeta_weights
+    # d_hat appears in denominators for flux-surface averaging; use 1.0 to avoid 0/0.
+    d_hat = _pad_2d(op.d_hat, axis=axis, pad=pad, fill=1.0)
+    b_hat = _pad_2d(op.b_hat, axis=axis, pad=pad, fill=1.0)
+    db_hat_dtheta = _pad_2d(op.db_hat_dtheta, axis=axis, pad=pad, fill=0.0)
+    db_hat_dzeta = _pad_2d(op.db_hat_dzeta, axis=axis, pad=pad, fill=0.0)
+    b_hat_sup_theta = _pad_2d(op.b_hat_sup_theta, axis=axis, pad=pad, fill=0.0)
+    b_hat_sup_zeta = _pad_2d(op.b_hat_sup_zeta, axis=axis, pad=pad, fill=0.0)
+    b_hat_sub_theta = _pad_2d(op.b_hat_sub_theta, axis=axis, pad=pad, fill=0.0)
+    b_hat_sub_zeta = _pad_2d(op.b_hat_sub_zeta, axis=axis, pad=pad, fill=0.0)
+    phi1_hat_base = _pad_2d(op.phi1_hat_base, axis=axis, pad=pad, fill=0.0)
+    padded = replace(
+        op,
+        fblock=fblock,
+        theta_weights=theta_weights,
+        zeta_weights=zeta_weights,
+        d_hat=d_hat,
+        b_hat=b_hat,
+        db_hat_dtheta=db_hat_dtheta,
+        db_hat_dzeta=db_hat_dzeta,
+        b_hat_sup_theta=b_hat_sup_theta,
+        b_hat_sup_zeta=b_hat_sup_zeta,
+        b_hat_sub_theta=b_hat_sub_theta,
+        b_hat_sub_zeta=b_hat_sub_zeta,
+        phi1_hat_base=phi1_hat_base,
+    )
+    _PADDED_OPERATOR_CACHE[key] = (weakref.ref(op), padded)
+    return padded
+
+
+def _pad_full_vector(
+    x_full: jnp.ndarray,
+    *,
+    op: V3FullSystemOperator,
+    op_pad: V3FullSystemOperator,
+    axis: str,
+    pad: int,
+) -> jnp.ndarray:
+    if pad <= 0:
+        return x_full
+    f = x_full[: op.f_size].reshape(op.fblock.f_shape)
+    if axis == "theta":
+        f_pad = jnp.pad(f, ((0, 0), (0, 0), (0, 0), (0, pad), (0, 0)))
+    else:
+        f_pad = jnp.pad(f, ((0, 0), (0, 0), (0, 0), (0, 0), (0, pad)))
+    f_pad_flat = f_pad.reshape((-1,))
+    rest = x_full[op.f_size :]
+    if op.include_phi1:
+        phi1_size = int(op.n_theta * op.n_zeta)
+        phi1 = rest[:phi1_size].reshape((op.n_theta, op.n_zeta))
+        if axis == "theta":
+            phi1_pad = jnp.pad(phi1, ((0, pad), (0, 0)))
+        else:
+            phi1_pad = jnp.pad(phi1, ((0, 0), (0, pad)))
+        phi1_pad_flat = phi1_pad.reshape((-1,))
+        lam = rest[phi1_size : phi1_size + 1]
+        extra = rest[op.phi1_size :]
+        rest_pad = jnp.concatenate([phi1_pad_flat, lam, extra])
+    else:
+        rest_pad = rest
+    return jnp.concatenate([f_pad_flat, rest_pad])
+
+
+def _unpad_full_vector(
+    x_pad: jnp.ndarray,
+    *,
+    op: V3FullSystemOperator,
+    op_pad: V3FullSystemOperator,
+    axis: str,
+    pad: int,
+) -> jnp.ndarray:
+    if pad <= 0:
+        return x_pad
+    f_pad = x_pad[: op_pad.f_size].reshape(op_pad.fblock.f_shape)
+    if axis == "theta":
+        f = f_pad[:, :, :, : op.n_theta, :]
+    else:
+        f = f_pad[:, :, :, :, : op.n_zeta]
+    f_flat = f.reshape((-1,))
+    rest_pad = x_pad[op_pad.f_size :]
+    if op.include_phi1:
+        phi1_size_pad = int(op_pad.n_theta * op_pad.n_zeta)
+        phi1_pad = rest_pad[:phi1_size_pad].reshape((op_pad.n_theta, op_pad.n_zeta))
+        if axis == "theta":
+            phi1 = phi1_pad[: op.n_theta, :]
+        else:
+            phi1 = phi1_pad[:, : op.n_zeta]
+        phi1_flat = phi1.reshape((-1,))
+        lam = rest_pad[phi1_size_pad : phi1_size_pad + 1]
+        extra = rest_pad[op_pad.phi1_size :]
+        rest = jnp.concatenate([phi1_flat, lam, extra])
+    else:
+        rest = rest_pad
+    return jnp.concatenate([f_flat, rest])
+
+
 def _matvec_shard_axis(op: V3FullSystemOperator | None = None) -> str | None:
     env = os.environ.get("SFINCS_JAX_MATVEC_SHARD_AXIS", "").strip().lower()
     if env in {"off", "none", "0", "false", "no"}:
         return None
     if env in {"flat", "vector", "p"}:
         return "flat"
-    if env in {"theta", "zeta"}:
+    if env in {"theta", "zeta", "x"}:
         return env
     auto_env = os.environ.get("SFINCS_JAX_AUTO_SHARD", "").strip().lower()
     if env not in {"", "auto"} and auto_env in {"0", "false", "no", "off"}:
@@ -884,12 +1305,23 @@ def _matvec_shard_axis(op: V3FullSystemOperator | None = None) -> str | None:
         return None
     ntheta = int(op.n_theta)
     nzeta = int(op.n_zeta)
+    prefer_x_env = os.environ.get("SFINCS_JAX_MATVEC_SHARD_PREFER_X", "").strip().lower()
+    prefer_x = prefer_x_env in {"1", "true", "yes", "on"}
+    try:
+        min_x_env = os.environ.get("SFINCS_JAX_MATVEC_SHARD_MIN_X", "").strip()
+        min_x = int(min_x_env) if min_x_env else 16
+    except ValueError:
+        min_x = 16
+    if prefer_x and int(op.n_x) >= max(1, min_x):
+        return "x"
     if ntheta > 1 and nzeta > 1:
         return "theta" if ntheta >= nzeta else "zeta"
     if ntheta > 1:
         return "theta"
     if nzeta > 1:
         return "zeta"
+    if int(op.n_x) >= max(1, min_x):
+        return "x"
     return None
 
 
@@ -986,13 +1418,23 @@ def apply_v3_full_system_operator_cached(
         mesh = _get_matvec_mesh(axis_name)
         if mesh is not None:
             n_devices = int(np.prod(mesh.devices.shape))
-            if shard_axis in {"theta", "zeta"}:
-                n_theta = int(op.n_theta)
-                n_zeta = int(op.n_zeta)
-                if shard_axis == "theta" and n_theta % max(1, n_devices) != 0:
-                    fn = _get_apply_full_system_operator_jit(_operator_signature_cached(op))
-                    return fn(op, x_full, include_jacobian_terms, 0)
-                if shard_axis == "zeta" and n_zeta % max(1, n_devices) != 0:
+            if shard_axis in {"theta", "zeta", "x"}:
+                if shard_axis == "theta":
+                    n_dim = int(op.n_theta)
+                elif shard_axis == "zeta":
+                    n_dim = int(op.n_zeta)
+                else:
+                    n_dim = int(op.n_x)
+                pad = (-n_dim) % max(1, n_devices)
+                if pad != 0 and shard_axis in {"theta", "zeta"} and _shard_pad_enabled():
+                    op_pad = _pad_full_system_operator(op, axis=shard_axis, pad=pad)
+                    x_pad = _pad_full_vector(x_full, op=op, op_pad=op_pad, axis=shard_axis, pad=pad)
+                    fn = _get_apply_full_system_operator_pjit(_operator_signature_cached(op_pad), shard_axis)
+                    with mesh:
+                        y_pad = fn(op_pad, x_pad, include_jacobian_terms)
+                    y = _unpad_full_vector(y_pad, op=op, op_pad=op_pad, axis=shard_axis, pad=pad)
+                    return y
+                if pad != 0:
                     fn = _get_apply_full_system_operator_jit(_operator_signature_cached(op))
                     return fn(op, x_full, include_jacobian_terms, 0)
                 fn = _get_apply_full_system_operator_pjit(_operator_signature_cached(op), shard_axis)

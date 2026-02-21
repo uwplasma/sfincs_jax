@@ -299,8 +299,13 @@ On GPUs, JAX will automatically see all local devices.
   and skips sharding constraints (no functional change).
 - Sharded matvec requires the sharded dimension (``Ntheta`` or ``Nzeta``) to be
   divisible by the device count. Because v3 forces **odd** ``Ntheta``/``Nzeta``,
-  only odd device counts activate theta/zeta sharding by default; even counts
-  fall back to the single‑device path.
+  only odd device counts activate theta/zeta sharding by default. Set
+  ``SFINCS_JAX_SHARD_PAD=1`` (default) to pad ghost planes so even device counts
+  can still shard without changing outputs.
+- ``x`` sharding is available as a fallback when odd ``Ntheta``/``Nzeta`` block
+  theta/zeta sharding. Use ``SFINCS_JAX_MATVEC_SHARD_AXIS=x`` or set
+  ``SFINCS_JAX_MATVEC_SHARD_PREFER_X=1`` with a large ``Nx``. (``Nx`` must be
+  divisible by the device count; no padding is applied on the x axis.)
 - When sharding is active and no explicit RHSMode=1 preconditioner is requested,
   `sfincs_jax` defaults to a **local line preconditioner** along the sharded
   axis (theta‑line or zeta‑line). This keeps the preconditioner apply local
@@ -308,15 +313,25 @@ On GPUs, JAX will automatically see all local devices.
 - This mirrors Fortran DMDA splitting along :math:`\theta` or :math:`\zeta`,
   with the same intent: distribute matvec and preconditioner cost.
 
+**Padding design (theta/zeta sharding).** When ``SFINCS_JAX_SHARD_PAD=1``,
+`sfincs_jax` pads odd ``Ntheta``/``Nzeta`` grids with **ghost planes** so that
+even device counts can shard. The padding is constructed to be
+mathematically neutral: weights and integration measures are padded with zeros,
+so the extra planes contribute nothing to residuals or diagnostics. We also
+pad ``BHat`` with 1 and derivatives with 0 to avoid division‑by‑zero in
+intermediate expressions. The final output is **un‑padded**, so the user‑visible
+solution and H5 outputs match the original grid exactly. This choice preserves
+parity while allowing SPMD sharding on otherwise incompatible grids.
+
 Sharded matvec scaling (single RHS)
 -----------------------------------
 
 We also benchmarked sharded matvec performance for a larger single‑RHS operator:
 `examples/performance/transport_parallel_sharded.input.namelist`.
 
-Latest run (cache warm, Macbook M3 Max):
-1 device 0.30 ms, 2 devices 0.30 ms, 3 devices 0.29 ms, 4 devices 0.28 ms,
-5 devices 0.45 ms, 6 devices 0.28 ms, 7 devices 0.28 ms, 8 devices 0.25 ms.
+Latest run (cache warm, Macbook M3 Max, theta‑sharded with padding):
+1 device 1.74 ms, 2 devices 4.08 ms, 3 devices 6.26 ms, 4 devices 8.06 ms,
+5 devices 8.01 ms, 6 devices 11.24 ms, 7 devices 13.81 ms, 8 devices 15.53 ms.
 CPU sharding overhead dominates at this size; this mode is primarily intended
 for **very large grids** or multi‑GPU nodes.
 
@@ -324,15 +339,69 @@ for **very large grids** or multi‑GPU nodes.
    :alt: Sharded matvec scaling on Macbook M3 Max
    :width: 90%
 
+X‑sharded matvec scaling (single RHS)
+-------------------------------------
+
+X‑sharding avoids the odd‑grid constraint but requires ``Nx`` to be divisible
+by the device count. For the same input (``Nx=12``), device counts 5, 7, and 8
+fall back to the unsharded path and therefore match single‑device timings.
+
+Latest run (cache warm, Macbook M3 Max, x‑sharded):
+1 device 1.65 ms, 2 devices 3.13 ms, 3 devices 5.00 ms, 4 devices 6.81 ms,
+5 devices 1.72 ms (fallback), 6 devices 9.77 ms,
+7 devices 1.84 ms (fallback), 8 devices 1.89 ms (fallback).
+
+.. figure:: _static/figures/parallel/transport_sharded_matvec_x_scaling.png
+   :alt: X-sharded matvec scaling on Macbook M3 Max
+   :width: 90%
+
+Shard_map halo prototype (uneven partition evaluation)
+------------------------------------------------------
+
+We added an **experimental** `shard_map` prototype that emulates PETSc‑style
+uneven partitions by performing an explicit **all‑gather halo exchange** before
+computing the collisionless :math:`\partial/\partial\theta` term. This is not
+wired into production runs; it is a research benchmark to quantify the
+communication cost of explicit halos for dense derivative operators.
+
+Reproduce:
+
+.. code-block:: bash
+
+   python examples/performance/benchmark_shard_map_halo.py \
+     --input examples/performance/transport_parallel_sharded.input.namelist \
+     --devices 4 \
+     --axis theta \
+     --repeats 5
+
+Notes:
+
+- The prototype uses a **full gather halo** (all_gather) because the current
+  dense derivative matrices are not stencil‑sparse in every scheme. For compact
+  stencils, this can be replaced with neighbor halo exchange to reduce bandwidth.
+- Outputs match the baseline collisionless operator; the path is for evaluation
+  only and is not enabled by default.
+- Latest measurement (Macbook M3 Max, 4 devices, theta axis): 0.679 s per call.
+
 Reproduce:
 
 .. code-block:: bash
 
    python examples/performance/benchmark_sharded_matvec_scaling.py \
      --input examples/performance/transport_parallel_sharded.input.namelist \
+     --axis theta \
+     --pad \
      --devices 1 2 3 4 5 6 7 8 \
      --repeats 1 \
-     --nrep 10 \
+     --nrep 2000 \
+     --global-warmup 1
+
+   python examples/performance/benchmark_sharded_matvec_scaling.py \
+     --input examples/performance/transport_parallel_sharded.input.namelist \
+     --axis x \
+     --devices 1 2 3 4 5 6 7 8 \
+     --repeats 1 \
+     --nrep 2000 \
      --global-warmup 1
 
 Sharded solve scaling (distributed GMRES)
@@ -357,11 +426,12 @@ Latest run (cache warm, Macbook M3 Max):
 
 Because SFINCS enforces **odd** ``Ntheta``/``Nzeta``, theta/zeta sharding only
 activates when the device count divides the sharded dimension (e.g. 1, 3, 7 for
-``Ntheta=63``). Other device counts fall back to the unsharded path, so scaling
-is overhead‑dominated for these medium cases. Achieving strong scaling for a
-*single* RHS will require a true domain‑decomposition GMRES with local
-preconditioning and communication‑avoiding reductions. That remains the next
-step for multi‑node scaling.
+``Ntheta=63``). With ``SFINCS_JAX_SHARD_PAD=1`` (default), `sfincs_jax` pads
+ghost planes so **even device counts can still shard** without changing outputs.
+Scaling is still overhead‑dominated for these medium cases; achieving strong
+scaling for a *single* RHS will require a true domain‑decomposition GMRES with
+local preconditioning and communication‑avoiding reductions. That remains the
+next step for multi‑node scaling.
 
 .. figure:: _static/figures/parallel/transport_sharded_solve_scaling.png
    :alt: Sharded RHSMode=1 solve scaling on Macbook M3 Max

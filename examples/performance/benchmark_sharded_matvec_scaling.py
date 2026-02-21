@@ -48,11 +48,14 @@ def _run_once(input_path: Path, *, nrep: int) -> float:
     return (t1 - t0) / float(max(1, int(nrep)))
 
 
-def _run_once_subprocess(*, input_path: Path, devices: int, nrep: int, cache_dir: Path | None) -> float:
+def _run_once_subprocess(
+    *, input_path: Path, devices: int, nrep: int, cache_dir: Path | None, axis: str, pad: bool
+) -> float:
     env = os.environ.copy()
     env["SFINCS_JAX_CPU_DEVICES"] = str(int(devices))
-    env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "auto"
+    env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = axis
     env["SFINCS_JAX_AUTO_SHARD"] = "1"
+    env["SFINCS_JAX_SHARD_PAD"] = "1" if pad else "0"
     env["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     env["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
     if cache_dir is not None:
@@ -83,6 +86,18 @@ def main() -> None:
         type=Path,
         default=default_input,
         help="Path to input.namelist for the full-system operator.",
+    )
+    parser.add_argument(
+        "--axis",
+        type=str,
+        default="auto",
+        choices=("auto", "theta", "zeta", "x", "flat"),
+        help="Sharding axis to request (default auto).",
+    )
+    parser.add_argument(
+        "--pad",
+        action="store_true",
+        help="Enable padding so odd grids can shard on even device counts.",
     )
     parser.add_argument(
         "--devices",
@@ -136,13 +151,27 @@ def main() -> None:
 
     if args.global_warmup and args.global_warmup > 0:
         for _ in range(int(args.global_warmup)):
-            _run_once_subprocess(input_path=input_path, devices=1, nrep=args.nrep, cache_dir=cache_dir)
+            _run_once_subprocess(
+                input_path=input_path,
+                devices=1,
+                nrep=args.nrep,
+                cache_dir=cache_dir,
+                axis=args.axis,
+                pad=args.pad,
+            )
 
     results = []
     for d in devices:
         times = []
         for _ in range(max(args.repeats, 1)):
-            dt = _run_once_subprocess(input_path=input_path, devices=d, nrep=args.nrep, cache_dir=cache_dir)
+            dt = _run_once_subprocess(
+                input_path=input_path,
+                devices=d,
+                nrep=args.nrep,
+                cache_dir=cache_dir,
+                axis=args.axis,
+                pad=args.pad,
+            )
             times.append(dt)
         times = np.asarray(times, dtype=float)
         results.append(
@@ -165,6 +194,8 @@ def main() -> None:
 
     payload = {
         "input": input_path.name,
+        "axis": args.axis,
+        "pad": bool(args.pad),
         "case": input_path.stem.replace(".input", ""),
         "devices": devices,
         "results": results,
@@ -175,6 +206,9 @@ def main() -> None:
     json_path.write_text(json.dumps(payload, indent=2))
 
     try:
+        import matplotlib  # noqa: PLC0415
+
+        matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt  # noqa: PLC0415
 
         d = np.array([r["devices"] for r in results], dtype=int)
