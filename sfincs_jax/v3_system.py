@@ -404,7 +404,7 @@ def apply_v3_full_system_operator(
     f_flat = x_full[: op.f_size]
     rest = x_full[op.f_size :]
     f = f_flat.reshape(op.fblock.f_shape)
-    shard_axis = _matvec_shard_axis()
+    shard_axis = _matvec_shard_axis(op)
     use_sharding = shard_axis in {"theta", "zeta"} and (jax.device_count() > 1)
     if use_sharding and shard_axis == "theta":
         f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, "p", None))
@@ -836,12 +836,32 @@ def _operator_signature_cached(op: V3FullSystemOperator) -> tuple[object, ...]:
     return sig
 
 
-def _matvec_shard_axis() -> str | None:
+def _matvec_shard_axis(op: V3FullSystemOperator | None = None) -> str | None:
     env = os.environ.get("SFINCS_JAX_MATVEC_SHARD_AXIS", "").strip().lower()
-    if env in {"", "off", "none", "0", "false", "no"}:
+    if env in {"off", "none", "0", "false", "no"}:
         return None
     if env in {"theta", "zeta"}:
         return env
+    auto_env = os.environ.get("SFINCS_JAX_AUTO_SHARD", "").strip().lower()
+    if env not in {"", "auto"} and auto_env in {"0", "false", "no", "off"}:
+        return None
+    if op is None:
+        return None
+    try:
+        min_tz_env = os.environ.get("SFINCS_JAX_MATVEC_SHARD_MIN_TZ", "").strip()
+        min_tz = int(min_tz_env) if min_tz_env else 128
+    except ValueError:
+        min_tz = 128
+    if int(op.n_theta) * int(op.n_zeta) < max(1, min_tz):
+        return None
+    ntheta = int(op.n_theta)
+    nzeta = int(op.n_zeta)
+    if ntheta > 1 and nzeta > 1:
+        return "theta" if ntheta >= nzeta else "zeta"
+    if ntheta > 1:
+        return "theta"
+    if nzeta > 1:
+        return "zeta"
     return None
 
 
@@ -880,7 +900,7 @@ def _get_apply_full_system_operator_pjit(_signature: tuple[object, ...], shard_a
 def apply_v3_full_system_operator_cached(
     op: V3FullSystemOperator, x_full: jnp.ndarray, *, include_jacobian_terms: bool = True
 ) -> jnp.ndarray:
-    shard_axis = _matvec_shard_axis()
+    shard_axis = _matvec_shard_axis(op)
     if shard_axis is not None:
         mesh = _get_matvec_mesh()
         if mesh is not None:

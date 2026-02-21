@@ -6,11 +6,25 @@ for selected examples, then expand coverage over time.
 
 from __future__ import annotations
 
-# Enable a default JAX compilation cache for repeated CLI invocations unless the
-# user explicitly disables it. This improves cold-start performance without
-# requiring environment configuration.
+# Enable host-device parallelism and a default JAX compilation cache for repeated
+# CLI invocations unless the user explicitly disables it. This improves cold-start
+# performance without requiring environment configuration.
 import os
 import tempfile
+
+# Allow users to request multiple CPU devices for JAX SPMD/pjit on host platforms.
+# This must be set before importing JAX.
+_cpu_devices_env = os.environ.get("SFINCS_JAX_CPU_DEVICES", "").strip()
+if _cpu_devices_env:
+    try:
+        _cpu_devices = int(_cpu_devices_env)
+    except ValueError:
+        _cpu_devices = 0
+    if _cpu_devices > 0:
+        _xla_flags = os.environ.get("XLA_FLAGS", "")
+        if "--xla_force_host_platform_device_count" not in _xla_flags:
+            flag = f"--xla_force_host_platform_device_count={_cpu_devices}"
+            os.environ["XLA_FLAGS"] = f"{_xla_flags} {flag}".strip()
 
 _disable_cache = os.environ.get("SFINCS_JAX_DISABLE_COMPILATION_CACHE", "").strip().lower()
 if _disable_cache not in {"1", "true", "yes", "on"}:

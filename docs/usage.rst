@@ -372,6 +372,16 @@ performance without changing the input file:
 - ``SFINCS_JAX_COMPILATION_CACHE_DIR``: convenience override for the default cache path when
   ``JAX_COMPILATION_CACHE_DIR`` is not set.
 
+- ``SFINCS_JAX_CPU_DEVICES``: request multiple host CPU devices for JAX SPMD/pjit.
+  Must be set **before** importing JAX (i.e., before running `python -m sfincs_jax`).
+
+- ``SFINCS_JAX_MATVEC_SHARD_AXIS``: control SPMD sharding of the matvec along ``theta``,
+  ``zeta``, or ``auto``. ``auto`` chooses the larger of ``Ntheta``/``Nzeta`` when
+  multiple devices are present.
+- ``SFINCS_JAX_MATVEC_SHARD_MIN_TZ``: minimum ``Ntheta * Nzeta`` before enabling
+  auto sharding (default: ``128``).
+- ``SFINCS_JAX_AUTO_SHARD``: set to ``0`` to disable auto sharding.
+
 - ``SFINCS_JAX_GEOMETRY_CACHE``: enable/disable the geometry cache in ``geometry_from_namelist``
   (default: enabled).
 - ``SFINCS_JAX_GEOMETRY_CACHE_PERSIST``: control persistent on‑disk geometry caching

@@ -83,6 +83,19 @@ preserving differentiability:
    Implementation: `apply_v3_full_system_operator_cached` in
    `sfincs_jax.v3_system` with `pjit` + `with_sharding_constraint`.
 
+   **Host‑device setup (CPU).** To emulate MPI‑style domain decomposition on a
+   multi‑core CPU, request multiple host devices *before importing JAX*:
+
+   .. code-block:: bash
+
+      export SFINCS_JAX_CPU_DEVICES=8
+      export SFINCS_JAX_MATVEC_SHARD_AXIS=auto
+
+   `sfincs_jax` will then shard the state vector along :math:`\\theta` or
+   :math:`\\zeta` (whichever is larger) once the :math:`N_\\theta N_\\zeta`
+   grid is large enough. This mirrors the Fortran DMDA split across angular
+   coordinates.
+
 Design choices and parity
 -------------------------
 
@@ -138,6 +151,32 @@ Benchmark case: `examples/performance/transport_parallel_xxlarge.input.namelist`
 
 Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
 single‑worker runtime in the 1–2 minute range while preserving parity.
+
+Step (2): Sharded matvec (single RHS)
+-------------------------------------
+
+Use sharded matvec when a **single** RHS is large enough to benefit from
+domain decomposition:
+
+.. code-block:: bash
+
+   export SFINCS_JAX_CPU_DEVICES=12
+   export SFINCS_JAX_MATVEC_SHARD_AXIS=auto
+
+Optional controls:
+
+- ``SFINCS_JAX_MATVEC_SHARD_AXIS``: ``auto`` (default when multi‑device), ``theta``,
+  ``zeta``, or ``off``.
+- ``SFINCS_JAX_MATVEC_SHARD_MIN_TZ``: minimum ``N_theta * N_zeta`` before sharding
+  (default: ``128``).
+- ``SFINCS_JAX_AUTO_SHARD``: set to ``0`` to disable auto sharding.
+
+**Notes**
+
+- Set ``SFINCS_JAX_CPU_DEVICES`` *before* importing JAX (i.e., before running
+  `python -m sfincs_jax ...`), otherwise the device count is fixed to 1.
+- For GPU nodes, JAX automatically exposes multiple devices; set
+  ``SFINCS_JAX_MATVEC_SHARD_AXIS`` to choose the domain split.
 You can override this via `--precond` in the benchmark script.
 
 Command:
