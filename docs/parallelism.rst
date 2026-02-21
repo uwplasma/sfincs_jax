@@ -298,13 +298,9 @@ On GPUs, JAX will automatically see all local devices.
 - When only one device is available, the code falls back to the standard JIT path
   and skips sharding constraints (no functional change).
 - Sharded matvec requires the sharded dimension (``Ntheta`` or ``Nzeta``) to be
-  divisible by the device count. Otherwise it falls back to the single‑device path.
-- For stronger scaling on a **single RHS**, use flat sharding with distributed GMRES:
-
-  .. code-block:: bash
-
-     export SFINCS_JAX_MATVEC_SHARD_AXIS=flat
-     export SFINCS_JAX_GMRES_DISTRIBUTED=1
+  divisible by the device count. Because v3 forces **odd** ``Ntheta``/``Nzeta``,
+  only odd device counts activate theta/zeta sharding by default; even counts
+  fall back to the single‑device path.
 - When sharding is active and no explicit RHSMode=1 preconditioner is requested,
   `sfincs_jax` defaults to a **local line preconditioner** along the sharded
   axis (theta‑line or zeta‑line). This keeps the preconditioner apply local
@@ -342,8 +338,8 @@ Reproduce:
 Sharded solve scaling (distributed GMRES)
 ----------------------------------------
 
-We also benchmarked a **single RHSMode=1 solve** with flat sharding and distributed
-GMRES enabled:
+We also benchmarked a **single RHSMode=1 solve** with theta‑sharded matvecs and
+distributed GMRES enabled:
 
 .. code-block:: bash
 
@@ -353,17 +349,19 @@ GMRES enabled:
      --global-warmup 1
 
 Input: `examples/performance/rhsmode1_sharded.input.namelist`
-(``Ntheta=64, Nzeta=64, Nxi=10, NL=6, Nx=10``).
+(``Ntheta=63, Nzeta=63, Nxi=10, NL=6, Nx=10``).
 
 Latest run (cache warm, Macbook M3 Max):
-1 device 1.23 s, 2 devices 4.39 s, 3 devices 4.35 s, 4 devices 4.63 s,
-5 devices 4.39 s, 6 devices 4.61 s, 7 devices 4.50 s, 8 devices 4.66 s.
+1 device 0.75 s, 2 devices 3.28 s, 3 devices 4.58 s, 4 devices 3.54 s,
+5 devices 3.56 s, 6 devices 3.63 s, 7 devices 5.00 s, 8 devices 4.25 s.
 
-This confirms that **flat sharding + distributed GMRES on CPU is still
-overhead‑dominated** for medium cases. Achieving strong scaling for a *single*
-RHS will require a true domain‑decomposition GMRES (theta/zeta) with
-local preconditioning and communication‑avoiding reductions. That is
-the next step for multi‑node scaling.
+Because SFINCS enforces **odd** ``Ntheta``/``Nzeta``, theta/zeta sharding only
+activates when the device count divides the sharded dimension (e.g. 1, 3, 7 for
+``Ntheta=63``). Other device counts fall back to the unsharded path, so scaling
+is overhead‑dominated for these medium cases. Achieving strong scaling for a
+*single* RHS will require a true domain‑decomposition GMRES with local
+preconditioning and communication‑avoiding reductions. That remains the next
+step for multi‑node scaling.
 
 .. figure:: _static/figures/parallel/transport_sharded_solve_scaling.png
    :alt: Sharded RHSMode=1 solve scaling on Macbook M3 Max

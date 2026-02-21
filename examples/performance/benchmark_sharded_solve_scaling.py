@@ -17,9 +17,10 @@ from sfincs_jax.v3_driver import solve_v3_full_system_linear_gmres
 def _run_once(input_path: Path) -> float:
     os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     os.environ["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
-    os.environ["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "flat"
+    os.environ["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "theta"
     os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] = "1"
     os.environ["SFINCS_JAX_AUTO_SHARD"] = "0"
+    os.environ["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
     nml = read_sfincs_input(input_path)
     t0 = time.perf_counter()
     solve_v3_full_system_linear_gmres(
@@ -32,9 +33,10 @@ def _run_once(input_path: Path) -> float:
 def _run_once_subprocess(*, input_path: Path, devices: int, cache_dir: Path | None) -> float:
     env = os.environ.copy()
     env["SFINCS_JAX_CPU_DEVICES"] = str(int(devices))
-    env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "flat"
+    env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "theta"
     env["SFINCS_JAX_GMRES_DISTRIBUTED"] = "1"
     env["SFINCS_JAX_AUTO_SHARD"] = "0"
+    env["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
     env["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     env["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
     if cache_dir is not None:

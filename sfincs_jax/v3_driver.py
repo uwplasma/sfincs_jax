@@ -51,7 +51,7 @@ from .transport_matrix import (
     v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit,
     v3_transport_matrix_from_flux_arrays,
 )
-from .v3_system import _fs_average_factor, _ix_min, _source_basis_constraint_scheme_1, _matvec_shard_axis
+from .v3_system import _fs_average_factor, _ix_min, _source_basis_constraint_scheme_1, _matvec_shard_axis, sharding_constraints
 from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
@@ -59,6 +59,7 @@ from .v3_system import (
     _operator_signature_cached,
     apply_v3_full_system_jacobian,
     apply_v3_full_system_jacobian_jit,
+    apply_v3_full_system_operator,
     apply_v3_full_system_operator_cached,
     full_system_operator_from_namelist,
     residual_v3_full_system,
@@ -118,11 +119,49 @@ def _precond_dtype(size_hint: int | None = None) -> jnp.dtype:
     return jnp.float64
 
 
-def _gmres_solve_dispatch(**kwargs):
+def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
+    if distributed_axis is not None:
+        with sharding_constraints(True):
+            return gmres_solve_distributed(axis_name=distributed_axis, **kwargs)
     if distributed_gmres_enabled():
-        return gmres_solve_distributed(**kwargs)
+        with sharding_constraints(True):
+            return gmres_solve_distributed(**kwargs)
     solver_fn = gmres_solve_jit if _use_solver_jit() else gmres_solve
     return solver_fn(**kwargs)
+
+
+def _resolve_distributed_gmres_axis(
+    *, op: V3FullSystemOperator | None, emit: Callable[[int, str], None] | None = None
+) -> str | None:
+    env = os.environ.get("SFINCS_JAX_GMRES_DISTRIBUTED", "").strip().lower()
+    if env in {"", "0", "false", "no", "off"}:
+        return None
+    if env in {"theta", "zeta"}:
+        axis = env
+    elif env in {"1", "true", "yes", "on", "auto"}:
+        axis = _matvec_shard_axis(op) if op is not None else None
+        if axis not in {"theta", "zeta"}:
+            axis = None
+    else:
+        axis = None
+    if axis not in {"theta", "zeta"}:
+        if env not in {"theta", "zeta", "1", "true", "yes", "on", "auto"} and emit is not None:
+            emit(1, f"SFINCS_JAX_GMRES_DISTRIBUTED={env!r} not recognized; distributed GMRES disabled.")
+        return None
+    n_devices = jax.local_device_count()
+    if n_devices <= 1:
+        return None
+    if op is None:
+        return axis
+    n_dim = int(op.n_theta) if axis == "theta" else int(op.n_zeta)
+    if n_dim % n_devices != 0:
+        if emit is not None:
+            emit(
+                1,
+                f"distributed GMRES disabled: {axis} dimension {n_dim} not divisible by {n_devices} devices.",
+            )
+        return None
+    return axis
 
 
 @dataclass(frozen=True)
@@ -3624,11 +3663,6 @@ def solve_v3_full_system_linear_gmres(
         if len(recycle_basis_use) > recycle_k:
             recycle_basis_use = recycle_basis_use[-recycle_k:]
 
-    def mv(x):
-        # Use the JIT-compiled operator application to reduce Python overhead in repeated matvecs
-        # (e.g. during GMRES iterations and Er scans).
-        return apply_v3_full_system_operator_cached(op, x)
-
     def _recycled_initial_guess(
         rhs_vec: jnp.ndarray,
         basis: list[jnp.ndarray],
@@ -4124,6 +4158,16 @@ def solve_v3_full_system_linear_gmres(
         bicgstab_fallback_strict = True
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
+    distributed_axis = _resolve_distributed_gmres_axis(op=op, emit=emit)
+    use_sharded_matvec = distributed_axis in {"theta", "zeta"} and (not use_implicit)
+    if use_sharded_matvec:
+        def mv(x):
+            return apply_v3_full_system_operator(op, x, allow_sharding=True)
+    else:
+        def mv(x):
+            # Use the JIT-compiled operator application to reduce Python overhead in repeated matvecs
+            # (e.g. during GMRES iterations and Er scans).
+            return apply_v3_full_system_operator_cached(op, x)
 
     sparse_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_PRECOND", "").strip().lower()
     if sparse_precond_env in {"jax", "jax_native", "native"}:
@@ -4290,6 +4334,7 @@ def solve_v3_full_system_linear_gmres(
             restart=restart_val,
             maxiter=maxiter_val,
             solve_method=solve_method_val,
+            distributed_axis=distributed_axis,
             precondition_side=precond_side,
         )
 
@@ -4334,10 +4379,22 @@ def solve_v3_full_system_linear_gmres(
                 maxiter=maxiter_val,
                 precondition_side=precond_side,
             )
-        if distributed_gmres_enabled():
-            solver_fn = gmres_solve_with_residual_distributed
-        else:
-            solver_fn = gmres_solve_with_residual_jit if _use_solver_jit() else gmres_solve_with_residual
+        if distributed_axis is not None:
+            with sharding_constraints(True):
+                return gmres_solve_with_residual_distributed(
+                    matvec=matvec_fn,
+                    b=b_vec,
+                    preconditioner=precond_fn,
+                    x0=x0_vec,
+                    tol=tol_val,
+                    atol=atol_val,
+                    restart=restart_val,
+                    maxiter=maxiter_val,
+                    solve_method=gmres_method,
+                    precondition_side=precond_side,
+                    axis_name=distributed_axis,
+                )
+        solver_fn = gmres_solve_with_residual_jit if _use_solver_jit() else gmres_solve_with_residual
         return solver_fn(
             matvec=matvec_fn,
             b=b_vec,
@@ -7962,10 +8019,22 @@ def solve_v3_transport_matrix_linear_gmres(
                 maxiter=maxiter_val,
                 precondition_side=precondition_side_val,
             )
-        if distributed_gmres_enabled():
-            solver_fn = gmres_solve_with_residual_distributed
-        else:
-            solver_fn = gmres_solve_with_residual_jit if use_solver_jit else gmres_solve_with_residual
+        if distributed_axis is not None:
+            with sharding_constraints(True):
+                return gmres_solve_with_residual_distributed(
+                    matvec=matvec_fn,
+                    b=b_vec,
+                    preconditioner=preconditioner_val,
+                    x0=x0_vec,
+                    tol=tol_val,
+                    atol=atol_val,
+                    restart=restart_val,
+                    maxiter=maxiter_val,
+                    solve_method=gmres_method,
+                    precondition_side=precondition_side_val,
+                    axis_name=distributed_axis,
+                )
+        solver_fn = gmres_solve_with_residual_jit if use_solver_jit else gmres_solve_with_residual
         return solver_fn(
             matvec=matvec_fn,
             b=b_vec,

@@ -29,8 +29,8 @@
 /
 
 &resolutionParameters
-  Ntheta = 64
-  Nzeta = 64
+  Ntheta = 63
+  Nzeta = 63
   Nxi = 10
   NL = 6
   Nx = 10

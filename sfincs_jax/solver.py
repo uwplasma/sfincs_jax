@@ -634,9 +634,13 @@ def _distributed_gmres_axis() -> str | None:
     env = os.environ.get("SFINCS_JAX_GMRES_DISTRIBUTED", "").strip().lower()
     if env in {"0", "false", "no", "off"}:
         return None
+    if env in {"theta", "zeta"}:
+        return env
     shard_axis = os.environ.get("SFINCS_JAX_MATVEC_SHARD_AXIS", "").strip().lower()
     if shard_axis in {"flat", "vector", "p"}:
         return "p"
+    if env in {"1", "true", "yes", "on"} and shard_axis in {"theta", "zeta"}:
+        return shard_axis
     if env in {"1", "true", "yes", "on"} and shard_axis in {"auto", ""}:
         return "p"
     return None
@@ -666,6 +670,7 @@ def gmres_solve_distributed(
     b: jnp.ndarray,
     preconditioner=None,
     x0: jnp.ndarray | None = None,
+    axis_name: str | None = None,
     tol: float = 1e-10,
     atol: float = 0.0,
     restart: int = 50,
@@ -673,7 +678,7 @@ def gmres_solve_distributed(
     solve_method: str = "batched",
     precondition_side: str = "left",
 ) -> GMRESSolveResult:
-    axis_name = _distributed_gmres_axis()
+    axis_name = _distributed_gmres_axis() if axis_name is None else axis_name
     if axis_name is None or _pjit is None or PartitionSpec is None:
         return gmres_solve(
             matvec=matvec,
@@ -702,20 +707,40 @@ def gmres_solve_distributed(
             precondition_side=precondition_side,
         )
 
+    method = str(solve_method).lower()
+    solve_method_use = "incremental" if method in {"auto", "default", "bicgstab", "bicgstab_jax"} else solve_method
     b_use = jnp.asarray(b)
+    b_orig = b_use
     x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
+    n = int(b_use.size)
+    n_devices = int(np.prod(mesh.devices.shape))
+    pad = (-n) % n_devices if n_devices > 0 else 0
+    preconditioner_use = preconditioner
+    if pad:
+        b_use = jnp.pad(b_use, (0, pad))
+        x0_use = jnp.pad(x0_use, (0, pad))
+
+        def matvec_use(x):
+            y = matvec(x[:n])
+            return jnp.pad(y, (0, pad))
+        if preconditioner is not None:
+            def preconditioner_use(x):
+                y = preconditioner(x[:n])
+                return jnp.pad(y, (0, pad))
+    else:
+        matvec_use = matvec
 
     def _solve(b_in: jnp.ndarray, x0_in: jnp.ndarray):
         res = gmres_solve(
-            matvec=matvec,
+            matvec=matvec_use,
             b=b_in,
-            preconditioner=preconditioner,
+            preconditioner=preconditioner_use,
             x0=x0_in,
             tol=tol,
             atol=atol,
             restart=restart,
             maxiter=maxiter,
-            solve_method=solve_method,
+            solve_method=solve_method_use,
             precondition_side=precondition_side,
         )
         return res.x, res.residual_norm
@@ -727,6 +752,12 @@ def gmres_solve_distributed(
     )
     with mesh:
         x, rn = solve_pjit(b_use, x0_use)
+        if pad:
+            r_pad = b_use - matvec_use(x)
+            r = r_pad[:n]
+            rn = jnp.linalg.norm(r)
+    if pad:
+        x = x[:n]
     return GMRESSolveResult(x=x, residual_norm=rn)
 
 
@@ -736,6 +767,7 @@ def gmres_solve_with_residual_distributed(
     b: jnp.ndarray,
     preconditioner=None,
     x0: jnp.ndarray | None = None,
+    axis_name: str | None = None,
     tol: float = 1e-10,
     atol: float = 0.0,
     restart: int = 50,
@@ -743,7 +775,7 @@ def gmres_solve_with_residual_distributed(
     solve_method: str = "batched",
     precondition_side: str = "left",
 ) -> tuple[GMRESSolveResult, jnp.ndarray]:
-    axis_name = _distributed_gmres_axis()
+    axis_name = _distributed_gmres_axis() if axis_name is None else axis_name
     if axis_name is None or _pjit is None or PartitionSpec is None:
         return gmres_solve_with_residual(
             matvec=matvec,
@@ -772,20 +804,39 @@ def gmres_solve_with_residual_distributed(
             precondition_side=precondition_side,
         )
 
+    method = str(solve_method).lower()
+    solve_method_use = "incremental" if method in {"auto", "default", "bicgstab", "bicgstab_jax"} else solve_method
     b_use = jnp.asarray(b)
+    b_orig = b_use
     x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
+    n = int(b_use.size)
+    n_devices = int(np.prod(mesh.devices.shape))
+    pad = (-n) % n_devices if n_devices > 0 else 0
+    if pad:
+        b_use = jnp.pad(b_use, (0, pad))
+        x0_use = jnp.pad(x0_use, (0, pad))
+
+        def matvec_use(x):
+            y = matvec(x[:n])
+            return jnp.pad(y, (0, pad))
+        if preconditioner is not None:
+            def preconditioner_use(x):
+                y = preconditioner(x[:n])
+                return jnp.pad(y, (0, pad))
+    else:
+        matvec_use = matvec
 
     def _solve(b_in: jnp.ndarray, x0_in: jnp.ndarray):
         res, r = gmres_solve_with_residual(
-            matvec=matvec,
+            matvec=matvec_use,
             b=b_in,
-            preconditioner=preconditioner,
+            preconditioner=preconditioner_use,
             x0=x0_in,
             tol=tol,
             atol=atol,
             restart=restart,
             maxiter=maxiter,
-            solve_method=solve_method,
+            solve_method=solve_method_use,
             precondition_side=precondition_side,
         )
         return res.x, res.residual_norm, r
@@ -797,4 +848,10 @@ def gmres_solve_with_residual_distributed(
     )
     with mesh:
         x, rn, r = solve_pjit(b_use, x0_use)
+        if pad:
+            r_pad = b_use - matvec_use(x)
+            r = r_pad[:n]
+            rn = jnp.linalg.norm(r)
+    if pad:
+        x = x[:n]
     return GMRESSolveResult(x=x, residual_norm=rn), r

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import os
+import contextlib
 import weakref
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +33,19 @@ from .vmec_wout import psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
 
 _THRESHOLD_FOR_INCLUSION = 1e-12  # Matches v3 `sparsify.F90`.
 _V3_DEFAULT_DELTA = 4.5694e-3  # v3 `globalVariables.F90`
+
+_SHARDING_CONSTRAINTS_ENABLED = False
+
+
+@contextlib.contextmanager
+def sharding_constraints(enabled: bool = True):
+    global _SHARDING_CONSTRAINTS_ENABLED
+    prev = _SHARDING_CONSTRAINTS_ENABLED
+    _SHARDING_CONSTRAINTS_ENABLED = bool(enabled)
+    try:
+        yield
+    finally:
+        _SHARDING_CONSTRAINTS_ENABLED = prev
 
 
 def _get_int(group: dict, key: str, default: int) -> int:
@@ -408,8 +422,16 @@ def apply_v3_full_system_operator(
     f_flat = x_full[: op.f_size]
     rest = x_full[op.f_size :]
     f = f_flat.reshape(op.fblock.f_shape)
-    shard_axis = _matvec_shard_axis(op) if allow_sharding else None
+    shard_axis = _matvec_shard_axis(op) if (allow_sharding and _SHARDING_CONSTRAINTS_ENABLED) else None
     use_sharding = shard_axis in {"theta", "zeta"} and (jax.device_count() > 1)
+    if use_sharding:
+        n_devices = jax.local_device_count()
+        if n_devices <= 1:
+            use_sharding = False
+        elif shard_axis == "theta" and int(op.n_theta) % n_devices != 0:
+            use_sharding = False
+        elif shard_axis == "zeta" and int(op.n_zeta) % n_devices != 0:
+            use_sharding = False
     if use_sharding and shard_axis == "theta":
         f = jax.lax.with_sharding_constraint(f, PartitionSpec(None, None, None, "theta", None))
     elif use_sharding and shard_axis == "zeta":

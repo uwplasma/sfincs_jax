@@ -123,7 +123,8 @@ Latest run (cache warm): per‑matvec time 0.30 ms (1 device), 0.30 ms (2),
 0.29 ms (3), 0.28 ms (4), 0.45 ms (5), 0.28 ms (6), 0.28 ms (7), 0.25 ms (8).
 CPU sharding overhead dominates at this size; this mode is mainly intended for
 very large grids or multi‑GPU nodes. The sharded dimension (``Ntheta`` or ``Nzeta``)
-must be divisible by the device count; otherwise it falls back to the single‑device path.
+must be divisible by the device count. Because v3 forces odd sizes, even device
+counts often fall back to the single‑device path unless the grid is adjusted.
 
 ![Sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_scaling.png)
 
@@ -138,9 +139,10 @@ python examples/performance/benchmark_sharded_matvec_scaling.py \
   --global-warmup 1
 ```
 
-Sharded **solve** scaling (flat sharding + distributed GMRES) currently shows
-CPU overhead dominance for medium RHSMode=1 cases. See
-`docs/parallelism.rst` for the full benchmark and figure.
+Sharded **solve** scaling (theta‑sharded GMRES) currently shows CPU overhead
+dominance for medium RHSMode=1 cases. Because v3 enforces **odd** ``Ntheta`` and
+``Nzeta``, sharding only activates when the device count divides those odd sizes.
+See `docs/parallelism.rst` for the full benchmark and figure.
 
 Enable parallel whichRHS solves in normal runs:
 
