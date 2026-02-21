@@ -419,11 +419,11 @@ distributed GMRES enabled:
      --global-warmup 1
 
 Input: `examples/performance/rhsmode1_sharded.input.namelist`
-(``Ntheta=95, Nzeta=95, Nxi=12, NL=8, Nx=16``).
+(``Ntheta=127, Nzeta=127, Nxi=14, NL=10, Nx=20``).
 
 Latest run (cache warm, Macbook M3 Max):
-1 device 0.90 s, 2 devices 5.13 s, 3 devices 5.15 s, 4 devices 5.29 s,
-5 devices 6.36 s, 6 devices 5.48 s, 7 devices 7.50 s, 8 devices 5.55 s.
+1 device 1.22 s, 2 devices 9.93 s, 3 devices 14.88 s, 4 devices 10.15 s,
+5 devices 10.42 s, 6 devices 15.50 s, 7 devices 10.87 s, 8 devices 11.07 s.
 
 Because SFINCS enforces **odd** ``Ntheta``/``Nzeta``, theta/zeta sharding only
 activates when the device count divides the sharded dimension (e.g. 1, 3, 7 for

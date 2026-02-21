@@ -29,11 +29,11 @@
 /
 
 &resolutionParameters
-  Ntheta = 95
-  Nzeta = 95
-  Nxi = 12
-  NL = 8
-  Nx = 16
+  Ntheta = 127
+  Nzeta = 127
+  Nxi = 14
+  NL = 10
+  Nx = 20
   solverTolerance = 1d-10
 /
 
