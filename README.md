@@ -60,8 +60,9 @@ reduce overhead in tiny PAS/transport cases while keeping large systems compiled
 Parallel `whichRHS` scaling for an extra‑large RHSMode=2 transport‑matrix case
 (`examples/performance/transport_parallel_xxlarge.input.namelist`, geometryScheme=2).
 Benchmark uses `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the single‑worker runtime
-in the 1–2 minute range.
-Latest run (cache warm): 1 worker 74.8s, 2 workers 49.3s, 3 workers 25.4s, 4 workers 25.4s.
+in the ~1 minute range.
+Latest run (cache warm): 1 worker 63.6s, 2 workers 46.8s, 3 workers 30.6s,
+4 workers 30.8s, 5 workers 30.5s, 6 workers 29.5s, 7 workers 30.2s, 8 workers 33.7s.
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
@@ -75,7 +76,7 @@ python examples/performance/benchmark_transport_parallel_scaling.py \
   --global-warmup 0
 
 python examples/performance/benchmark_transport_parallel_scaling.py \
-  --workers 1 2 3 4 \
+  --workers 1 2 3 4 5 6 7 8 \
   --repeats 1 \
   --warmup 0 \
   --global-warmup 0
@@ -86,7 +87,7 @@ Run with explicit worker counts and a custom input:
 ```bash
 python examples/performance/benchmark_transport_parallel_scaling.py \
   --input examples/performance/transport_parallel_xxlarge.input.namelist \
-  --workers 1 2 3 4 \
+  --workers 1 2 3 4 5 6 7 8 \
   --repeats 1 \
   --warmup 0 \
   --global-warmup 0

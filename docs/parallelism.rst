@@ -150,7 +150,11 @@ Benchmark case: `examples/performance/transport_parallel_xxlarge.input.namelist`
 (RHSMode=2, geometryScheme=2, Ntheta=15, Nzeta=15, Nxi=6, NL=4, Nx=5).
 
 Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
-single‑worker runtime in the 1–2 minute range while preserving parity.
+single‑worker runtime near ~1 minute while preserving parity.
+
+Latest cache‑warm sweep (1–8 workers):
+1 worker 63.6s, 2 workers 46.8s, 3 workers 30.6s, 4 workers 30.8s,
+5 workers 30.5s, 6 workers 29.5s, 7 workers 30.2s, 8 workers 33.7s.
 
 Step (2): Sharded matvec (single RHS)
 -------------------------------------
