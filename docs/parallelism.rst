@@ -434,6 +434,32 @@ scaling for a *single* RHS will require a true domain‑decomposition GMRES with
 local preconditioning and communication‑avoiding reductions. That remains the
 next step for multi‑node scaling.
 
+Why scaling is still poor for single‑RHS GMRES
+----------------------------------------------
+
+For RHSMode=1, each GMRES iteration performs a **global reduction** (dot products
+and norms) plus one matvec and preconditioner apply. On CPUs, the per‑iteration
+work is relatively small compared to the **synchronization cost** of those global
+reductions, and sharded matvecs introduce additional data movement. As a result,
+strong scaling stalls or reverses until the per‑iteration workload is large
+enough to amortize communication and Python/JAX dispatch overhead.
+
+Next‑step plan
+--------------
+
+To reach strong scaling on dozens of cores or multi‑node runs, we need to reduce
+global synchronization and keep most work local:
+
+- **Domain‑decomposition preconditioner** (additive Schwarz / block‑Jacobi with
+  overlap) so most Krylov progress happens in local subdomains.
+- **Communication‑avoiding Krylov** (pipelined or s‑step GMRES) to fuse multiple
+  dot‑products per iteration and reduce global barriers.
+- **Coarse grid / deflation** (local coarse solve for the nullspace‑like modes)
+  so the global coupling is handled by a small, cheap correction.
+
+These steps mirror PETSc‑style strong‑scaling strategies and are the path to
+meaningful speedups for single‑RHS runs on large CPU/GPU counts.
+
 .. figure:: _static/figures/parallel/transport_sharded_solve_scaling.png
    :alt: Sharded RHSMode=1 solve scaling on Macbook M3 Max
    :width: 90%
