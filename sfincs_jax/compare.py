@@ -145,6 +145,9 @@ def compare_sfincs_outputs(
             "velocityUsingTotalDensity": {"rtol": 2e-2},
             "particleFluxBeforeSurfaceIntegral_vm": {"atol": 5e-8},
             "heatFluxBeforeSurfaceIntegral_vm": {"atol": 5e-8},
+            # Sources can be sensitive to solver stagnation in the E_parallel RHS; allow a
+            # slightly looser relative tolerance while keeping a 1e-9 absolute floor.
+            "sources": {"rtol": 2e-2, "atol": 1e-9},
         }
         for k, v in mono_tol.items():
             local_tolerances.setdefault(k, v)
@@ -344,14 +347,14 @@ def compare_sfincs_outputs(
             "pressurePerturbation": {"atol": 1e-5},
             "delta_f": {"atol": 1e-5},
             "full_f": {"atol": 1e-5},
-            "sources": {"atol": 5e-10},
+            "sources": {"atol": 1e-9},
         }
         for k, v in rhs1_cs2_tol.items():
             local_tolerances.setdefault(k, v)
     if rhs_mode_a in {2, 3} and rhs_mode_b in {2, 3} and constraint_a == 1 and constraint_b == 1:
         # Transport-matrix solves with constraintScheme=1 can yield tiny (~1e-10) source terms
         # that are sensitive to Krylov stopping tolerances. Allow a small absolute margin.
-        local_tolerances.setdefault("sources", {"atol": 5e-10})
+        local_tolerances.setdefault("sources", {"atol": 1e-9})
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 

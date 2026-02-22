@@ -4088,6 +4088,12 @@ def solve_v3_full_system_linear_gmres(
             _nml_get(phys_params, "useDKESExBdrift", _nml_get(phys_params, "use_dkes_exb_drift", None)),
         )
     )
+    if op.fblock.pas is not None and use_dkes:
+        restart = max(int(restart), 200)
+        if maxiter is None:
+            maxiter = 2000
+        else:
+            maxiter = max(int(maxiter), 2000)
     use_active_dof_mode = False
     if active_env in {"1", "true", "yes", "on"}:
         use_active_dof_mode = True
@@ -4143,14 +4149,6 @@ def solve_v3_full_system_linear_gmres(
             and geom_scheme != 1
         )
     )
-    if (
-        pas_project_mode == "auto"
-        and (not pas_project_enabled)
-        and op.fblock.pas is not None
-        and use_dkes
-        and (not full_precond_requested)
-    ):
-        pas_project_enabled = True
     use_pas_projection = bool(
         pas_project_enabled
         and int(op.rhs_mode) == 1
@@ -4302,10 +4300,13 @@ def solve_v3_full_system_linear_gmres(
                 except ValueError:
                     tz_max = 128
                 xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+                default_xblock_tz_max = 1200
+                if op.fblock.pas is not None and use_dkes:
+                    default_xblock_tz_max = 2000
                 try:
-                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else default_xblock_tz_max
                 except ValueError:
-                    xblock_tz_max = 1200
+                    xblock_tz_max = default_xblock_tz_max
                 xblock_tz_lmax_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX", "").strip()
                 try:
                     xblock_tz_lmax_override = int(xblock_tz_lmax_env) if xblock_tz_lmax_env else 0
@@ -4356,6 +4357,8 @@ def solve_v3_full_system_linear_gmres(
                     except ValueError:
                         schur_auto_min = 2500
                     schur_auto = int(op.total_size) >= schur_auto_min
+                if op.fblock.pas is not None and use_dkes:
+                    schur_auto = False
                 phys_params = nml.group("physicsParameters")
                 er_val = phys_params.get("ER", phys_params.get("Er", phys_params.get("er", None)))
                 er_abs = 0.0
@@ -4489,6 +4492,19 @@ def solve_v3_full_system_linear_gmres(
                 rhs1_precond_kind = "point"
         else:
             rhs1_precond_kind = None
+    if (
+        (not rhs1_precond_env)
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and int(op.constraint_scheme) == 2
+        and op.fblock.pas is not None
+        and use_dkes
+        and rhs1_precond_kind in {None, "point", "theta_line", "zeta_line", "schur"}
+    ):
+        # DKES-trajectory PAS runs can stagnate with weak preconditioners; prefer x-multigrid
+        # when the default selection is too weak.
+        rhs1_precond_kind = "xmg"
+    rhs1_precond_kind_requested = rhs1_precond_kind
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
         rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
@@ -4582,10 +4598,13 @@ def solve_v3_full_system_linear_gmres(
     else:
         sparse_operator_mode = "auto"
     sparse_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_MAX", "").strip()
+    default_sparse_max = 4000
+    if op.fblock.pas is not None and use_dkes:
+        default_sparse_max = 60000
     try:
-        sparse_max_size = int(sparse_max_env) if sparse_max_env else 4000
+        sparse_max_size = int(sparse_max_env) if sparse_max_env else default_sparse_max
     except ValueError:
-        sparse_max_size = 4000
+        sparse_max_size = default_sparse_max
     sparse_drop_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DROP_TOL", "").strip()
     sparse_drop_rel_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DROP_REL", "").strip()
     sparse_ilu_drop_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_DROP_TOL", "").strip()
@@ -5548,6 +5567,54 @@ def solve_v3_full_system_linear_gmres(
             ksp_x0 = x0_reduced
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = _solver_kind(solve_method)[0]
+        if (
+            pas_precond_force_collision
+            and op.fblock.pas is not None
+            and float(res_reduced.residual_norm) > target_reduced
+        ):
+            force_full_ratio_env = os.environ.get("SFINCS_JAX_PAS_FORCE_FULL_RATIO", "").strip()
+            try:
+                force_full_ratio = float(force_full_ratio_env) if force_full_ratio_env else 50.0
+            except ValueError:
+                force_full_ratio = 50.0
+            res_ratio_full = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
+            if res_ratio_full > force_full_ratio:
+                forced_kind = rhs1_precond_kind_requested or "xmg"
+                if forced_kind in {"collision", "schur", "point"}:
+                    forced_kind = "xmg"
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: PAS forcing full preconditioner "
+                        f"(kind={forced_kind}, residual={float(res_reduced.residual_norm):.3e} > "
+                        f"{force_full_ratio:.1f}x target)",
+                    )
+                rhs1_precond_kind = forced_kind
+                preconditioner_reduced = _build_rhs1_preconditioner_reduced()
+                if use_pas_projection:
+                    preconditioner_reduced = _wrap_pas_precond(preconditioner_reduced)
+                res_full = _solve_linear(
+                    matvec_fn=mv_reduced,
+                    b_vec=rhs_reduced,
+                    precond_fn=preconditioner_reduced,
+                    x0_vec=res_reduced.x,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val="incremental",
+                    precond_side=gmres_precond_side,
+                )
+                if float(res_full.residual_norm) < float(res_reduced.residual_norm):
+                    res_reduced = res_full
+                    ksp_matvec = mv_reduced
+                    ksp_b = rhs_reduced
+                    ksp_precond = preconditioner_reduced
+                    ksp_x0 = res_reduced.x
+                    ksp_restart = restart
+                    ksp_maxiter = maxiter
+                    ksp_precond_side = gmres_precond_side
+                    ksp_solver_kind = _solver_kind("incremental")[0]
         residual_norm_check = float(res_reduced.residual_norm)
         residual_norm_true = residual_norm_check
         try:
@@ -5706,11 +5773,23 @@ def solve_v3_full_system_linear_gmres(
         strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
         strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
         strong_precond_auto = strong_precond_env == "auto"
+        pas_force_strong_ratio_env = os.environ.get("SFINCS_JAX_PAS_FORCE_STRONG_RATIO", "").strip()
+        try:
+            pas_force_strong_ratio = float(pas_force_strong_ratio_env) if pas_force_strong_ratio_env else 10.0
+        except ValueError:
+            pas_force_strong_ratio = 10.0
         if pas_precond_force_collision and strong_precond_env in {"", "auto"}:
-            strong_precond_disabled = True
-            strong_precond_auto = False
-            if emit is not None:
-                emit(1, "solve_v3_full_system_linear_gmres: PAS collision probe disabled strong preconditioner auto")
+            if float(res_reduced.residual_norm) <= target_reduced * pas_force_strong_ratio:
+                strong_precond_disabled = True
+                strong_precond_auto = False
+                if emit is not None:
+                    emit(1, "solve_v3_full_system_linear_gmres: PAS collision probe disabled strong preconditioner auto")
+            elif emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: PAS collision probe allows strong preconditioner "
+                    f"(residual={float(res_reduced.residual_norm):.3e} > {pas_force_strong_ratio:.1f}x target)",
+                )
         if (
             strong_precond_env == ""
             and int(op.constraint_scheme) == 2
@@ -5779,10 +5858,13 @@ def solve_v3_full_system_linear_gmres(
                 except ValueError:
                     tz_max = 128
                 xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+                default_xblock_tz_max = 1200
+                if op.fblock.pas is not None and use_dkes:
+                    default_xblock_tz_max = 2000
                 try:
-                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else default_xblock_tz_max
                 except ValueError:
-                    xblock_tz_max = 1200
+                    xblock_tz_max = default_xblock_tz_max
                 max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
                 if (
                     int(op.n_theta) > 1
@@ -5818,10 +5900,13 @@ def solve_v3_full_system_linear_gmres(
                 except ValueError:
                     tz_max = 128
                 xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+                default_xblock_tz_max = 1200
+                if op.fblock.pas is not None and use_dkes:
+                    default_xblock_tz_max = 2000
                 try:
-                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else default_xblock_tz_max
                 except ValueError:
-                    xblock_tz_max = 1200
+                    xblock_tz_max = default_xblock_tz_max
                 max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
                 if (
                     int(op.n_theta) > 1
@@ -5999,7 +6084,9 @@ def solve_v3_full_system_linear_gmres(
         if sparse_precond_mode == "on":
             sparse_enabled = True
         elif sparse_precond_mode == "auto":
-            sparse_enabled = op.fblock.fp is not None
+            sparse_enabled = bool(op.fblock.fp is not None) or (
+                op.fblock.pas is not None and float(res_reduced.residual_norm) > target_reduced
+            )
         if sparse_enabled:
             sparse_enabled = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
         if sparse_enabled:
@@ -9579,6 +9666,53 @@ def solve_v3_transport_matrix_linear_gmres(
                                 "solve_v3_transport_matrix_linear_gmres: dense fallback failed "
                                 f"({type(exc).__name__}: {exc})",
                             )
+                if _needs_retry(res_reduced, target_rhs) and int(rhs_mode) == 3:
+                    polish_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RATIO", "").strip()
+                    try:
+                        polish_ratio = float(polish_ratio_env) if polish_ratio_env else 2.0
+                    except ValueError:
+                        polish_ratio = 2.0
+                    if _residual_value(res_reduced) > target_rhs * polish_ratio:
+                        polish_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RESTART", "").strip()
+                        polish_maxiter_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_MAXITER", "").strip()
+                        base_restart = max(int(gmres_restart), 40)
+                        base_maxiter = int(maxiter) if maxiter is not None else 800
+                        try:
+                            polish_restart = int(polish_restart_env) if polish_restart_env else max(base_restart * 2, 80)
+                        except ValueError:
+                            polish_restart = max(base_restart * 2, 80)
+                        try:
+                            polish_maxiter = int(polish_maxiter_env) if polish_maxiter_env else max(base_maxiter * 2, 1200)
+                        except ValueError:
+                            polish_maxiter = max(base_maxiter * 2, 1200)
+                        polish_precond = _get_strong_preconditioner(True)
+                        if polish_precond is None:
+                            polish_precond = preconditioner_use
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_transport_matrix_linear_gmres: polish solve for RHSMode=3 "
+                                f"(residual={float(res_reduced.residual_norm):.3e} > {polish_ratio:.1f}x target, "
+                                f"restart={polish_restart} maxiter={polish_maxiter})",
+                            )
+                        res_polish = _solve_linear(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            x0_vec=res_reduced.x,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=polish_restart,
+                            maxiter_val=polish_maxiter,
+                            solve_method_val="incremental",
+                            preconditioner_val=polish_precond,
+                            precondition_side_val="left",
+                        )
+                        if _residual_value(res_polish) < _residual_value(res_reduced):
+                            res_reduced = res_polish
+                            preconditioner_used = polish_precond
+                            solver_kind_used = "gmres"
+                            solve_method_used = "incremental"
+                            restart_used = polish_restart
                 x_full = expand_reduced(res_reduced.x)
                 x_full = _maybe_project_constraint_nullspace(
                     x_full, which_rhs=int(which_rhs), op_matvec=op_matvec, rhs_vec=rhs
@@ -9824,6 +9958,54 @@ def solve_v3_transport_matrix_linear_gmres(
                                 "solve_v3_transport_matrix_linear_gmres: dense fallback failed "
                                 f"({type(exc).__name__}: {exc})",
                             )
+                if _needs_retry(res, target_rhs) and int(rhs_mode) == 3:
+                    polish_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RATIO", "").strip()
+                    try:
+                        polish_ratio = float(polish_ratio_env) if polish_ratio_env else 2.0
+                    except ValueError:
+                        polish_ratio = 2.0
+                    if _residual_value(res) > target_rhs * polish_ratio:
+                        polish_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RESTART", "").strip()
+                        polish_maxiter_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_MAXITER", "").strip()
+                        base_restart = max(int(gmres_restart), 40)
+                        base_maxiter = int(maxiter) if maxiter is not None else 800
+                        try:
+                            polish_restart = int(polish_restart_env) if polish_restart_env else max(base_restart * 2, 80)
+                        except ValueError:
+                            polish_restart = max(base_restart * 2, 80)
+                        try:
+                            polish_maxiter = int(polish_maxiter_env) if polish_maxiter_env else max(base_maxiter * 2, 1200)
+                        except ValueError:
+                            polish_maxiter = max(base_maxiter * 2, 1200)
+                        polish_precond = _get_strong_preconditioner(False)
+                        if polish_precond is None:
+                            polish_precond = preconditioner_use
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_transport_matrix_linear_gmres: polish solve for RHSMode=3 "
+                                f"(residual={float(res.residual_norm):.3e} > {polish_ratio:.1f}x target, "
+                                f"restart={polish_restart} maxiter={polish_maxiter})",
+                            )
+                        res_polish, residual_polish = _solve_linear_with_residual(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            x0_vec=res.x,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=polish_restart,
+                            maxiter_val=polish_maxiter,
+                            solve_method_val="incremental",
+                            preconditioner_val=polish_precond,
+                            precondition_side_val="left",
+                        )
+                        if _residual_value(res_polish) < _residual_value(res):
+                            res = res_polish
+                            residual_vec = residual_polish
+                            preconditioner_used = polish_precond
+                            solver_kind_used = "gmres"
+                            solve_method_used = "incremental"
+                            restart_used = polish_restart
                 if (
                     dense_used
                     and dense_batch_fallback_enabled

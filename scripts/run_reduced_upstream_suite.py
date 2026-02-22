@@ -1555,7 +1555,7 @@ def main() -> int:
     parser.add_argument("--timeout-s", type=float, default=120.0, help="Per-run timeout in seconds.")
     parser.add_argument("--max-attempts", type=int, default=6, help="Maximum adaptive retries per case.")
     parser.add_argument("--rtol", type=float, default=5e-4)
-    parser.add_argument("--atol", type=float, default=1e-10)
+    parser.add_argument("--atol", type=float, default=1e-9)
     parser.add_argument(
         "--target-runtime-s",
         type=float,

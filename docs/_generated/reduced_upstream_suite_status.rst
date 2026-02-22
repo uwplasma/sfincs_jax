@@ -4,7 +4,7 @@
 
 - Comparison mode: **practical**
 - Cases: **38**
-- Status counts: parity_mismatch=3, parity_ok=35
+- Status counts: parity_mismatch=2, parity_ok=36
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: practical mode applies per-case `*.compare_tolerances.json` when present.
@@ -61,14 +61,14 @@
      - NTHETA=12,NX=12,NXI=10,NZETA=12
      - 1
      - 0
-     - 3.076
-     - 180.560
+     - 2.830
+     - 1063.466
      - 344.0
-     - 778.8
-     - 38/193
+     - 1801.3
+     - 40/193
      - S:12 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=38/193
+     - Common numeric dataset mismatches present. sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0 buckets=solver:12 physics:0 strict=40/193
    * - HSX_PASCollisions_fullTrajectories
      - parity_ok
      - none
@@ -266,19 +266,19 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/203
    * - monoenergetic_geometryScheme11
-     - parity_mismatch
-     - output field mismatch
+     - parity_ok
+     - none
      - NTHETA=18,NX=14,NXI=24,NZETA=18
      - 1
      - 0
-     - 3.209
-     - 67.429
+     - 2.812
+     - 209.776
      - 205.2
-     - 551.7
-     - 2/208
-     - S:2 P:0
+     - 531.3
+     - 0/208
+     - S:0 P:0
      - 9/9
-     - Common numeric dataset mismatches present. sample=NTVBeforeSurfaceIntegral,sources buckets=solver:2 physics:0 strict=2/208
+     - All common numeric datasets matched tolerance. strict=0/208
    * - monoenergetic_geometryScheme5_ASCII
      - parity_ok
      - none
@@ -369,10 +369,10 @@
      - NTHETA=13,NX=10,NXI=10,NZETA=13
      - 1
      - 0
-     - 5.162
-     - 34.161
+     - 4.955
+     - 353.583
      - 374.2
-     - 670.7
+     - 2524.8
      - 42/207
      - S:12 P:0
      - 9/9

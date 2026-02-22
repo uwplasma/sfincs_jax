@@ -20,36 +20,7 @@ def _load(path: Path) -> dict[str, dict]:
     return {row["case"]: row for row in data}
 
 
-def _short_case(case: str) -> str:
-    short = case
-    replacements = [
-        ("sfincsPaperFigure3", "paper3"),
-        ("transportMatrix", "TM"),
-        ("geometryScheme", "geom"),
-        ("FPCollisions", "FP"),
-        ("PASCollisions", "PAS"),
-        ("DKESTrajectories", "DKES"),
-        ("fullTrajectories", "full"),
-        ("magneticDrifts", "magDrift"),
-        ("filteredW7XNetCDF", "W7XnetCDF"),
-        ("monoenergetic", "mono"),
-        ("tokamak", "toka"),
-        ("1species", "1sp"),
-        ("2species", "2sp"),
-        ("3species", "3sp"),
-        ("withPhi1InDKE", "Phi1"),
-        ("withEr", "Er"),
-        ("noEr", "noEr"),
-        ("withQN", "QN"),
-        ("_geometryScheme", "_geom"),
-        ("scheme", "sch"),
-    ]
-    for old, new in replacements:
-        short = short.replace(old, new)
-    return short
-
-
-def _format_row(case: str, row: dict, row_strict: dict | None, *, short_case: str) -> str:
+def _format_row(case: str, row: dict, row_strict: dict | None) -> str:
     n_common = int(row.get("n_common_keys", 0))
     n_bad = int(row.get("n_mismatch_common", 0))
     if row_strict is None:
@@ -79,9 +50,7 @@ def _format_row(case: str, row: dict, row_strict: dict | None, *, short_case: st
     fm_s = "-" if fm is None else f"{float(fm):.1f}"
     jm_s = "-" if jm is None else f"{float(jm):.1f}"
 
-    label = html.escape(short_case)
-    full = html.escape(case)
-    case_cell = label if label == full else f'<span title="{full}">{label}</span>'
+    case_cell = html.escape(case)
     return (
         f"| {case_cell} | {ft_s} | {jt_s} | {fm_s} | {jm_s} | {mismatch} | {pp} |"
     )
@@ -93,21 +62,12 @@ def main() -> int:
     rows = _load(REPORT)
     rows_strict = _load(REPORT_STRICT) if REPORT_STRICT.exists() else {}
 
-    short_names = {case: _short_case(case) for case in rows}
-    collisions: dict[str, list[str]] = {}
-    for case, short in short_names.items():
-        collisions.setdefault(short, []).append(case)
-    for short, cases in collisions.items():
-        if len(cases) > 1:
-            for case in cases:
-                short_names[case] = case
-
     table_lines = [
         "| Case | Fortran(s) | sfincs_jax(s) | Fortran MB | sfincs_jax MB | Mismatches (practical/strict) | Print parity |",
         "| --- | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for case in sorted(rows):
-        table_lines.append(_format_row(case, rows[case], rows_strict.get(case), short_case=short_names[case]))
+        table_lines.append(_format_row(case, rows[case], rows_strict.get(case)))
 
     readme = README.read_text()
     if BEGIN not in readme or END not in readme:
