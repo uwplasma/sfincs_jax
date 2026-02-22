@@ -3167,6 +3167,69 @@ def _compose_preconditioners(
     return _apply
 
 
+def _build_rhsmode1_pas_hybrid_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Hybrid PAS preconditioner: line solve + coarse-x correction + collision diagonal.
+
+    This targets PAS DKES/full-trajectory cases where pure line or x-coarse preconditioners
+    can stagnate. We apply a line preconditioner (theta or zeta), then a coarse-x additive
+    correction (xmg), and finally the collision diagonal as a cheap smoothing pass.
+    """
+    line_precond: Callable[[jnp.ndarray], jnp.ndarray] | None = None
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    local_per_species = int(np.sum(nxi_for_x))
+    line_size = int(local_per_species * int(op.n_theta))
+    line_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LINE_MAX", "").strip()
+    try:
+        line_max = int(line_max_env) if line_max_env else 512
+    except ValueError:
+        line_max = 512
+    if line_size <= line_max:
+        if int(op.n_theta) >= int(op.n_zeta):
+            line_precond = _build_rhsmode1_theta_line_preconditioner(
+                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+            )
+        else:
+            line_precond = _build_rhsmode1_zeta_line_preconditioner(
+                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+            )
+    else:
+        # Try a truncated-L (theta,zeta) block per x as a cheaper angular preconditioner.
+        lmax_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LMAX", "").strip()
+        try:
+            lmax = int(lmax_env) if lmax_env else 1
+        except ValueError:
+            lmax = 1
+        xblock_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_XBLOCK_MAX", "").strip()
+        try:
+            xblock_max = int(xblock_max_env) if xblock_max_env else 256
+        except ValueError:
+            xblock_max = 256
+        block_size = int(max(0, lmax) * int(op.n_theta) * int(op.n_zeta))
+        if lmax > 0 and block_size > 0 and block_size <= xblock_max:
+            line_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(
+                op=op,
+                lmax=lmax,
+                reduce_full=reduce_full,
+                expand_reduced=expand_reduced,
+            )
+    xmg_precond = _build_rhsmode1_xmg_preconditioner(
+        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+    )
+    collision_precond = _build_rhsmode1_collision_preconditioner(
+        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+    )
+    # Apply angular/line preconditioner (if enabled), then x-coarse correction, then collision smoothing.
+    precond = xmg_precond
+    if line_precond is not None:
+        precond = _compose_preconditioners(line_precond, precond)
+    return _compose_preconditioners(precond, collision_precond)
+
+
 def _build_rhsmode1_species_block_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -4273,6 +4336,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "xblock_tz"
         elif rhs1_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
             rhs1_precond_kind = "xmg"
+        elif rhs1_precond_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
+            rhs1_precond_kind = "pas_hybrid"
         elif rhs1_precond_env in {"theta_zeta", "theta_zeta_line", "tz", "tz_line"}:
             rhs1_precond_kind = "theta_zeta"
         elif rhs1_precond_env in {"zeta", "zeta_line", "line_zeta"}:
@@ -4499,11 +4564,11 @@ def solve_v3_full_system_linear_gmres(
         and int(op.constraint_scheme) == 2
         and op.fblock.pas is not None
         and use_dkes
-        and rhs1_precond_kind in {None, "point", "theta_line", "zeta_line", "schur"}
     ):
-        # DKES-trajectory PAS runs can stagnate with weak preconditioners; prefer x-multigrid
-        # when the default selection is too weak.
-        rhs1_precond_kind = "xmg"
+        # DKES-trajectory PAS runs can stagnate with weak preconditioners; use the
+        # PAS hybrid (line + x-coarse) preconditioner by default. The PAS probe can
+        # still downgrade to a collision preconditioner if it suffices.
+        rhs1_precond_kind = "pas_hybrid"
     rhs1_precond_kind_requested = rhs1_precond_kind
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
@@ -5151,6 +5216,7 @@ def solve_v3_full_system_linear_gmres(
             "sxblock_tz",
             "species_block",
             "schur",
+            "pas_hybrid",
         }
         if (
             pas_probe_enabled
@@ -5280,6 +5346,10 @@ def solve_v3_full_system_linear_gmres(
                 precond = _build_rhsmode1_xmg_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+            elif rhs1_precond_kind == "pas_hybrid":
+                precond = _build_rhsmode1_pas_hybrid_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
             elif rhs1_precond_kind == "zeta_line":
                 precond = _build_rhsmode1_zeta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
@@ -5347,6 +5417,31 @@ def solve_v3_full_system_linear_gmres(
                     bicgstab_preconditioner_reduced = preconditioner_reduced
         if preconditioner_reduced is None and bicgstab_preconditioner_reduced is not None:
             preconditioner_reduced = bicgstab_preconditioner_reduced
+        if preconditioner_reduced is not None and rhs1_precond_kind == "pas_hybrid":
+            try:
+                probe = preconditioner_reduced(rhs_reduced)
+                probe_ok = bool(jnp.all(jnp.isfinite(probe)))
+            except Exception as exc:  # noqa: BLE001
+                probe_ok = False
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: PAS hybrid precond probe failed "
+                        f"({type(exc).__name__}: {exc}), using collision preconditioner",
+                    )
+            if not probe_ok:
+                preconditioner_reduced = _build_rhsmode1_collision_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                if use_pas_projection:
+                    preconditioner_reduced = _wrap_pas_precond(preconditioner_reduced)
+                if rhs1_bicgstab_kind == "rhs1":
+                    bicgstab_preconditioner_reduced = preconditioner_reduced
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: PAS hybrid precond non-finite -> collision",
+                    )
         sparse_operator_use = False
         if sparse_operator_mode == "on":
             sparse_operator_use = True
@@ -5580,7 +5675,9 @@ def solve_v3_full_system_linear_gmres(
             res_ratio_full = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
             if res_ratio_full > force_full_ratio:
                 forced_kind = rhs1_precond_kind_requested or "xmg"
-                if forced_kind in {"collision", "schur", "point"}:
+                if op.fblock.pas is not None and use_dkes:
+                    forced_kind = "pas_hybrid"
+                elif forced_kind in {"collision", "schur", "point"}:
                     forced_kind = "xmg"
                 if emit is not None:
                     emit(
@@ -5830,6 +5927,8 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind = "xblock_tz"
         elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
             strong_precond_kind = "xmg"
+        elif strong_precond_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
+            strong_precond_kind = "pas_hybrid"
         elif strong_precond_env in {"theta_zeta", "theta_zeta_line", "tz", "tz_line"}:
             strong_precond_kind = "theta_zeta"
         elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
@@ -5844,6 +5943,8 @@ def solve_v3_full_system_linear_gmres(
         if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
             if int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
                 strong_precond_kind = "schur"
+            elif op.fblock.pas is not None and use_dkes:
+                strong_precond_kind = "pas_hybrid"
             elif (
                 rhs1_precond_env == ""
                 and int(op.rhs_mode) == 1
@@ -5966,6 +6067,10 @@ def solve_v3_full_system_linear_gmres(
                     )
                 elif strong_precond_kind == "xmg":
                     strong_preconditioner_reduced = _build_rhsmode1_xmg_preconditioner(
+                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "pas_hybrid":
+                    strong_preconditioner_reduced = _build_rhsmode1_pas_hybrid_preconditioner(
                         op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                     )
                 elif strong_precond_kind == "xblock_tz":
@@ -6537,6 +6642,8 @@ def solve_v3_full_system_linear_gmres(
                     precond = _build_rhsmode1_xblock_tz_preconditioner(op=op)
                 elif rhs1_precond_kind == "xmg":
                     precond = _build_rhsmode1_xmg_preconditioner(op=op)
+                elif rhs1_precond_kind == "pas_hybrid":
+                    precond = _build_rhsmode1_pas_hybrid_preconditioner(op=op)
                 elif rhs1_precond_kind == "theta_zeta":
                     precond = _build_rhsmode1_theta_zeta_preconditioner(op=op)
                 elif rhs1_precond_kind == "zeta_line":
@@ -6584,6 +6691,27 @@ def solve_v3_full_system_linear_gmres(
                         bicgstab_preconditioner_full = preconditioner_full
             if preconditioner_full is None and bicgstab_preconditioner_full is not None:
                 preconditioner_full = bicgstab_preconditioner_full
+            if preconditioner_full is not None and rhs1_precond_kind == "pas_hybrid":
+                try:
+                    probe = preconditioner_full(rhs)
+                    probe_ok = bool(jnp.all(jnp.isfinite(probe)))
+                except Exception as exc:  # noqa: BLE001
+                    probe_ok = False
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_full_system_linear_gmres: PAS hybrid precond probe failed "
+                            f"({type(exc).__name__}: {exc}), using collision preconditioner",
+                        )
+                if not probe_ok:
+                    preconditioner_full = _build_rhsmode1_collision_preconditioner(op=op)
+                    if rhs1_bicgstab_kind == "rhs1":
+                        bicgstab_preconditioner_full = preconditioner_full
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_full_system_linear_gmres: PAS hybrid precond non-finite -> collision",
+                        )
             if recycle_basis_use:
                 basis_full: list[jnp.ndarray] = []
                 for vec in recycle_basis_use:
@@ -6808,6 +6936,8 @@ def solve_v3_full_system_linear_gmres(
                 strong_precond_kind = "xblock_tz"
             elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
                 strong_precond_kind = "xmg"
+            elif strong_precond_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
+                strong_precond_kind = "pas_hybrid"
             elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
                 strong_precond_kind = "adi"
             elif strong_precond_env in {"schur", "schur_complement", "constraint_schur"}:
@@ -6820,6 +6950,8 @@ def solve_v3_full_system_linear_gmres(
             if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
                 if int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
                     strong_precond_kind = "schur"
+                elif op.fblock.pas is not None and use_dkes:
+                    strong_precond_kind = "pas_hybrid"
                 elif (
                     rhs1_precond_env == ""
                     and rhs1_precond_kind == "point"
@@ -6920,6 +7052,8 @@ def solve_v3_full_system_linear_gmres(
                     strong_preconditioner_full = _build_rhsmode1_xblock_tz_preconditioner(op=op)
                 elif strong_precond_kind == "xmg":
                     strong_preconditioner_full = _build_rhsmode1_xmg_preconditioner(op=op)
+                elif strong_precond_kind == "pas_hybrid":
+                    strong_preconditioner_full = _build_rhsmode1_pas_hybrid_preconditioner(op=op)
                 elif strong_precond_kind == "theta_zeta":
                     strong_preconditioner_full = _build_rhsmode1_theta_zeta_preconditioner(op=op)
                 elif strong_precond_kind == "zeta_line":
