@@ -4238,46 +4238,39 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
                 op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
             )
     else:
-        if op.fblock.pas is not None and op.fblock.fp is None and (
-            op.fblock.er_xdot is not None or op.fblock.er_xidot is not None
-        ):
-            # PAS+Er runs can have very weak/near-singular low-L angular blocks (especially
-            # L=0, krook=0), so inverting a truncated-L (theta,zeta) block can be numerically
-            # fragile. Prefer the always-small theta-line-per-(x,L,zeta) blocks instead.
-            line_precond = _build_rhsmode1_theta_line_xdiag_preconditioner(
-                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+        # Try a truncated-L (theta,zeta) block per x as a cheaper angular preconditioner.
+        lmax_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LMAX", "").strip()
+        has_er = op.fblock.er_xdot is not None or op.fblock.er_xidot is not None
+        try:
+            if lmax_env:
+                lmax = int(lmax_env)
+            else:
+                # The v3 Er xDot / xiDot terms couple ΔL=±2, so a truncated angular block that
+                # only retains L=0 is often too weak. Default to keeping L=0..2 when these
+                # terms are present (bounded by xblock_max below).
+                lmax = 3 if has_er else 1
+        except ValueError:
+            lmax = 3 if has_er else 1
+        xblock_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_XBLOCK_MAX", "").strip()
+        try:
+            # PAS+Er runs need larger angular blocks to be effective; allow a larger default.
+            xblock_max_default = 2048 if has_er else 256
+            xblock_max = int(xblock_max_env) if xblock_max_env else xblock_max_default
+        except ValueError:
+            xblock_max = 2048 if has_er else 256
+        nz = int(op.n_theta) * int(op.n_zeta)
+        if nz > 0:
+            max_allowed = int(xblock_max // nz)
+            if max_allowed > 0:
+                lmax = min(int(lmax), max_allowed)
+        block_size = int(max(0, lmax) * int(op.n_theta) * int(op.n_zeta))
+        if lmax > 0 and block_size > 0 and block_size <= xblock_max:
+            line_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(
+                op=op,
+                lmax=lmax,
+                reduce_full=reduce_full,
+                expand_reduced=expand_reduced,
             )
-        else:
-            # Try a truncated-L (theta,zeta) block per x as a cheaper angular preconditioner.
-            lmax_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LMAX", "").strip()
-            try:
-                if lmax_env:
-                    lmax = int(lmax_env)
-                else:
-                    # The v3 Er xDot / xiDot terms couple ΔL=±2, so a truncated angular block that
-                    # only retains L=0 is often too weak. Default to keeping L=0..2 when these
-                    # terms are present (bounded below by xblock_max below).
-                    lmax = 3 if (op.fblock.er_xdot is not None or op.fblock.er_xidot is not None) else 1
-            except ValueError:
-                lmax = 1
-            xblock_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_XBLOCK_MAX", "").strip()
-            try:
-                xblock_max = int(xblock_max_env) if xblock_max_env else 256
-            except ValueError:
-                xblock_max = 256
-            nz = int(op.n_theta) * int(op.n_zeta)
-            if nz > 0:
-                max_allowed = int(xblock_max // nz)
-                if max_allowed > 0:
-                    lmax = min(int(lmax), max_allowed)
-            block_size = int(max(0, lmax) * int(op.n_theta) * int(op.n_zeta))
-            if lmax > 0 and block_size > 0 and block_size <= xblock_max:
-                line_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(
-                    op=op,
-                    lmax=lmax,
-                    reduce_full=reduce_full,
-                    expand_reduced=expand_reduced,
-                )
     x_precond: Callable[[jnp.ndarray], jnp.ndarray]
     if op.fblock.pas is not None and op.fblock.fp is None and op.fblock.er_xdot is not None:
         # The dense ddx matrices in the v3 Er xDot operator can be extremely ill-conditioned.
