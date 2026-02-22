@@ -103,7 +103,11 @@ def _precond_dtype(size_hint: int | None = None) -> jnp.dtype:
         if size_hint is None:
             size_hint = _PRECOND_SIZE_HINT or 0
             thresh_env = os.environ.get("SFINCS_JAX_PRECOND_FP32_MIN_SIZE", "").strip()
-            thresh_default = 20000
+            # Parity/stability-first: fp32 preconditioner factors can break convergence for
+            # stiff PAS/constraint systems (notably when L=0 PAS diagonals are near-singular).
+            # Keep fp64 factors by default for all reduced-suite sizes; allow fp32 only for
+            # truly enormous systems or when explicitly requested via env vars.
+            thresh_default = 5_000_000
         else:
             thresh_env = os.environ.get("SFINCS_JAX_PRECOND_FP32_MIN_BLOCK", "").strip()
             # Default parity-first: keep block preconditioner factors in float64 unless
@@ -6531,76 +6535,76 @@ def solve_v3_full_system_linear_gmres(
                     f"kind={strong_precond_kind} (residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
                 )
 
-                if strong_precond_kind == "theta_line":
-                    strong_preconditioner_reduced = _build_rhsmode1_theta_line_preconditioner(
+            if strong_precond_kind == "theta_line":
+                strong_preconditioner_reduced = _build_rhsmode1_theta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "theta_line_xdiag":
+                strong_preconditioner_reduced = _build_rhsmode1_theta_line_xdiag_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                if op.fblock.fp is not None or op.fblock.pas is not None:
+                    collision_precond = _build_rhsmode1_collision_preconditioner(
                         op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                     )
-                elif strong_precond_kind == "theta_line_xdiag":
-                    strong_preconditioner_reduced = _build_rhsmode1_theta_line_xdiag_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    strong_preconditioner_reduced = _compose_preconditioners(
+                        collision_precond, strong_preconditioner_reduced
                     )
-                    if op.fblock.fp is not None or op.fblock.pas is not None:
-                        collision_precond = _build_rhsmode1_collision_preconditioner(
-                            op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                        )
-                        strong_preconditioner_reduced = _compose_preconditioners(
-                            collision_precond, strong_preconditioner_reduced
-                        )
-                elif strong_precond_kind == "species_block":
-                    strong_preconditioner_reduced = _build_rhsmode1_species_block_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "sxblock":
-                    strong_preconditioner_reduced = _build_rhsmode1_species_xblock_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "sxblock_tz":
-                    strong_preconditioner_reduced = _build_rhsmode1_sxblock_tz_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "theta_zeta":
-                    strong_preconditioner_reduced = _build_rhsmode1_theta_zeta_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "xmg":
-                    strong_preconditioner_reduced = _build_rhsmode1_xmg_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "pas_hybrid":
-                    strong_preconditioner_reduced = _build_rhsmode1_pas_hybrid_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "xblock_tz":
-                    strong_preconditioner_reduced = _build_rhsmode1_xblock_tz_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "zeta_line":
-                    strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                elif strong_precond_kind == "schur":
-                    strong_preconditioner_reduced = _build_rhsmode1_schur_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                else:
-                    pre_theta = _build_rhsmode1_theta_line_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                    pre_zeta = _build_rhsmode1_zeta_line_preconditioner(
-                        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-                    )
-                    sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
-                    try:
-                        sweeps = int(sweeps_env) if sweeps_env else 2
-                    except ValueError:
-                        sweeps = 2
-                    sweeps = max(1, sweeps)
+            elif strong_precond_kind == "species_block":
+                strong_preconditioner_reduced = _build_rhsmode1_species_block_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "sxblock":
+                strong_preconditioner_reduced = _build_rhsmode1_species_xblock_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "sxblock_tz":
+                strong_preconditioner_reduced = _build_rhsmode1_sxblock_tz_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "theta_zeta":
+                strong_preconditioner_reduced = _build_rhsmode1_theta_zeta_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "xmg":
+                strong_preconditioner_reduced = _build_rhsmode1_xmg_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "pas_hybrid":
+                strong_preconditioner_reduced = _build_rhsmode1_pas_hybrid_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "xblock_tz":
+                strong_preconditioner_reduced = _build_rhsmode1_xblock_tz_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "zeta_line":
+                strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "schur":
+                strong_preconditioner_reduced = _build_rhsmode1_schur_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            else:
+                pre_theta = _build_rhsmode1_theta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                pre_zeta = _build_rhsmode1_zeta_line_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+                sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+                try:
+                    sweeps = int(sweeps_env) if sweeps_env else 2
+                except ValueError:
+                    sweeps = 2
+                sweeps = max(1, sweeps)
 
-                    def strong_preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
-                        out = v
-                        for _ in range(sweeps):
-                            out = pre_zeta(pre_theta(out))
-                        return out
+                def strong_preconditioner_reduced(v: jnp.ndarray) -> jnp.ndarray:
+                    out = v
+                    for _ in range(sweeps):
+                        out = pre_zeta(pre_theta(out))
+                    return out
             _mark("rhs1_strong_precond_build_done")
             if use_pas_projection:
                 strong_preconditioner_reduced = _wrap_pas_precond(strong_preconditioner_reduced)
