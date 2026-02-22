@@ -447,6 +447,8 @@ class _TransportXmgPrecondCache:
     inv_diag_f: jnp.ndarray
     coarse_inv: jnp.ndarray
     coarse_idx: jnp.ndarray
+    coarse_inv_lblock: jnp.ndarray | None = None
+    lblock: int = 0
 
 
 @dataclass(frozen=True)
@@ -1135,7 +1137,17 @@ def _build_rhsmode1_xmg_preconditioner(
             reg = float(reg_env) if reg_env else 1e-10
         except ValueError:
             reg = 1e-10
-        inv_diag_f = 1.0 / (diag + float(reg))
+        reg_l0 = float(reg)
+        if op.fblock.pas is not None and op.fblock.fp is None and op.fblock.er_xdot is not None:
+            # The PAS operator can have an exactly-zero L=0 diagonal (krook=0). With Er xDot enabled,
+            # the x-coupled block can be near-singular if we only add an extremely small regularization,
+            # leading to huge preconditioner entries and GMRES blow-up. Use a modest L=0 shift here to
+            # keep the xmg inverse numerically stable.
+            reg_l0 = max(reg_l0, 1.0)
+        reg_by_l = np.full((n_l,), float(reg), dtype=np.float64)
+        if n_l > 0:
+            reg_by_l[0] = reg_l0
+        inv_diag_f = 1.0 / (diag + reg_by_l[None, None, :, None, None])
 
         coarse_inv = np.zeros((n_species, n_l, n_coarse, n_coarse), dtype=np.float64)
         mat_fp = None
@@ -1157,6 +1169,7 @@ def _build_rhsmode1_xmg_preconditioner(
         # diagonal-in-L approximation here to recover useful x-coupling at low cost.
         xdot_x_part: np.ndarray | None = None  # (Xc,Xc)
         xdot_coef_l: np.ndarray | None = None  # (L,)
+        xdot_rms = 0.0
         if op.fblock.er_xdot is not None:
             try:
                 er = op.fblock.er_xdot
@@ -1177,13 +1190,20 @@ def _build_rhsmode1_xmg_preconditioner(
                 zeta_w = np.asarray(op.zeta_weights, dtype=np.float64)
                 d_hat_full = np.asarray(op.d_hat, dtype=np.float64)
                 fs_factor = (theta_w[:, None] * zeta_w[None, :]) / d_hat_full  # (T,Z), un-normalized
-                xdot_avg = float(np.sum(fs_factor * xdot_factor))
+                # Signed flux-surface averages of xdot_factor can cancel (common for tokamak-like
+                # geometries), which would incorrectly eliminate dense-x coupling from the
+                # preconditioner. Use an RMS magnitude instead to capture the typical scale.
+                fs_sum = float(np.sum(fs_factor))
+                if fs_sum > 0.0:
+                    xdot_rms = float(np.sqrt(np.sum(fs_factor * (xdot_factor * xdot_factor)) / fs_sum))
+                else:
+                    xdot_rms = 0.0
 
                 l_vec = np.arange(n_l, dtype=np.float64)
                 denom = (2.0 * l_vec + 3.0) * (2.0 * l_vec - 1.0)
                 diag_coef = 2.0 * (3.0 * l_vec * l_vec + 3.0 * l_vec - 2.0) / denom
                 # force0RadialCurrentInEquilibrium=.true. (v3 default) -> xdotFactor2 = 0.
-                xdot_coef_l = diag_coef * xdot_avg
+                xdot_coef_l = diag_coef * xdot_rms
 
                 x_arr = np.asarray(er.x, dtype=np.float64)
                 ddx = np.asarray(er.ddx_plus, dtype=np.float64)
@@ -1192,6 +1212,90 @@ def _build_rhsmode1_xmg_preconditioner(
             except Exception:  # noqa: BLE001
                 xdot_x_part = None
                 xdot_coef_l = None
+                xdot_rms = 0.0
+
+        # If PAS+Er includes ΔL=±2 xDot coupling, build a small coupled (L,x) coarse inverse
+        # for low Legendre modes. This is much stronger than per-L coarse inverses, while still
+        # cheap: we only couple a few low-L modes and only on the coarse x grid.
+        coarse_inv_lblock: np.ndarray | None = None  # (S, Lb*Xc, Lb*Xc)
+        lblock = 0
+        pinv_env = os.environ.get("SFINCS_JAX_RHSMODE1_XMG_PINV_RCOND", "").strip()
+        try:
+            pinv_rcond = float(pinv_env) if pinv_env else 1e-12
+        except ValueError:
+            pinv_rcond = 1e-12
+        if (
+            xdot_x_part is not None
+            and xdot_coef_l is not None
+            and float(xdot_rms) != 0.0
+            and op.fblock.pas is not None
+            and mat_fp is None
+            and n_l >= 3
+        ):
+            # Default to a small block that captures the first few ΔL=±2 couplings.
+            # L is small (Nxi is usually O(10)), so a block of size 6 is still cheap.
+            lblock = int(min(int(n_l), 6))
+            n_block = int(lblock * n_coarse)
+            coarse_inv_lblock = np.zeros((n_species, n_block, n_block), dtype=np.float64)
+
+            # Coefficients for ΔL=±2 couplings in `apply_er_xdot_v3`:
+            #   row L gets col L+2 with coef sup2[L]
+            #   row L gets col L-2 with coef sub2[L]
+            l_vec = np.arange(n_l, dtype=np.float64)
+            sup2 = np.zeros((n_l,), dtype=np.float64)
+            sub2 = np.zeros((n_l,), dtype=np.float64)
+            if n_l >= 3:
+                l0 = l_vec[:-2]
+                sup2[:-2] = (l0 + 1.0) * (l0 + 2.0) / ((2.0 * l0 + 5.0) * (2.0 * l0 + 3.0))
+                l2 = l_vec[2:]
+                sub2[2:] = l2 * (l2 - 1.0) / ((2.0 * l2 - 3.0) * (2.0 * l2 - 1.0))
+
+            for s in range(n_species):
+                a = np.zeros((n_block, n_block), dtype=np.float64)
+                # Base diagonal blocks (PAS + identity shift + regularization).
+                for l in range(lblock):
+                    i0 = int(l * n_coarse)
+                    i1 = i0 + n_coarse
+                    block = np.zeros((n_coarse, n_coarse), dtype=np.float64)
+                    reg_eff = reg_l0 if l == 0 else float(reg)
+                    diag_vec = np.full((n_coarse,), identity_shift + reg_eff, dtype=np.float64)
+                    if pas_diag is not None:
+                        diag_vec = diag_vec + pas_diag[s, coarse_idx, l]
+                    block[np.arange(n_coarse), np.arange(n_coarse)] += diag_vec
+                    a[i0:i1, i0:i1] += block
+
+                # Add xDot dense-x coupling (diagonal + ΔL=±2 couplings) using an RMS magnitude.
+                for l in range(lblock):
+                    i0 = int(l * n_coarse)
+                    i1 = i0 + n_coarse
+                    a[i0:i1, i0:i1] += float(xdot_coef_l[l]) * xdot_x_part
+                    if l + 2 < lblock:
+                        j0 = int((l + 2) * n_coarse)
+                        j1 = j0 + n_coarse
+                        a[i0:i1, j0:j1] += float(sup2[l] * xdot_rms) * xdot_x_part
+                    if l - 2 >= 0:
+                        j0 = int((l - 2) * n_coarse)
+                        j1 = j0 + n_coarse
+                        a[i0:i1, j0:j1] += float(sub2[l] * xdot_rms) * xdot_x_part
+
+                # Identity rows/cols for inactive (x,L) combinations.
+                for l in range(lblock):
+                    inactive_x = np.where(nxi_for_x <= l)[0]
+                    if not inactive_x.size:
+                        continue
+                    for ix in inactive_x:
+                        idx = coarse_map.get(int(ix))
+                        if idx is None:
+                            continue
+                        p = int(l * n_coarse + idx)
+                        a[p, :] = 0.0
+                        a[:, p] = 0.0
+                        a[p, p] = 1.0
+
+                inv = np.linalg.pinv(a, rcond=pinv_rcond)
+                if not np.all(np.isfinite(inv)):
+                    inv = np.linalg.pinv(a, rcond=pinv_rcond)
+                coarse_inv_lblock[s, :, :] = inv
 
         for s in range(n_species):
             for l in range(n_l):
@@ -1200,7 +1304,8 @@ def _build_rhsmode1_xmg_preconditioner(
                 else:
                     a = np.array(mat_fp[s, s, l, :, :], dtype=np.float64, copy=True)
                 a = a[np.ix_(coarse_idx, coarse_idx)]
-                diag_vec = np.full((n_coarse,), identity_shift + reg, dtype=np.float64)
+                reg_eff = reg_l0 if l == 0 else float(reg)
+                diag_vec = np.full((n_coarse,), identity_shift + reg_eff, dtype=np.float64)
                 if pas_diag is not None:
                     diag_vec += pas_diag[s, coarse_idx, l]
                 a[np.arange(n_coarse), np.arange(n_coarse)] += diag_vec
@@ -1217,34 +1322,56 @@ def _build_rhsmode1_xmg_preconditioner(
                         a[:, idx] = 0.0
                         a[idx, idx] = 1.0
 
-                try:
-                    inv = np.linalg.inv(a)
-                except np.linalg.LinAlgError:
-                    inv = np.linalg.pinv(a, rcond=1e-12)
+                use_pinv = bool(xdot_x_part is not None and xdot_coef_l is not None and l == 0 and mat_fp is None)
+                if use_pinv:
+                    inv = np.linalg.pinv(a, rcond=pinv_rcond)
+                else:
+                    try:
+                        inv = np.linalg.inv(a)
+                    except np.linalg.LinAlgError:
+                        inv = np.linalg.pinv(a, rcond=pinv_rcond)
                 if not np.all(np.isfinite(inv)):
-                    inv = np.linalg.pinv(a, rcond=1e-12)
+                    inv = np.linalg.pinv(a, rcond=pinv_rcond)
                 coarse_inv[s, l, :, :] = inv
 
         cached = _TransportXmgPrecondCache(
             inv_diag_f=jnp.asarray(inv_diag_f, dtype=precond_dtype),
             coarse_inv=jnp.asarray(coarse_inv, dtype=precond_dtype),
             coarse_idx=jnp.asarray(coarse_idx, dtype=jnp.int32),
+            coarse_inv_lblock=(
+                None if coarse_inv_lblock is None else jnp.asarray(coarse_inv_lblock, dtype=precond_dtype)
+            ),
+            lblock=int(lblock),
         )
         _RHSMODE1_XMG_PRECOND_CACHE[cache_key] = cached
 
     inv_diag_f = cached.inv_diag_f
     coarse_inv = cached.coarse_inv
     coarse_idx = cached.coarse_idx
+    coarse_inv_lblock = cached.coarse_inv_lblock
+    lblock = int(cached.lblock)
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=precond_dtype)
         f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
         z_f = f * inv_diag_f
         f_sl = jnp.transpose(f, (0, 2, 1, 3, 4))  # (S,L,X,T,Z)
-        f_coarse = f_sl[:, :, coarse_idx, :, :]
-        z_coarse = jnp.einsum("slij,sljtz->slitz", coarse_inv, f_coarse)
         corr_sl = jnp.zeros_like(f_sl)
-        corr_sl = corr_sl.at[:, :, coarse_idx, :, :].set(z_coarse)
+        if coarse_inv_lblock is not None and lblock > 0:
+            n_coarse = int(coarse_idx.shape[0])
+            lblock_use = int(min(lblock, int(f_sl.shape[1])))
+            f_block = f_sl[:, :lblock_use, coarse_idx, :, :].reshape((f_sl.shape[0], lblock_use * n_coarse) + f_sl.shape[3:])
+            z_block = jnp.einsum("sij,sjtz->sitz", coarse_inv_lblock, f_block)
+            z_block = z_block.reshape((f_sl.shape[0], lblock_use, n_coarse) + f_sl.shape[3:])
+            corr_sl = corr_sl.at[:, :lblock_use, coarse_idx, :, :].set(z_block)
+            if lblock_use < int(f_sl.shape[1]):
+                f_high = f_sl[:, lblock_use:, coarse_idx, :, :]
+                z_high = jnp.einsum("slij,sljtz->slitz", coarse_inv[:, lblock_use:, :, :], f_high)
+                corr_sl = corr_sl.at[:, lblock_use:, coarse_idx, :, :].set(z_high)
+        else:
+            f_coarse = f_sl[:, :, coarse_idx, :, :]
+            z_coarse = jnp.einsum("slij,sljtz->slitz", coarse_inv, f_coarse)
+            corr_sl = corr_sl.at[:, :, coarse_idx, :, :].set(z_coarse)
         corr = jnp.transpose(corr_sl, (0, 2, 1, 3, 4))
         z_f = z_f + corr
         tail = r_full[op.f_size :]
@@ -2844,6 +2971,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_kind = "xblock_tz"
     elif base_kind_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
         base_kind = "xmg"
+    elif base_kind_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
+        base_kind = "pas_hybrid"
     elif base_kind_env in {"pas_tokamak_theta", "pas_tokamak", "pas_theta", "tokamak_theta", "theta_tokamak"}:
         base_kind = "pas_tokamak_theta"
     elif base_kind_env in {"point", "block", "jacobi"}:
@@ -2864,7 +2993,7 @@ def _build_rhsmode1_schur_preconditioner(
                 xmg_min = 50000
             prefer_xmg = int(op.total_size) >= xmg_min
         if prefer_xmg:
-            base_kind = "xmg"
+            base_kind = "pas_hybrid"
         elif int(op.n_theta) > 1 or int(op.n_zeta) > 1:
             tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
             try:
@@ -2929,6 +3058,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_precond = _build_rhsmode1_xblock_tz_preconditioner(op=op)
     elif base_kind == "xmg":
         base_precond = _build_rhsmode1_xmg_preconditioner(op=op)
+    elif base_kind == "pas_hybrid":
+        base_precond = _build_rhsmode1_pas_hybrid_preconditioner(op=op)
     elif base_kind == "pas_tokamak_theta":
         base_precond = _build_rhsmode1_pas_tokamak_theta_preconditioner(op=op)
     elif base_kind == "theta_zeta":
@@ -2986,7 +3117,7 @@ def _build_rhsmode1_schur_preconditioner(
     except ValueError:
         xschur_min = 50000
     use_xschur = bool(
-        base_kind == "xmg"
+        base_kind in {"xmg", "pas_hybrid"}
         and op.fblock.pas is not None
         and op.fblock.fp is None
         and op.fblock.er_xdot is not None
@@ -3014,12 +3145,16 @@ def _build_rhsmode1_schur_preconditioner(
             factor0 = -(alpha * delta * dphi) / 4.0
             xdot_factor = factor0 * d_hat_er / (b_hat**3) * (b_sub_theta * db_dzeta - b_sub_zeta * db_dtheta)  # (T,Z)
             fs_factor = (theta_w[:, None] * zeta_w[None, :]) / d_hat  # (T,Z)
-            xdot_avg = float(np.sum(fs_factor * xdot_factor))
+            fs_sum_safe = float(np.sum(fs_factor))
+            if fs_sum_safe > 0.0:
+                xdot_rms = float(np.sqrt(np.sum(fs_factor * (xdot_factor * xdot_factor)) / fs_sum_safe))
+            else:
+                xdot_rms = 0.0
 
             # Diagonal-in-L coefficient for L=0 from `apply_er_xdot_v3`:
             # diag_coef = 2*(3L^2+3L-2) / ((2L+3)(2L-1)) -> 4/3 at L=0.
             diag_coef0 = 4.0 / 3.0
-            xdot_coef0 = diag_coef0 * xdot_avg
+            xdot_coef0 = diag_coef0 * xdot_rms
 
             x_arr = np.asarray(er.x, dtype=np.float64)
             ddx = np.asarray(er.ddx_plus, dtype=np.float64)
@@ -3915,7 +4050,13 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
         # Try a truncated-L (theta,zeta) block per x as a cheaper angular preconditioner.
         lmax_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LMAX", "").strip()
         try:
-            lmax = int(lmax_env) if lmax_env else 1
+            if lmax_env:
+                lmax = int(lmax_env)
+            else:
+                # The v3 Er xDot / xiDot terms couple ΔL=±2, so a truncated angular block that
+                # only retains L=0 is often too weak. Default to keeping L=0..2 when these
+                # terms are present (bounded below by xblock_max below).
+                lmax = 3 if (op.fblock.er_xdot is not None or op.fblock.er_xidot is not None) else 1
         except ValueError:
             lmax = 1
         xblock_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_XBLOCK_MAX", "").strip()
@@ -3923,6 +4064,11 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
             xblock_max = int(xblock_max_env) if xblock_max_env else 256
         except ValueError:
             xblock_max = 256
+        nz = int(op.n_theta) * int(op.n_zeta)
+        if nz > 0:
+            max_allowed = int(xblock_max // nz)
+            if max_allowed > 0:
+                lmax = min(int(lmax), max_allowed)
         block_size = int(max(0, lmax) * int(op.n_theta) * int(op.n_zeta))
         if lmax > 0 and block_size > 0 and block_size <= xblock_max:
             line_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(

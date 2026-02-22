@@ -39,3 +39,13 @@ def test_rhsmode1_xmg_includes_er_xdot_x_coupling_for_pas(monkeypatch) -> None:
     offdiag = mat - np.diag(np.diag(mat))
     assert float(np.max(np.abs(offdiag))) > 0.0
 
+    # PAS+Er xDot includes ΔL=±2 couplings; the xmg preconditioner should build a small
+    # coupled (L,x) coarse inverse for low-L modes so these couplings are captured.
+    assert cached.coarse_inv_lblock is not None
+    lblock = int(cached.lblock)
+    assert lblock >= 3
+    coarse_idx = np.asarray(cached.coarse_idx)
+    n_coarse = int(coarse_idx.shape[0])
+    mat_lblock = np.asarray(cached.coarse_inv_lblock)[0]  # (Lb*Xc,Lb*Xc)
+    sub02 = mat_lblock[0:n_coarse, 2 * n_coarse : 3 * n_coarse]
+    assert float(np.max(np.abs(sub02))) > 0.0
