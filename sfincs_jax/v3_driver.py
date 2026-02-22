@@ -475,8 +475,10 @@ class _PasTokamakThetaPrecondCache:
     is absent and theta-line blocks over the full x-grid are prohibitively large.
     """
 
-    inv_a: jnp.ndarray  # (S, X, L, T, T) approximate inverse of effective diagonal blocks
-    g: jnp.ndarray  # (S, X, L-1, T, T) block-Thomas factors for back-substitution
+    inv_a01: jnp.ndarray  # (S, X, 2*T, 2*T) effective inverse for the (L=0,1) combined block
+    g01: jnp.ndarray  # (S, X, 2*T, T) block-Thomas factor coupling (L=0,1) block to L=2
+    inv_a: jnp.ndarray  # (S, X, L-2, T, T) approximate inverse of effective diagonal blocks for L>=2
+    g: jnp.ndarray  # (S, X, max(L-3,0), T, T) block-Thomas factors for back-substitution for L>=2
     c_stream: jnp.ndarray  # (X, L) scalar streaming coupling (row L from col L-1)
     c_mirror: jnp.ndarray  # (X, L) scalar mirror coupling (row L from col L-1)
     m_theta: jnp.ndarray  # (S, T, T) row-scaled theta-derivative matrix
@@ -1447,6 +1449,9 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
 
         if n_theta <= 1:
             return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+        if n_l < 2:
+            # The (L,theta) block-tridiagonal structure requires at least L=0,1.
+            return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
 
         x = np.asarray(cl.x, dtype=np.float64)  # (X,)
         ddtheta = np.asarray(cl.ddtheta, dtype=np.float64)  # (T,T)
@@ -1484,22 +1489,26 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
         c_mirror[:, 1:] = coef_mirror_minus_x[:, 1:] * mask_minus
 
         # Preconditioner regularization:
-        # Use a larger default than the tiny block-preconditioner reg to avoid catastrophic
-        # scaling in the L=0 nullspace mode of pitch-angle scattering.
+        # For PAS tokamak-like systems, the L=0 diagonal can be exactly 0 (krook=0), while
+        # the theta derivative operator has a constant-mode nullspace. A naive block-Thomas
+        # factorization that inverts the L=0 diagonal block can therefore be unstable.
+        #
+        # We keep a *tiny* diagonal regularization to protect against true singularities,
+        # and we avoid the large L=0 "lift" heuristic by using a combined (L=0,1) block
+        # as the first elimination step (below). This yields a much tighter approximation
+        # and typically reduces Krylov iterations dramatically.
         reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_TOKAMAK_REG", "").strip()
         try:
-            reg = float(reg_env) if reg_env else 1e-6
+            reg = float(reg_env) if reg_env else 1e-12
         except ValueError:
-            reg = 1e-6
-        reg = max(float(reg), 1e-12)
+            reg = 1e-12
+        reg = max(float(reg), 0.0)
 
         pas_coef = np.asarray(pas.coef, dtype=np.float64)  # (S,X,L)
-        diag_vals = pas_coef + reg  # (S,X,L)
+        identity_shift = float(op.fblock.identity_shift)
+        diag_vals = pas_coef + identity_shift + reg  # (S,X,L)
         # For inactive (x,L), decouple by setting diag=1 and couplings=0 (handled above).
         diag_vals = diag_vals * mask_active[None, :, :] + (1.0 - mask_active)[None, :, :]
-        # Heuristic: lift the L=0 diagonal to a comparable scale as L=1 to reduce precond blow-up.
-        if n_l >= 2:
-            diag_vals[:, :, 0] = np.maximum(diag_vals[:, :, 0], 0.5 * diag_vals[:, :, 1])
 
         # Geometry-dependent base matrices (per species).
         v_theta = b_sup_theta / b_hat  # (T,)
@@ -1514,19 +1523,57 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
             mirror_diag[s, :, :] = np.diag(mirror_factor[s, :])
 
         eye_t = np.eye(n_theta, dtype=np.float64)
-        inv_a = np.zeros((n_species, n_x, n_l, n_theta, n_theta), dtype=np.float64)
-        g = np.zeros((n_species, n_x, max(0, n_l - 1), n_theta, n_theta), dtype=np.float64)
+        # Factorization with a combined (L=0,1) block (size 2*Ntheta) followed by standard
+        # block-Thomas elimination for L>=2 (size Ntheta).
+        twot = 2 * n_theta
+        inv_a01 = np.zeros((n_species, n_x, twot, twot), dtype=np.float64)
+        g01 = np.zeros((n_species, n_x, twot, n_theta), dtype=np.float64)
+        inv_a = np.zeros((n_species, n_x, max(0, n_l - 2), n_theta, n_theta), dtype=np.float64)
+        g = np.zeros((n_species, n_x, max(0, n_l - 3), n_theta, n_theta), dtype=np.float64)
 
         for s in range(n_species):
             m_s = m_theta[s, :, :]
             mir_s = mirror_diag[s, :, :]
             for ix in range(n_x):
-                g_prev = np.zeros((n_theta, n_theta), dtype=np.float64)
-                for l in range(n_l):
+                # Build and factor the combined (L=0,1) block.
+                a0 = float(diag_vals[s, ix, 0])
+                a1 = float(diag_vals[s, ix, 1])
+                a0_blk = a0 * eye_t
+                a1_blk = a1 * eye_t
+                b0 = float(b_stream[ix, 0]) * m_s + float(b_mirror[ix, 0]) * mir_s
+                c1 = float(c_stream[ix, 1]) * m_s + float(c_mirror[ix, 1]) * mir_s
+                a01 = np.zeros((twot, twot), dtype=np.float64)
+                a01[:n_theta, :n_theta] = a0_blk
+                a01[:n_theta, n_theta:] = b0
+                a01[n_theta:, :n_theta] = c1
+                a01[n_theta:, n_theta:] = a1_blk
+                try:
+                    inv01 = np.linalg.inv(a01)
+                except np.linalg.LinAlgError:
+                    inv01 = np.linalg.pinv(a01, rcond=1e-12)
+                if not np.all(np.isfinite(inv01)):
+                    inv01 = np.linalg.pinv(a01, rcond=1e-12)
+                inv_a01[s, ix, :, :] = inv01
+
+                if n_l == 2:
+                    continue
+
+                # G01 = inv(A01) @ B_tilde, where B_tilde couples f2 into the L=1 equation only.
+                b1 = float(b_stream[ix, 1]) * m_s + float(b_mirror[ix, 1]) * mir_s
+                b_tilde = np.zeros((twot, n_theta), dtype=np.float64)
+                b_tilde[n_theta:, :] = b1
+                g01_loc = inv01 @ b_tilde  # (2T,T)
+                g01[s, ix, :, :] = g01_loc
+
+                # Eliminate L>=2 using standard block-Thomas with previous G having shape (2T,T) for l=2.
+                g_prev = g01_loc
+                for l in range(2, n_l):
                     a_diag = float(diag_vals[s, ix, l])
-                    # Effective diagonal block A_l = a_diag*I - C_l @ G_{l-1}
-                    if l == 0:
-                        a_eff = a_diag * eye_t
+                    if l == 2:
+                        c2 = float(c_stream[ix, l]) * m_s + float(c_mirror[ix, l]) * mir_s
+                        c_tilde = np.zeros((n_theta, twot), dtype=np.float64)
+                        c_tilde[:, n_theta:] = c2
+                        a_eff = a_diag * eye_t - c_tilde @ g_prev
                     else:
                         c_l = float(c_stream[ix, l]) * m_s + float(c_mirror[ix, l]) * mir_s
                         a_eff = a_diag * eye_t - c_l @ g_prev
@@ -1536,14 +1583,16 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
                         a_inv = np.linalg.pinv(a_eff, rcond=1e-12)
                     if not np.all(np.isfinite(a_inv)):
                         a_inv = np.linalg.pinv(a_eff, rcond=1e-12)
-                    inv_a[s, ix, l, :, :] = a_inv
+                    inv_a[s, ix, l - 2, :, :] = a_inv
                     if l < n_l - 1:
                         b_l = float(b_stream[ix, l]) * m_s + float(b_mirror[ix, l]) * mir_s
                         g_l = a_inv @ b_l
-                        g[s, ix, l, :, :] = g_l
+                        g[s, ix, l - 2, :, :] = g_l
                         g_prev = g_l
 
         cached = _PasTokamakThetaPrecondCache(
+            inv_a01=jnp.asarray(inv_a01, dtype=precond_dtype),
+            g01=jnp.asarray(g01, dtype=precond_dtype),
             inv_a=jnp.asarray(inv_a, dtype=precond_dtype),
             g=jnp.asarray(g, dtype=precond_dtype),
             c_stream=jnp.asarray(c_stream, dtype=precond_dtype),
@@ -1554,6 +1603,8 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
         )
         _RHSMODE1_PAS_TOKAMAK_THETA_CACHE[cache_key] = cached
 
+    inv_a01 = cached.inv_a01
+    g01 = cached.g01
     inv_a = cached.inv_a
     g = cached.g
     c_stream = cached.c_stream
@@ -1565,6 +1616,7 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
     f_shape = op.fblock.f_shape  # (S,X,L,T,Z)
     assert int(f_shape[-1]) == 1
     n_l = int(f_shape[2])
+    n_theta = int(f_shape[3])
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -1572,36 +1624,65 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
         f_rhs = jnp.asarray(f_rhs, dtype=precond_dtype)
         f_rhs = f_rhs * mask_active[None, :, :, None]
 
-        inv_a_l = jnp.transpose(inv_a, (2, 0, 1, 3, 4))  # (L,S,X,T,T)
-        rhs_l = jnp.transpose(f_rhs, (2, 0, 1, 3))  # (L,S,X,T)
-        c_stream_l = jnp.transpose(c_stream, (1, 0))  # (L,X)
-        c_mirror_l = jnp.transpose(c_mirror, (1, 0))  # (L,X)
+        rhs0 = f_rhs[:, :, 0, :]  # (S,X,T)
+        rhs1 = f_rhs[:, :, 1, :]  # (S,X,T)
+        rhs01 = jnp.concatenate([rhs0, rhs1], axis=-1)  # (S,X,2T)
+        d01 = jnp.einsum("sxij,sxj->sxi", inv_a01, rhs01)  # (S,X,2T)
 
-        def _fwd_step(d_prev: jnp.ndarray, inputs):
-            inv_block, rhs_block, cs, cm = inputs  # inv: (S,X,T,T), rhs: (S,X,T), cs/cm: (X,)
-            corr_stream = jnp.einsum("sij,sxj->sxi", m_theta, d_prev) * cs[None, :, None]
-            corr_mirror = (mirror_factor[:, None, :] * d_prev) * cm[None, :, None]
-            rhs_eff = rhs_block - (corr_stream + corr_mirror)
-            d = jnp.einsum("sxij,sxj->sxi", inv_block, rhs_eff)
-            return d, d
+        if n_l == 2:
+            f0 = d01[:, :, :n_theta]
+            f1 = d01[:, :, n_theta:]
+            f_all = jnp.concatenate([f0[:, :, None, :], f1[:, :, None, :]], axis=2)  # (S,X,2,T)
+        else:
+            d_prev = d01[:, :, n_theta:]  # (S,X,T) -> previous L=1 forward solution
 
-        d0 = jnp.zeros((int(op.n_species), int(op.n_x), int(op.n_theta)), dtype=precond_dtype)
-        _, d_out = jax.lax.scan(_fwd_step, d0, (inv_a_l, rhs_l, c_stream_l, c_mirror_l))
-        d_all = jnp.transpose(d_out, (1, 2, 0, 3))  # (S,X,L,T)
+            inv_a_l = jnp.transpose(inv_a, (2, 0, 1, 3, 4))  # (L-2,S,X,T,T) for L>=2
+            rhs_l = jnp.transpose(f_rhs[:, :, 2:, :], (2, 0, 1, 3))  # (L-2,S,X,T)
+            c_stream_l = jnp.transpose(c_stream[:, 2:], (1, 0))  # (L-2,X)
+            c_mirror_l = jnp.transpose(c_mirror[:, 2:], (1, 0))  # (L-2,X)
 
-        g_l = jnp.transpose(g, (2, 0, 1, 3, 4))  # (L-1,S,X,T,T)
-        d_rev = jnp.transpose(d_all[:, :, :-1, :], (2, 0, 1, 3))[::-1]  # (L-1,S,X,T)
-        g_rev = g_l[::-1]
-        f_last = d_all[:, :, -1, :]  # (S,X,T)
+            def _fwd_step(d_prev: jnp.ndarray, inputs):
+                inv_block, rhs_block, cs, cm = inputs  # inv: (S,X,T,T), rhs: (S,X,T), cs/cm: (X,)
+                corr_stream = jnp.einsum("sij,sxj->sxi", m_theta, d_prev) * cs[None, :, None]
+                corr_mirror = (mirror_factor[:, None, :] * d_prev) * cm[None, :, None]
+                rhs_eff = rhs_block - (corr_stream + corr_mirror)
+                d = jnp.einsum("sxij,sxj->sxi", inv_block, rhs_eff)
+                return d, d
 
-        def _bwd_step(f_next: jnp.ndarray, inputs):
-            g_block, d_block = inputs
-            f_l = d_block - jnp.einsum("sxij,sxj->sxi", g_block, f_next)
-            return f_l, f_l
+            _, d_out = jax.lax.scan(_fwd_step, d_prev, (inv_a_l, rhs_l, c_stream_l, c_mirror_l))
+            d_rest = jnp.transpose(d_out, (1, 2, 0, 3))  # (S,X,L-2,T)
 
-        _, f_rev = jax.lax.scan(_bwd_step, f_last, (g_rev, d_rev))
-        f_prefix = f_rev[::-1]  # (L-1,S,X,T)
-        f_all = jnp.concatenate([jnp.transpose(f_prefix, (1, 2, 0, 3)), f_last[:, :, None, :]], axis=2)  # (S,X,L,T)
+            # Back substitution for L>=2.
+            f_last = d_rest[:, :, -1, :]  # (S,X,T) corresponds to L=n_l-1
+            if n_l > 3:
+                g_l = jnp.transpose(g, (2, 0, 1, 3, 4))  # (L-3,S,X,T,T) for L=2..n_l-2
+                d_rev = jnp.transpose(d_rest[:, :, :-1, :], (2, 0, 1, 3))[::-1]  # (L-3,S,X,T)
+                g_rev = g_l[::-1]
+
+                def _bwd_step(f_next: jnp.ndarray, inputs):
+                    g_block, d_block = inputs
+                    f_l = d_block - jnp.einsum("sxij,sxj->sxi", g_block, f_next)
+                    return f_l, f_l
+
+                _, f_rev = jax.lax.scan(_bwd_step, f_last, (g_rev, d_rev))
+                f_prefix = f_rev[::-1]  # (L-3,S,X,T)
+                f_mid = jnp.transpose(f_prefix, (1, 2, 0, 3))  # (S,X,L-3,T) for L=2..n_l-2
+                f2 = f_mid[:, :, 0, :]  # L=2
+                f_rest_all = jnp.concatenate([f_mid, f_last[:, :, None, :]], axis=2)  # (S,X,L-2,T)
+            else:
+                # n_l == 3: only L=2 exists in the "rest" block.
+                f2 = f_last
+                f_rest_all = f_last[:, :, None, :]  # (S,X,1,T)
+
+            # Recover (L=0,1) by subtracting the coupling correction from L=2.
+            u01 = d01 - jnp.einsum("sxij,sxj->sxi", g01, f2)  # (S,X,2T)
+            f0 = u01[:, :, :n_theta]
+            f1 = u01[:, :, n_theta:]
+            f_all = jnp.concatenate(
+                [f0[:, :, None, :], f1[:, :, None, :], f_rest_all],
+                axis=2,
+            )  # (S,X,L,T)
+
         f_all = f_all * mask_active[None, :, :, None]
         f_all = jnp.asarray(f_all, dtype=jnp.float64)
         z_f = f_all[:, :, :, :, None].reshape((-1,))
