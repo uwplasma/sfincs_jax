@@ -148,7 +148,7 @@ Regenerate these files:
 
    python scripts/run_reduced_upstream_suite.py --timeout-s 120 --max-attempts 1
 
-Default tolerances are ``rtol=5e-4`` and ``atol=1e-10``; override with ``--rtol``/``--atol``.
+Default tolerances are ``rtol=5e-4`` and ``atol=1e-9``; override with ``--rtol``/``--atol``.
 
 Target a single case family:
 

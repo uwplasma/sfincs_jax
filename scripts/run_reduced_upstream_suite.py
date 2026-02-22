@@ -587,6 +587,66 @@ def _run_fortran_direct(
     dt = time.perf_counter() - t0
     out = input_path.parent / "sfincsOutput.h5"
     rss_mb = _parse_max_rss_mb_from_time_log(log_path)
+    if rss_mb is None and sys.platform == "darwin":
+        # `time -l` occasionally fails on some macOS/sandbox combinations with:
+        #   "time: sysctl kern.clockrate: Operation not permitted"
+        # which prevents printing the memory stats. In that case, rerun once without `time`
+        # and measure max RSS using `resource.getrusage(RUSAGE_CHILDREN)`, which reports
+        # bytes on macOS.
+        tail = _tail(log_path, n=20).lower()
+        if "sysctl" in tail and "kern.clockrate" in tail and "operation not permitted" in tail:
+            wrapper = r"""
+import json
+import os
+import resource
+import subprocess
+import sys
+import time
+
+exe = sys.argv[1]
+cwd = sys.argv[2]
+log_path = sys.argv[3]
+timeout_s = float(sys.argv[4])
+
+t0 = time.perf_counter()
+try:
+    with open(log_path, "w", encoding="utf-8") as log:
+        proc = subprocess.run(
+            [exe],
+            cwd=cwd,
+            env=os.environ.copy(),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_s,
+            check=False,
+        )
+except subprocess.TimeoutExpired:
+    print(json.dumps({"timeout": True}))
+    sys.exit(124)
+
+dt = time.perf_counter() - t0
+ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+rss_mb = float(ru.ru_maxrss) / 1.0e6  # bytes on darwin
+print(json.dumps({"returncode": int(proc.returncode), "dt": float(dt), "rss_mb": float(rss_mb)}))
+"""
+            proc = subprocess.run(
+                [sys.executable, "-c", wrapper, str(exe.resolve()), str(input_path.parent), str(log_path), str(timeout_s)],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            if proc.returncode == 124:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout_s)
+            try:
+                payload = json.loads(proc.stdout.strip().splitlines()[-1])
+                if isinstance(payload, dict):
+                    dt = float(payload.get("dt", dt))
+                    rss_mb = float(payload.get("rss_mb", rss_mb)) if payload.get("rss_mb", None) is not None else rss_mb
+                    last_returncode = int(payload.get("returncode", last_returncode))
+            except Exception:  # noqa: BLE001
+                pass
+            returncode = int(last_returncode)
     if returncode != 0:
         if out.exists():
             tail = _tail(log_path, n=120).lower()
@@ -1167,6 +1227,36 @@ def _run_case(
                 fortran_log_path = fallback.get("fortran_log")
                 jax_log_path = fallback.get("jax_log")
                 final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
+                if fortran_h5_path is not None and jax_h5_path is not None:
+                    try:
+                        tolerances = None
+                        tol_path = case_out_dir / "compare_tolerances.json"
+                        if not tol_path.exists():
+                            reduced_tol = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.compare_tolerances.json"
+                            if reduced_tol.exists():
+                                tol_path = reduced_tol
+                        if tol_path.exists():
+                            try:
+                                tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
+                            except json.JSONDecodeError:
+                                tolerances = None
+                        n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(
+                            fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=tolerances
+                        )
+                        mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
+                        (
+                            strict_n_common,
+                            strict_n_bad,
+                            strict_max_abs,
+                            strict_mismatch_keys,
+                        ) = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=None)
+                        strict_mismatch_solver_keys, strict_mismatch_physics_keys = _bucket_mismatch_keys(strict_mismatch_keys)
+                        if fortran_log_path is not None and jax_log_path is not None:
+                            print_signals, print_total, print_missing = _compute_print_parity(
+                                fortran_log=Path(fortran_log_path), jax_log=Path(jax_log_path)
+                            )
+                    except Exception:  # noqa: BLE001
+                        pass
                 break
             new_res = _scale_resolution_in_place(dst_input, factor=0.5)
             if new_res == final_res:
@@ -1256,6 +1346,36 @@ def _run_case(
                 fortran_log_path = fallback.get("fortran_log")
                 jax_log_path = fallback.get("jax_log")
                 final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
+                if fortran_h5_path is not None and jax_h5_path is not None:
+                    try:
+                        tolerances = None
+                        tol_path = case_out_dir / "compare_tolerances.json"
+                        if not tol_path.exists():
+                            reduced_tol = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.compare_tolerances.json"
+                            if reduced_tol.exists():
+                                tol_path = reduced_tol
+                        if tol_path.exists():
+                            try:
+                                tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
+                            except json.JSONDecodeError:
+                                tolerances = None
+                        n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(
+                            fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=tolerances
+                        )
+                        mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
+                        (
+                            strict_n_common,
+                            strict_n_bad,
+                            strict_max_abs,
+                            strict_mismatch_keys,
+                        ) = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=None)
+                        strict_mismatch_solver_keys, strict_mismatch_physics_keys = _bucket_mismatch_keys(strict_mismatch_keys)
+                        if fortran_log_path is not None and jax_log_path is not None:
+                            print_signals, print_total, print_missing = _compute_print_parity(
+                                fortran_log=Path(fortran_log_path), jax_log=Path(jax_log_path)
+                            )
+                    except Exception:  # noqa: BLE001
+                        pass
                 break
             new_res = _scale_resolution_in_place(dst_input, factor=0.5)
             if new_res == final_res:

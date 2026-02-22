@@ -3137,6 +3137,7 @@ def _build_rhsmode1_schur_preconditioner(
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Approximate Schur-complement preconditioner for constraintScheme=2 RHSMode=1 solves."""
     precond_dtype = _precond_dtype()
+    base_xblock_tz_lmax = 0
     species_block_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPECIES_BLOCK_MAX", "").strip()
     try:
         species_block_max = int(species_block_max_env) if species_block_max_env else 1600
@@ -3159,6 +3160,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_kind = "sxblock_tz"
     elif base_kind_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
         base_kind = "xblock_tz"
+    elif base_kind_env in {"xblock_tz_lmax", "xblock_lmax", "xtz_lmax", "xblock_theta_zeta_lmax"}:
+        base_kind = "xblock_tz_lmax"
     elif base_kind_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
         base_kind = "xmg"
     elif base_kind_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
@@ -3172,6 +3175,9 @@ def _build_rhsmode1_schur_preconditioner(
         max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
         local_per_species = int(np.sum(nxi_for_x))
         dke_size = int(local_per_species * int(op.n_theta) * int(op.n_zeta))
+        use_dkes_exb = bool(getattr(op.fblock.exb_theta, "use_dkes_exb_drift", False)) or bool(
+            getattr(op.fblock.exb_zeta, "use_dkes_exb_drift", False)
+        )
         prefer_xmg = False
         if op.fblock.pas is not None and op.fblock.er_xdot is not None and op.fblock.fp is None:
             # PAS+Er runs introduce dense x-coupling via the v3 Er xDot term. For large
@@ -3200,7 +3206,23 @@ def _build_rhsmode1_schur_preconditioner(
             except ValueError:
                 xblock_tz_max = 2000 if op.fblock.pas is not None else 1200
             block_size = int(max_l) * int(op.n_theta) * int(op.n_zeta)
-            if (
+            if op.fblock.pas is not None and op.fblock.fp is None and use_dkes_exb:
+                # DKES-trajectory PAS runs can require a strong angular preconditioner, but using the full
+                # xblock_tz base (max_l * Ntheta*Nzeta dense inverses per x) can be very expensive in both
+                # runtime and peak RSS. Use a truncated-L xblock_tz_lmax base sized by a simple cutoff.
+                dkes_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_DKES_XBLOCK_TZ_MAX", "").strip()
+                try:
+                    dkes_tz_max = int(dkes_tz_max_env) if dkes_tz_max_env else int(xblock_tz_max)
+                except ValueError:
+                    dkes_tz_max = int(xblock_tz_max)
+                nz = int(op.n_theta) * int(op.n_zeta)
+                lmax_use = int(max_l)
+                if nz > 0 and int(dkes_tz_max) > 0:
+                    lmax_use = int(dkes_tz_max // nz)
+                lmax_use = max(1, min(int(max_l), int(lmax_use)))
+                base_xblock_tz_lmax = int(lmax_use)
+                base_kind = "xblock_tz_lmax"
+            elif (
                 op.fblock.pas is not None
                 and int(op.n_theta) > 1
                 and int(op.n_zeta) > 1
@@ -3246,6 +3268,15 @@ def _build_rhsmode1_schur_preconditioner(
         base_precond = _build_rhsmode1_sxblock_tz_preconditioner(op=op)
     elif base_kind == "xblock_tz":
         base_precond = _build_rhsmode1_xblock_tz_preconditioner(op=op)
+    elif base_kind == "xblock_tz_lmax":
+        lmax_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_XBLOCK_TZ_LMAX", "").strip()
+        if not lmax_env:
+            lmax_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX", "").strip()
+        try:
+            lmax_use = int(lmax_env) if lmax_env else int(base_xblock_tz_lmax)
+        except ValueError:
+            lmax_use = int(base_xblock_tz_lmax)
+        base_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(op=op, lmax=int(lmax_use))
     elif base_kind == "xmg":
         base_precond = _build_rhsmode1_xmg_preconditioner(op=op)
     elif base_kind == "pas_hybrid":
@@ -4241,6 +4272,10 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
         # Try a truncated-L (theta,zeta) block per x as a cheaper angular preconditioner.
         lmax_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LMAX", "").strip()
         has_er = op.fblock.er_xdot is not None or op.fblock.er_xidot is not None
+        use_dkes_exb = bool(getattr(op.fblock.exb_theta, "use_dkes_exb_drift", False)) or bool(
+            getattr(op.fblock.exb_zeta, "use_dkes_exb_drift", False)
+        )
+        needs_stronger_l = bool(has_er or use_dkes_exb)
         try:
             if lmax_env:
                 lmax = int(lmax_env)
@@ -4248,16 +4283,16 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
                 # The v3 Er xDot / xiDot terms couple ΔL=±2, so a truncated angular block that
                 # only retains L=0 is often too weak. Default to keeping L=0..2 when these
                 # terms are present (bounded by xblock_max below).
-                lmax = 3 if has_er else 1
+                lmax = 3 if needs_stronger_l else 1
         except ValueError:
-            lmax = 3 if has_er else 1
+            lmax = 3 if needs_stronger_l else 1
         xblock_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_XBLOCK_MAX", "").strip()
         try:
             # PAS+Er runs need larger angular blocks to be effective; allow a larger default.
-            xblock_max_default = 2048 if has_er else 256
+            xblock_max_default = 2048 if needs_stronger_l else 256
             xblock_max = int(xblock_max_env) if xblock_max_env else xblock_max_default
         except ValueError:
-            xblock_max = 2048 if has_er else 256
+            xblock_max = 2048 if needs_stronger_l else 256
         nz = int(op.n_theta) * int(op.n_zeta)
         if nz > 0:
             max_allowed = int(xblock_max // nz)

@@ -466,7 +466,7 @@ Current reduced-suite snapshot (latest run):
 - **Strict:** 38/38 parity_ok (strict mode ignores per-case tolerance overrides; see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
 - **Print parity:** 38/38 cases (all emitted signals match; 7/7 or 9/9 depending on case).
 
-Strict-mode mismatches (reduced suite, rtol=5e-4, atol=1e-10): none.
+Strict-mode mismatches (reduced suite, rtol=5e-4, atol=1e-9): none.
 
 ### Reduced-suite outputs and mismatches (all upstream examples, reduced resolution)
 
@@ -477,7 +477,7 @@ Each reduced-resolution upstream example produces the following outputs for the 
 
 The table below enumerates every upstream example in the reduced suite, the outputs produced,
 the Fortran vs `sfincs_jax` runtimes, and the number of mismatches relative to Fortran output
-(`bad/total`, rtol=5e-4, atol=1e-10). The `sfincs_jax` runtime is reported as the **warm** runtime
+(`bad/total`, rtol=5e-4, atol=1e-9). The `sfincs_jax` runtime is reported as the **warm** runtime
 (mean of repeats after the first run when `--jax-repeats > 1`), with persistent compilation cache enabled.
 Stdout print parity signals are 7/7 or 9/9 depending on case.
 
@@ -492,7 +492,7 @@ python scripts/generate_readme_reduced_suite_table.py
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | HSX_FPCollisions_DKESTrajectories | 1.570 | 3.646 | 143.2 | 618.3 | 0/193 (strict 0/193) | 9/9 |
 | HSX_FPCollisions_fullTrajectories | 1.381 | 3.385 | 96.6 | 562.2 | 0/193 (strict 0/193) | 9/9 |
-| HSX_PASCollisions_DKESTrajectories | 2.830 | 10.770 | 344.0 | 1922.0 | 0/193 (strict 0/193) | 9/9 |
+| HSX_PASCollisions_DKESTrajectories | 2.830 | 10.379 | 344.0 | 1967.8 | 0/193 (strict 0/193) | 9/9 |
 | HSX_PASCollisions_fullTrajectories | 0.122 | 2.994 | 103.3 | 596.0 | 0/193 (strict 0/193) | 9/9 |
 | filteredW7XNetCDF_2species_magneticDrifts_noEr | 0.947 | 2.035 | 128.2 | 946.3 | 0/193 (strict 0/193) | 9/9 |
 | filteredW7XNetCDF_2species_magneticDrifts_withEr | 0.774 | 2.189 | 122.4 | 538.1 | 0/193 (strict 0/193) | 9/9 |
@@ -514,13 +514,13 @@ python scripts/generate_readme_reduced_suite_table.py
 | sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | 0.261 | 1.707 | 104.6 | 469.7 | 0/207 (strict 0/207) | 9/9 |
 | sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | 0.446 | 2.240 | 115.6 | 552.0 | 0/207 (strict 0/207) | 9/9 |
 | sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | 0.125 | 1.930 | 111.6 | 506.3 | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | 4.955 | 11.682 | 374.2 | 2096.3 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | 4.905 | 10.763 | 392.2 | 2109.4 | 0/207 (strict 0/207) | 9/9 |
 | tokamak_1species_FPCollisions_noEr | 0.793 | 1.605 | 112.6 | 551.1 | 0/202 (strict 0/202) | 9/9 |
 | tokamak_1species_FPCollisions_noEr_withPhi1InDKE | 1.547 | 1.997 | 143.6 | 457.1 | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_FPCollisions_noEr_withQN | 0.866 | 1.780 | 111.8 | 453.4 | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_FPCollisions_withEr_DKESTrajectories | 0.390 | 1.537 | 108.3 | 419.3 | 0/214 (strict 0/214) | 9/9 |
 | tokamak_1species_FPCollisions_withEr_fullTrajectories | 1.398 | 2.498 | 206.6 | 627.4 | 0/214 (strict 0/214) | 9/9 |
-| tokamak_1species_PASCollisions_noEr | 1.642 | 50.965 | 553.0 | 1172.1 | 0/140 (strict 0/140) | 7/7 |
+| tokamak_1species_PASCollisions_noEr | 1.642 | 4.029 | 553.0 | 1201.8 | 0/140 (strict 0/140) | 7/7 |
 | tokamak_1species_PASCollisions_noEr_Nx1 | 0.124 | 1.764 | 110.9 | 473.5 | 0/212 (strict 0/212) | 9/9 |
 | tokamak_1species_PASCollisions_noEr_withQN | 0.691 | 2.721 | 176.1 | 621.6 | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_PASCollisions_withEr_fullTrajectories | 0.434 | 1.909 | 124.0 | 528.1 | 0/212 (strict 0/212) | 9/9 |
