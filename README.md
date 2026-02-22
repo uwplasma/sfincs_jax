@@ -492,7 +492,7 @@ python scripts/generate_readme_reduced_suite_table.py
 | --- | ---: | ---: | ---: | ---: | --- | --- |
 | <span title="HSX_FPCollisions_DKESTrajectories">HSX_FP_DKES</span> | 1.570 | 3.291 | 143.2 | 639.8 | 0/193 (strict 0/193) | 9/9 |
 | <span title="HSX_FPCollisions_fullTrajectories">HSX_FP_full</span> | 1.381 | 3.206 | 96.6 | 575.6 | 0/193 (strict 0/193) | 9/9 |
-| <span title="HSX_PASCollisions_DKESTrajectories">HSX_PAS_DKES</span> | 0.031 | 2.971 | 109.4 | 909.1 | 0/193 (strict 0/193) | 9/9 |
+| <span title="HSX_PASCollisions_DKESTrajectories">HSX_PAS_DKES</span> | 3.076 | 180.560 | 344.0 | 778.8 | 38/193 (strict 38/193) | 9/9 |
 | <span title="HSX_PASCollisions_fullTrajectories">HSX_PAS_full</span> | 0.122 | 2.840 | 103.3 | 605.5 | 0/193 (strict 0/193) | 9/9 |
 | <span title="filteredW7XNetCDF_2species_magneticDrifts_noEr">W7XnetCDF_2sp_magDrift_noEr</span> | 0.947 | 1.846 | 128.2 | 960.6 | 0/193 (strict 0/193) | 9/9 |
 | <span title="filteredW7XNetCDF_2species_magneticDrifts_withEr">W7XnetCDF_2sp_magDrift_Er</span> | 0.774 | 2.018 | 122.4 | 550.6 | 0/193 (strict 0/193) | 9/9 |
@@ -507,22 +507,22 @@ python scripts/generate_readme_reduced_suite_table.py
 | <span title="geometryScheme5_3species_loRes">geom5_3sp_loRes</span> | 0.736 | 2.373 | 154.7 | 559.9 | 0/193 (strict 0/193) | 9/9 |
 | inductiveE_noEr | 0.504 | 1.678 | 115.6 | 828.7 | 0/207 (strict 0/207) | 9/9 |
 | <span title="monoenergetic_geometryScheme1">mono_geom1</span> | 0.459 | 1.832 | 128.7 | 1501.0 | 0/203 (strict 0/203) | 9/9 |
-| <span title="monoenergetic_geometryScheme11">mono_geom11</span> | 0.007 | 2.145 | 98.9 | 467.8 | 0/208 (strict 0/208) | 9/9 |
+| <span title="monoenergetic_geometryScheme11">mono_geom11</span> | 3.209 | 67.429 | 205.2 | 551.7 | 2/208 (strict 2/208) | 9/9 |
 | <span title="monoenergetic_geometryScheme5_ASCII">mono_geom5_ASCII</span> | 0.684 | 1.652 | 164.0 | 1434.6 | 0/208 (strict 0/208) | 9/9 |
 | <span title="monoenergetic_geometryScheme5_netCDF">mono_geom5_netCDF</span> | 0.625 | 1.680 | 161.6 | 1427.3 | 0/208 (strict 0/208) | 9/9 |
 | <span title="quick_2species_FPCollisions_noEr">quick_2sp_FP_noEr</span> | 0.433 | 1.652 | 116.4 | 828.6 | 0/207 (strict 0/207) | 9/9 |
 | <span title="sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories">paper3_geom11_FP_2Species_DKES</span> | 0.261 | 1.560 | 104.6 | 472.5 | 0/207 (strict 0/207) | 9/9 |
 | <span title="sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories">paper3_geom11_FP_2Species_full</span> | 0.446 | 2.078 | 115.6 | 533.5 | 0/207 (strict 0/207) | 9/9 |
 | <span title="sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories">paper3_geom11_PAS_2Species_DKES</span> | 0.125 | 1.838 | 111.6 | 826.4 | 0/207 (strict 0/207) | 9/9 |
-| <span title="sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories">paper3_geom11_PAS_2Species_full</span> | 0.037 | 1.672 | 96.9 | 528.6 | 0/207 (strict 0/207) | 9/9 |
+| <span title="sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories">paper3_geom11_PAS_2Species_full</span> | 5.162 | 34.161 | 374.2 | 670.7 | 42/207 (strict 42/207) | 9/9 |
 | <span title="tokamak_1species_FPCollisions_noEr">toka_1sp_FP_noEr</span> | 0.793 | 1.488 | 112.6 | 552.6 | 0/202 (strict 0/202) | 9/9 |
 | <span title="tokamak_1species_FPCollisions_noEr_withPhi1InDKE">toka_1sp_FP_noEr_Phi1</span> | 1.547 | 1.745 | 143.6 | 466.0 | 0/275 (strict 0/275) | 9/9 |
 | <span title="tokamak_1species_FPCollisions_noEr_withQN">toka_1sp_FP_noEr_QN</span> | 0.866 | 1.591 | 111.8 | 456.6 | 0/275 (strict 0/275) | 9/9 |
 | <span title="tokamak_1species_FPCollisions_withEr_DKESTrajectories">toka_1sp_FP_Er_DKES</span> | 0.390 | 1.429 | 108.3 | 423.8 | 0/214 (strict 0/214) | 9/9 |
 | <span title="tokamak_1species_FPCollisions_withEr_fullTrajectories">toka_1sp_FP_Er_full</span> | 1.398 | 2.429 | 206.6 | 631.2 | 0/214 (strict 0/214) | 9/9 |
-| <span title="tokamak_1species_PASCollisions_noEr">toka_1sp_PAS_noEr</span> | 0.037 | 1.600 | 105.6 | 458.4 | 0/212 (strict 0/212) | 9/9 |
+| <span title="tokamak_1species_PASCollisions_noEr">toka_1sp_PAS_noEr</span> | 3.211 | 96.620 | 553.0 | 741.9 | 0/140 (strict 0/140) | 7/7 |
 | <span title="tokamak_1species_PASCollisions_noEr_Nx1">toka_1sp_PAS_noEr_Nx1</span> | 0.124 | 1.667 | 110.9 | 468.3 | 0/212 (strict 0/212) | 9/9 |
-| <span title="tokamak_1species_PASCollisions_noEr_withQN">toka_1sp_PAS_noEr_QN</span> | 0.079 | 1.845 | 104.4 | 671.3 | 0/275 (strict 0/275) | 9/9 |
+| <span title="tokamak_1species_PASCollisions_noEr_withQN">toka_1sp_PAS_noEr_QN</span> | 0.766 | 2.752 | 176.1 | 630.8 | 0/275 (strict 0/275) | 9/9 |
 | <span title="tokamak_1species_PASCollisions_withEr_fullTrajectories">toka_1sp_PAS_Er_full</span> | 0.434 | 1.785 | 124.0 | 532.2 | 0/212 (strict 0/212) | 9/9 |
 | <span title="tokamak_2species_PASCollisions_noEr">toka_2sp_PAS_noEr</span> | 0.074 | 1.610 | 100.6 | 628.0 | 0/212 (strict 0/212) | 9/9 |
 | <span title="tokamak_2species_PASCollisions_withEr_fullTrajectories">toka_2sp_PAS_Er_full</span> | 0.887 | 2.363 | 169.6 | 603.5 | 0/212 (strict 0/212) | 9/9 |
