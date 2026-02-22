@@ -446,6 +446,13 @@ class _TransportXmgPrecondCache:
 
 
 @dataclass(frozen=True)
+class _TransportTzFftPrecondCache:
+    subdiag: jnp.ndarray  # (S,X,T,Z,L) complex (subdiag[0] ignored)
+    diag: jnp.ndarray  # (S,X,T,Z,L) complex
+    superdiag: jnp.ndarray  # (S,X,T,Z,L) complex (superdiag[-1] ignored)
+
+
+@dataclass(frozen=True)
 class _SparseJaxPrecondCache:
     a_sp: object
     d_inv: jnp.ndarray
@@ -484,6 +491,7 @@ _RHSMODE1_XMG_PRECOND_CACHE: dict[tuple[object, ...], _TransportXmgPrecondCache]
 _RHSMODE1_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
+_TRANSPORT_TZFFT_PRECOND_CACHE: dict[tuple[object, ...], _TransportTzFftPrecondCache] = {}
 _RHSMODE23_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 _RHSMODE1_SPARSE_JAX_CACHE: dict[tuple[object, ...], _SparseJaxPrecondCache] = {}
 _RHSMODE1_PAS_TOKAMAK_THETA_CACHE: dict[tuple[object, ...], _PasTokamakThetaPrecondCache] = {}
@@ -1187,6 +1195,178 @@ def _build_rhsmode1_xmg_preconditioner(
         corr_sl = corr_sl.at[:, :, coarse_idx, :, :].set(z_coarse)
         corr = jnp.transpose(corr_sl, (0, 2, 1, 3, 4))
         z_f = z_f + corr
+        tail = r_full[op.f_size :]
+        z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode23_tzfft_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """FFT-based tridiagonal-in-L preconditioner for collisionless RHSMode=2/3 systems.
+
+    This preconditioner targets the collisionless streaming+mirror operator, which couples
+    Legendre modes (L) off-diagonally and is local in x and species. We approximate geometry
+    coefficients by a flux-surface average, diagonalize theta/zeta derivative stencils in
+    Fourier space (valid for periodic finite-difference matrices), and solve an (L,L) tridiagonal
+    system independently for each (k_theta, k_zeta) mode.
+
+    Notes
+    -----
+    - Designed for collisionless / monoenergetic transport solves, where x-multigrid does not help
+      (often Nx=1) and Krylov can stagnate without an angular preconditioner.
+    - Fully JAX-native and differentiable; safe to use under `custom_linear_solve`.
+    """
+    if op.fblock.collisionless is None:
+        return _build_rhsmode23_collision_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+    reg_env = os.environ.get("SFINCS_JAX_TRANSPORT_TZFFT_REG", "").strip()
+    try:
+        reg = float(reg_env) if reg_env else 1e-8
+    except ValueError:
+        reg = 1e-8
+
+    precond_dtype = _precond_dtype()
+    complex_dtype = jnp.complex64 if precond_dtype == jnp.float32 else jnp.complex128
+    cache_key = _transport_precond_cache_key(op, "tzfft") + (float(reg), str(complex_dtype))
+    cached = _TRANSPORT_TZFFT_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        cl = op.fblock.collisionless
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+
+        # Circulant FD derivative matrices: eigenvalues are FFT of first column.
+        ddtheta0 = jnp.asarray(cl.ddtheta[:, 0], dtype=complex_dtype)
+        ddzeta0 = jnp.asarray(cl.ddzeta[:, 0], dtype=complex_dtype)
+        eig_theta = jnp.fft.fft(ddtheta0)  # (T,)
+        eig_zeta = jnp.fft.fft(ddzeta0)  # (Z,)
+
+        factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
+        wsum = jnp.sum(factor)
+        wsum = jnp.where(wsum != 0, wsum, jnp.asarray(1.0, dtype=jnp.float64))
+
+        v_theta = jnp.sum(factor * (op.b_hat_sup_theta / op.b_hat)) / wsum
+        v_zeta = jnp.sum(factor * (op.b_hat_sup_zeta / op.b_hat)) / wsum
+        mirror_geom = op.b_hat_sup_theta * op.db_hat_dtheta + op.b_hat_sup_zeta * op.db_hat_dzeta
+        mirror_base = jnp.sum(factor * (mirror_geom / (2.0 * (op.b_hat**2)))) / wsum
+
+        sqrt_t_over_m = jnp.sqrt(op.t_hat / op.m_hat)  # (S,)
+        v_theta_s = jnp.asarray(sqrt_t_over_m * v_theta, dtype=jnp.float64)  # (S,)
+        v_zeta_s = jnp.asarray(sqrt_t_over_m * v_zeta, dtype=jnp.float64)  # (S,)
+        mirror_factor_s = jnp.asarray(-sqrt_t_over_m * mirror_base, dtype=jnp.float64)  # (S,)
+
+        d_symbol = (
+            v_theta_s[:, None, None] * eig_theta[None, :, None]
+            + v_zeta_s[:, None, None] * eig_zeta[None, None, :]
+        )  # (S,T,Z) complex
+
+        l = jnp.arange(n_l, dtype=jnp.float64)
+        coef_plus = (l + 1.0) / (2.0 * l + 3.0)  # (L,)
+        coef_minus = jnp.where(l > 0, l / (2.0 * l - 1.0), 0.0)  # (L,)
+        coef_mirror_plus = (l + 1.0) * (l + 2.0) / (2.0 * l + 3.0)  # (L,)
+        coef_mirror_minus = jnp.where(l > 1, -l * (l - 1.0) / (2.0 * l - 1.0), 0.0)  # (L,)
+
+        coef_plus_x = op.x[:, None] * coef_plus[None, :]  # (X,L)
+        coef_minus_x = op.x[:, None] * coef_minus[None, :]
+        coef_mirror_plus_x = op.x[:, None] * coef_mirror_plus[None, :]
+        coef_mirror_minus_x = op.x[:, None] * coef_mirror_minus[None, :]
+
+        # Tridiagonal coefficients over L for each (s,x,theta,zeta).
+        sup = d_symbol[:, None, :, :, None] * coef_plus_x[None, :, None, None, :-1]  # (S,X,T,Z,L-1)
+        sup = sup + (mirror_factor_s[:, None, None, None, None] * coef_mirror_plus_x[None, :, None, None, :-1]).astype(complex_dtype)
+        sub = d_symbol[:, None, :, :, None] * coef_minus_x[None, :, None, None, 1:]  # (S,X,T,Z,L-1)
+        sub = sub + (mirror_factor_s[:, None, None, None, None] * coef_mirror_minus_x[None, :, None, None, 1:]).astype(complex_dtype)
+
+        diag_base = jnp.asarray(float(op.fblock.identity_shift) + float(reg), dtype=jnp.float64)
+        diag = jnp.full((n_species, n_x, n_theta, n_zeta, n_l), diag_base, dtype=complex_dtype)
+
+        # Add diagonal collision/exb contributions that are diagonal in L.
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l_arr = jnp.arange(n_l, dtype=jnp.float64)
+            factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * pas.krook)
+            pas_diag = pas.nu_n * pas.nu_d_hat[:, :, None] * factor_l[None, None, :]  # (S,X,L)
+            diag = diag + pas_diag[:, :, None, None, :].astype(complex_dtype)
+
+        if op.fblock.fp is not None:
+            mat = op.fblock.fp.mat  # (S,S,L,X,X)
+            diag_x = jnp.diagonal(mat, axis1=3, axis2=4)  # (S,S,L,X)
+            diag_self = jnp.diagonal(diag_x, axis1=0, axis2=1)  # (L,X,S)
+            diag_self = jnp.transpose(diag_self, (2, 1, 0))  # (S,X,L)
+            diag = diag + diag_self[:, :, None, None, :].astype(complex_dtype)
+
+        # Approximate ExB drift using a flux-surface-averaged coefficient so it is diagonal in Fourier space.
+        if op.fblock.exb_theta is not None or op.fblock.exb_zeta is not None:
+            use_dkes_exb = bool(getattr(op.fblock.exb_theta, "use_dkes_exb_drift", False)) if op.fblock.exb_theta is not None else bool(getattr(op.fblock.exb_zeta, "use_dkes_exb_drift", False))
+            if use_dkes_exb:
+                denom = jnp.asarray(op.fsab_hat2, dtype=jnp.float64)
+                denom = jnp.where(denom != 0, denom, jnp.asarray(1.0, dtype=jnp.float64))
+                coef_theta = (op.d_hat * op.b_hat_sub_zeta) / denom
+                coef_zeta = (op.d_hat * op.b_hat_sub_theta) / denom
+            else:
+                denom = op.b_hat**2
+                coef_theta = (op.d_hat * op.b_hat_sub_zeta) / denom
+                coef_zeta = (op.d_hat * op.b_hat_sub_theta) / denom
+            coef_theta_avg = jnp.sum(factor * coef_theta) / wsum
+            coef_zeta_avg = jnp.sum(factor * coef_zeta) / wsum
+            exb_factor = float(op.alpha) * float(op.delta) * 0.5 * float(op.dphi_hat_dpsi_hat)
+            exb_theta_symbol = jnp.asarray(exb_factor * coef_theta_avg, dtype=complex_dtype) * eig_theta  # (T,)
+            exb_zeta_symbol = jnp.asarray(-exb_factor * coef_zeta_avg, dtype=complex_dtype) * eig_zeta  # (Z,)
+            diag_exb = exb_theta_symbol[None, None, :, None, None] + exb_zeta_symbol[None, None, None, :, None]
+            diag = diag + diag_exb
+
+        # Mask invalid L modes per x.
+        nxi_for_x = op.fblock.collisionless.n_xi_for_x.astype(jnp.int32)
+        active = jnp.arange(n_l, dtype=jnp.int32)[None, :] < nxi_for_x[:, None]  # (X,L)
+        active_s = active[None, :, None, None, :]  # (1,X,1,1,L)
+        diag = jnp.where(active_s, diag, jnp.asarray(1.0 + 0.0j, dtype=complex_dtype))
+        link_active = active[:, :-1] & active[:, 1:]  # (X,L-1)
+        link_s = link_active[None, :, None, None, :]  # (1,X,1,1,L-1)
+        sup = jnp.where(link_s, sup, jnp.asarray(0.0 + 0.0j, dtype=complex_dtype))
+        sub = jnp.where(link_s, sub, jnp.asarray(0.0 + 0.0j, dtype=complex_dtype))
+
+        # `lax.linalg.tridiagonal_solve` expects all three diagonals to have the same shape (..., n),
+        # with subdiag[..., 0] and superdiag[..., -1] ignored.
+        z0 = jnp.zeros((n_species, n_x, n_theta, n_zeta, 1), dtype=complex_dtype)
+        sub_full = jnp.concatenate([z0, sub], axis=-1)  # (..., L)
+        sup_full = jnp.concatenate([sup, z0], axis=-1)  # (..., L)
+
+        cached = _TransportTzFftPrecondCache(
+            subdiag=jnp.asarray(sub_full, dtype=complex_dtype),
+            diag=jnp.asarray(diag, dtype=complex_dtype),
+            superdiag=jnp.asarray(sup_full, dtype=complex_dtype),
+        )
+        _TRANSPORT_TZFFT_PRECOND_CACHE[cache_key] = cached
+
+    subdiag = cached.subdiag
+    diag = cached.diag
+    superdiag = cached.superdiag
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+        f_hat = jnp.fft.fftn(f.astype(complex_dtype), axes=(-2, -1))  # (S,X,L,T,Z)
+        rhs = jnp.transpose(f_hat, (0, 1, 3, 4, 2))  # (S,X,T,Z,L)
+        rhs = rhs[..., None]  # (S,X,T,Z,L,1)
+        sol = jax.lax.linalg.tridiagonal_solve(subdiag, diag, superdiag, rhs)
+        sol = sol[..., 0]  # (S,X,T,Z,L)
+        sol = jnp.transpose(sol, (0, 1, 4, 2, 3))  # (S,X,L,T,Z)
+        z_f = jnp.fft.ifftn(sol, axes=(-2, -1)).real.astype(jnp.float64)
         tail = r_full[op.f_size :]
         z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
         return jnp.asarray(z_full, dtype=jnp.float64)
@@ -9144,9 +9324,15 @@ def solve_v3_transport_matrix_linear_gmres(
         "species_x",
         "xmg",
         "multigrid",
+        "tzfft",
+        "streaming_fft",
+        "stream_fft",
         "sparse_jax",
     }:
-        transport_precond_kind = transport_precond_env
+        if transport_precond_env in {"streaming_fft", "stream_fft"}:
+            transport_precond_kind = "tzfft"
+        else:
+            transport_precond_kind = transport_precond_env
     else:
         transport_precond_kind = "auto"
 
@@ -9216,7 +9402,16 @@ def solve_v3_transport_matrix_linear_gmres(
                 else:
                     strong_precond_kind = "xmg"
             else:
-                if int(op0.total_size) <= block_max:
+                # Collisionless (no PAS/FP) transport systems can be dominated by (theta,zeta)
+                # streaming/mirror coupling, for which x-multigrid provides no benefit (often Nx=1).
+                # Prefer an angular FFT+tridiagonal(L) preconditioner in this branch.
+                no_fp = op0.fblock.fp is None
+                small_x = int(op0.n_x) <= 2
+                multi_angle = int(op0.n_theta) * int(op0.n_zeta) >= 64
+                if no_fp and small_x and multi_angle:
+                    precond_kind = "tzfft"
+                    strong_precond_kind = "tzfft"
+                elif int(op0.total_size) <= block_max:
                     precond_kind = "block"
                     strong_precond_kind = "block"
                 else:
@@ -9229,6 +9424,12 @@ def solve_v3_transport_matrix_linear_gmres(
             preconditioner_full = _build_rhsmode23_xmg_preconditioner(op=op0)
             if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
                 preconditioner_reduced = _build_rhsmode23_xmg_preconditioner(
+                    op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+        elif precond_kind == "tzfft":
+            preconditioner_full = _build_rhsmode23_tzfft_preconditioner(op=op0)
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_tzfft_preconditioner(
                     op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
         elif precond_kind == "sparse_jax":
@@ -9299,6 +9500,12 @@ def solve_v3_transport_matrix_linear_gmres(
                 preconditioner_reduced = _build_rhsmode23_collision_preconditioner(
                     op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
+        if emit is not None and precond_kind_used is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: preconditioner="
+                f"{precond_kind_used} strong={strong_precond_kind}",
+            )
 
     strong_preconditioner_full = None
     strong_preconditioner_reduced = None
@@ -9313,6 +9520,10 @@ def solve_v3_transport_matrix_linear_gmres(
             if strong_preconditioner_reduced is None:
                 if strong_precond_kind in {"xmg", "multigrid"}:
                     strong_preconditioner_reduced = _build_rhsmode23_xmg_preconditioner(
+                        op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+                elif strong_precond_kind == "tzfft":
+                    strong_preconditioner_reduced = _build_rhsmode23_tzfft_preconditioner(
                         op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
                     )
                 elif strong_precond_kind in {"sxblock", "block_sx", "species_x"}:
@@ -9331,6 +9542,8 @@ def solve_v3_transport_matrix_linear_gmres(
         if strong_preconditioner_full is None:
             if strong_precond_kind in {"xmg", "multigrid"}:
                 strong_preconditioner_full = _build_rhsmode23_xmg_preconditioner(op=op0)
+            elif strong_precond_kind == "tzfft":
+                strong_preconditioner_full = _build_rhsmode23_tzfft_preconditioner(op=op0)
             elif strong_precond_kind in {"sxblock", "block_sx", "species_x"}:
                 strong_preconditioner_full = _build_rhsmode23_sxblock_preconditioner(op=op0)
             elif strong_precond_kind in {"block", "block_jacobi"}:
