@@ -3249,7 +3249,7 @@ def _build_rhsmode1_schur_preconditioner(
     elif base_kind == "xmg":
         base_precond = _build_rhsmode1_xmg_preconditioner(op=op)
     elif base_kind == "pas_hybrid":
-        base_precond = _build_rhsmode1_pas_hybrid_preconditioner(op=op)
+        base_precond = _build_rhsmode1_pas_hybrid_preconditioner(op=op, safe=False)
     elif base_kind == "pas_tokamak_theta":
         base_precond = _build_rhsmode1_pas_tokamak_theta_preconditioner(op=op)
     elif base_kind == "theta_zeta":
@@ -4211,6 +4211,7 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
     op: V3FullSystemOperator,
     reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    safe: bool = True,
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Hybrid PAS preconditioner: line solve + coarse-x correction + collision diagonal.
 
@@ -4237,36 +4238,46 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
                 op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
             )
     else:
-        # Try a truncated-L (theta,zeta) block per x as a cheaper angular preconditioner.
-        lmax_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LMAX", "").strip()
-        try:
-            if lmax_env:
-                lmax = int(lmax_env)
-            else:
-                # The v3 Er xDot / xiDot terms couple ΔL=±2, so a truncated angular block that
-                # only retains L=0 is often too weak. Default to keeping L=0..2 when these
-                # terms are present (bounded below by xblock_max below).
-                lmax = 3 if (op.fblock.er_xdot is not None or op.fblock.er_xidot is not None) else 1
-        except ValueError:
-            lmax = 1
-        xblock_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_XBLOCK_MAX", "").strip()
-        try:
-            xblock_max = int(xblock_max_env) if xblock_max_env else 256
-        except ValueError:
-            xblock_max = 256
-        nz = int(op.n_theta) * int(op.n_zeta)
-        if nz > 0:
-            max_allowed = int(xblock_max // nz)
-            if max_allowed > 0:
-                lmax = min(int(lmax), max_allowed)
-        block_size = int(max(0, lmax) * int(op.n_theta) * int(op.n_zeta))
-        if lmax > 0 and block_size > 0 and block_size <= xblock_max:
-            line_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(
-                op=op,
-                lmax=lmax,
-                reduce_full=reduce_full,
-                expand_reduced=expand_reduced,
+        if op.fblock.pas is not None and op.fblock.fp is None and (
+            op.fblock.er_xdot is not None or op.fblock.er_xidot is not None
+        ):
+            # PAS+Er runs can have very weak/near-singular low-L angular blocks (especially
+            # L=0, krook=0), so inverting a truncated-L (theta,zeta) block can be numerically
+            # fragile. Prefer the always-small theta-line-per-(x,L,zeta) blocks instead.
+            line_precond = _build_rhsmode1_theta_line_xdiag_preconditioner(
+                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
             )
+        else:
+            # Try a truncated-L (theta,zeta) block per x as a cheaper angular preconditioner.
+            lmax_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_LMAX", "").strip()
+            try:
+                if lmax_env:
+                    lmax = int(lmax_env)
+                else:
+                    # The v3 Er xDot / xiDot terms couple ΔL=±2, so a truncated angular block that
+                    # only retains L=0 is often too weak. Default to keeping L=0..2 when these
+                    # terms are present (bounded below by xblock_max below).
+                    lmax = 3 if (op.fblock.er_xdot is not None or op.fblock.er_xidot is not None) else 1
+            except ValueError:
+                lmax = 1
+            xblock_max_env = os.environ.get("SFINCS_JAX_PAS_HYBRID_XBLOCK_MAX", "").strip()
+            try:
+                xblock_max = int(xblock_max_env) if xblock_max_env else 256
+            except ValueError:
+                xblock_max = 256
+            nz = int(op.n_theta) * int(op.n_zeta)
+            if nz > 0:
+                max_allowed = int(xblock_max // nz)
+                if max_allowed > 0:
+                    lmax = min(int(lmax), max_allowed)
+            block_size = int(max(0, lmax) * int(op.n_theta) * int(op.n_zeta))
+            if lmax > 0 and block_size > 0 and block_size <= xblock_max:
+                line_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(
+                    op=op,
+                    lmax=lmax,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
+                )
     x_precond: Callable[[jnp.ndarray], jnp.ndarray]
     if op.fblock.pas is not None and op.fblock.fp is None and op.fblock.er_xdot is not None:
         # The dense ddx matrices in the v3 Er xDot operator can be extremely ill-conditioned.
@@ -4285,7 +4296,11 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
         precond = _compose_preconditioners(line_precond, precond)
     precond = _compose_preconditioners(precond, collision_precond)
     # Guard against non-finite preconditioned vectors causing GMRES breakdown.
-    return _safe_preconditioner(precond)
+    #
+    # Note: this wrapper is *nonlinear* (nan_to_num/clip). Avoid it when the preconditioner is
+    # used as a building block inside other Krylov preconditioners (e.g. Schur), where linearity
+    # matters for stability.
+    return _safe_preconditioner(precond) if bool(safe) else precond
 
 
 def _build_rhsmode1_species_block_preconditioner(
@@ -9409,10 +9424,22 @@ def solve_v3_transport_matrix_linear_gmres(
 
         results: list[dict[str, object]] = []
         with _transport_parallel_worker_env(int(parallel_workers)):
-            with concurrent.futures.ProcessPoolExecutor(max_workers=int(parallel_workers)) as pool:
-                futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
-                for fut in concurrent.futures.as_completed(futures):
-                    results.append(fut.result())
+            try:
+                with concurrent.futures.ProcessPoolExecutor(max_workers=int(parallel_workers)) as pool:
+                    futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
+                    for fut in concurrent.futures.as_completed(futures):
+                        results.append(fut.result())
+            except (PermissionError, NotImplementedError, OSError) as exc:
+                # Some platforms / sandboxed environments cannot create process pools due to
+                # missing semaphore support or restricted sysconf calls. Fall back to a safe,
+                # sequential execution path to preserve correctness.
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_transport_matrix_linear_gmres: process parallelism unavailable "
+                        f"({type(exc).__name__}: {exc}); falling back to sequential whichRHS",
+                    )
+                results = [_transport_parallel_worker(payload) for payload in payloads]
 
         s = int(op0.n_species)
         diag_pf = np.zeros((s, n), dtype=np.float64)
