@@ -452,6 +452,14 @@ class _TransportXmgPrecondCache:
 
 
 @dataclass(frozen=True)
+class _XUpwindPrecondCache:
+    """Cached factors for a simple x-upwind (bidiagonal) preconditioner."""
+
+    diag: jnp.ndarray  # (S, X, L)
+    sub: jnp.ndarray  # (S, X, L) with sub[:, 0, :] ignored
+
+
+@dataclass(frozen=True)
 class _TransportTzFftPrecondCache:
     subdiag: jnp.ndarray  # (S,X,T,Z,L) complex (subdiag[0] ignored)
     diag: jnp.ndarray  # (S,X,T,Z,L) complex
@@ -496,6 +504,7 @@ _TRANSPORT_SXBLOCK_LR_PRECOND_CACHE: dict[tuple[object, ...], _LowRankXBlockPrec
 _RHSMODE1_SXBLOCK_LR_PRECOND_CACHE: dict[tuple[object, ...], _LowRankXBlockPrecondCache] = {}
 _TRANSPORT_XMG_PRECOND_CACHE: dict[tuple[object, ...], _TransportXmgPrecondCache] = {}
 _RHSMODE1_XMG_PRECOND_CACHE: dict[tuple[object, ...], _TransportXmgPrecondCache] = {}
+_RHSMODE1_XUPWIND_PRECOND_CACHE: dict[tuple[object, ...], _XUpwindPrecondCache] = {}
 _RHSMODE1_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _TRANSPORT_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
@@ -1093,6 +1102,12 @@ def _build_rhsmode1_xmg_preconditioner(
     Uses the same coarse-x correction as the transport x-multigrid preconditioner,
     but applies it to the RHSMode=1 operator (including PAS/FP diagonals).
     """
+    # For PAS+Er systems, inverting dense x-blocks derived from ddx matrices can be
+    # extremely ill-conditioned. Use a stable x-upwind solve instead.
+    if op.fblock.pas is not None and op.fblock.fp is None and op.fblock.er_xdot is not None:
+        return _build_rhsmode1_xupwind_preconditioner(
+            op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+        )
     stride_env = os.environ.get("SFINCS_JAX_RHSMODE1_XMG_STRIDE", "").strip()
     if not stride_env:
         stride_env = os.environ.get("SFINCS_JAX_XMG_STRIDE", "").strip()
@@ -1388,6 +1403,160 @@ def _build_rhsmode1_xmg_preconditioner(
     return _apply_reduced
 
 
+def _build_rhsmode1_xupwind_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """x-upwind preconditioner for PAS+Er RHSMode=1 systems.
+
+    Motivation
+    ----------
+    The v3 Er xDot operator applies a dense ddx matvec that is effectively a first-order
+    advection operator in x. On realistic x grids, explicitly inverting dense x blocks
+    (as done by the xmg coarse correction) can be extremely ill-conditioned and produce
+    enormous preconditioner factors.
+
+    This preconditioner instead approximates the xDot coupling using a *bidiagonal*
+    first-order upwind operator on the x grid, yielding a stable forward-substitution
+    solve along x for each (species, L, theta, zeta) slice.
+
+    Notes
+    -----
+    - Designed for PAS-only systems with Er xDot enabled (FP absent).
+    - Uses a flux-surface RMS magnitude of xdotFactor to obtain a single scalar strength,
+      and ignores the θ/ζ sign variation and ΔL=±2 couplings (handled elsewhere).
+    - Fully JAX-native and differentiable; safe under `custom_linear_solve`.
+    """
+    if op.fblock.fp is not None or op.fblock.er_xdot is None:
+        return _build_rhsmode1_xmg_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+    precond_dtype = _precond_dtype()
+    cache_key = _rhsmode1_precond_cache_key(op, "xupwind")
+    cached = _RHSMODE1_XUPWIND_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        f_shape = op.fblock.f_shape
+        n_species, n_x, n_l, _, _ = f_shape
+
+        diag_base = np.zeros((n_species, n_x, n_l), dtype=np.float64)
+        if float(op.fblock.identity_shift) != 0.0:
+            diag_base = diag_base + float(op.fblock.identity_shift)
+
+        if op.fblock.pas is not None:
+            pas = op.fblock.pas
+            l_arr = np.arange(n_l, dtype=np.float64)
+            factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
+            pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
+            diag_base = diag_base + pas_diag
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-10
+        except ValueError:
+            reg = 1e-10
+        reg_l0 = float(reg)
+        if op.fblock.pas is not None and op.fblock.fp is None and op.fblock.er_xdot is not None:
+            reg_l0 = max(reg_l0, 1.0)
+        reg_by_l = np.full((n_l,), float(reg), dtype=np.float64)
+        if n_l > 0:
+            reg_by_l[0] = reg_l0
+        diag_base = diag_base + reg_by_l[None, None, :]
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        active = (np.arange(n_l, dtype=np.int32)[None, :] < nxi_for_x[:, None])  # (X,L)
+        for ix in range(n_x):
+            for l in range(n_l):
+                if not bool(active[ix, l]):
+                    diag_base[:, ix, l] = 1.0
+
+        # Flux-surface RMS magnitude of xdotFactor.
+        xdot_rms = 0.0
+        try:
+            er = op.fblock.er_xdot
+            alpha = float(np.asarray(er.alpha, dtype=np.float64).reshape(()))
+            delta = float(np.asarray(er.delta, dtype=np.float64).reshape(()))
+            dphi = float(np.asarray(er.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+            d_hat = np.asarray(er.d_hat, dtype=np.float64)
+            b_hat = np.asarray(er.b_hat, dtype=np.float64)
+            b_sub_theta = np.asarray(er.b_hat_sub_theta, dtype=np.float64)
+            b_sub_zeta = np.asarray(er.b_hat_sub_zeta, dtype=np.float64)
+            db_dtheta = np.asarray(er.db_hat_dtheta, dtype=np.float64)
+            db_dzeta = np.asarray(er.db_hat_dzeta, dtype=np.float64)
+            factor0 = -(alpha * delta * dphi) / 4.0
+            xdot_factor = factor0 * d_hat / (b_hat**3) * (b_sub_theta * db_dzeta - b_sub_zeta * db_dtheta)
+            theta_w = np.asarray(op.theta_weights, dtype=np.float64)
+            zeta_w = np.asarray(op.zeta_weights, dtype=np.float64)
+            d_hat_full = np.asarray(op.d_hat, dtype=np.float64)
+            fs_factor = (theta_w[:, None] * zeta_w[None, :]) / d_hat_full
+            fs_sum = float(np.sum(fs_factor))
+            if fs_sum > 0.0:
+                xdot_rms = float(np.sqrt(np.sum(fs_factor * (xdot_factor * xdot_factor)) / fs_sum))
+        except Exception:  # noqa: BLE001
+            xdot_rms = 0.0
+
+        l_vec = np.arange(n_l, dtype=np.float64)
+        denom = (2.0 * l_vec + 3.0) * (2.0 * l_vec - 1.0)
+        diag_coef = 2.0 * (3.0 * l_vec * l_vec + 3.0 * l_vec - 2.0) / denom
+        c_l = diag_coef * float(xdot_rms)  # (L,)
+
+        x_arr = np.asarray(op.fblock.er_xdot.x, dtype=np.float64)
+        dx = np.diff(x_arr)
+        x_over_dx = np.zeros((n_x,), dtype=np.float64)
+        if n_x >= 2:
+            x_over_dx[1:] = x_arr[1:] / np.where(dx != 0, dx, 1.0)
+
+        # Lower-bidiagonal coefficients for (diag + c_l * x * d/dx_upwind).
+        sub = -(x_over_dx[:, None] * c_l[None, :])  # (X,L), sub[0]=0
+        diag = diag_base + (x_over_dx[:, None] * c_l[None, :])  # (S,X,L)
+        sub = np.broadcast_to(sub[None, :, :], (n_species, n_x, n_l)).copy()
+
+        # Inactive (x,L): identity.
+        for ix in range(n_x):
+            for l in range(n_l):
+                if not bool(active[ix, l]):
+                    sub[:, ix, l] = 0.0
+
+        cached = _XUpwindPrecondCache(
+            diag=jnp.asarray(diag, dtype=precond_dtype),
+            sub=jnp.asarray(sub, dtype=precond_dtype),
+        )
+        _RHSMODE1_XUPWIND_PRECOND_CACHE[cache_key] = cached
+
+    diag = cached.diag  # (S,X,L)
+    sub = cached.sub  # (S,X,L)
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        f = r_full[: op.f_size].reshape(op.fblock.f_shape)  # (S,X,L,T,Z)
+        f_x = jnp.transpose(f, (1, 0, 2, 3, 4))  # (X,S,L,T,Z)
+        diag_x = jnp.transpose(diag, (1, 0, 2))  # (X,S,L)
+        sub_x = jnp.transpose(sub, (1, 0, 2))  # (X,S,L)
+
+        def _step(z_prev, inp):
+            rhs_i, diag_i, sub_i = inp
+            diag_b = diag_i[..., None, None]
+            sub_b = sub_i[..., None, None]
+            z_i = (rhs_i - sub_b * z_prev) / diag_b
+            return z_i, z_i
+
+        z0 = jnp.zeros_like(f_x[0])
+        _, z_x = jax.lax.scan(_step, z0, (f_x, diag_x, sub_x))
+        z_f = jnp.transpose(z_x, (1, 0, 2, 3, 4))  # (S,X,L,T,Z)
+        tail = r_full[op.f_size :]
+        z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 def _build_rhsmode23_tzfft_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -1416,6 +1585,16 @@ def _build_rhsmode23_tzfft_preconditioner(
         reg = float(reg_env) if reg_env else 1e-8
     except ValueError:
         reg = 1e-8
+    # For PAS+Er systems (RHSMode=1 constraintScheme=2 branch), the L=0 diagonal can be
+    # exactly zero (krook=0) while the streaming/mirror operator has a constant-mode
+    # nullspace in Fourier space. A very small `reg` can therefore produce enormous
+    # tridiagonal-solve factors and cause Krylov divergence when this preconditioner is
+    # used as part of a PAS hybrid. Use a more conservative L=0 lift in that branch.
+    reg_l0 = float(reg)
+    if op.fblock.pas is not None and op.fblock.fp is None and (
+        op.fblock.er_xdot is not None or op.fblock.er_xidot is not None
+    ):
+        reg_l0 = max(reg_l0, 1.0)
 
     precond_dtype = _precond_dtype()
     complex_dtype = jnp.complex64 if precond_dtype == jnp.float32 else jnp.complex128
@@ -1473,6 +1652,8 @@ def _build_rhsmode23_tzfft_preconditioner(
 
         diag_base = jnp.asarray(float(op.fblock.identity_shift) + float(reg), dtype=jnp.float64)
         diag = jnp.full((n_species, n_x, n_theta, n_zeta, n_l), diag_base, dtype=complex_dtype)
+        if n_l > 0 and reg_l0 != float(reg):
+            diag = diag.at[..., 0].add(jnp.asarray(reg_l0 - float(reg), dtype=complex_dtype))
 
         # Add diagonal collision/exb contributions that are diagonal in L.
         if op.fblock.pas is not None:
@@ -2166,7 +2347,16 @@ def _build_rhsmode1_collision_preconditioner(
                 reg = float(reg_env) if reg_env else 1e-10
             except ValueError:
                 reg = 1e-10
-            inv_diag_f = 1.0 / (diag + float(reg))
+            reg_l0 = float(reg)
+            if op.fblock.pas is not None and op.fblock.fp is None and op.fblock.er_xdot is not None:
+                # PAS+Er runs can have an exactly-zero L=0 diagonal (krook=0), so a tiny
+                # regularization produces enormous inverse diagonals and can destabilize
+                # left-preconditioned Krylov residual norms.
+                reg_l0 = max(reg_l0, 1.0)
+            reg_by_l = jnp.full((n_l,), jnp.asarray(float(reg), dtype=jnp.float64))
+            if n_l > 0:
+                reg_by_l = reg_by_l.at[0].set(jnp.asarray(reg_l0, dtype=jnp.float64))
+            inv_diag_f = 1.0 / (diag + reg_by_l[None, None, :, None, None])
             cached = _TransportPrecondCache(inv_diag_f=jnp.asarray(inv_diag_f, dtype=precond_dtype))
             _RHSMODE1_DIAG_PRECOND_CACHE[cache_key] = cached
 
@@ -2993,7 +3183,7 @@ def _build_rhsmode1_schur_preconditioner(
                 xmg_min = 50000
             prefer_xmg = int(op.total_size) >= xmg_min
         if prefer_xmg:
-            base_kind = "pas_hybrid"
+            base_kind = "xmg"
         elif int(op.n_theta) > 1 or int(op.n_zeta) > 1:
             tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
             try:
@@ -4077,14 +4267,20 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
                 reduce_full=reduce_full,
                 expand_reduced=expand_reduced,
             )
-    xmg_precond = _build_rhsmode1_xmg_preconditioner(
-        op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
-    )
+    x_precond: Callable[[jnp.ndarray], jnp.ndarray]
+    if op.fblock.pas is not None and op.fblock.fp is None and op.fblock.er_xdot is not None:
+        # The dense ddx matrices in the v3 Er xDot operator can be extremely ill-conditioned.
+        # Prefer a stable x-upwind solve over explicit dense x-block inversions.
+        x_precond = _build_rhsmode1_xupwind_preconditioner(
+            op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+        )
+    else:
+        x_precond = _build_rhsmode1_xmg_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
     collision_precond = _build_rhsmode1_collision_preconditioner(
         op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
     )
     # Apply angular/line preconditioner (if enabled), then x-coarse correction, then collision smoothing.
-    precond = xmg_precond
+    precond = x_precond
     if line_precond is not None:
         precond = _compose_preconditioners(line_precond, precond)
     precond = _compose_preconditioners(precond, collision_precond)

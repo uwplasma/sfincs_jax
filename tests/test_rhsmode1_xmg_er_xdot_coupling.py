@@ -32,20 +32,10 @@ def test_rhsmode1_xmg_includes_er_xdot_x_coupling_for_pas(monkeypatch) -> None:
 
     monkeypatch.setenv("SFINCS_JAX_RHSMODE1_XMG_STRIDE", "2")
     vd._build_rhsmode1_xmg_preconditioner(op=op)
-    cache_key = vd._rhsmode1_precond_cache_key(op, "xmg_2")
-    cached = vd._RHSMODE1_XMG_PRECOND_CACHE[cache_key]
 
-    mat = np.asarray(cached.coarse_inv)[0, 0]  # (Xc,Xc) for s=0, L=0
-    offdiag = mat - np.diag(np.diag(mat))
-    assert float(np.max(np.abs(offdiag))) > 0.0
-
-    # PAS+Er xDot includes ΔL=±2 couplings; the xmg preconditioner should build a small
-    # coupled (L,x) coarse inverse for low-L modes so these couplings are captured.
-    assert cached.coarse_inv_lblock is not None
-    lblock = int(cached.lblock)
-    assert lblock >= 3
-    coarse_idx = np.asarray(cached.coarse_idx)
-    n_coarse = int(coarse_idx.shape[0])
-    mat_lblock = np.asarray(cached.coarse_inv_lblock)[0]  # (Lb*Xc,Lb*Xc)
-    sub02 = mat_lblock[0:n_coarse, 2 * n_coarse : 3 * n_coarse]
-    assert float(np.max(np.abs(sub02))) > 0.0
+    # For PAS+Er, the xmg builder should route to the stable x-upwind preconditioner
+    # (dense ddx-based x-block inversions can be extremely ill-conditioned).
+    cache_key = vd._rhsmode1_precond_cache_key(op, "xupwind")
+    cached = vd._RHSMODE1_XUPWIND_PRECOND_CACHE[cache_key]
+    sub = np.asarray(cached.sub)[0, :, 0]  # (X,) for s=0, L=0
+    assert float(np.max(np.abs(sub[1:]))) > 0.0
