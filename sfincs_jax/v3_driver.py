@@ -106,7 +106,10 @@ def _precond_dtype(size_hint: int | None = None) -> jnp.dtype:
             thresh_default = 20000
         else:
             thresh_env = os.environ.get("SFINCS_JAX_PRECOND_FP32_MIN_BLOCK", "").strip()
-            thresh_default = 500000
+            # Default parity-first: keep block preconditioner factors in float64 unless
+            # they are truly huge. Using fp32 factors can break convergence in stiff
+            # PAS/DKES systems.
+            thresh_default = 5000000
         try:
             thresh = int(thresh_env) if thresh_env else thresh_default
         except ValueError:
@@ -2289,9 +2292,13 @@ def _build_rhsmode1_schur_preconditioner(
                 tz_max = 128
             xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
             try:
-                xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+                # PAS systems can be much harder to solve if the Schur base preconditioner
+                # does not include (theta,zeta) coupling. Allow a somewhat larger xblock_tz
+                # base by default for PAS to preserve parity on 3D constrained systems.
+                default_xblock_tz_max = 2000 if op.fblock.pas is not None else 1200
+                xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else default_xblock_tz_max
             except ValueError:
-                xblock_tz_max = 1200
+                xblock_tz_max = 2000 if op.fblock.pas is not None else 1200
             if (
                 op.fblock.pas is not None
                 and int(op.n_theta) > 1
@@ -3167,6 +3174,23 @@ def _compose_preconditioners(
     return _apply
 
 
+def _safe_preconditioner(
+    precond: Callable[[jnp.ndarray], jnp.ndarray],
+    *,
+    clip: float = 1.0e100,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    clip_val = float(clip)
+
+    def _apply(v: jnp.ndarray) -> jnp.ndarray:
+        out = precond(v)
+        out = jnp.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+        if clip_val > 0:
+            out = jnp.clip(out, -clip_val, clip_val)
+        return out
+
+    return _apply
+
+
 def _build_rhsmode1_pas_hybrid_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -3227,7 +3251,9 @@ def _build_rhsmode1_pas_hybrid_preconditioner(
     precond = xmg_precond
     if line_precond is not None:
         precond = _compose_preconditioners(line_precond, precond)
-    return _compose_preconditioners(precond, collision_precond)
+    precond = _compose_preconditioners(precond, collision_precond)
+    # Guard against non-finite preconditioned vectors causing GMRES breakdown.
+    return _safe_preconditioner(precond)
 
 
 def _build_rhsmode1_species_block_preconditioner(
@@ -3619,11 +3645,13 @@ def _build_rhsmode1_xblock_tz_preconditioner(
             z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
         return jnp.asarray(z_full, dtype=jnp.float64)
 
+    apply_full_safe = _safe_preconditioner(_apply_full)
+
     if reduce_full is None or expand_reduced is None:
-        return _apply_full
+        return apply_full_safe
 
     def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
-        z_full = _apply_full(expand_reduced(r_reduced))
+        z_full = apply_full_safe(expand_reduced(r_reduced))
         return reduce_full(z_full)
 
     return _apply_reduced
@@ -3755,11 +3783,13 @@ def _build_rhsmode1_xblock_tz_lmax_preconditioner(
             z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
         return jnp.asarray(z_full, dtype=jnp.float64)
 
+    apply_full_safe = _safe_preconditioner(_apply_full)
+
     if reduce_full is None or expand_reduced is None:
-        return _apply_full
+        return apply_full_safe
 
     def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
-        z_full = _apply_full(expand_reduced(r_reduced))
+        z_full = apply_full_safe(expand_reduced(r_reduced))
         return reduce_full(z_full)
 
     return _apply_reduced
@@ -4152,11 +4182,15 @@ def solve_v3_full_system_linear_gmres(
         )
     )
     if op.fblock.pas is not None and use_dkes:
-        restart = max(int(restart), 200)
+        # DKES trajectory runs can be stiff, but very large GMRES restart/maxiter
+        # values are expensive in JAX (memory + orthogonalization cost). Prefer
+        # moderate defaults and let stage2/strong-preconditioner fallbacks handle
+        # the truly difficult cases.
+        restart = max(int(restart), 80)
         if maxiter is None:
-            maxiter = 2000
+            maxiter = 600
         else:
-            maxiter = max(int(maxiter), 2000)
+            maxiter = max(int(maxiter), 600)
     use_active_dof_mode = False
     if active_env in {"1", "true", "yes", "on"}:
         use_active_dof_mode = True
@@ -4172,8 +4206,11 @@ def solve_v3_full_system_linear_gmres(
         use_active_dof_mode = has_reduced_modes and (
             int(op.rhs_mode) in {2, 3} or (int(op.rhs_mode) == 1 and (not bool(op.include_phi1)))
         )
-        if use_active_dof_mode and int(op.rhs_mode) == 1 and op.fblock.pas is not None and use_dkes:
-            # DKES trajectories are sensitive to active-DOF reduction for PAS runs.
+        # Upstream v3 always drops inactive (x,L) modes when `Nxi_for_x` truncation is
+        # active. Keep this reduction on for DKES trajectories as well to match v3's
+        # linear-system size/conditioning and avoid singular inactive rows.
+        dkes_active_env = os.environ.get("SFINCS_JAX_ACTIVE_DOF_DKES", "").strip().lower()
+        if dkes_active_env in {"0", "false", "no", "off"} and use_active_dof_mode and int(op.rhs_mode) == 1 and op.fblock.pas is not None and use_dkes:
             use_active_dof_mode = False
 
     precond_opts = nml.group("preconditionerOptions")
@@ -4422,8 +4459,6 @@ def solve_v3_full_system_linear_gmres(
                     except ValueError:
                         schur_auto_min = 2500
                     schur_auto = int(op.total_size) >= schur_auto_min
-                if op.fblock.pas is not None and use_dkes:
-                    schur_auto = False
                 phys_params = nml.group("physicsParameters")
                 er_val = phys_params.get("ER", phys_params.get("Er", phys_params.get("er", None)))
                 er_abs = 0.0
@@ -4564,6 +4599,7 @@ def solve_v3_full_system_linear_gmres(
         and int(op.constraint_scheme) == 2
         and op.fblock.pas is not None
         and use_dkes
+        and rhs1_precond_kind in {None, "collision", "point", "xmg"}
     ):
         # DKES-trajectory PAS runs can stagnate with weak preconditioners; use the
         # PAS hybrid (line + x-coarse) preconditioner by default. The PAS probe can
@@ -5224,10 +5260,15 @@ def solve_v3_full_system_linear_gmres(
             and rhs1_precond_enabled
             and solve_method_kind not in {"dense", "dense_ksp"}
             and op.fblock.pas is not None
+            and (not use_dkes)
         ):
             probe_key = _rhsmode1_precond_cache_key(op, "pas_probe_decision")
             use_collision_precond = _RHSMODE1_PAS_PRECOND_PROBE_CACHE.get(probe_key)
-            if use_collision_precond is None and int(op.total_size) >= int(pas_build_max):
+            if (
+                use_collision_precond is None
+                and int(op.total_size) >= int(pas_build_max)
+                and not (int(op.constraint_scheme) == 2 and int(op.extra_size) > 0)
+            ):
                 use_collision_precond = True
                 _RHSMODE1_PAS_PRECOND_PROBE_CACHE[probe_key] = True
                 if emit is not None:
@@ -6728,6 +6769,7 @@ def solve_v3_full_system_linear_gmres(
                             r1 = jnp.linalg.norm(mv(x0_recycled) - rhs)
                             if jnp.isfinite(r1) and (not jnp.isfinite(r0) or float(r1) < float(r0)):
                                 x0 = x0_recycled
+            _mark("rhs1_krylov_solve_start")
             result, residual_vec = _solve_linear_with_residual(
                 matvec_fn=mv,
                 b_vec=rhs,
@@ -6740,6 +6782,7 @@ def solve_v3_full_system_linear_gmres(
                 solve_method_val=solve_method,
                 precond_side=gmres_precond_side,
             )
+            _mark("rhs1_krylov_solve_done")
             ksp_matvec = mv
             ksp_b = rhs
             ksp_precond = preconditioner_full
@@ -6749,6 +6792,7 @@ def solve_v3_full_system_linear_gmres(
             if preconditioner_full is not None and (not _gmres_result_is_finite(result)):
                 if emit is not None:
                     emit(0, "solve_v3_full_system_linear_gmres: preconditioned GMRES returned non-finite result; retrying without preconditioner")
+                _mark("rhs1_krylov_solve_retry_start")
                 result, residual_vec = _solve_linear_with_residual(
                     matvec_fn=mv,
                     b_vec=rhs,
@@ -6761,6 +6805,7 @@ def solve_v3_full_system_linear_gmres(
                     solve_method_val=solve_method,
                     precond_side=gmres_precond_side,
                 )
+                _mark("rhs1_krylov_solve_retry_done")
                 ksp_matvec = mv
                 ksp_b = rhs
                 ksp_precond = None
