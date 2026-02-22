@@ -453,6 +453,26 @@ class _SparseJaxPrecondCache:
     sweeps: int
 
 
+@dataclass(frozen=True)
+class _PasTokamakThetaPrecondCache:
+    """Cached factors for PAS tokamak (Nzeta=1) theta/L block-tridiagonal preconditioning.
+
+    Notes
+    -----
+    This cache stores the block-Thomas factors for the (theta,L) coupling within each x.
+    It is intended for the stiff PAS-only tokamak branch (no drift terms) where x-coupling
+    is absent and theta-line blocks over the full x-grid are prohibitively large.
+    """
+
+    inv_a: jnp.ndarray  # (S, X, L, T, T) approximate inverse of effective diagonal blocks
+    g: jnp.ndarray  # (S, X, L-1, T, T) block-Thomas factors for back-substitution
+    c_stream: jnp.ndarray  # (X, L) scalar streaming coupling (row L from col L-1)
+    c_mirror: jnp.ndarray  # (X, L) scalar mirror coupling (row L from col L-1)
+    m_theta: jnp.ndarray  # (S, T, T) row-scaled theta-derivative matrix
+    mirror_factor: jnp.ndarray  # (S, T) diagonal mirror factor in theta
+    mask_active: jnp.ndarray  # (X, L) float mask (1.0 active, 0.0 inactive)
+
+
 _TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_DIAG_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
@@ -466,6 +486,7 @@ _TRANSPORT_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecon
 _TRANSPORT_SXBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
 _RHSMODE23_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 _RHSMODE1_SPARSE_JAX_CACHE: dict[tuple[object, ...], _SparseJaxPrecondCache] = {}
+_RHSMODE1_PAS_TOKAMAK_THETA_CACHE: dict[tuple[object, ...], _PasTokamakThetaPrecondCache] = {}
 
 
 def _precond_chunk_cols(total_size: int, n_cols: int) -> int:
@@ -1169,6 +1190,239 @@ def _build_rhsmode1_xmg_preconditioner(
         tail = r_full[op.f_size :]
         z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
         return jnp.asarray(z_full, dtype=jnp.float64)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _pas_tokamak_theta_preconditioner_applicable(op: V3FullSystemOperator) -> bool:
+    """Return True if the PAS tokamak theta/L preconditioner is applicable."""
+    if int(op.rhs_mode) != 1:
+        return False
+    if int(op.n_zeta) != 1:
+        return False
+    fb = op.fblock
+    if fb.collisionless is None or fb.pas is None:
+        return False
+    # This preconditioner assumes no drift/X coupling terms.
+    if (
+        fb.exb_theta is not None
+        or fb.exb_zeta is not None
+        or fb.magdrift_theta is not None
+        or fb.magdrift_zeta is not None
+        or fb.magdrift_xidot is not None
+        or fb.er_xdot is not None
+        or fb.er_xidot is not None
+        or fb.fp is not None
+        or fb.fp_phi1 is not None
+    ):
+        return False
+    return True
+
+
+def _build_rhsmode1_pas_tokamak_theta_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """PAS tokamak (Nzeta=1) theta/L block-tridiagonal preconditioner for RHSMode=1.
+
+    This preconditioner targets the stiff PAS-only tokamak branch (no drifts) where:
+    - x-coupling is absent (block-diagonal in x),
+    - the dominant couplings are along theta (streaming) and in Legendre index L,
+    - full theta-line blocks over *all* x are far too large to factor.
+
+    Approach:
+    - Build a block-tridiagonal-in-L approximation for each x with blocks of size Ntheta.
+    - Precompute block-Thomas factors (approximate inverses of effective diagonal blocks + G factors).
+    - Apply in O(Nx * Nxi * Ntheta^2) per Krylov iteration.
+    """
+    if not _pas_tokamak_theta_preconditioner_applicable(op):
+        return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+    cache_key = _rhsmode1_precond_cache_key(op, "pas_tokamak_theta")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_PAS_TOKAMAK_THETA_CACHE.get(cache_key)
+    if cached is None:
+        cl = op.fblock.collisionless
+        pas = op.fblock.pas
+        assert cl is not None
+        assert pas is not None
+
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+
+        if n_theta <= 1:
+            return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+        x = np.asarray(cl.x, dtype=np.float64)  # (X,)
+        ddtheta = np.asarray(cl.ddtheta, dtype=np.float64)  # (T,T)
+        b_hat = np.asarray(cl.b_hat, dtype=np.float64)[:, 0]  # (T,)
+        b_sup_theta = np.asarray(cl.b_hat_sup_theta, dtype=np.float64)[:, 0]  # (T,)
+        b_sup_zeta = np.asarray(cl.b_hat_sup_zeta, dtype=np.float64)[:, 0]  # (T,)
+        db_dtheta = np.asarray(cl.db_hat_dtheta, dtype=np.float64)[:, 0]  # (T,)
+        db_dzeta = np.asarray(cl.db_hat_dzeta, dtype=np.float64)[:, 0]  # (T,)
+        t_hats = np.asarray(cl.t_hats, dtype=np.float64)  # (S,)
+        m_hats = np.asarray(cl.m_hats, dtype=np.float64)  # (S,)
+        nxi_for_x = np.asarray(cl.n_xi_for_x, dtype=np.int32)  # (X,)
+
+        l_arr = np.arange(n_l, dtype=np.float64)
+        coef_plus = (l_arr + 1.0) / (2.0 * l_arr + 3.0)
+        coef_minus = np.where(l_arr > 0, l_arr / (2.0 * l_arr - 1.0), 0.0)
+        coef_mirror_plus = (l_arr + 1.0) * (l_arr + 2.0) / (2.0 * l_arr + 3.0)
+        coef_mirror_minus = np.where(l_arr > 1, -l_arr * (l_arr - 1.0) / (2.0 * l_arr - 1.0), 0.0)
+
+        coef_plus_x = x[:, None] * coef_plus[None, :]  # (X,L)
+        coef_minus_x = x[:, None] * coef_minus[None, :]  # (X,L)
+        coef_mirror_plus_x = x[:, None] * coef_mirror_plus[None, :]  # (X,L)
+        coef_mirror_minus_x = x[:, None] * coef_mirror_minus[None, :]  # (X,L)
+
+        mask_active = (np.arange(n_l, dtype=np.int32)[None, :] < nxi_for_x[:, None]).astype(np.float64)  # (X,L)
+        mask_plus = (mask_active[:, :-1] * mask_active[:, 1:]).astype(np.float64)  # (X,L-1)
+        mask_minus = mask_plus  # same condition, just shifted in index
+
+        b_stream = np.zeros((n_x, n_l), dtype=np.float64)
+        b_mirror = np.zeros((n_x, n_l), dtype=np.float64)
+        c_stream = np.zeros((n_x, n_l), dtype=np.float64)
+        c_mirror = np.zeros((n_x, n_l), dtype=np.float64)
+        b_stream[:, :-1] = coef_plus_x[:, :-1] * mask_plus
+        b_mirror[:, :-1] = coef_mirror_plus_x[:, :-1] * mask_plus
+        c_stream[:, 1:] = coef_minus_x[:, 1:] * mask_minus
+        c_mirror[:, 1:] = coef_mirror_minus_x[:, 1:] * mask_minus
+
+        # Preconditioner regularization:
+        # Use a larger default than the tiny block-preconditioner reg to avoid catastrophic
+        # scaling in the L=0 nullspace mode of pitch-angle scattering.
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_TOKAMAK_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-6
+        except ValueError:
+            reg = 1e-6
+        reg = max(float(reg), 1e-12)
+
+        pas_coef = np.asarray(pas.coef, dtype=np.float64)  # (S,X,L)
+        diag_vals = pas_coef + reg  # (S,X,L)
+        # For inactive (x,L), decouple by setting diag=1 and couplings=0 (handled above).
+        diag_vals = diag_vals * mask_active[None, :, :] + (1.0 - mask_active)[None, :, :]
+        # Heuristic: lift the L=0 diagonal to a comparable scale as L=1 to reduce precond blow-up.
+        if n_l >= 2:
+            diag_vals[:, :, 0] = np.maximum(diag_vals[:, :, 0], 0.5 * diag_vals[:, :, 1])
+
+        # Geometry-dependent base matrices (per species).
+        v_theta = b_sup_theta / b_hat  # (T,)
+        sqrt_t_over_m = np.sqrt(t_hats / m_hats)  # (S,)
+        v_theta_s = sqrt_t_over_m[:, None] * v_theta[None, :]  # (S,T)
+        m_theta = v_theta_s[:, :, None] * ddtheta[None, :, :]  # (S,T,T) row-scaled ddtheta
+
+        mirror_geom = b_sup_theta * db_dtheta + b_sup_zeta * db_dzeta  # (T,)
+        mirror_factor = -sqrt_t_over_m[:, None] * mirror_geom[None, :] / (2.0 * (b_hat * b_hat)[None, :])  # (S,T)
+        mirror_diag = np.zeros((n_species, n_theta, n_theta), dtype=np.float64)
+        for s in range(n_species):
+            mirror_diag[s, :, :] = np.diag(mirror_factor[s, :])
+
+        eye_t = np.eye(n_theta, dtype=np.float64)
+        inv_a = np.zeros((n_species, n_x, n_l, n_theta, n_theta), dtype=np.float64)
+        g = np.zeros((n_species, n_x, max(0, n_l - 1), n_theta, n_theta), dtype=np.float64)
+
+        for s in range(n_species):
+            m_s = m_theta[s, :, :]
+            mir_s = mirror_diag[s, :, :]
+            for ix in range(n_x):
+                g_prev = np.zeros((n_theta, n_theta), dtype=np.float64)
+                for l in range(n_l):
+                    a_diag = float(diag_vals[s, ix, l])
+                    # Effective diagonal block A_l = a_diag*I - C_l @ G_{l-1}
+                    if l == 0:
+                        a_eff = a_diag * eye_t
+                    else:
+                        c_l = float(c_stream[ix, l]) * m_s + float(c_mirror[ix, l]) * mir_s
+                        a_eff = a_diag * eye_t - c_l @ g_prev
+                    try:
+                        a_inv = np.linalg.inv(a_eff)
+                    except np.linalg.LinAlgError:
+                        a_inv = np.linalg.pinv(a_eff, rcond=1e-12)
+                    if not np.all(np.isfinite(a_inv)):
+                        a_inv = np.linalg.pinv(a_eff, rcond=1e-12)
+                    inv_a[s, ix, l, :, :] = a_inv
+                    if l < n_l - 1:
+                        b_l = float(b_stream[ix, l]) * m_s + float(b_mirror[ix, l]) * mir_s
+                        g_l = a_inv @ b_l
+                        g[s, ix, l, :, :] = g_l
+                        g_prev = g_l
+
+        cached = _PasTokamakThetaPrecondCache(
+            inv_a=jnp.asarray(inv_a, dtype=precond_dtype),
+            g=jnp.asarray(g, dtype=precond_dtype),
+            c_stream=jnp.asarray(c_stream, dtype=precond_dtype),
+            c_mirror=jnp.asarray(c_mirror, dtype=precond_dtype),
+            m_theta=jnp.asarray(m_theta, dtype=precond_dtype),
+            mirror_factor=jnp.asarray(mirror_factor, dtype=precond_dtype),
+            mask_active=jnp.asarray(mask_active, dtype=precond_dtype),
+        )
+        _RHSMODE1_PAS_TOKAMAK_THETA_CACHE[cache_key] = cached
+
+    inv_a = cached.inv_a
+    g = cached.g
+    c_stream = cached.c_stream
+    c_mirror = cached.c_mirror
+    m_theta = cached.m_theta
+    mirror_factor = cached.mirror_factor
+    mask_active = cached.mask_active
+
+    f_shape = op.fblock.f_shape  # (S,X,L,T,Z)
+    assert int(f_shape[-1]) == 1
+    n_l = int(f_shape[2])
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        f_rhs = r_full[: op.f_size].reshape(f_shape)[:, :, :, :, 0]  # (S,X,L,T)
+        f_rhs = jnp.asarray(f_rhs, dtype=precond_dtype)
+        f_rhs = f_rhs * mask_active[None, :, :, None]
+
+        inv_a_l = jnp.transpose(inv_a, (2, 0, 1, 3, 4))  # (L,S,X,T,T)
+        rhs_l = jnp.transpose(f_rhs, (2, 0, 1, 3))  # (L,S,X,T)
+        c_stream_l = jnp.transpose(c_stream, (1, 0))  # (L,X)
+        c_mirror_l = jnp.transpose(c_mirror, (1, 0))  # (L,X)
+
+        def _fwd_step(d_prev: jnp.ndarray, inputs):
+            inv_block, rhs_block, cs, cm = inputs  # inv: (S,X,T,T), rhs: (S,X,T), cs/cm: (X,)
+            corr_stream = jnp.einsum("sij,sxj->sxi", m_theta, d_prev) * cs[None, :, None]
+            corr_mirror = (mirror_factor[:, None, :] * d_prev) * cm[None, :, None]
+            rhs_eff = rhs_block - (corr_stream + corr_mirror)
+            d = jnp.einsum("sxij,sxj->sxi", inv_block, rhs_eff)
+            return d, d
+
+        d0 = jnp.zeros((int(op.n_species), int(op.n_x), int(op.n_theta)), dtype=precond_dtype)
+        _, d_out = jax.lax.scan(_fwd_step, d0, (inv_a_l, rhs_l, c_stream_l, c_mirror_l))
+        d_all = jnp.transpose(d_out, (1, 2, 0, 3))  # (S,X,L,T)
+
+        g_l = jnp.transpose(g, (2, 0, 1, 3, 4))  # (L-1,S,X,T,T)
+        d_rev = jnp.transpose(d_all[:, :, :-1, :], (2, 0, 1, 3))[::-1]  # (L-1,S,X,T)
+        g_rev = g_l[::-1]
+        f_last = d_all[:, :, -1, :]  # (S,X,T)
+
+        def _bwd_step(f_next: jnp.ndarray, inputs):
+            g_block, d_block = inputs
+            f_l = d_block - jnp.einsum("sxij,sxj->sxi", g_block, f_next)
+            return f_l, f_l
+
+        _, f_rev = jax.lax.scan(_bwd_step, f_last, (g_rev, d_rev))
+        f_prefix = f_rev[::-1]  # (L-1,S,X,T)
+        f_all = jnp.concatenate([jnp.transpose(f_prefix, (1, 2, 0, 3)), f_last[:, :, None, :]], axis=2)  # (S,X,L,T)
+        f_all = f_all * mask_active[None, :, :, None]
+        f_all = jnp.asarray(f_all, dtype=jnp.float64)
+        z_f = f_all[:, :, :, :, None].reshape((-1,))
+        tail = r_full[op.f_size :]
+        return jnp.concatenate([z_f, tail], axis=0)
 
     if reduce_full is None or expand_reduced is None:
         return _apply_full
@@ -2277,6 +2531,10 @@ def _build_rhsmode1_schur_preconditioner(
         base_kind = "sxblock_tz"
     elif base_kind_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
         base_kind = "xblock_tz"
+    elif base_kind_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
+        base_kind = "xmg"
+    elif base_kind_env in {"pas_tokamak_theta", "pas_tokamak", "pas_theta", "tokamak_theta", "theta_tokamak"}:
+        base_kind = "pas_tokamak_theta"
     elif base_kind_env in {"point", "block", "jacobi"}:
         base_kind = "point"
     else:
@@ -2299,6 +2557,7 @@ def _build_rhsmode1_schur_preconditioner(
                 xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else default_xblock_tz_max
             except ValueError:
                 xblock_tz_max = 2000 if op.fblock.pas is not None else 1200
+            block_size = int(max_l) * int(op.n_theta) * int(op.n_zeta)
             if (
                 op.fblock.pas is not None
                 and int(op.n_theta) > 1
@@ -2310,9 +2569,8 @@ def _build_rhsmode1_schur_preconditioner(
             elif (
                 op.fblock.pas is not None
                 and int(op.n_theta) > 1
-                and int(op.n_zeta) > 1
                 and xblock_tz_max > 0
-                and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+                and block_size <= xblock_tz_max
             ):
                 base_kind = "xblock_tz"
             elif (
@@ -2322,6 +2580,10 @@ def _build_rhsmode1_schur_preconditioner(
                 and int(op.n_theta) * int(op.n_zeta) <= tz_max
             ):
                 base_kind = "theta_zeta"
+            elif op.fblock.pas is not None and _pas_tokamak_theta_preconditioner_applicable(op):
+                # Tokamak-like PAS-only systems have no x-coupling; use an inexpensive
+                # block-tridiagonal-in-L theta preconditioner rather than enormous theta-line blocks.
+                base_kind = "pas_tokamak_theta"
             else:
                 base_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
         else:
@@ -2342,6 +2604,10 @@ def _build_rhsmode1_schur_preconditioner(
         base_precond = _build_rhsmode1_sxblock_tz_preconditioner(op=op)
     elif base_kind == "xblock_tz":
         base_precond = _build_rhsmode1_xblock_tz_preconditioner(op=op)
+    elif base_kind == "xmg":
+        base_precond = _build_rhsmode1_xmg_preconditioner(op=op)
+    elif base_kind == "pas_tokamak_theta":
+        base_precond = _build_rhsmode1_pas_tokamak_theta_preconditioner(op=op)
     elif base_kind == "theta_zeta":
         base_precond = _build_rhsmode1_theta_zeta_preconditioner(op=op)
     elif base_kind == "zeta_line":
@@ -2474,7 +2740,11 @@ def _build_rhsmode1_schur_preconditioner(
         schur_full_max = 256
     use_full_schur = bool(schur_mode == "full" or (schur_mode == "auto" and n_constraints <= schur_full_max))
 
-    inv_diag_cached = _schur_inv_diag()
+    # Building the diagonal Schur approximation currently requires constructing the
+    # (theta,zeta)-point block preconditioner cache, which can be expensive for large
+    # active DOF systems. If we are going to use the dense (small) Schur complement,
+    # skip the diagonal approximation entirely.
+    inv_diag_cached = _schur_inv_diag() if (not use_full_schur) else None
     inv_schur_cached = _schur_inv_full() if use_full_schur else None
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
@@ -2491,7 +2761,7 @@ def _build_rhsmode1_schur_preconditioner(
         if use_full_schur and inv_schur_cached is not None:
             x_e = inv_schur_cached @ (c_y - r_e)
         else:
-            inv_diag = inv_diag_cached.reshape((-1,))
+            inv_diag = inv_diag_cached.reshape((-1,)) if inv_diag_cached is not None else jnp.zeros_like(r_e)
             x_e = (c_y - r_e) * inv_diag
         f_corr = _constraint_scheme2_inject_source(op, x_e.reshape((n_species, n_x)))
         r_corr = r_f - f_corr
@@ -4502,7 +4772,13 @@ def solve_v3_full_system_linear_gmres(
                         ):
                             rhs1_precond_kind = "xblock_tz"
                         else:
-                            rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                            # For tokamak-like constrained PAS systems, theta-line blocks can be
+                            # enormous at high (Nx,Nxi) resolution. Prefer Schur+x-coarsening
+                            # preconditioning for robustness and performance.
+                            if op.fblock.pas is not None:
+                                rhs1_precond_kind = "schur"
+                            else:
+                                rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                     else:
                         if op.fblock.pas is not None and int(op.total_size) >= pas_xmg_min:
                             rhs1_precond_kind = "xmg"
