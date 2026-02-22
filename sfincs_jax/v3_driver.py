@@ -1149,6 +1149,50 @@ def _build_rhsmode1_xmg_preconditioner(
             factor_l = 0.5 * (l_arr * (l_arr + 1.0) + 2.0 * float(pas.krook))
             pas_diag = float(pas.nu_n) * np.asarray(pas.nu_d_hat, dtype=np.float64)[:, :, None] * factor_l[None, None, :]
 
+        # Optional dense-x coupling from the v3 Er xDot term.
+        #
+        # For PAS-only systems, the collision operator is diagonal in x, so the x-multigrid
+        # preconditioner is otherwise ineffective. The Er xDot term introduces dense ddx
+        # coupling in x (see `apply_er_xdot_v3`), so we include a flux-surface-averaged
+        # diagonal-in-L approximation here to recover useful x-coupling at low cost.
+        xdot_x_part: np.ndarray | None = None  # (Xc,Xc)
+        xdot_coef_l: np.ndarray | None = None  # (L,)
+        if op.fblock.er_xdot is not None:
+            try:
+                er = op.fblock.er_xdot
+                alpha = float(np.asarray(er.alpha, dtype=np.float64).reshape(()))
+                delta = float(np.asarray(er.delta, dtype=np.float64).reshape(()))
+                dphi = float(np.asarray(er.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+                d_hat = np.asarray(er.d_hat, dtype=np.float64)  # (T,Z)
+                b_hat = np.asarray(er.b_hat, dtype=np.float64)  # (T,Z)
+                b_sub_theta = np.asarray(er.b_hat_sub_theta, dtype=np.float64)  # (T,Z)
+                b_sub_zeta = np.asarray(er.b_hat_sub_zeta, dtype=np.float64)  # (T,Z)
+                db_dtheta = np.asarray(er.db_hat_dtheta, dtype=np.float64)  # (T,Z)
+                db_dzeta = np.asarray(er.db_hat_dzeta, dtype=np.float64)  # (T,Z)
+
+                factor0 = -(alpha * delta * dphi) / 4.0  # adjointFactor=1
+                xdot_factor = factor0 * d_hat / (b_hat**3) * (b_sub_theta * db_dzeta - b_sub_zeta * db_dtheta)  # (T,Z)
+
+                theta_w = np.asarray(op.theta_weights, dtype=np.float64)
+                zeta_w = np.asarray(op.zeta_weights, dtype=np.float64)
+                d_hat_full = np.asarray(op.d_hat, dtype=np.float64)
+                fs_factor = (theta_w[:, None] * zeta_w[None, :]) / d_hat_full  # (T,Z), un-normalized
+                xdot_avg = float(np.sum(fs_factor * xdot_factor))
+
+                l_vec = np.arange(n_l, dtype=np.float64)
+                denom = (2.0 * l_vec + 3.0) * (2.0 * l_vec - 1.0)
+                diag_coef = 2.0 * (3.0 * l_vec * l_vec + 3.0 * l_vec - 2.0) / denom
+                # force0RadialCurrentInEquilibrium=.true. (v3 default) -> xdotFactor2 = 0.
+                xdot_coef_l = diag_coef * xdot_avg
+
+                x_arr = np.asarray(er.x, dtype=np.float64)
+                ddx = np.asarray(er.ddx_plus, dtype=np.float64)
+                x_part = x_arr[:, None] * ddx  # (X,X)
+                xdot_x_part = x_part[np.ix_(coarse_idx, coarse_idx)]
+            except Exception:  # noqa: BLE001
+                xdot_x_part = None
+                xdot_coef_l = None
+
         for s in range(n_species):
             for l in range(n_l):
                 if mat_fp is None:
@@ -1160,6 +1204,8 @@ def _build_rhsmode1_xmg_preconditioner(
                 if pas_diag is not None:
                     diag_vec += pas_diag[s, coarse_idx, l]
                 a[np.arange(n_coarse), np.arange(n_coarse)] += diag_vec
+                if xdot_x_part is not None and xdot_coef_l is not None:
+                    a = a + float(xdot_coef_l[l]) * xdot_x_part
 
                 inactive_x = np.where(nxi_for_x <= l)[0]
                 if inactive_x.size:
@@ -2807,7 +2853,19 @@ def _build_rhsmode1_schur_preconditioner(
         max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
         local_per_species = int(np.sum(nxi_for_x))
         dke_size = int(local_per_species * int(op.n_theta) * int(op.n_zeta))
-        if int(op.n_theta) > 1 or int(op.n_zeta) > 1:
+        prefer_xmg = False
+        if op.fblock.pas is not None and op.fblock.er_xdot is not None and op.fblock.fp is None:
+            # PAS+Er runs introduce dense x-coupling via the v3 Er xDot term. For large
+            # systems, prefer an x-coarse base preconditioner over large angular blocks.
+            xmg_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XMG_MIN", "").strip()
+            try:
+                xmg_min = int(xmg_min_env) if xmg_min_env else 50000
+            except ValueError:
+                xmg_min = 50000
+            prefer_xmg = int(op.total_size) >= xmg_min
+        if prefer_xmg:
+            base_kind = "xmg"
+        elif int(op.n_theta) > 1 or int(op.n_zeta) > 1:
             tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
             try:
                 tz_max = int(tz_max_env) if tz_max_env else 128
@@ -2906,6 +2964,91 @@ def _build_rhsmode1_schur_preconditioner(
     n_species = int(op.n_species)
     n_x = int(op.n_x)
     n_constraints = int(extra_size)
+    ix0 = _ix_min(bool(op.point_at_x0))
+
+    theta_w = np.asarray(op.theta_weights, dtype=np.float64)
+    zeta_w = np.asarray(op.zeta_weights, dtype=np.float64)
+    d_hat = np.asarray(op.d_hat, dtype=np.float64)
+    fs_sum = float(np.sum((theta_w[:, None] * zeta_w[None, :]) / d_hat))
+
+    # Large PAS+Er constrained systems are expensive to precondition if we assemble a dense Schur
+    # complement via repeated full-size preconditioner applications. For the important PAS branch,
+    # the constraint operator only touches the L=0 flux-surface average, so we can approximate
+    # S^{-1} using an x-coupled L=0 block (dense in x) built from collisions + averaged Er xDot.
+    #
+    # This is a "block-Schur with x-coarsening" strategy:
+    # - Base preconditioner: x-coarse (xmg) for the kinetic block M^{-1}.
+    # - Schur inverse approximation: (1/<1>) * M_L0, where <1>=fs_sum and M_L0 is an x-coupled
+    #   approximation to the L=0 rows/cols.
+    xschur_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_XMG_MIN", "").strip()
+    try:
+        xschur_min = int(xschur_min_env) if xschur_min_env else 50000
+    except ValueError:
+        xschur_min = 50000
+    use_xschur = bool(
+        base_kind == "xmg"
+        and op.fblock.pas is not None
+        and op.fblock.fp is None
+        and op.fblock.er_xdot is not None
+        and int(op.total_size) >= xschur_min
+        and fs_sum != 0.0
+    )
+    a0_cached: jnp.ndarray | None = None  # (S,X,X)
+    if use_xschur:
+        try:
+            er = op.fblock.er_xdot
+            assert er is not None
+            pas = op.fblock.pas
+            assert pas is not None
+
+            alpha = float(np.asarray(er.alpha, dtype=np.float64).reshape(()))
+            delta = float(np.asarray(er.delta, dtype=np.float64).reshape(()))
+            dphi = float(np.asarray(er.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+            d_hat_er = np.asarray(er.d_hat, dtype=np.float64)  # (T,Z)
+            b_hat = np.asarray(er.b_hat, dtype=np.float64)  # (T,Z)
+            b_sub_theta = np.asarray(er.b_hat_sub_theta, dtype=np.float64)  # (T,Z)
+            b_sub_zeta = np.asarray(er.b_hat_sub_zeta, dtype=np.float64)  # (T,Z)
+            db_dtheta = np.asarray(er.db_hat_dtheta, dtype=np.float64)  # (T,Z)
+            db_dzeta = np.asarray(er.db_hat_dzeta, dtype=np.float64)  # (T,Z)
+
+            factor0 = -(alpha * delta * dphi) / 4.0
+            xdot_factor = factor0 * d_hat_er / (b_hat**3) * (b_sub_theta * db_dzeta - b_sub_zeta * db_dtheta)  # (T,Z)
+            fs_factor = (theta_w[:, None] * zeta_w[None, :]) / d_hat  # (T,Z)
+            xdot_avg = float(np.sum(fs_factor * xdot_factor))
+
+            # Diagonal-in-L coefficient for L=0 from `apply_er_xdot_v3`:
+            # diag_coef = 2*(3L^2+3L-2) / ((2L+3)(2L-1)) -> 4/3 at L=0.
+            diag_coef0 = 4.0 / 3.0
+            xdot_coef0 = diag_coef0 * xdot_avg
+
+            x_arr = np.asarray(er.x, dtype=np.float64)
+            ddx = np.asarray(er.ddx_plus, dtype=np.float64)
+            x_part = x_arr[:, None] * ddx  # (X,X)
+
+            pas_coef = np.asarray(pas.coef, dtype=np.float64)  # (S,X,L)
+            identity_shift = float(op.fblock.identity_shift)
+            reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_XMG_REG", "").strip()
+            try:
+                reg = float(reg_env) if reg_env else 1e-12
+            except ValueError:
+                reg = 1e-12
+
+            nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+            inactive_x = np.where(nxi_for_x <= 0)[0]
+            a0 = np.zeros((n_species, n_x, n_x), dtype=np.float64)
+            for s in range(n_species):
+                a = np.array(xdot_coef0 * x_part, dtype=np.float64, copy=True)
+                a[np.arange(n_x), np.arange(n_x)] += identity_shift + reg + pas_coef[s, :, 0]
+                if inactive_x.size:
+                    for ix in inactive_x:
+                        a[ix, :] = 0.0
+                        a[:, ix] = 0.0
+                        a[ix, ix] = 1.0
+                a0[s, :, :] = a
+            a0_cached = jnp.asarray(a0, dtype=precond_dtype)
+        except Exception:  # noqa: BLE001
+            use_xschur = False
+            a0_cached = None
 
     def _schur_inv_diag() -> jnp.ndarray:
         cache_key = _rhsmode1_precond_cache_key(op, "schur_diag")
@@ -3009,8 +3152,12 @@ def _build_rhsmode1_schur_preconditioner(
     # (theta,zeta)-point block preconditioner cache, which can be expensive for large
     # active DOF systems. If we are going to use the dense (small) Schur complement,
     # skip the diagonal approximation entirely.
-    inv_diag_cached = _schur_inv_diag() if (not use_full_schur) else None
-    inv_schur_cached = _schur_inv_full() if use_full_schur else None
+    if use_xschur:
+        inv_diag_cached = None
+        inv_schur_cached = None
+    else:
+        inv_diag_cached = _schur_inv_diag() if (not use_full_schur) else None
+        inv_schur_cached = _schur_inv_full() if use_full_schur else None
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
@@ -3023,7 +3170,15 @@ def _build_rhsmode1_schur_preconditioner(
         y_f = y_full[:f_size]
         f = y_f.reshape(op.fblock.f_shape)
         c_y = _constraint_scheme2_source_from_f(op, f).reshape((-1,))
-        if use_full_schur and inv_schur_cached is not None:
+        if use_xschur and a0_cached is not None:
+            y = (c_y - r_e).reshape((n_species, n_x))
+            x_e = jnp.einsum("sij,sj->si", a0_cached, y) / float(fs_sum)
+            if ix0 > 0:
+                # For pointAtX0, the x=0 constraint row is `y_extra = src`, so treat it as identity.
+                r_e_mat = r_e.reshape((n_species, n_x))
+                x_e = x_e.at[:, :ix0].set(r_e_mat[:, :ix0])
+            x_e = x_e.reshape((-1,))
+        elif use_full_schur and inv_schur_cached is not None:
             x_e = inv_schur_cached @ (c_y - r_e)
         else:
             inv_diag = inv_diag_cached.reshape((-1,)) if inv_diag_cached is not None else jnp.zeros_like(r_e)
@@ -5046,7 +5201,10 @@ def solve_v3_full_system_linear_gmres(
                                 rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                     else:
                         if op.fblock.pas is not None and int(op.total_size) >= pas_xmg_min:
-                            rhs1_precond_kind = "xmg"
+                            # Constrained PAS+Er systems can be stiff in x due to the v3 Er xDot term.
+                            # Use a Schur preconditioner (with an x-coarse base) to preserve constraints
+                            # while capturing the dominant dense-x coupling.
+                            rhs1_precond_kind = "schur"
                         elif op.fblock.pas is not None and int(op.total_size) >= pas_xdiag_min:
                             lmax_use = xblock_tz_lmax_override if xblock_tz_lmax_override > 0 else lmax_auto
                             if lmax_use >= 1:
