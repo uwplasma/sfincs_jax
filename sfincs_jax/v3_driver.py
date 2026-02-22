@@ -10123,11 +10123,17 @@ def solve_v3_transport_matrix_linear_gmres(
                             )
                 if _needs_retry(res_reduced, target_rhs) and int(rhs_mode) == 3:
                     polish_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RATIO", "").strip()
+                    polish_abs_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_ABS", "").strip()
                     try:
                         polish_ratio = float(polish_ratio_env) if polish_ratio_env else 2.0
                     except ValueError:
                         polish_ratio = 2.0
-                    if _residual_value(res_reduced) > target_rhs * polish_ratio:
+                    try:
+                        polish_abs = float(polish_abs_env) if polish_abs_env else 1e-8
+                    except ValueError:
+                        polish_abs = 1e-8
+                    polish_thresh = max(target_rhs * polish_ratio, polish_abs)
+                    if _residual_value(res_reduced) > polish_thresh:
                         polish_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RESTART", "").strip()
                         polish_maxiter_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_MAXITER", "").strip()
                         base_restart = max(int(gmres_restart), 40)
@@ -10147,7 +10153,8 @@ def solve_v3_transport_matrix_linear_gmres(
                             emit(
                                 0,
                                 "solve_v3_transport_matrix_linear_gmres: polish solve for RHSMode=3 "
-                                f"(residual={float(res_reduced.residual_norm):.3e} > {polish_ratio:.1f}x target, "
+                                f"(residual={float(res_reduced.residual_norm):.3e} > "
+                                f"max({polish_ratio:.1f}x target, {polish_abs:.1e}), "
                                 f"restart={polish_restart} maxiter={polish_maxiter})",
                             )
                         res_polish = _solve_linear(
@@ -10415,11 +10422,17 @@ def solve_v3_transport_matrix_linear_gmres(
                             )
                 if _needs_retry(res, target_rhs) and int(rhs_mode) == 3:
                     polish_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RATIO", "").strip()
+                    polish_abs_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_ABS", "").strip()
                     try:
                         polish_ratio = float(polish_ratio_env) if polish_ratio_env else 2.0
                     except ValueError:
                         polish_ratio = 2.0
-                    if _residual_value(res) > target_rhs * polish_ratio:
+                    try:
+                        polish_abs = float(polish_abs_env) if polish_abs_env else 1e-8
+                    except ValueError:
+                        polish_abs = 1e-8
+                    polish_thresh = max(target_rhs * polish_ratio, polish_abs)
+                    if _residual_value(res) > polish_thresh:
                         polish_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_RESTART", "").strip()
                         polish_maxiter_env = os.environ.get("SFINCS_JAX_TRANSPORT_POLISH_MAXITER", "").strip()
                         base_restart = max(int(gmres_restart), 40)
@@ -10439,7 +10452,8 @@ def solve_v3_transport_matrix_linear_gmres(
                             emit(
                                 0,
                                 "solve_v3_transport_matrix_linear_gmres: polish solve for RHSMode=3 "
-                                f"(residual={float(res.residual_norm):.3e} > {polish_ratio:.1f}x target, "
+                                f"(residual={float(res.residual_norm):.3e} > "
+                                f"max({polish_ratio:.1f}x target, {polish_abs:.1e}), "
                                 f"restart={polish_restart} maxiter={polish_maxiter})",
                             )
                         res_polish, residual_polish = _solve_linear_with_residual(
