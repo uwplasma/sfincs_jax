@@ -230,6 +230,31 @@ _RHSMODE1_PAS_PRECOND_PROBE_CACHE: dict[tuple[object, ...], bool] = {}
 
 
 @dataclass(frozen=True)
+class _RHSMode1ILUBlockPrecondCache:
+    """Sparse ILU block-Jacobi preconditioner cache for PAS-like operators.
+
+    Notes
+    -----
+    We store per-(species,x) ILU factors in a padded row format so the apply path
+    is JAX-compatible (no SciPy calls inside GMRES iterations). Factorization is
+    done once per operator signature using SciPy's `spilu` (PETSc-like ILU).
+    """
+
+    inv_perm_r_sx: jnp.ndarray  # (S,X,N)
+    perm_c_sx: jnp.ndarray  # (S,X,N)
+    lower_idx_sx: jnp.ndarray  # (S,X,N,Klower) int32
+    lower_val_sx: jnp.ndarray  # (S,X,N,Klower)
+    upper_idx_sx: jnp.ndarray  # (S,X,N,Kupper) int32
+    upper_val_sx: jnp.ndarray  # (S,X,N,Kupper)
+    upper_diag_sx: jnp.ndarray  # (S,X,N)
+    extra_idx_jnp: jnp.ndarray
+    extra_inv_jnp: jnp.ndarray | None
+
+
+_RHSMODE1_PRECOND_ILU_CACHE: dict[tuple[object, ...], _RHSMode1ILUBlockPrecondCache] = {}
+
+
+@dataclass(frozen=True)
 class _RHSMode1ThetaLineDiagXCache:
     block_inv: jnp.ndarray
     block_idx: jnp.ndarray
@@ -557,6 +582,72 @@ def _matvec_submatrix(
     if len(blocks) == 1:
         return blocks[0]
     return np.concatenate(blocks, axis=0)
+
+
+def _inverse_permutation(p: np.ndarray) -> np.ndarray:
+    """Return the inverse permutation of `p` (0-based)."""
+    p = np.asarray(p, dtype=np.int32).reshape((-1,))
+    inv = np.empty_like(p)
+    inv[p] = np.arange(int(p.size), dtype=np.int32)
+    return inv
+
+
+def _triangular_solve_lower_padded(
+    *,
+    lower_idx: jnp.ndarray,
+    lower_val: jnp.ndarray,
+    b: jnp.ndarray,
+) -> jnp.ndarray:
+    """Solve a unit-lower-triangular system `L y = b` in JAX.
+
+    `lower_idx`/`lower_val` define the strictly-lower entries per row, padded with -1.
+    """
+    b = jnp.asarray(b, dtype=jnp.float64)
+    n = int(b.shape[0])
+    y = jnp.zeros_like(b)
+    if lower_idx.size == 0:
+        return b
+
+    def _body(i, y_vec):
+        idx = lower_idx[i]
+        val = lower_val[i]
+        mask = idx >= 0
+        idx_safe = jnp.where(mask, idx, 0)
+        contrib = jnp.sum(jnp.where(mask, val * y_vec[idx_safe], 0.0))
+        yi = b[i] - contrib
+        return y_vec.at[i].set(yi, unique_indices=True)
+
+    return jax.lax.fori_loop(0, n, _body, y)
+
+
+def _triangular_solve_upper_padded(
+    *,
+    upper_idx: jnp.ndarray,
+    upper_val: jnp.ndarray,
+    upper_diag: jnp.ndarray,
+    b: jnp.ndarray,
+) -> jnp.ndarray:
+    """Solve an upper-triangular system `U x = b` in JAX.
+
+    `upper_idx`/`upper_val` define strictly-upper entries per row, padded with -1.
+    """
+    b = jnp.asarray(b, dtype=jnp.float64)
+    n = int(b.shape[0])
+    x = jnp.zeros_like(b)
+    if upper_idx.size == 0:
+        return b / upper_diag
+
+    def _body(i, x_vec):
+        row = n - 1 - i
+        idx = upper_idx[row]
+        val = upper_val[row]
+        mask = idx >= 0
+        idx_safe = jnp.where(mask, idx, 0)
+        contrib = jnp.sum(jnp.where(mask, val * x_vec[idx_safe], 0.0))
+        xi = (b[row] - contrib) / upper_diag[row]
+        return x_vec.at[row].set(xi, unique_indices=True)
+
+    return jax.lax.fori_loop(0, n, _body, x)
 
 
 def _hash_array(arr: jnp.ndarray | np.ndarray) -> str:
@@ -3166,6 +3257,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_kind = "xmg"
     elif base_kind_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
         base_kind = "pas_hybrid"
+    elif base_kind_env in {"pas_ilu", "pas_block_ilu", "pas_xblock_ilu", "block_ilu"}:
+        base_kind = "pas_ilu"
     elif base_kind_env in {"pas_tokamak_theta", "pas_tokamak", "pas_theta", "tokamak_theta", "theta_tokamak"}:
         base_kind = "pas_tokamak_theta"
     elif base_kind_env in {"point", "block", "jacobi"}:
@@ -3206,22 +3299,17 @@ def _build_rhsmode1_schur_preconditioner(
             except ValueError:
                 xblock_tz_max = 2000 if op.fblock.pas is not None else 1200
             block_size = int(max_l) * int(op.n_theta) * int(op.n_zeta)
-            if op.fblock.pas is not None and op.fblock.fp is None and use_dkes_exb:
-                # DKES-trajectory PAS runs can require a strong angular preconditioner, but using the full
-                # xblock_tz base (max_l * Ntheta*Nzeta dense inverses per x) can be very expensive in both
-                # runtime and peak RSS. Use a truncated-L xblock_tz_lmax base sized by a simple cutoff.
-                dkes_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_DKES_XBLOCK_TZ_MAX", "").strip()
-                try:
-                    dkes_tz_max = int(dkes_tz_max_env) if dkes_tz_max_env else int(xblock_tz_max)
-                except ValueError:
-                    dkes_tz_max = int(xblock_tz_max)
-                nz = int(op.n_theta) * int(op.n_zeta)
-                lmax_use = int(max_l)
-                if nz > 0 and int(dkes_tz_max) > 0:
-                    lmax_use = int(dkes_tz_max // nz)
-                lmax_use = max(1, min(int(max_l), int(lmax_use)))
-                base_xblock_tz_lmax = int(lmax_use)
-                base_kind = "xblock_tz_lmax"
+            if (
+                op.fblock.pas is not None
+                and op.fblock.fp is None
+                and use_dkes_exb
+                and op.fblock.er_xdot is None
+                and op.fblock.er_xidot is None
+            ):
+                # DKES-trajectory PAS runs can require a strong angular preconditioner, but using the dense
+                # xblock_tz (or truncated-L dense) base can be extremely expensive. Prefer a sparse per-x
+                # block ILU (PETSc-like PCBJACOBI+ILU) which is much cheaper to build/apply.
+                base_kind = "pas_ilu"
             elif (
                 op.fblock.pas is not None
                 and int(op.n_theta) > 1
@@ -3277,6 +3365,8 @@ def _build_rhsmode1_schur_preconditioner(
         except ValueError:
             lmax_use = int(base_xblock_tz_lmax)
         base_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(op=op, lmax=int(lmax_use))
+    elif base_kind == "pas_ilu":
+        base_precond = _build_rhsmode1_pas_xblock_ilu_preconditioner(op=op)
     elif base_kind == "xmg":
         base_precond = _build_rhsmode1_xmg_preconditioner(op=op)
     elif base_kind == "pas_hybrid":
@@ -4993,6 +5083,504 @@ def _build_rhsmode1_sxblock_tz_preconditioner(
     return _apply_reduced
 
 
+def _build_rhsmode1_pas_xblock_ilu_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Sparse block-Jacobi ILU preconditioner for PAS-like RHSMode=1 operators.
+
+    This preconditioner targets PAS DKES / PAS collisionless runs that are *dense* in the
+    existing (theta,zeta,L) block inverses, making preconditioner build/application very
+    expensive.
+
+    We assemble a sparse approximation to the per-(species,x) (L,theta,zeta) block matrix
+    using the same stencil-like operator structure used in the matrix-free apply:
+    - collisionless streaming+mirror (ΔL=±1, spatial derivatives)
+    - ExB drifts (spatial derivatives, diagonal in L)
+    - pitch-angle scattering collisions (diagonal in L and in theta/zeta)
+
+    Then we compute an ILU factorization with SciPy (`spilu`), and convert the L/U factors
+    to a padded row format so the apply path is pure JAX (triangular solves) and can run
+    inside JITted GMRES iterations.
+
+    Notes
+    -----
+    - The ILU factorization is *not* differentiated through; gradients for solves come from
+      the implicit-diff VJP of the linear solve, not backpropagating through GMRES.
+    - This is intended for PAS-only (no FP) operators. For FP, the x-coupling makes a
+      per-x block ILU far less effective.
+    """
+    if op.fblock.pas is None or op.fblock.fp is not None:
+        # Not applicable: fall back to existing defaults.
+        return _build_rhsmode1_pas_hybrid_preconditioner(
+            op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+        )
+
+    try:
+        import scipy.sparse as sp  # noqa: PLC0415
+        from scipy.sparse.linalg import spilu  # noqa: PLC0415
+    except Exception:
+        # SciPy missing: fall back to existing defaults.
+        return _build_rhsmode1_pas_hybrid_preconditioner(
+            op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+        )
+
+    # ILU parameters (PETSc-like PCILU defaults). Keep these conservative to
+    # avoid unstable factors on ill-conditioned blocks. In particular, we cap
+    # the stored nnz-per-row for L/U factors so the JAX-side padded-row format
+    # does not explode memory usage on hard PAS blocks.
+    ilu_drop_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_ILU_DROP_TOL", "").strip()
+    ilu_fill_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_ILU_FILL_FACTOR", "").strip()
+    row_nnz_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_ILU_ROW_NNZ_MAX", "").strip()
+    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_ILU_REG", "").strip()
+    try:
+        ilu_drop_tol = float(ilu_drop_tol_env) if ilu_drop_tol_env else 1e-3
+    except ValueError:
+        ilu_drop_tol = 1e-3
+    try:
+        ilu_fill_factor = float(ilu_fill_env) if ilu_fill_env else 5.0
+    except ValueError:
+        ilu_fill_factor = 5.0
+    try:
+        row_nnz_max = int(row_nnz_env) if row_nnz_env else 64
+    except ValueError:
+        row_nnz_max = 64
+    row_nnz_max = max(0, int(row_nnz_max))
+    try:
+        reg = float(reg_env) if reg_env else 1e-12
+    except ValueError:
+        reg = 1e-12
+    reg = float(max(reg, 0.0))
+
+    # Cache key: include the physics pieces that affect the assembled sparse block.
+    colless = op.fblock.collisionless
+    pas = op.fblock.pas
+    exb_theta = op.fblock.exb_theta
+    exb_zeta = op.fblock.exb_zeta
+
+    cache_key = (
+        *_rhsmode1_precond_cache_key(op, "pas_xblock_ilu"),
+        float(op.fblock.identity_shift),
+        float(pas.nu_n),
+        float(pas.krook),
+        _hash_array(pas.nu_d_hat),
+        _hash_array(colless.ddtheta),
+        _hash_array(colless.ddzeta),
+        _hash_array(colless.b_hat_sup_theta),
+        _hash_array(colless.b_hat_sup_zeta),
+        _hash_array(colless.db_hat_dtheta),
+        _hash_array(colless.db_hat_dzeta),
+        float(ilu_drop_tol),
+        float(ilu_fill_factor),
+        int(row_nnz_max),
+        float(reg),
+        bool(exb_theta is not None),
+        bool(exb_zeta is not None),
+        bool(getattr(exb_theta, "use_dkes_exb_drift", False)) if exb_theta is not None else False,
+        bool(getattr(exb_zeta, "use_dkes_exb_drift", False)) if exb_zeta is not None else False,
+    )
+    cached = _RHSMODE1_PRECOND_ILU_CACHE.get(cache_key)
+    if cached is None:
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+        nxi_for_x = np.asarray(colless.n_xi_for_x, dtype=np.int32)
+
+        # Build sparse derivative matrices on the (theta,zeta) grid. (zeta is fastest.)
+        ddtheta = np.asarray(colless.ddtheta, dtype=np.float64)
+        ddzeta = np.asarray(colless.ddzeta, dtype=np.float64)
+        ddtheta_sp = sp.csr_matrix(ddtheta)
+        ddzeta_sp = sp.csr_matrix(ddzeta)
+        i_theta = sp.eye(n_theta, format="csr", dtype=np.float64)
+        i_zeta = sp.eye(n_zeta, format="csr", dtype=np.float64)
+        dtheta_tz = sp.kron(ddtheta_sp, i_zeta, format="csr")
+        dzeta_tz = sp.kron(i_theta, ddzeta_sp, format="csr")
+        n_tz = int(n_theta * n_zeta)
+        i_tz = sp.eye(n_tz, format="csr", dtype=np.float64)
+
+        # Precompute ExB drift diagonal-in-L spatial operator (shared across species/x).
+        exb_op_tz: sp.csr_matrix | None = None
+        if exb_theta is not None:
+            exb_theta_np = exb_theta
+            alpha = float(np.asarray(exb_theta_np.alpha, dtype=np.float64).reshape(()))
+            delta = float(np.asarray(exb_theta_np.delta, dtype=np.float64).reshape(()))
+            dphi = float(np.asarray(exb_theta_np.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+            if getattr(exb_theta_np, "use_dkes_exb_drift", False):
+                denom = float(np.asarray(exb_theta_np.fsab_hat2, dtype=np.float64).reshape(()))
+                coef = np.asarray(exb_theta_np.d_hat * exb_theta_np.b_hat_sub_zeta, dtype=np.float64) / denom
+            else:
+                b2 = np.asarray(exb_theta_np.b_hat, dtype=np.float64) ** 2
+                coef = np.asarray(exb_theta_np.d_hat * exb_theta_np.b_hat_sub_zeta, dtype=np.float64) / b2
+            factor = alpha * delta * 0.5 * dphi
+            coef_flat = (factor * coef).reshape((-1,))
+            exb_op_tz = sp.diags(coef_flat, 0, format="csr") @ dtheta_tz
+        if exb_zeta is not None:
+            exb_zeta_np = exb_zeta
+            alpha = float(np.asarray(exb_zeta_np.alpha, dtype=np.float64).reshape(()))
+            delta = float(np.asarray(exb_zeta_np.delta, dtype=np.float64).reshape(()))
+            dphi = float(np.asarray(exb_zeta_np.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+            if getattr(exb_zeta_np, "use_dkes_exb_drift", False):
+                denom = float(np.asarray(exb_zeta_np.fsab_hat2, dtype=np.float64).reshape(()))
+                coef = np.asarray(exb_zeta_np.d_hat * exb_zeta_np.b_hat_sub_theta, dtype=np.float64) / denom
+            else:
+                b2 = np.asarray(exb_zeta_np.b_hat, dtype=np.float64) ** 2
+                coef = np.asarray(exb_zeta_np.d_hat * exb_zeta_np.b_hat_sub_theta, dtype=np.float64) / b2
+            factor = -alpha * delta * 0.5 * dphi
+            coef_flat = (factor * coef).reshape((-1,))
+            term = sp.diags(coef_flat, 0, format="csr") @ dzeta_tz
+            exb_op_tz = term if exb_op_tz is None else (exb_op_tz + term)
+
+        # Geometry pieces for collisionless streaming/mirror.
+        b_hat = np.asarray(colless.b_hat, dtype=np.float64)
+        v_theta = np.asarray(colless.b_hat_sup_theta, dtype=np.float64) / b_hat
+        v_zeta = np.asarray(colless.b_hat_sup_zeta, dtype=np.float64) / b_hat
+        mirror_geom = (
+            np.asarray(colless.b_hat_sup_theta, dtype=np.float64) * np.asarray(colless.db_hat_dtheta, dtype=np.float64)
+            + np.asarray(colless.b_hat_sup_zeta, dtype=np.float64) * np.asarray(colless.db_hat_dzeta, dtype=np.float64)
+        )
+        mirror_geom = np.asarray(mirror_geom, dtype=np.float64)
+
+        t_hat = np.asarray(op.t_hat, dtype=np.float64).reshape((n_species,))
+        m_hat = np.asarray(op.m_hat, dtype=np.float64).reshape((n_species,))
+        x_arr = np.asarray(colless.x, dtype=np.float64).reshape((n_x,))
+        pas_coef = np.asarray(pas.coef, dtype=np.float64)  # (S,X,Lmax)
+        identity_shift = float(np.asarray(op.fblock.identity_shift, dtype=np.float64).reshape(()))
+
+        # Precompute per-species spatial operators.
+        stream_op_by_s: list[sp.csr_matrix] = []
+        mirror_diag_by_s: list[sp.csr_matrix] = []
+        sqrt_t_over_m = np.sqrt(t_hat / m_hat)  # (S,)
+        for s in range(n_species):
+            v_theta_s_flat = (sqrt_t_over_m[s] * v_theta).reshape((-1,))
+            v_zeta_s_flat = (sqrt_t_over_m[s] * v_zeta).reshape((-1,))
+            stream = sp.diags(v_theta_s_flat, 0, format="csr") @ dtheta_tz
+            stream = stream + (sp.diags(v_zeta_s_flat, 0, format="csr") @ dzeta_tz)
+            stream_op_by_s.append(stream)
+
+            mirror_factor_flat = (-sqrt_t_over_m[s] * mirror_geom / (2.0 * (b_hat**2))).reshape((-1,))
+            mirror_diag_by_s.append(sp.diags(mirror_factor_flat, 0, format="csr"))
+
+        block_size_max = int(n_l * n_tz)
+        # Store one block per (species,x), matching F-block layout.
+        inv_perm_r_blocks: list[np.ndarray] = []
+        perm_c_blocks: list[np.ndarray] = []
+        lower_idx_blocks: list[np.ndarray] = []
+        lower_val_blocks: list[np.ndarray] = []
+        upper_idx_blocks: list[np.ndarray] = []
+        upper_val_blocks: list[np.ndarray] = []
+        upper_diag_blocks: list[np.ndarray] = []
+        max_lower_global = 0
+        max_upper_global = 0
+
+        # Factor per-(species,x) block. Use a fixed block size (n_l*n_theta*n_zeta) for all x,
+        # padding inactive (L>nxi_for_x) modes as identity. This keeps apply shapes uniform and
+        # avoids huge JIT compile times from per-block shape specialization.
+        for s in range(n_species):
+            stream_tz = stream_op_by_s[s]
+            mirror_diag = mirror_diag_by_s[s]
+            for ix in range(n_x):
+                n_lx = int(nxi_for_x[ix])
+                active_n = int(n_lx * n_tz)
+
+                # Default: identity for the whole block (used when active_n==0 or ILU fails).
+                perm_r_full = np.arange(block_size_max, dtype=np.int32)
+                perm_c_full = np.arange(block_size_max, dtype=np.int32)
+                inv_perm_r_full = perm_r_full.copy()
+                lower_idx_full = np.zeros((block_size_max, 0), dtype=np.int32)
+                lower_val_full = np.zeros((block_size_max, 0), dtype=np.float64)
+                upper_idx_full = np.zeros((block_size_max, 0), dtype=np.int32)
+                upper_val_full = np.zeros((block_size_max, 0), dtype=np.float64)
+                upper_diag_full = np.ones((block_size_max,), dtype=np.float64)
+
+                if active_n > 0:
+                    # L-coupling coefficients for this x.
+                    l = np.arange(n_lx, dtype=np.float64)
+                    coef_plus = (l + 1.0) / (2.0 * l + 3.0)
+                    coef_minus = np.where(l > 0, l / (2.0 * l - 1.0), 0.0)
+                    coef_m_plus = (l + 1.0) * (l + 2.0) / (2.0 * l + 3.0)
+                    coef_m_minus = np.where(l > 1, -l * (l - 1.0) / (2.0 * l - 1.0), 0.0)
+                    coef_plus *= x_arr[ix]
+                    coef_minus *= x_arr[ix]
+                    coef_m_plus *= x_arr[ix]
+                    coef_m_minus *= x_arr[ix]
+
+                    # Assemble sparse block matrix in L-block form for the active L-modes.
+                    blocks: list[list[sp.spmatrix | None]] = [
+                        [None for _ in range(n_lx)] for _ in range(n_lx)
+                    ]
+                    for il in range(n_lx):
+                        diag_val = identity_shift + float(pas_coef[s, ix, il]) + reg
+                        diag_block: sp.spmatrix = diag_val * i_tz
+                        if exb_op_tz is not None:
+                            diag_block = diag_block + exb_op_tz
+                        blocks[il][il] = diag_block
+                        if il + 1 < n_lx:
+                            blocks[il][il + 1] = coef_plus[il] * stream_tz + coef_m_plus[il] * mirror_diag
+                        if il - 1 >= 0:
+                            blocks[il][il - 1] = coef_minus[il] * stream_tz + coef_m_minus[il] * mirror_diag
+                    a = sp.bmat(blocks, format="csc", dtype=np.float64)
+
+                    try:
+                        ilu = spilu(
+                            a,
+                            drop_tol=ilu_drop_tol,
+                            fill_factor=ilu_fill_factor,
+                            permc_spec="COLAMD",
+                        )
+                    except Exception:  # noqa: BLE001
+                        ilu = None
+
+                    if ilu is not None:
+                        perm_r = np.asarray(ilu.perm_r, dtype=np.int32)
+                        perm_c = np.asarray(ilu.perm_c, dtype=np.int32)
+
+                        l_csr = ilu.L.tocsr()
+                        u_csr = ilu.U.tocsr()
+                        n = int(active_n)
+
+                        # Strict lower-triangular part (unit diagonal assumed).
+                        lower_cols: list[np.ndarray] = []
+                        lower_vals: list[np.ndarray] = []
+                        max_lower = 0
+                        for i in range(n):
+                            rs = int(l_csr.indptr[i])
+                            re = int(l_csr.indptr[i + 1])
+                            cols = l_csr.indices[rs:re]
+                            vals = l_csr.data[rs:re]
+                            mask = cols < i
+                            cols = cols[mask].astype(np.int32, copy=False)
+                            vals = vals[mask].astype(np.float64, copy=False)
+                            if row_nnz_max > 0 and int(cols.size) > row_nnz_max:
+                                sel = np.argpartition(np.abs(vals), -row_nnz_max)[-row_nnz_max:]
+                                cols = cols[sel]
+                                vals = vals[sel]
+                            if cols.size:
+                                order = np.argsort(cols)
+                                cols = cols[order]
+                                vals = vals[order]
+                            lower_cols.append(cols)
+                            lower_vals.append(vals)
+                            max_lower = max(max_lower, int(cols.size))
+                        lower_idx = -np.ones((n, max_lower), dtype=np.int32)
+                        lower_val = np.zeros((n, max_lower), dtype=np.float64)
+                        for i in range(n):
+                            k = int(lower_cols[i].size)
+                            if k:
+                                lower_idx[i, :k] = lower_cols[i]
+                                lower_val[i, :k] = lower_vals[i]
+
+                        # Strict upper + diagonal.
+                        upper_cols: list[np.ndarray] = []
+                        upper_vals: list[np.ndarray] = []
+                        upper_diag = np.ones((n,), dtype=np.float64)
+                        max_upper = 0
+                        for i in range(n):
+                            rs = int(u_csr.indptr[i])
+                            re = int(u_csr.indptr[i + 1])
+                            cols = u_csr.indices[rs:re]
+                            vals = u_csr.data[rs:re]
+                            diag_mask = cols == i
+                            if np.any(diag_mask):
+                                upper_diag[i] = float(vals[diag_mask][0])
+                            mask = cols > i
+                            cols_u = cols[mask].astype(np.int32, copy=False)
+                            vals_u = vals[mask].astype(np.float64, copy=False)
+                            if row_nnz_max > 0 and int(cols_u.size) > row_nnz_max:
+                                sel = np.argpartition(np.abs(vals_u), -row_nnz_max)[-row_nnz_max:]
+                                cols_u = cols_u[sel]
+                                vals_u = vals_u[sel]
+                            if cols_u.size:
+                                order = np.argsort(cols_u)
+                                cols_u = cols_u[order]
+                                vals_u = vals_u[order]
+                            upper_cols.append(cols_u)
+                            upper_vals.append(vals_u)
+                            max_upper = max(max_upper, int(cols_u.size))
+                        upper_idx = -np.ones((n, max_upper), dtype=np.int32)
+                        upper_val = np.zeros((n, max_upper), dtype=np.float64)
+                        for i in range(n):
+                            k = int(upper_cols[i].size)
+                            if k:
+                                upper_idx[i, :k] = upper_cols[i]
+                                upper_val[i, :k] = upper_vals[i]
+
+                        bad = ~np.isfinite(upper_diag) | (upper_diag == 0.0)
+                        if np.any(bad):
+                            upper_diag[bad] = 1.0
+
+                        # Pad to the full x-block size by appending identity rows/cols.
+                        perm_r_full[:n] = perm_r
+                        perm_c_full[:n] = perm_c
+                        inv_perm_r_full = _inverse_permutation(perm_r_full)
+
+                        lower_idx_full = -np.ones((block_size_max, max_lower), dtype=np.int32)
+                        lower_val_full = np.zeros((block_size_max, max_lower), dtype=np.float64)
+                        lower_idx_full[:n, :] = lower_idx
+                        lower_val_full[:n, :] = lower_val
+
+                        upper_idx_full = -np.ones((block_size_max, max_upper), dtype=np.int32)
+                        upper_val_full = np.zeros((block_size_max, max_upper), dtype=np.float64)
+                        upper_idx_full[:n, :] = upper_idx
+                        upper_val_full[:n, :] = upper_val
+
+                        upper_diag_full = np.ones((block_size_max,), dtype=np.float64)
+                        upper_diag_full[:n] = upper_diag
+
+                max_lower_global = max(max_lower_global, int(lower_idx_full.shape[1]))
+                max_upper_global = max(max_upper_global, int(upper_idx_full.shape[1]))
+                inv_perm_r_blocks.append(inv_perm_r_full)
+                perm_c_blocks.append(perm_c_full)
+                lower_idx_blocks.append(lower_idx_full)
+                lower_val_blocks.append(lower_val_full)
+                upper_idx_blocks.append(upper_idx_full)
+                upper_val_blocks.append(upper_val_full)
+                upper_diag_blocks.append(upper_diag_full)
+
+        # Finalize uniform (Klower,Kupper) padding.
+        for i in range(len(lower_idx_blocks)):
+            if int(lower_idx_blocks[i].shape[1]) < max_lower_global:
+                pad = int(max_lower_global - int(lower_idx_blocks[i].shape[1]))
+                lower_idx_blocks[i] = np.pad(lower_idx_blocks[i], ((0, 0), (0, pad)), constant_values=-1)
+                lower_val_blocks[i] = np.pad(lower_val_blocks[i], ((0, 0), (0, pad)), constant_values=0.0)
+            if int(upper_idx_blocks[i].shape[1]) < max_upper_global:
+                pad = int(max_upper_global - int(upper_idx_blocks[i].shape[1]))
+                upper_idx_blocks[i] = np.pad(upper_idx_blocks[i], ((0, 0), (0, pad)), constant_values=-1)
+                upper_val_blocks[i] = np.pad(upper_val_blocks[i], ((0, 0), (0, pad)), constant_values=0.0)
+
+        inv_perm_r_np = np.stack(inv_perm_r_blocks, axis=0).reshape((n_species, n_x, block_size_max))
+        perm_c_np = np.stack(perm_c_blocks, axis=0).reshape((n_species, n_x, block_size_max))
+        lower_idx_np = np.stack(lower_idx_blocks, axis=0).reshape(
+            (n_species, n_x, block_size_max, max_lower_global)
+        )
+        lower_val_np = np.stack(lower_val_blocks, axis=0).reshape(
+            (n_species, n_x, block_size_max, max_lower_global)
+        )
+        upper_idx_np = np.stack(upper_idx_blocks, axis=0).reshape(
+            (n_species, n_x, block_size_max, max_upper_global)
+        )
+        upper_val_np = np.stack(upper_val_blocks, axis=0).reshape(
+            (n_species, n_x, block_size_max, max_upper_global)
+        )
+        upper_diag_np = np.stack(upper_diag_blocks, axis=0).reshape((n_species, n_x, block_size_max))
+
+        # Extra (constraint) block: keep the existing dense inverse on the small extra subsystem.
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + float(reg) * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=jnp.float64)
+
+        cached = _RHSMode1ILUBlockPrecondCache(
+            inv_perm_r_sx=jnp.asarray(inv_perm_r_np, dtype=jnp.int32),
+            perm_c_sx=jnp.asarray(perm_c_np, dtype=jnp.int32),
+            lower_idx_sx=jnp.asarray(lower_idx_np, dtype=jnp.int32),
+            lower_val_sx=jnp.asarray(lower_val_np, dtype=jnp.float64),
+            upper_idx_sx=jnp.asarray(upper_idx_np, dtype=jnp.int32),
+            upper_val_sx=jnp.asarray(upper_val_np, dtype=jnp.float64),
+            upper_diag_sx=jnp.asarray(upper_diag_np, dtype=jnp.float64),
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_PRECOND_ILU_CACHE[cache_key] = cached
+
+    inv_perm_r_sx = cached.inv_perm_r_sx
+    perm_c_sx = cached.perm_c_sx
+    lower_idx_sx = cached.lower_idx_sx
+    lower_val_sx = cached.lower_val_sx
+    upper_idx_sx = cached.upper_idx_sx
+    upper_val_sx = cached.upper_val_sx
+    upper_diag_sx = cached.upper_diag_sx
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+
+    f_size = int(op.f_size)
+    n_species = int(op.n_species)
+    n_x = int(op.n_x)
+    block_size_max = int(inv_perm_r_sx.shape[-1])
+
+    def _solve_block(
+        r: jnp.ndarray,
+        inv_perm_r: jnp.ndarray,
+        perm_c: jnp.ndarray,
+        lower_idx: jnp.ndarray,
+        lower_val: jnp.ndarray,
+        upper_idx: jnp.ndarray,
+        upper_val: jnp.ndarray,
+        upper_diag: jnp.ndarray,
+    ) -> jnp.ndarray:
+        r_perm = r[inv_perm_r]
+        y = _triangular_solve_lower_padded(lower_idx=lower_idx, lower_val=lower_val, b=r_perm)
+        z = _triangular_solve_upper_padded(
+            upper_idx=upper_idx, upper_val=upper_val, upper_diag=upper_diag, b=y
+        )
+        return z[perm_c]
+
+    _solve_over_x = jax.vmap(
+        _solve_block,
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0),
+        out_axes=0,
+    )
+    _solve_over_sx = jax.vmap(
+        _solve_over_x,
+        in_axes=(0, 0, 0, 0, 0, 0, 0, 0),
+        out_axes=0,
+    )
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        r_f = r_full[:f_size].reshape((n_species, n_x, block_size_max))
+        z_f = _solve_over_sx(
+            r_f,
+            inv_perm_r_sx,
+            perm_c_sx,
+            lower_idx_sx,
+            lower_val_sx,
+            upper_idx_sx,
+            upper_val_sx,
+            upper_diag_sx,
+        )
+        z_full = jnp.concatenate([z_f.reshape((-1,)), r_full[f_size:]], axis=0)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    apply_full_safe = _safe_preconditioner(_apply_full)
+
+    if reduce_full is None or expand_reduced is None:
+        return apply_full_safe
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = apply_full_safe(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 def _build_rhsmode1_zeta_line_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -5262,6 +5850,16 @@ def solve_v3_full_system_linear_gmres(
         # moderate defaults and let stage2/strong-preconditioner fallbacks handle
         # the truly difficult cases.
         restart = max(int(restart), 80)
+        # Cap restart to keep the (N x restart) Krylov basis manageable on CPU.
+        # Upstream v3 can afford larger restart sizes due to optimized BLAS/PETSc paths,
+        # while JAX's orthogonalization can become a dominant cost.
+        restart_cap_env = os.environ.get("SFINCS_JAX_RHSMODE1_DKES_RESTART_CAP", "").strip()
+        try:
+            restart_cap = int(restart_cap_env) if restart_cap_env else 100
+        except ValueError:
+            restart_cap = 100
+        if restart_cap > 0:
+            restart = min(int(restart), int(restart_cap))
         if maxiter is None:
             maxiter = 600
         else:
@@ -5450,6 +6048,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "xmg"
         elif rhs1_precond_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
             rhs1_precond_kind = "pas_hybrid"
+        elif rhs1_precond_env in {"pas_ilu", "pas_block_ilu", "pas_xblock_ilu", "block_ilu"}:
+            rhs1_precond_kind = "pas_ilu"
         elif rhs1_precond_env in {"theta_zeta", "theta_zeta_line", "tz", "tz_line"}:
             rhs1_precond_kind = "theta_zeta"
         elif rhs1_precond_env in {"zeta", "zeta_line", "line_zeta"}:
@@ -6473,6 +7073,10 @@ def solve_v3_full_system_linear_gmres(
                 )
             elif rhs1_precond_kind == "pas_hybrid":
                 precond = _build_rhsmode1_pas_hybrid_preconditioner(
+                    op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif rhs1_precond_kind == "pas_ilu":
+                precond = _build_rhsmode1_pas_xblock_ilu_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             elif rhs1_precond_kind == "zeta_line":

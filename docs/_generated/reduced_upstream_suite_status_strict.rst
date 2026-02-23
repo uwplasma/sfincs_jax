@@ -58,17 +58,17 @@
    * - HSX_PASCollisions_DKESTrajectories
      - parity_ok
      - none
-     - NTHETA=12,NX=12,NXI=10,NZETA=12
+     - NTHETA=13,NX=12,NXI=10,NZETA=13
      - 1
      - 0
      - 2.830
-     - 9.843
+     - -
      - 344.0
-     - 1898.8
+     - -
      - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/193
+     - Using last successful run after timeout.
    * - HSX_PASCollisions_fullTrajectories
      - parity_ok
      - none
