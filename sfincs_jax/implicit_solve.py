@@ -123,7 +123,11 @@ def _use_solver_jit(size_hint: int | None = None) -> bool:
     # Default is intentionally conservative: JITting the full Krylov loop can yield very
     # large XLA compilations for medium/large systems. Users can opt in via
     # `SFINCS_JAX_SOLVER_JIT=1` or raise the cutoff with `SFINCS_JAX_SOLVER_JIT_MAX_SIZE`.
-    thresh_default = 20000
+    #
+    # In practice, we've found that XLA compilation of the *entire* GMRES/BiCGStab loop can
+    # transiently allocate multiple GB of host RAM even for modest n~O(1e3-1e4). Keep the
+    # auto-JIT cutoff small so the default favors lower peak memory and faster startup.
+    thresh_default = 2000
     try:
         thresh = int(thresh_env) if thresh_env else thresh_default
     except ValueError:

@@ -106,6 +106,7 @@ assembly dominates total runtime.
 **Knobs.**
 
 - ``SFINCS_JAX_SOLVER_JIT``: disable/enable JIT of Krylov solves.
+- ``SFINCS_JAX_SOLVER_JIT_MAX_SIZE``: auto-JIT cutoff (default ``2000``).
 - ``SFINCS_JAX_TRANSPORT_MATVEC_MODE``: choose base vs RHS operator for transport solves.
 
 **Compared to Fortran.**
@@ -394,6 +395,13 @@ The preconditioner uses a Schur complement approximation
 with diagonal or dense approximations for :math:`S`. This preserves constraint
 coupling while improving conditioning in high‑ratio PAS cases.
 
+For x‑block‑diagonal operators (no :math:`x` coupling), :math:`S` is diagonal in the
+(species, :math:`x`) constraint index. ``sfincs_jax`` takes advantage of this structure
+by recovering the diagonal Schur entries with a **single** base‑preconditioner apply
+(injecting all constraint sources at once), rather than constructing the Schur matrix
+column‑by‑column. This significantly reduces Schur setup time in tokamak‑like PAS runs
+with many :math:`x` points.
+
 Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_schur_*``).
 Controls: ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` and
 ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``. The base preconditioner used inside the
@@ -419,10 +427,13 @@ fallbacks when the residual is only slightly above target.
 For **small FP systems**, ``sfincs_jax`` now defaults to a direct dense solve
 instead of running GMRES first. This avoids JIT/Krylov overhead in cases where a
 direct solve is both faster and more robust for parity. The FP threshold is
-``SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF`` (default: same as
-``SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF``). PAS uses Krylov by default to
-preserve parity; set ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` explicitly if you want
-to re-enable dense PAS fallbacks.
+``SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF`` (default:
+``min(SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF, 2500)``).
+
+For **small PAS systems** (``constraintScheme=2``), dense solves are enabled up to
+``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` (default: ``2500``) to preserve parity, but
+larger PAS systems default to Krylov+preconditioning to avoid multi‑GB transient
+dense allocations.
 
 When the input requests a fully coupled preconditioner (``preconditioner_species = preconditioner_x = preconditioner_xi = 0``),
 ``sfincs_jax`` now defaults to the Schur preconditioner for ``constraintScheme=2`` to avoid dense fallbacks while

@@ -2270,14 +2270,19 @@ def write_sfincs_jax_output_h5(
             dense_active_cutoff = 5000
         dense_pas_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX", "").strip()
         try:
-            dense_pas_cutoff = int(dense_pas_env) if dense_pas_env else 5000
+            # Dense solves can be *fast* for very small RHSMode=1 systems, but for a few
+            # medium-sized PAS constrained systems JAX/XLA can transiently allocate large
+            # scratch buffers (multi-GB) in the dense branch. Keep the dense PAS default
+            # conservative and fall back to Krylov+preconditioning for n above this cutoff.
+            dense_pas_cutoff = int(dense_pas_env) if dense_pas_env else 2500
         except ValueError:
-            dense_pas_cutoff = dense_active_cutoff
+            dense_pas_cutoff = 2500
         dense_fp_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF", "").strip()
         try:
-            dense_fp_cutoff = int(dense_fp_env) if dense_fp_env else dense_active_cutoff
+            # Same motivation as PAS: avoid large transient dense allocations.
+            dense_fp_cutoff = int(dense_fp_env) if dense_fp_env else min(int(dense_active_cutoff), 2500)
         except ValueError:
-            dense_fp_cutoff = dense_active_cutoff
+            dense_fp_cutoff = min(int(dense_active_cutoff), 2500)
         phys_params = nml.group("physicsParameters")
         use_dkes_val = (
             phys_params.get("useDKESExBDrift", None)
