@@ -79,6 +79,16 @@ if _cpu_devices_env:
 _disable_cache = os.environ.get("SFINCS_JAX_DISABLE_COMPILATION_CACHE", "").strip().lower()
 if _disable_cache not in {"1", "true", "yes", "on"}:
     if not os.environ.get("JAX_COMPILATION_CACHE_DIR", "").strip():
+        def _is_writable_dir(path: str) -> bool:
+            try:
+                test_path = os.path.join(path, ".sfincs_jax_write_test")
+                with open(test_path, "wb") as f:
+                    f.write(b"")
+                os.remove(test_path)
+                return True
+            except OSError:
+                return False
+
         cache_override = os.environ.get("SFINCS_JAX_COMPILATION_CACHE_DIR", "").strip()
         if cache_override:
             default_cache_dir = cache_override
@@ -95,6 +105,17 @@ if _disable_cache not in {"1", "true", "yes", "on"}:
             try:
                 os.makedirs(default_cache_dir, exist_ok=True)
             except OSError:
+                default_cache_dir = ""
+        if default_cache_dir and (not _is_writable_dir(default_cache_dir)):
+            # Some environments (CI sandboxes, read-only homes) can create the directory but
+            # cannot write compilation entries. Fall back to a tempdir cache to avoid noisy
+            # warnings and degraded cold-start performance.
+            default_cache_dir = os.path.join(tempfile.gettempdir(), "sfincs_jax", "jax_compilation_cache")
+            try:
+                os.makedirs(default_cache_dir, exist_ok=True)
+            except OSError:
+                default_cache_dir = ""
+            if default_cache_dir and (not _is_writable_dir(default_cache_dir)):
                 default_cache_dir = ""
         if default_cache_dir:
             os.environ["JAX_COMPILATION_CACHE_DIR"] = default_cache_dir
