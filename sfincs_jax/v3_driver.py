@@ -521,6 +521,30 @@ class _PasTokamakThetaPrecondCache:
     mask_active: jnp.ndarray  # (X, L) float mask (1.0 active, 0.0 inactive)
 
 
+@dataclass(frozen=True)
+class _PasTzPrecondCache:
+    """Cached factors for PAS 3D (theta,zeta)/L block-tridiagonal preconditioning.
+
+    Notes
+    -----
+    This cache stores block-Thomas factors for a per-(species,x) block-tridiagonal-in-L
+    approximation with blocks over the full (theta,zeta) plane.
+
+    This is intended for PAS-only RHSMode=1 cases in 3D (Ntheta*Nzeta>1) where building
+    dense per-x (theta,zeta,L) blocks (e.g. `xblock_tz`) is prohibitively expensive.
+    """
+
+    inv_a01: jnp.ndarray  # (S, X, 2*TZ, 2*TZ) effective inverse for the (L=0,1) combined block
+    g01: jnp.ndarray  # (S, X, 2*TZ, TZ) block-Thomas factor coupling (L=0,1) block to L=2
+    inv_a: jnp.ndarray  # (S, X, L-2, TZ, TZ) approximate inverse of effective diagonal blocks for L>=2
+    g: jnp.ndarray  # (S, X, max(L-3,0), TZ, TZ) block-Thomas factors for back-substitution for L>=2
+    c_stream: jnp.ndarray  # (X, L) scalar streaming coupling (row L from col L-1)
+    c_mirror: jnp.ndarray  # (X, L) scalar mirror coupling (row L from col L-1)
+    m_tz: jnp.ndarray  # (S, TZ, TZ) row-scaled (theta,zeta)-derivative matrix
+    mirror_factor: jnp.ndarray  # (S, TZ) diagonal mirror factor in (theta,zeta)
+    mask_active: jnp.ndarray  # (X, L) float mask (1.0 active, 0.0 inactive)
+
+
 _TRANSPORT_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_DIAG_PRECOND_CACHE: dict[tuple[object, ...], _TransportPrecondCache] = {}
 _RHSMODE1_XBLOCK_PRECOND_CACHE: dict[tuple[object, ...], _TransportXBlockPrecondCache] = {}
@@ -537,6 +561,7 @@ _TRANSPORT_TZFFT_PRECOND_CACHE: dict[tuple[object, ...], _TransportTzFftPrecondC
 _RHSMODE23_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1PrecondCache] = {}
 _RHSMODE1_SPARSE_JAX_CACHE: dict[tuple[object, ...], _SparseJaxPrecondCache] = {}
 _RHSMODE1_PAS_TOKAMAK_THETA_CACHE: dict[tuple[object, ...], _PasTokamakThetaPrecondCache] = {}
+_RHSMODE1_PAS_TZ_CACHE: dict[tuple[object, ...], _PasTzPrecondCache] = {}
 
 
 def _precond_chunk_cols(total_size: int, n_cols: int) -> int:
@@ -2144,6 +2169,344 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
     return _apply_reduced
 
 
+def _pas_tz_preconditioner_applicable(op: V3FullSystemOperator) -> bool:
+    """Return True if the PAS 3D (theta,zeta)/L preconditioner is applicable.
+
+    This preconditioner is designed for PAS-only RHSMode=1 systems in 3D. It builds a
+    per-x block-tridiagonal-in-L approximation with dense (theta,zeta) blocks.
+    """
+    if int(op.rhs_mode) != 1:
+        return False
+    if int(op.n_theta) <= 1 or int(op.n_zeta) <= 1:
+        # The tokamak Nzeta=1 branch has a dedicated implementation.
+        return False
+    if int(op.n_xi) < 2:
+        return False
+    fb = op.fblock
+    if fb.collisionless is None or fb.pas is None:
+        return False
+    if fb.fp is not None or fb.fp_phi1 is not None:
+        return False
+    return True
+
+
+def _build_rhsmode1_pas_tz_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """PAS 3D (theta,zeta)/L block-tridiagonal preconditioner for RHSMode=1.
+
+    This preconditioner targets PAS-only 3D cases for which building dense per-x
+    (theta,zeta,L) blocks (e.g. `xblock_tz`) is extremely expensive in both time and
+    memory. We exploit the collisionless streaming+mirror structure, which couples
+    only L<->L±1, to build a block-tridiagonal-in-L approximation with blocks of size
+    Ntheta*Nzeta.
+
+    The block-Thomas factors are precomputed once per operator signature and applied
+    in O(Nx * Nxi * (Ntheta*Nzeta)^2) per Krylov iteration.
+    """
+    if not _pas_tz_preconditioner_applicable(op):
+        return _build_rhsmode1_pas_hybrid_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
+
+    cache_key = _rhsmode1_precond_cache_key(op, "pas_tz")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_PAS_TZ_CACHE.get(cache_key)
+    if cached is None:
+        cl = op.fblock.collisionless
+        pas = op.fblock.pas
+        assert cl is not None
+        assert pas is not None
+
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        n_tz = int(n_theta * n_zeta)
+
+        if n_tz <= 1 or n_l < 2:
+            return _build_rhsmode1_pas_hybrid_preconditioner(
+                op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+            )
+
+        x = np.asarray(cl.x, dtype=np.float64)  # (X,)
+        ddtheta = np.asarray(cl.ddtheta, dtype=np.float64)  # (T,T)
+        ddzeta = np.asarray(cl.ddzeta, dtype=np.float64)  # (Z,Z)
+        b_hat = np.asarray(cl.b_hat, dtype=np.float64)  # (T,Z)
+        b_sup_theta = np.asarray(cl.b_hat_sup_theta, dtype=np.float64)  # (T,Z)
+        b_sup_zeta = np.asarray(cl.b_hat_sup_zeta, dtype=np.float64)  # (T,Z)
+        db_dtheta = np.asarray(cl.db_hat_dtheta, dtype=np.float64)  # (T,Z)
+        db_dzeta = np.asarray(cl.db_hat_dzeta, dtype=np.float64)  # (T,Z)
+        t_hats = np.asarray(cl.t_hats, dtype=np.float64)  # (S,)
+        m_hats = np.asarray(cl.m_hats, dtype=np.float64)  # (S,)
+        nxi_for_x = np.asarray(cl.n_xi_for_x, dtype=np.int32)  # (X,)
+
+        l_arr = np.arange(n_l, dtype=np.float64)
+        coef_plus = (l_arr + 1.0) / (2.0 * l_arr + 3.0)
+        coef_minus = np.where(l_arr > 0, l_arr / (2.0 * l_arr - 1.0), 0.0)
+        coef_mirror_plus = (l_arr + 1.0) * (l_arr + 2.0) / (2.0 * l_arr + 3.0)
+        coef_mirror_minus = np.where(l_arr > 1, -l_arr * (l_arr - 1.0) / (2.0 * l_arr - 1.0), 0.0)
+
+        coef_plus_x = x[:, None] * coef_plus[None, :]  # (X,L)
+        coef_minus_x = x[:, None] * coef_minus[None, :]  # (X,L)
+        coef_mirror_plus_x = x[:, None] * coef_mirror_plus[None, :]  # (X,L)
+        coef_mirror_minus_x = x[:, None] * coef_mirror_minus[None, :]  # (X,L)
+
+        mask_active = (np.arange(n_l, dtype=np.int32)[None, :] < nxi_for_x[:, None]).astype(np.float64)  # (X,L)
+        mask_plus = (mask_active[:, :-1] * mask_active[:, 1:]).astype(np.float64)  # (X,L-1)
+        mask_minus = mask_plus
+
+        b_stream = np.zeros((n_x, n_l), dtype=np.float64)
+        b_mirror = np.zeros((n_x, n_l), dtype=np.float64)
+        c_stream = np.zeros((n_x, n_l), dtype=np.float64)
+        c_mirror = np.zeros((n_x, n_l), dtype=np.float64)
+        b_stream[:, :-1] = coef_plus_x[:, :-1] * mask_plus
+        b_mirror[:, :-1] = coef_mirror_plus_x[:, :-1] * mask_plus
+        c_stream[:, 1:] = coef_minus_x[:, 1:] * mask_minus
+        c_mirror[:, 1:] = coef_mirror_minus_x[:, 1:] * mask_minus
+
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_TZ_REG", "").strip()
+        try:
+            reg = float(reg_env) if reg_env else 1e-12
+        except ValueError:
+            reg = 1e-12
+        reg = max(float(reg), 0.0)
+
+        pas_coef = np.asarray(pas.coef, dtype=np.float64)  # (S,X,L)
+        identity_shift = float(op.fblock.identity_shift)
+        diag_vals = pas_coef + identity_shift + reg  # (S,X,L)
+        # Inactive (x,L) decouple to identity.
+        diag_vals = diag_vals * mask_active[None, :, :] + (1.0 - mask_active)[None, :, :]
+
+        i_zeta = np.eye(n_zeta, dtype=np.float64)
+        i_theta = np.eye(n_theta, dtype=np.float64)
+        dtheta_tz = np.kron(ddtheta, i_zeta)  # (TZ,TZ) zeta-fast layout
+        dzeta_tz = np.kron(i_theta, ddzeta)  # (TZ,TZ)
+
+        v_theta = b_sup_theta / b_hat  # (T,Z)
+        v_zeta = b_sup_zeta / b_hat  # (T,Z)
+        sqrt_t_over_m = np.sqrt(t_hats / m_hats)  # (S,)
+        mirror_geom = b_sup_theta * db_dtheta + b_sup_zeta * db_dzeta  # (T,Z)
+        mirror_base = mirror_geom / (2.0 * (b_hat * b_hat))  # (T,Z)
+
+        m_tz = np.zeros((n_species, n_tz, n_tz), dtype=np.float64)
+        mirror_factor = np.zeros((n_species, n_tz), dtype=np.float64)
+        for s in range(n_species):
+            v_theta_s = (sqrt_t_over_m[s] * v_theta).reshape((-1,))  # (TZ,)
+            v_zeta_s = (sqrt_t_over_m[s] * v_zeta).reshape((-1,))  # (TZ,)
+            m_tz[s, :, :] = v_theta_s[:, None] * dtheta_tz + v_zeta_s[:, None] * dzeta_tz
+            mirror_factor[s, :] = (-sqrt_t_over_m[s] * mirror_base).reshape((-1,))
+
+        exb_op_tz = np.zeros((n_tz, n_tz), dtype=np.float64)
+        if op.fblock.exb_theta is not None:
+            exb_theta = op.fblock.exb_theta
+            alpha = float(np.asarray(exb_theta.alpha, dtype=np.float64).reshape(()))
+            delta = float(np.asarray(exb_theta.delta, dtype=np.float64).reshape(()))
+            dphi = float(np.asarray(exb_theta.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+            if getattr(exb_theta, "use_dkes_exb_drift", False):
+                denom = float(np.asarray(exb_theta.fsab_hat2, dtype=np.float64).reshape(()))
+                coef = np.asarray(exb_theta.d_hat * exb_theta.b_hat_sub_zeta, dtype=np.float64) / denom
+            else:
+                b2 = np.asarray(exb_theta.b_hat, dtype=np.float64) ** 2
+                coef = np.asarray(exb_theta.d_hat * exb_theta.b_hat_sub_zeta, dtype=np.float64) / b2
+            factor = alpha * delta * 0.5 * dphi
+            coef_flat = (factor * coef).reshape((-1,))
+            exb_op_tz = exb_op_tz + coef_flat[:, None] * dtheta_tz
+        if op.fblock.exb_zeta is not None:
+            exb_zeta = op.fblock.exb_zeta
+            alpha = float(np.asarray(exb_zeta.alpha, dtype=np.float64).reshape(()))
+            delta = float(np.asarray(exb_zeta.delta, dtype=np.float64).reshape(()))
+            dphi = float(np.asarray(exb_zeta.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+            if getattr(exb_zeta, "use_dkes_exb_drift", False):
+                denom = float(np.asarray(exb_zeta.fsab_hat2, dtype=np.float64).reshape(()))
+                coef = np.asarray(exb_zeta.d_hat * exb_zeta.b_hat_sub_theta, dtype=np.float64) / denom
+            else:
+                b2 = np.asarray(exb_zeta.b_hat, dtype=np.float64) ** 2
+                coef = np.asarray(exb_zeta.d_hat * exb_zeta.b_hat_sub_theta, dtype=np.float64) / b2
+            factor = -alpha * delta * 0.5 * dphi
+            coef_flat = (factor * coef).reshape((-1,))
+            exb_op_tz = exb_op_tz + coef_flat[:, None] * dzeta_tz
+
+        tz = int(n_tz)
+        twotz = int(2 * tz)
+        eye_tz = np.eye(tz, dtype=np.float64)
+
+        inv_a01 = np.zeros((n_species, n_x, twotz, twotz), dtype=np.float64)
+        g01 = np.zeros((n_species, n_x, twotz, tz), dtype=np.float64)
+        inv_a = np.zeros((n_species, n_x, max(n_l - 2, 0), tz, tz), dtype=np.float64)
+        g = np.zeros((n_species, n_x, max(n_l - 3, 0), tz, tz), dtype=np.float64)
+
+        for s in range(n_species):
+            m_s = m_tz[s, :, :]  # (TZ,TZ)
+            mir_vec = mirror_factor[s, :]  # (TZ,)
+            mir_s = mir_vec[:, None] * eye_tz  # diagonal matrix
+            for ix in range(n_x):
+                # Combined (L=0,1) block to avoid L=0 singularities.
+                active0 = float(mask_active[ix, 0])
+                active1 = float(mask_active[ix, 1])
+                a0 = float(diag_vals[s, ix, 0])
+                a1 = float(diag_vals[s, ix, 1])
+                a0_blk = a0 * eye_tz + active0 * exb_op_tz
+                a1_blk = a1 * eye_tz + active1 * exb_op_tz
+                b0 = float(b_stream[ix, 0]) * m_s + float(b_mirror[ix, 0]) * mir_s
+                c1 = float(c_stream[ix, 1]) * m_s + float(c_mirror[ix, 1]) * mir_s
+                a01 = np.zeros((twotz, twotz), dtype=np.float64)
+                a01[:tz, :tz] = a0_blk
+                a01[:tz, tz:] = b0
+                a01[tz:, :tz] = c1
+                a01[tz:, tz:] = a1_blk
+                try:
+                    inv01 = np.linalg.inv(a01)
+                except np.linalg.LinAlgError:
+                    inv01 = np.linalg.pinv(a01, rcond=1e-12)
+                if not np.all(np.isfinite(inv01)):
+                    inv01 = np.linalg.pinv(a01, rcond=1e-12)
+                inv_a01[s, ix, :, :] = inv01
+
+                if n_l == 2:
+                    continue
+
+                # G01 = inv(A01) @ B_tilde, where B_tilde couples f2 into the L=1 equation only.
+                b1 = float(b_stream[ix, 1]) * m_s + float(b_mirror[ix, 1]) * mir_s
+                b_tilde = np.zeros((twotz, tz), dtype=np.float64)
+                b_tilde[tz:, :] = b1
+                g01_loc = inv01 @ b_tilde
+                g01[s, ix, :, :] = g01_loc
+
+                g_prev = g01_loc
+                for l in range(2, n_l):
+                    active_l = float(mask_active[ix, l])
+                    a_diag = float(diag_vals[s, ix, l])
+                    a_blk = a_diag * eye_tz + active_l * exb_op_tz
+                    if l == 2:
+                        c2 = float(c_stream[ix, l]) * m_s + float(c_mirror[ix, l]) * mir_s
+                        c_tilde = np.zeros((tz, twotz), dtype=np.float64)
+                        c_tilde[:, tz:] = c2
+                        a_eff = a_blk - c_tilde @ g_prev
+                    else:
+                        c_l = float(c_stream[ix, l]) * m_s + float(c_mirror[ix, l]) * mir_s
+                        a_eff = a_blk - c_l @ g_prev
+                    try:
+                        a_inv = np.linalg.inv(a_eff)
+                    except np.linalg.LinAlgError:
+                        a_inv = np.linalg.pinv(a_eff, rcond=1e-12)
+                    if not np.all(np.isfinite(a_inv)):
+                        a_inv = np.linalg.pinv(a_eff, rcond=1e-12)
+                    inv_a[s, ix, l - 2, :, :] = a_inv
+                    if l < n_l - 1:
+                        b_l = float(b_stream[ix, l]) * m_s + float(b_mirror[ix, l]) * mir_s
+                        g_l = a_inv @ b_l
+                        g[s, ix, l - 2, :, :] = g_l
+                        g_prev = g_l
+
+        cached = _PasTzPrecondCache(
+            inv_a01=jnp.asarray(inv_a01, dtype=precond_dtype),
+            g01=jnp.asarray(g01, dtype=precond_dtype),
+            inv_a=jnp.asarray(inv_a, dtype=precond_dtype),
+            g=jnp.asarray(g, dtype=precond_dtype),
+            c_stream=jnp.asarray(c_stream, dtype=precond_dtype),
+            c_mirror=jnp.asarray(c_mirror, dtype=precond_dtype),
+            m_tz=jnp.asarray(m_tz, dtype=precond_dtype),
+            mirror_factor=jnp.asarray(mirror_factor, dtype=precond_dtype),
+            mask_active=jnp.asarray(mask_active, dtype=precond_dtype),
+        )
+        _RHSMODE1_PAS_TZ_CACHE[cache_key] = cached
+
+    inv_a01 = cached.inv_a01
+    g01 = cached.g01
+    inv_a = cached.inv_a
+    g = cached.g
+    c_stream = cached.c_stream
+    c_mirror = cached.c_mirror
+    m_tz = cached.m_tz
+    mirror_factor = cached.mirror_factor
+    mask_active = cached.mask_active
+
+    f_shape = op.fblock.f_shape  # (S,X,L,T,Z)
+    n_species = int(f_shape[0])
+    n_x = int(f_shape[1])
+    n_l = int(f_shape[2])
+    n_theta = int(f_shape[3])
+    n_zeta = int(f_shape[4])
+    tz = int(n_theta * n_zeta)
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=jnp.float64)
+        f_rhs = r_full[: op.f_size].reshape(f_shape).reshape((n_species, n_x, n_l, tz))  # (S,X,L,TZ)
+        f_rhs = jnp.asarray(f_rhs, dtype=precond_dtype)
+        f_rhs = f_rhs * mask_active[None, :, :, None]
+
+        rhs0 = f_rhs[:, :, 0, :]  # (S,X,TZ)
+        rhs1 = f_rhs[:, :, 1, :]  # (S,X,TZ)
+        rhs01 = jnp.concatenate([rhs0, rhs1], axis=-1)  # (S,X,2TZ)
+        d01 = jnp.einsum("sxij,sxj->sxi", inv_a01, rhs01)  # (S,X,2TZ)
+
+        if n_l == 2:
+            f0 = d01[:, :, :tz]
+            f1 = d01[:, :, tz:]
+            f_all = jnp.concatenate([f0[:, :, None, :], f1[:, :, None, :]], axis=2)  # (S,X,2,TZ)
+        else:
+            d_prev = d01[:, :, tz:]  # (S,X,TZ)
+
+            inv_a_l = jnp.transpose(inv_a, (2, 0, 1, 3, 4))  # (L-2,S,X,TZ,TZ) for L>=2
+            rhs_l = jnp.transpose(f_rhs[:, :, 2:, :], (2, 0, 1, 3))  # (L-2,S,X,TZ)
+            c_stream_l = jnp.transpose(c_stream[:, 2:], (1, 0))  # (L-2,X)
+            c_mirror_l = jnp.transpose(c_mirror[:, 2:], (1, 0))  # (L-2,X)
+
+            def _fwd_step(d_prev: jnp.ndarray, inputs):
+                inv_block, rhs_block, cs, cm = inputs
+                corr_stream = jnp.einsum("sij,sxj->sxi", m_tz, d_prev) * cs[None, :, None]
+                corr_mirror = (mirror_factor[:, None, :] * d_prev) * cm[None, :, None]
+                rhs_eff = rhs_block - (corr_stream + corr_mirror)
+                d = jnp.einsum("sxij,sxj->sxi", inv_block, rhs_eff)
+                return d, d
+
+            _, d_out = jax.lax.scan(_fwd_step, d_prev, (inv_a_l, rhs_l, c_stream_l, c_mirror_l))
+            d_rest = jnp.transpose(d_out, (1, 2, 0, 3))  # (S,X,L-2,TZ)
+
+            f_last = d_rest[:, :, -1, :]  # (S,X,TZ) corresponds to L=n_l-1
+            if n_l > 3:
+                g_l = jnp.transpose(g, (2, 0, 1, 3, 4))  # (L-3,S,X,TZ,TZ) for L=2..n_l-2
+                d_rev = jnp.transpose(d_rest[:, :, :-1, :], (2, 0, 1, 3))[::-1]  # (L-3,S,X,TZ)
+                g_rev = g_l[::-1]
+
+                def _bwd_step(f_next: jnp.ndarray, inputs):
+                    g_block, d_block = inputs
+                    f_l = d_block - jnp.einsum("sxij,sxj->sxi", g_block, f_next)
+                    return f_l, f_l
+
+                _, f_rev = jax.lax.scan(_bwd_step, f_last, (g_rev, d_rev))
+                f_prefix = f_rev[::-1]  # (L-3,S,X,TZ)
+                f_mid = jnp.transpose(f_prefix, (1, 2, 0, 3))  # (S,X,L-3,TZ) for L=2..n_l-2
+                f2 = f_mid[:, :, 0, :]  # L=2
+                f_rest_all = jnp.concatenate([f_mid, f_last[:, :, None, :]], axis=2)  # (S,X,L-2,TZ)
+            else:
+                f2 = f_last
+                f_rest_all = f_last[:, :, None, :]  # (S,X,1,TZ)
+
+            u01 = d01 - jnp.einsum("sxij,sxj->sxi", g01, f2)  # (S,X,2TZ)
+            f0 = u01[:, :, :tz]
+            f1 = u01[:, :, tz:]
+            f_all = jnp.concatenate([f0[:, :, None, :], f1[:, :, None, :], f_rest_all], axis=2)  # (S,X,L,TZ)
+
+        f_all = f_all * mask_active[None, :, :, None]
+        f_all = jnp.asarray(f_all, dtype=jnp.float64).reshape((n_species, n_x, n_l, n_theta, n_zeta))
+        z_f = f_all.reshape((-1,))
+        tail = r_full[op.f_size :]
+        return jnp.concatenate([z_f, tail], axis=0)
+
+    if reduce_full is None or expand_reduced is None:
+        return _apply_full
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
 def _build_rhsmode1_collision_preconditioner(
     *,
     op: V3FullSystemOperator,
@@ -3259,6 +3622,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_kind = "pas_hybrid"
     elif base_kind_env in {"pas_ilu", "pas_block_ilu", "pas_xblock_ilu", "block_ilu"}:
         base_kind = "pas_ilu"
+    elif base_kind_env in {"pas_tz", "pas_theta_zeta", "pas_tz_l", "pas_l_tz", "tz_l", "tz_lblock"}:
+        base_kind = "pas_tz"
     elif base_kind_env in {"pas_tokamak_theta", "pas_tokamak", "pas_theta", "tokamak_theta", "theta_tokamak"}:
         base_kind = "pas_tokamak_theta"
     elif base_kind_env in {"point", "block", "jacobi"}:
@@ -3299,6 +3664,11 @@ def _build_rhsmode1_schur_preconditioner(
             except ValueError:
                 xblock_tz_max = 2000 if op.fblock.pas is not None else 1200
             block_size = int(max_l) * int(op.n_theta) * int(op.n_zeta)
+            pas_tz_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_TZ_MIN", "").strip()
+            try:
+                pas_tz_min = int(pas_tz_min_env) if pas_tz_min_env else 800
+            except ValueError:
+                pas_tz_min = 800
             if (
                 op.fblock.pas is not None
                 and op.fblock.fp is None
@@ -3306,15 +3676,23 @@ def _build_rhsmode1_schur_preconditioner(
                 and op.fblock.er_xdot is None
                 and op.fblock.er_xidot is None
             ):
-                # DKES-trajectory PAS runs can require a strong angular preconditioner, but using the dense
-                # xblock_tz (or truncated-L dense) base can be extremely expensive. Prefer a sparse per-x
-                # block ILU (PETSc-like PCBJACOBI+ILU) which is much cheaper to build/apply.
+                # DKES-trajectory PAS runs can require a strong angular preconditioner. For parity,
+                # default to the dense xblock_tz base when it is still feasible; otherwise fall back
+                # to a sparse per-x ILU.
                 if xblock_tz_max > 0 and block_size <= xblock_tz_max:
-                    # If the full (theta,zeta,L) dense blocks are still small enough, prefer the dense
-                    # xblock_tz base: it is much faster to apply in JAX than sparse triangular solves.
                     base_kind = "xblock_tz"
                 else:
                     base_kind = "pas_ilu"
+            elif (
+                op.fblock.pas is not None
+                and op.fblock.fp is None
+                and _pas_tz_preconditioner_applicable(op)
+                and block_size >= pas_tz_min
+            ):
+                # For 3D PAS cases with large angular blocks, dense per-x (theta,zeta,L) inverses are
+                # prohibitively expensive. Switch to the cheaper PAS (theta,zeta)/L block-tridiagonal
+                # approximation by default.
+                base_kind = "pas_tz"
             elif (
                 op.fblock.pas is not None
                 and int(op.n_theta) > 1
@@ -3378,6 +3756,8 @@ def _build_rhsmode1_schur_preconditioner(
         base_precond = _build_rhsmode1_pas_hybrid_preconditioner(op=op, safe=False)
     elif base_kind == "pas_tokamak_theta":
         base_precond = _build_rhsmode1_pas_tokamak_theta_preconditioner(op=op)
+    elif base_kind == "pas_tz":
+        base_precond = _build_rhsmode1_pas_tz_preconditioner(op=op)
     elif base_kind == "theta_zeta":
         base_precond = _build_rhsmode1_theta_zeta_preconditioner(op=op)
     elif base_kind == "zeta_line":
@@ -7476,6 +7856,11 @@ def solve_v3_full_system_linear_gmres(
             stage2_ratio = float(stage2_ratio_env) if stage2_ratio_env else 1.0e2
         except ValueError:
             stage2_ratio = 1.0e2
+        # PAS DKES cases can require *tight* convergence for parity, even when the
+        # initial solve is only slightly above the target tolerance. Trigger stage2
+        # as a "polish" step whenever residual > target in this branch.
+        if op.fblock.pas is not None and use_dkes:
+            stage2_ratio = min(float(stage2_ratio), 1.0)
         stage2_trigger = bool(res_ratio > stage2_ratio) if stage2_ratio > 0 else True
         if (not early_dense_shortcut) and dense_shortcut_ratio > 0 and res_ratio >= dense_shortcut_ratio:
             early_dense_shortcut = True
@@ -8525,6 +8910,8 @@ def solve_v3_full_system_linear_gmres(
                 stage2_ratio = float(stage2_ratio_env) if stage2_ratio_env else 1.0e2
             except ValueError:
                 stage2_ratio = 1.0e2
+            if op.fblock.pas is not None and use_dkes:
+                stage2_ratio = min(float(stage2_ratio), 1.0)
             stage2_trigger = bool(res_ratio > stage2_ratio) if stage2_ratio > 0 else True
             solver_kind = _solver_kind(solve_method)[0]
             if solver_kind == "bicgstab" and (
