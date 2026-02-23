@@ -4033,9 +4033,15 @@ def _build_rhsmode1_schur_preconditioner(
                 dense_bytes = int(int(op.n_species) * int(np.sum(block_sizes_x * block_sizes_x)) * 8)
                 xblock_tz_small_env = os.environ.get("SFINCS_JAX_RHSMODE1_DKES_XBLOCK_TZ_SMALL_MAX", "").strip()
                 try:
-                    xblock_tz_small_max = int(xblock_tz_small_env) if xblock_tz_small_env else 512
+                    # Default to the same scale as xblock_tz_max for DKES PAS systems.
+                    # Empirically this branch is far more robust/fast than PAS ILU for
+                    # medium-size DKES blocks when dense memory stays within the cap.
+                    xblock_tz_small_default = max(0, int(xblock_tz_max))
+                    xblock_tz_small_max = (
+                        int(xblock_tz_small_env) if xblock_tz_small_env else xblock_tz_small_default
+                    )
                 except ValueError:
-                    xblock_tz_small_max = 512
+                    xblock_tz_small_max = max(0, int(xblock_tz_max))
                 xblock_tz_small_max = max(0, int(xblock_tz_small_max))
                 use_dense_xblock_tz = bool(
                     xblock_tz_small_max > 0

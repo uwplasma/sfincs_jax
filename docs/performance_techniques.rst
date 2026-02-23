@@ -502,7 +502,7 @@ so scan points can reuse the same preconditioner blocks. Controls:
 - ``SFINCS_JAX_RHSMODE1_COLLISION_SXBLOCK_MAX`` / ``SFINCS_JAX_RHSMODE1_COLLISION_XBLOCK_MAX``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN`` (auto Schur cutoff by total size)
-- ``SFINCS_JAX_RHSMODE1_DKES_XBLOCK_TZ_SMALL_MAX`` (DKES PAS only: cap on dense xblock_tz base; default ``512``)
+- ``SFINCS_JAX_RHSMODE1_DKES_XBLOCK_TZ_SMALL_MAX`` (DKES PAS only: cap on dense xblock_tz base; default matches ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX``)
 - ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (auto switch to the lightweight PAS x‑multigrid preconditioner for large systems; default ``50000``)
 - ``SFINCS_JAX_RHSMODE1_XMG_STRIDE`` (coarse‑x stride for the PAS x‑multigrid preconditioner)
 - ``SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN`` (auto switch to point‑block x‑diagonal preconditioner for large PAS runs; default disabled)
@@ -523,8 +523,10 @@ preconditioner is:
 - factorize :math:`\tilde{A}_{s,x}` once (SciPy sparse LU for small blocks; sparse ILU for larger),
 - apply the triangular factors in pure JAX inside GMRES iterations.
 
-This avoids the expensive dense block assembly/inversion that ``xblock_tz`` uses while
-remaining accurate enough for parity-sensitive DKES PAS diagnostics.
+This is primarily a fallback for large DKES PAS blocks (or strict memory caps). For
+medium DKES PAS systems, the default now prefers dense ``xblock_tz`` blocks when the
+estimated dense memory stays within the configured cap, since that path is typically
+more robust and faster in practice.
 
 Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_pas_xblock_ilu_preconditioner``).
 Key controls:
