@@ -10,6 +10,8 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
+from .periodic_stencil import apply_periodic_stencil_roll, periodic_stencil_runtime_enabled
+
 
 def _mask_xi(n_xi_for_x: jnp.ndarray, n_xi_max: int) -> jnp.ndarray:
     # (Nx, Nxi)
@@ -87,6 +89,10 @@ class MagneticDriftThetaV3Operator:
     db_hat_sub_zeta_dpsi_hat: jnp.ndarray  # (Ntheta, Nzeta)
 
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
+    ddtheta_plus_stencil_shifts: tuple[int, ...] = ()
+    ddtheta_plus_stencil_coeffs: tuple[float, ...] = ()
+    ddtheta_minus_stencil_shifts: tuple[int, ...] = ()
+    ddtheta_minus_stencil_coeffs: tuple[float, ...] = ()
 
     def tree_flatten(self):
         children = (
@@ -106,12 +112,16 @@ class MagneticDriftThetaV3Operator:
             self.db_hat_sub_zeta_dpsi_hat,
             self.n_xi_for_x,
         )
-        aux = None
+        aux = (
+            self.ddtheta_plus_stencil_shifts,
+            self.ddtheta_plus_stencil_coeffs,
+            self.ddtheta_minus_stencil_shifts,
+            self.ddtheta_minus_stencil_coeffs,
+        )
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        del aux
         (
             delta,
             t_hat,
@@ -129,6 +139,18 @@ class MagneticDriftThetaV3Operator:
             db_hat_sub_zeta_dpsi_hat,
             n_xi_for_x,
         ) = children
+        if aux is None:
+            ddtheta_plus_stencil_shifts = ()
+            ddtheta_plus_stencil_coeffs = ()
+            ddtheta_minus_stencil_shifts = ()
+            ddtheta_minus_stencil_coeffs = ()
+        else:
+            (
+                ddtheta_plus_stencil_shifts,
+                ddtheta_plus_stencil_coeffs,
+                ddtheta_minus_stencil_shifts,
+                ddtheta_minus_stencil_coeffs,
+            ) = aux
         return cls(
             delta=delta,
             t_hat=t_hat,
@@ -145,6 +167,10 @@ class MagneticDriftThetaV3Operator:
             db_hat_sub_psi_dzeta=db_hat_sub_psi_dzeta,
             db_hat_sub_zeta_dpsi_hat=db_hat_sub_zeta_dpsi_hat,
             n_xi_for_x=n_xi_for_x,
+            ddtheta_plus_stencil_shifts=tuple(int(v) for v in ddtheta_plus_stencil_shifts),
+            ddtheta_plus_stencil_coeffs=tuple(float(v) for v in ddtheta_plus_stencil_coeffs),
+            ddtheta_minus_stencil_shifts=tuple(int(v) for v in ddtheta_minus_stencil_shifts),
+            ddtheta_minus_stencil_coeffs=tuple(float(v) for v in ddtheta_minus_stencil_coeffs),
         )
 
 
@@ -171,6 +197,10 @@ class MagneticDriftZetaV3Operator:
     db_hat_sub_psi_dtheta: jnp.ndarray  # (Ntheta, Nzeta)
 
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
+    ddzeta_plus_stencil_shifts: tuple[int, ...] = ()
+    ddzeta_plus_stencil_coeffs: tuple[float, ...] = ()
+    ddzeta_minus_stencil_shifts: tuple[int, ...] = ()
+    ddzeta_minus_stencil_coeffs: tuple[float, ...] = ()
 
     def tree_flatten(self):
         children = (
@@ -190,12 +220,16 @@ class MagneticDriftZetaV3Operator:
             self.db_hat_sub_psi_dtheta,
             self.n_xi_for_x,
         )
-        aux = None
+        aux = (
+            self.ddzeta_plus_stencil_shifts,
+            self.ddzeta_plus_stencil_coeffs,
+            self.ddzeta_minus_stencil_shifts,
+            self.ddzeta_minus_stencil_coeffs,
+        )
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        del aux
         (
             delta,
             t_hat,
@@ -213,6 +247,18 @@ class MagneticDriftZetaV3Operator:
             db_hat_sub_psi_dtheta,
             n_xi_for_x,
         ) = children
+        if aux is None:
+            ddzeta_plus_stencil_shifts = ()
+            ddzeta_plus_stencil_coeffs = ()
+            ddzeta_minus_stencil_shifts = ()
+            ddzeta_minus_stencil_coeffs = ()
+        else:
+            (
+                ddzeta_plus_stencil_shifts,
+                ddzeta_plus_stencil_coeffs,
+                ddzeta_minus_stencil_shifts,
+                ddzeta_minus_stencil_coeffs,
+            ) = aux
         return cls(
             delta=delta,
             t_hat=t_hat,
@@ -229,6 +275,10 @@ class MagneticDriftZetaV3Operator:
             db_hat_sub_theta_dpsi_hat=db_hat_sub_theta_dpsi_hat,
             db_hat_sub_psi_dtheta=db_hat_sub_psi_dtheta,
             n_xi_for_x=n_xi_for_x,
+            ddzeta_plus_stencil_shifts=tuple(int(v) for v in ddzeta_plus_stencil_shifts),
+            ddzeta_plus_stencil_coeffs=tuple(float(v) for v in ddzeta_plus_stencil_coeffs),
+            ddzeta_minus_stencil_shifts=tuple(int(v) for v in ddzeta_minus_stencil_shifts),
+            ddzeta_minus_stencil_coeffs=tuple(float(v) for v in ddzeta_minus_stencil_coeffs),
         )
 
 
@@ -329,8 +379,24 @@ def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: 
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
     # d/dtheta applied to f:
-    dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
-    dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddtheta_plus_stencil_shifts:
+        dtheta_plus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddtheta_plus_stencil_shifts,
+            coeffs=op.ddtheta_plus_stencil_coeffs,
+            axis=3,
+        )
+    else:
+        dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddtheta_minus_stencil_shifts:
+        dtheta_minus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddtheta_minus_stencil_shifts,
+            coeffs=op.ddtheta_minus_stencil_coeffs,
+            axis=3,
+        )
+    else:
+        dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f)
 
     # Upwind selection matches v3 `magneticDriftDerivativeScheme != 0`:
     # ddthetaToUse depends on sign(geometricFactor1 * DHat(1,1) / Z).
@@ -385,8 +451,24 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
     base = (op.delta * op.t_hat * op.d_hat / (2.0 * op.z * (op.b_hat**3))).astype(jnp.float64)  # (T,Z)
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
-    dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
-    dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddtheta_plus_stencil_shifts:
+        dtheta_plus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddtheta_plus_stencil_shifts,
+            coeffs=op.ddtheta_plus_stencil_coeffs,
+            axis=3,
+        )
+    else:
+        dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddtheta_minus_stencil_shifts:
+        dtheta_minus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddtheta_minus_stencil_shifts,
+            coeffs=op.ddtheta_minus_stencil_coeffs,
+            axis=3,
+        )
+    else:
+        dtheta_minus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_minus.astype(jnp.float64), f)
 
     dhat11 = op.d_hat[0, 0].astype(jnp.float64)
     use_plus = (gf1 * dhat11 / op.z.astype(jnp.float64)) > 0
@@ -434,8 +516,24 @@ def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jn
     base = (op.delta * op.t_hat * op.d_hat / (2.0 * op.z * (op.b_hat**3))).astype(jnp.float64)  # (T,Z)
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
-    dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
-    dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddzeta_plus_stencil_shifts:
+        dzeta_plus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddzeta_plus_stencil_shifts,
+            coeffs=op.ddzeta_plus_stencil_coeffs,
+            axis=4,
+        )
+    else:
+        dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddzeta_minus_stencil_shifts:
+        dzeta_minus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddzeta_minus_stencil_shifts,
+            coeffs=op.ddzeta_minus_stencil_coeffs,
+            axis=4,
+        )
+    else:
+        dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f)
 
     dhat11 = op.d_hat[0, 0].astype(jnp.float64)
     use_plus = (gf1 * dhat11 / op.z.astype(jnp.float64)) > 0  # (T,Z) bool
@@ -487,8 +585,24 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
     base = (op.delta * op.t_hat * op.d_hat / (2.0 * op.z * (op.b_hat**3))).astype(jnp.float64)  # (T,Z)
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
-    dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
-    dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddzeta_plus_stencil_shifts:
+        dzeta_plus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddzeta_plus_stencil_shifts,
+            coeffs=op.ddzeta_plus_stencil_coeffs,
+            axis=4,
+        )
+    else:
+        dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
+    if periodic_stencil_runtime_enabled() and op.ddzeta_minus_stencil_shifts:
+        dzeta_minus = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddzeta_minus_stencil_shifts,
+            coeffs=op.ddzeta_minus_stencil_coeffs,
+            axis=4,
+        )
+    else:
+        dzeta_minus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_minus.astype(jnp.float64), f)
 
     dhat11 = op.d_hat[0, 0].astype(jnp.float64)
     use_plus = (gf1 * dhat11 / op.z.astype(jnp.float64)) > 0

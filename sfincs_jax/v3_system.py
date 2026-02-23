@@ -944,6 +944,10 @@ def _pad_collisionless(op: CollisionlessV3Operator, *, axis: str, pad: int) -> C
             b_hat_sup_zeta=_pad_2d_theta(op.b_hat_sup_zeta, pad, fill=0.0),
             db_hat_dtheta=_pad_2d_theta(op.db_hat_dtheta, pad, fill=0.0),
             db_hat_dzeta=_pad_2d_theta(op.db_hat_dzeta, pad, fill=0.0),
+            ddtheta_stencil_shifts=(),
+            ddtheta_stencil_coeffs=(),
+            ddtheta_sparse_cols=None,
+            ddtheta_sparse_vals=None,
         )
     if axis == "zeta":
         return replace(
@@ -954,6 +958,10 @@ def _pad_collisionless(op: CollisionlessV3Operator, *, axis: str, pad: int) -> C
             b_hat_sup_zeta=_pad_2d_zeta(op.b_hat_sup_zeta, pad, fill=0.0),
             db_hat_dtheta=_pad_2d_zeta(op.db_hat_dtheta, pad, fill=0.0),
             db_hat_dzeta=_pad_2d_zeta(op.db_hat_dzeta, pad, fill=0.0),
+            ddzeta_stencil_shifts=(),
+            ddzeta_stencil_coeffs=(),
+            ddzeta_sparse_cols=None,
+            ddzeta_sparse_vals=None,
         )
     if axis == "x":
         return replace(

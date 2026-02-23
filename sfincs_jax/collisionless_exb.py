@@ -10,6 +10,8 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
+from .periodic_stencil import apply_periodic_stencil_roll, periodic_stencil_runtime_enabled
+
 
 def _mask_xi(n_xi_for_x: jnp.ndarray, n_xi_max: int) -> jnp.ndarray:
     # (Nx, Nxi)
@@ -40,6 +42,8 @@ class ExBThetaV3Operator:
     fsab_hat2: jnp.ndarray  # scalar, only used when use_dkes_exb_drift=True
 
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
+    ddtheta_stencil_shifts: tuple[int, ...] = ()
+    ddtheta_stencil_coeffs: tuple[float, ...] = ()
 
     def tree_flatten(self):
         children = (
@@ -53,7 +57,11 @@ class ExBThetaV3Operator:
             self.fsab_hat2,
             self.n_xi_for_x,
         )
-        aux = bool(self.use_dkes_exb_drift)
+        aux = (
+            bool(self.use_dkes_exb_drift),
+            self.ddtheta_stencil_shifts,
+            self.ddtheta_stencil_coeffs,
+        )
         return children, aux
 
     @classmethod
@@ -69,6 +77,7 @@ class ExBThetaV3Operator:
             fsab_hat2,
             n_xi_for_x,
         ) = children
+        use_dkes_exb_drift, ddtheta_stencil_shifts, ddtheta_stencil_coeffs = aux
         return cls(
             alpha=alpha,
             delta=delta,
@@ -77,9 +86,11 @@ class ExBThetaV3Operator:
             d_hat=d_hat,
             b_hat=b_hat,
             b_hat_sub_zeta=b_hat_sub_zeta,
-            use_dkes_exb_drift=bool(aux),
+            use_dkes_exb_drift=bool(use_dkes_exb_drift),
             fsab_hat2=fsab_hat2,
             n_xi_for_x=n_xi_for_x,
+            ddtheta_stencil_shifts=tuple(int(v) for v in ddtheta_stencil_shifts),
+            ddtheta_stencil_coeffs=tuple(float(v) for v in ddtheta_stencil_coeffs),
         )
 
 
@@ -101,6 +112,8 @@ class ExBZetaV3Operator:
     fsab_hat2: jnp.ndarray  # scalar, only used when use_dkes_exb_drift=True
 
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
+    ddzeta_stencil_shifts: tuple[int, ...] = ()
+    ddzeta_stencil_coeffs: tuple[float, ...] = ()
 
     def tree_flatten(self):
         children = (
@@ -114,7 +127,11 @@ class ExBZetaV3Operator:
             self.fsab_hat2,
             self.n_xi_for_x,
         )
-        aux = bool(self.use_dkes_exb_drift)
+        aux = (
+            bool(self.use_dkes_exb_drift),
+            self.ddzeta_stencil_shifts,
+            self.ddzeta_stencil_coeffs,
+        )
         return children, aux
 
     @classmethod
@@ -130,6 +147,7 @@ class ExBZetaV3Operator:
             fsab_hat2,
             n_xi_for_x,
         ) = children
+        use_dkes_exb_drift, ddzeta_stencil_shifts, ddzeta_stencil_coeffs = aux
         return cls(
             alpha=alpha,
             delta=delta,
@@ -138,9 +156,11 @@ class ExBZetaV3Operator:
             d_hat=d_hat,
             b_hat=b_hat,
             b_hat_sub_theta=b_hat_sub_theta,
-            use_dkes_exb_drift=bool(aux),
+            use_dkes_exb_drift=bool(use_dkes_exb_drift),
             fsab_hat2=fsab_hat2,
             n_xi_for_x=n_xi_for_x,
+            ddzeta_stencil_shifts=tuple(int(v) for v in ddzeta_stencil_shifts),
+            ddzeta_stencil_coeffs=tuple(float(v) for v in ddzeta_stencil_coeffs),
         )
 
 
@@ -173,7 +193,15 @@ def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
 
     factor = (op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat)
 
-    dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta, f)
+    if periodic_stencil_runtime_enabled() and op.ddtheta_stencil_shifts:
+        dtheta_f = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddtheta_stencil_shifts,
+            coeffs=op.ddtheta_stencil_coeffs,
+            axis=3,
+        )
+    else:
+        dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta, f)
     out = factor * dtheta_f * coef[None, None, None, :, :]
 
     mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(out.dtype)  # (X,L)
@@ -203,7 +231,15 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
 
     factor = (-op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat)
 
-    dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta, f)
+    if periodic_stencil_runtime_enabled() and op.ddzeta_stencil_shifts:
+        dzeta_f = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddzeta_stencil_shifts,
+            coeffs=op.ddzeta_stencil_coeffs,
+            axis=4,
+        )
+    else:
+        dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta, f)
     out = factor * dzeta_f * coef[None, None, None, :, :]
 
     mask = _mask_xi(op.n_xi_for_x.astype(jnp.int32), n_xi).astype(out.dtype)  # (X,L)

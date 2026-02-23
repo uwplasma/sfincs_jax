@@ -47,6 +47,7 @@ from .magnetic_drifts import (
 from .namelist import Namelist
 from .solver import GMRESSolveResult, gmres_solve
 from .boozer_bc import read_boozer_bc_header, selected_r_n_from_bc
+from .periodic_stencil import extract_sparse_circulant_stencil, extract_sparse_row_stencil
 from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
 from .vmec_wout import psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
@@ -264,6 +265,11 @@ def _fsab_hat2(*, grids: V3Grids, geom: BoozerGeometry) -> float:
     return float(np.asarray(fsab_hat2_jax(grids=grids, geom=geom), dtype=np.float64))
 
 
+def _stencil_from_matrix(mat: jnp.ndarray) -> tuple[tuple[int, ...], tuple[float, ...]]:
+    arr = np.asarray(mat, dtype=np.float64)
+    return extract_sparse_circulant_stencil(arr)
+
+
 def collisionless_operator_from_namelist(
     *,
     nml: Namelist,
@@ -274,6 +280,10 @@ def collisionless_operator_from_namelist(
     # Monoenergetic runs (RHSMode=3) can omit speciesParameters entirely in upstream examples.
     t_hats = _as_1d_float_default(species, "THats", default=1.0)
     m_hats = _as_1d_float_default(species, "mHats", default=1.0)
+    ddtheta_shifts, ddtheta_coeffs = _stencil_from_matrix(grids.ddtheta)
+    ddzeta_shifts, ddzeta_coeffs = _stencil_from_matrix(grids.ddzeta)
+    ddtheta_sparse_cols, ddtheta_sparse_vals = extract_sparse_row_stencil(np.asarray(grids.ddtheta, dtype=np.float64))
+    ddzeta_sparse_cols, ddzeta_sparse_vals = extract_sparse_row_stencil(np.asarray(grids.ddzeta, dtype=np.float64))
     return CollisionlessV3Operator(
         x=grids.x,
         ddtheta=grids.ddtheta,
@@ -286,6 +296,14 @@ def collisionless_operator_from_namelist(
         t_hats=jnp.asarray(t_hats),
         m_hats=jnp.asarray(m_hats),
         n_xi_for_x=grids.n_xi_for_x,
+        ddtheta_stencil_shifts=ddtheta_shifts,
+        ddtheta_stencil_coeffs=ddtheta_coeffs,
+        ddzeta_stencil_shifts=ddzeta_shifts,
+        ddzeta_stencil_coeffs=ddzeta_coeffs,
+        ddtheta_sparse_cols=jnp.asarray(ddtheta_sparse_cols, dtype=jnp.int32),
+        ddtheta_sparse_vals=jnp.asarray(ddtheta_sparse_vals, dtype=jnp.float64),
+        ddzeta_sparse_cols=jnp.asarray(ddzeta_sparse_cols, dtype=jnp.int32),
+        ddzeta_sparse_vals=jnp.asarray(ddzeta_sparse_vals, dtype=jnp.float64),
     )
 
 
@@ -593,6 +611,10 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             species = nml.group("speciesParameters")
             t_hat = float(_as_1d_float_default(species, "THats", default=1.0)[0])
             z = float(_as_1d_float_default(species, "Zs", default=1.0)[0])
+            ddtheta_plus_shifts, ddtheta_plus_coeffs = _stencil_from_matrix(grids.ddtheta_magdrift_plus)
+            ddtheta_minus_shifts, ddtheta_minus_coeffs = _stencil_from_matrix(grids.ddtheta_magdrift_minus)
+            ddzeta_plus_shifts, ddzeta_plus_coeffs = _stencil_from_matrix(grids.ddzeta_magdrift_plus)
+            ddzeta_minus_shifts, ddzeta_minus_coeffs = _stencil_from_matrix(grids.ddzeta_magdrift_minus)
 
             magdrift_theta = MagneticDriftThetaV3Operator(
                 delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -610,6 +632,10 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
                 db_hat_sub_psi_dzeta=geom.db_hat_sub_psi_dzeta,
                 db_hat_sub_zeta_dpsi_hat=geom.db_hat_sub_zeta_dpsi_hat,
                 n_xi_for_x=grids.n_xi_for_x,
+                ddtheta_plus_stencil_shifts=ddtheta_plus_shifts,
+                ddtheta_plus_stencil_coeffs=ddtheta_plus_coeffs,
+                ddtheta_minus_stencil_shifts=ddtheta_minus_shifts,
+                ddtheta_minus_stencil_coeffs=ddtheta_minus_coeffs,
             )
             magdrift_zeta = MagneticDriftZetaV3Operator(
                 delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -627,6 +653,10 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
                 db_hat_sub_theta_dpsi_hat=geom.db_hat_sub_theta_dpsi_hat,
                 db_hat_sub_psi_dtheta=geom.db_hat_sub_psi_dtheta,
                 n_xi_for_x=grids.n_xi_for_x,
+                ddzeta_plus_stencil_shifts=ddzeta_plus_shifts,
+                ddzeta_plus_stencil_coeffs=ddzeta_plus_coeffs,
+                ddzeta_minus_stencil_shifts=ddzeta_minus_shifts,
+                ddzeta_minus_stencil_coeffs=ddzeta_minus_coeffs,
             )
             magdrift_xidot = MagneticDriftXiDotV3Operator(
                 delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -696,6 +726,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     exb_theta = None
     exb_zeta = None
     if not dphi_is_zero:
+        exb_theta_shifts, exb_theta_coeffs = _stencil_from_matrix(grids.ddtheta)
+        exb_zeta_shifts, exb_zeta_coeffs = _stencil_from_matrix(grids.ddzeta)
         exb_theta = ExBThetaV3Operator(
             alpha=jnp.asarray(alpha, dtype=jnp.float64),
             delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -707,6 +739,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             use_dkes_exb_drift=bool(use_dkes_exb),
             fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
             n_xi_for_x=grids.n_xi_for_x,
+            ddtheta_stencil_shifts=exb_theta_shifts,
+            ddtheta_stencil_coeffs=exb_theta_coeffs,
         )
         exb_zeta = ExBZetaV3Operator(
             alpha=jnp.asarray(alpha, dtype=jnp.float64),
@@ -719,6 +753,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             use_dkes_exb_drift=bool(use_dkes_exb),
             fsab_hat2=jnp.asarray(fsab_hat2, dtype=jnp.float64),
             n_xi_for_x=grids.n_xi_for_x,
+            ddzeta_stencil_shifts=exb_zeta_shifts,
+            ddzeta_stencil_coeffs=exb_zeta_coeffs,
         )
 
     er_xidot = None

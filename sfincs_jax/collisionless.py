@@ -10,6 +10,12 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
+from .periodic_stencil import (
+    apply_periodic_stencil_roll,
+    apply_sparse_row_stencil_gather,
+    periodic_stencil_runtime_enabled,
+)
+
 
 @jtu.register_pytree_node_class
 @dataclass(frozen=True)
@@ -33,6 +39,14 @@ class CollisionlessV3Operator:
     t_hats: jnp.ndarray  # (Nspecies,)
     m_hats: jnp.ndarray  # (Nspecies,)
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
+    ddtheta_stencil_shifts: tuple[int, ...] = ()
+    ddtheta_stencil_coeffs: tuple[float, ...] = ()
+    ddzeta_stencil_shifts: tuple[int, ...] = ()
+    ddzeta_stencil_coeffs: tuple[float, ...] = ()
+    ddtheta_sparse_cols: jnp.ndarray | None = None
+    ddtheta_sparse_vals: jnp.ndarray | None = None
+    ddzeta_sparse_cols: jnp.ndarray | None = None
+    ddzeta_sparse_vals: jnp.ndarray | None = None
 
     @property
     def n_species(self) -> int:
@@ -63,13 +77,21 @@ class CollisionlessV3Operator:
             self.t_hats,
             self.m_hats,
             self.n_xi_for_x,
+            self.ddtheta_sparse_cols,
+            self.ddtheta_sparse_vals,
+            self.ddzeta_sparse_cols,
+            self.ddzeta_sparse_vals,
         )
-        aux = None
+        aux = (
+            self.ddtheta_stencil_shifts,
+            self.ddtheta_stencil_coeffs,
+            self.ddzeta_stencil_shifts,
+            self.ddzeta_stencil_coeffs,
+        )
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        del aux
         (
             x,
             ddtheta,
@@ -82,7 +104,23 @@ class CollisionlessV3Operator:
             t_hats,
             m_hats,
             n_xi_for_x,
+            ddtheta_sparse_cols,
+            ddtheta_sparse_vals,
+            ddzeta_sparse_cols,
+            ddzeta_sparse_vals,
         ) = children
+        if aux is None:
+            ddtheta_stencil_shifts = ()
+            ddtheta_stencil_coeffs = ()
+            ddzeta_stencil_shifts = ()
+            ddzeta_stencil_coeffs = ()
+        else:
+            (
+                ddtheta_stencil_shifts,
+                ddtheta_stencil_coeffs,
+                ddzeta_stencil_shifts,
+                ddzeta_stencil_coeffs,
+            ) = aux
         return cls(
             x=x,
             ddtheta=ddtheta,
@@ -95,6 +133,14 @@ class CollisionlessV3Operator:
             t_hats=t_hats,
             m_hats=m_hats,
             n_xi_for_x=n_xi_for_x,
+            ddtheta_stencil_shifts=tuple(int(v) for v in ddtheta_stencil_shifts),
+            ddtheta_stencil_coeffs=tuple(float(v) for v in ddtheta_stencil_coeffs),
+            ddzeta_stencil_shifts=tuple(int(v) for v in ddzeta_stencil_shifts),
+            ddzeta_stencil_coeffs=tuple(float(v) for v in ddzeta_stencil_coeffs),
+            ddtheta_sparse_cols=ddtheta_sparse_cols,
+            ddtheta_sparse_vals=ddtheta_sparse_vals,
+            ddzeta_sparse_cols=ddzeta_sparse_cols,
+            ddzeta_sparse_vals=ddzeta_sparse_vals,
         )
 
 
@@ -146,11 +192,49 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
     v_zeta_s = sqrt_t_over_m[:, None, None] * v_zeta[None, :, :]  # (S,T,Z)
 
     # d/dtheta applied to f at each (s,x,l,zeta): (S,X,L,T,Z)
-    dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta, f)
+    if periodic_stencil_runtime_enabled() and op.ddtheta_stencil_shifts:
+        dtheta_f = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddtheta_stencil_shifts,
+            coeffs=op.ddtheta_stencil_coeffs,
+            axis=3,
+        )
+    elif (
+        op.ddtheta_sparse_cols is not None
+        and op.ddtheta_sparse_vals is not None
+        and int(op.ddtheta_sparse_cols.size) > 0
+    ):
+        dtheta_f = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddtheta_sparse_cols,
+            vals=op.ddtheta_sparse_vals,
+            axis=3,
+        )
+    else:
+        dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta, f)
     dtheta_f = dtheta_f * v_theta_s[:, None, None, :, :]  # row-scaling
 
     # d/dzeta applied to f at each (s,x,l,theta): (S,X,L,T,Z)
-    dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta, f)
+    if periodic_stencil_runtime_enabled() and op.ddzeta_stencil_shifts:
+        dzeta_f = apply_periodic_stencil_roll(
+            f,
+            shifts=op.ddzeta_stencil_shifts,
+            coeffs=op.ddzeta_stencil_coeffs,
+            axis=4,
+        )
+    elif (
+        op.ddzeta_sparse_cols is not None
+        and op.ddzeta_sparse_vals is not None
+        and int(op.ddzeta_sparse_cols.size) > 0
+    ):
+        dzeta_f = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddzeta_sparse_cols,
+            vals=op.ddzeta_sparse_vals,
+            axis=4,
+        )
+    else:
+        dzeta_f = jnp.einsum("ij,sxltj->sxlti", op.ddzeta, f)
     dzeta_f = dzeta_f * v_zeta_s[:, None, None, :, :]
 
     # L-coupling coefficients for row L:

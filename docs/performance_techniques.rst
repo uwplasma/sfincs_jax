@@ -619,6 +619,63 @@ while keeping the matvec control‑flow free (required for JAX GMRES/BiCGStab).
 iterative solvers: they assert on control‑flow. The collision operators (PAS/FP)
 remain separate so remat/checkpointing controls and Phi1‑dependent variants stay intact.
 
+Sparse-row derivative kernels (step 1)
+--------------------------------------
+
+**Technique.** Replace dense :math:`d/d\theta` and :math:`d/d\zeta` matrix contractions
+in the collisionless block with a sparse-row gather kernel when the differentiation
+matrix has a small number of nonzeros per row.
+
+For a derivative matrix :math:`D` and state :math:`f`, the dense apply
+
+.. math::
+
+   y_i = \sum_j D_{ij} f_j
+
+is evaluated as a sparse row sum
+
+.. math::
+
+   y_i = \sum_{k=1}^{K_i} w_{i,k}\, f_{c_{i,k}},
+
+where :math:`c_{i,k}` are the stored nonzero column indices in row :math:`i`.
+This reduces derivative cost from :math:`\mathcal{O}(N^2)` to
+:math:`\mathcal{O}(N K)` with small :math:`K` (typically 3–5 for v3 finite-difference
+schemes used in reduced-suite inputs).
+
+**Implementation.**
+
+- Sparse-row extraction and apply:
+  ``sfincs_jax.periodic_stencil.extract_sparse_row_stencil`` and
+  ``sfincs_jax.periodic_stencil.apply_sparse_row_stencil_gather``.
+- Collisionless operator fast path:
+  ``sfincs_jax.collisionless.apply_collisionless_v3``.
+- Operator build wiring:
+  ``sfincs_jax.v3_fblock.collisionless_operator_from_namelist``.
+
+**Periodic circulant optimization.** For periodic circulant derivative matrices,
+an additional compact roll-based kernel is available and enabled on single-device
+runs. On multi-device runs this roll path is disabled by default to avoid
+cross-device halo overhead regressions in current JAX CPU sharding.
+
+**Controls.**
+
+- ``SFINCS_JAX_PERIODIC_STENCIL``: enable/disable periodic roll kernel (default on).
+- ``SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED``: force periodic roll kernel on sharded
+  multi-device runs (default off).
+- ``SFINCS_JAX_DERIV_SPARSE_MAX_ROW_NNZ``: max nonzeros per row for sparse-row
+  extraction (default ``9``).
+
+**Validation and measured impact.**
+
+- Unit parity coverage:
+  ``tests/test_periodic_stencil.py``,
+  ``tests/test_collisionless_operator_parity.py``,
+  ``tests/test_fblock_pas_matvec_parity.py``.
+- Benchmark (cache-warm, `transport_parallel_xxlarge`, 1 CPU device):
+  mean matvec time improved from ``7.49e-4 s`` (stencil off) to
+  ``5.87e-4 s`` (stencil on), about **1.28× faster**.
+
 Transport diagnostics: batched + precomputed
 --------------------------------------------
 

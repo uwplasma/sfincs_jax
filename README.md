@@ -124,6 +124,11 @@ python examples/performance/benchmark_transport_parallel_scaling.py \
   --repeats 1 \
   --warmup 0 \
   --global-warmup 0
+
+# Derivative kernel microbenchmark (single device):
+SFINCS_JAX_PERIODIC_STENCIL=1 python examples/performance/benchmark_sharded_matvec_scaling.py \
+  --input examples/performance/transport_parallel_xxlarge.input.namelist \
+  --axis theta --devices 1 --nrep 100 --repeats 3 --global-warmup 1
 ```
 
 For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.

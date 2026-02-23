@@ -342,6 +342,12 @@ On GPUs, JAX will automatically see all local devices.
   `sfincs_jax` defaults to a **local line preconditioner** along the sharded
   axis (theta‑line or zeta‑line). This keeps the preconditioner apply local
   to each shard, mirroring PETSc-style block‑Jacobi behavior.
+- Collisionless derivative kernels now use a sparse-row gather apply when the
+  differentiation matrices are banded/sparse (common 3‑point/5‑point schemes).
+  This reduces single-device matvec cost and keeps the operator matrix-free and
+  differentiable. The periodic roll kernel is enabled only on single-device
+  runs by default; on multi-device sharded runs it is disabled unless
+  ``SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED=1`` is set.
 - This mirrors Fortran DMDA splitting along :math:`\theta` or :math:`\zeta`,
   with the same intent: distribute matvec and preconditioner cost.
 
@@ -366,6 +372,25 @@ Latest run (cache warm, Macbook M3 Max, theta‑sharded with padding):
 5 devices 8.01 ms, 6 devices 11.24 ms, 7 devices 13.81 ms, 8 devices 15.53 ms.
 CPU sharding overhead dominates at this size; this mode is primarily intended
 for **very large grids** or multi‑GPU nodes.
+
+Single-device derivative-kernel speedup
+---------------------------------------
+
+For the same operator (`transport_parallel_xxlarge`), enabling sparse derivative
+kernels reduced single-device matvec time from ``7.49e-4 s`` to ``5.87e-4 s``
+(about ``1.28x`` faster, cache-warm).
+
+Reproduce:
+
+.. code-block:: bash
+
+   SFINCS_JAX_PERIODIC_STENCIL=0 python examples/performance/benchmark_sharded_matvec_scaling.py \
+     --input examples/performance/transport_parallel_xxlarge.input.namelist \
+     --axis theta --devices 1 --nrep 100 --repeats 3 --global-warmup 1
+
+   SFINCS_JAX_PERIODIC_STENCIL=1 python examples/performance/benchmark_sharded_matvec_scaling.py \
+     --input examples/performance/transport_parallel_xxlarge.input.namelist \
+     --axis theta --devices 1 --nrep 100 --repeats 3 --global-warmup 1
 
 .. figure:: _static/figures/parallel/transport_sharded_matvec_scaling.png
    :alt: Sharded matvec scaling on Macbook M3 Max
