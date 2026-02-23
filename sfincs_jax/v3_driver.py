@@ -3676,10 +3676,14 @@ def _build_rhsmode1_schur_preconditioner(
                 and op.fblock.er_xdot is None
                 and op.fblock.er_xidot is None
             ):
-                # DKES-trajectory PAS runs can require a strong angular preconditioner. For parity,
-                # default to the dense xblock_tz base when it is still feasible; otherwise fall back
-                # to a sparse per-x ILU. Dense xblock_tz has O((Ntheta*Nzeta*Lmax)^2) memory per
-                # (species,x) block, so consider the total (species,x) count as well.
+                # DKES-trajectory PAS runs can be stiff. Prefer a PETSc-like sparse block
+                # factorization per (species,x) ("pas_ilu") by default:
+                # - Assemble a stencil-like sparse approximation of the (L,theta,zeta) operator.
+                # - Factor each x-block with SciPy (exact sparse LU for small blocks, ILU for larger).
+                # - Apply the triangular factors in pure JAX inside GMRES iterations.
+                #
+                # This avoids the expensive dense xblock_tz assembly/inversion while remaining
+                # robust enough for parity-sensitive DKES diagnostics.
                 dense_bytes_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_DKES_XBLOCK_TZ_MAX_BYTES", "").strip()
                 try:
                     # Default parity-first: allow moderately large dense (theta,zeta) x-block
@@ -3697,20 +3701,23 @@ def _build_rhsmode1_schur_preconditioner(
                     np.int64, copy=False
                 )
                 dense_bytes = int(int(op.n_species) * int(np.sum(block_sizes_x * block_sizes_x)) * 8)
-                use_dense_xblock_tz = (
-                    xblock_tz_max > 0 and block_size <= xblock_tz_max and dense_bytes <= dense_bytes_max
+                xblock_tz_small_env = os.environ.get("SFINCS_JAX_RHSMODE1_DKES_XBLOCK_TZ_SMALL_MAX", "").strip()
+                try:
+                    xblock_tz_small_max = int(xblock_tz_small_env) if xblock_tz_small_env else 512
+                except ValueError:
+                    xblock_tz_small_max = 512
+                xblock_tz_small_max = max(0, int(xblock_tz_small_max))
+                use_dense_xblock_tz = bool(
+                    xblock_tz_small_max > 0
+                    and xblock_tz_max > 0
+                    and block_size <= xblock_tz_max
+                    and block_size <= xblock_tz_small_max
+                    and dense_bytes <= dense_bytes_max
                 )
                 if use_dense_xblock_tz:
                     base_kind = "xblock_tz"
                 else:
-                    # For larger DKES-trajectory PAS systems, prefer the JAX-native
-                    # (theta,zeta)/L block-tridiagonal approximation (pas_tz). Fall back
-                    # to sparse per-x ILU only when pas_tz is not applicable.
-                    base_kind = (
-                        "pas_tz"
-                        if (_pas_tz_preconditioner_applicable(op) and block_size >= pas_tz_min)
-                        else "pas_ilu"
-                    )
+                    base_kind = "pas_ilu"
             elif (
                 op.fblock.pas is not None
                 and op.fblock.fp is None
@@ -5647,12 +5654,21 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
 
     try:
         import scipy.sparse as sp  # noqa: PLC0415
-        from scipy.sparse.linalg import spilu  # noqa: PLC0415
+        from scipy.sparse.linalg import spilu, splu  # noqa: PLC0415
     except Exception:
         # SciPy missing: fall back to existing defaults.
         return _build_rhsmode1_pas_hybrid_preconditioner(
             op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
         )
+
+    # Detect the DKES-trajectory branch (strong ExB drift). These PAS systems are often
+    # much stiffer / less diagonally-dominant than tokamak-like cases, and the default
+    # ILU drop settings can be too aggressive, leading to slow or stalled Krylov solves.
+    exb_theta = op.fblock.exb_theta
+    exb_zeta = op.fblock.exb_zeta
+    use_dkes_exb = bool(getattr(exb_theta, "use_dkes_exb_drift", False)) or bool(
+        getattr(exb_zeta, "use_dkes_exb_drift", False)
+    )
 
     # ILU parameters (PETSc-like PCILU defaults). Keep these conservative to
     # avoid unstable factors on ill-conditioned blocks. In particular, we cap
@@ -5663,13 +5679,17 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
     row_nnz_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_ILU_ROW_NNZ_MAX", "").strip()
     reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_ILU_REG", "").strip()
     try:
-        ilu_drop_tol = float(ilu_drop_tol_env) if ilu_drop_tol_env else 1e-3
+        # For DKES-like PAS cases, default to a stronger (less dropping) ILU since the
+        # operator can be poorly conditioned.
+        default_drop = 1e-4 if use_dkes_exb else 1e-3
+        ilu_drop_tol = float(ilu_drop_tol_env) if ilu_drop_tol_env else default_drop
     except ValueError:
-        ilu_drop_tol = 1e-3
+        ilu_drop_tol = 1e-4 if use_dkes_exb else 1e-3
     try:
-        ilu_fill_factor = float(ilu_fill_env) if ilu_fill_env else 5.0
+        default_fill = 10.0 if use_dkes_exb else 5.0
+        ilu_fill_factor = float(ilu_fill_env) if ilu_fill_env else default_fill
     except ValueError:
-        ilu_fill_factor = 5.0
+        ilu_fill_factor = 10.0 if use_dkes_exb else 5.0
     try:
         row_nnz_max = int(row_nnz_env) if row_nnz_env else 64
     except ValueError:
@@ -5682,10 +5702,27 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
     reg = float(max(reg, 0.0))
 
     # Cache key: include the physics pieces that affect the assembled sparse block.
+    # For small per-x blocks, an exact sparse LU can be both robust and faster overall
+    # than a weak ILU (fewer Krylov iterations). We only enable this for small blocks
+    # to avoid dense factors in the padded-row JAX format.
+    lu_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_LU_MAX", "").strip()
+    try:
+        lu_max = int(lu_max_env) if lu_max_env else 5000
+    except ValueError:
+        lu_max = 5000
+    lu_max = max(0, int(lu_max))
+    # Row cap for *exact LU* factors. Exact sparse LU can have substantially more fill than
+    # ILU; we allow a higher cap for LU factors (to keep the preconditioner strong) but
+    # still cap aggressively to avoid allocating dense padded-row arrays.
+    lu_full_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_LU_ROW_NNZ_MAX", "").strip()
+    try:
+        lu_full_row_nnz_max = int(lu_full_env) if lu_full_env else 512
+    except ValueError:
+        lu_full_row_nnz_max = 512
+    lu_full_row_nnz_max = max(0, int(lu_full_row_nnz_max))
+
     colless = op.fblock.collisionless
     pas = op.fblock.pas
-    exb_theta = op.fblock.exb_theta
-    exb_zeta = op.fblock.exb_zeta
 
     cache_key = (
         *_rhsmode1_precond_cache_key(op, "pas_xblock_ilu"),
@@ -5703,6 +5740,8 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
         float(ilu_fill_factor),
         int(row_nnz_max),
         float(reg),
+        int(lu_max),
+        int(lu_full_row_nnz_max),
         bool(exb_theta is not None),
         bool(exb_zeta is not None),
         bool(getattr(exb_theta, "use_dkes_exb_drift", False)) if exb_theta is not None else False,
@@ -5862,23 +5901,40 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
                     a = a + sp.kron(c_stream, stream_tz, format="csc") + sp.kron(c_mirror, mirror_diag, format="csc")
                 a = a.tocsc()
 
-                try:
-                    ilu = spilu(
-                        a,
-                        drop_tol=ilu_drop_tol,
-                        fill_factor=ilu_fill_factor,
-                        permc_spec="COLAMD",
-                    )
-                except Exception:  # noqa: BLE001
-                    ilu = None
+                fac = None
+                used_lu = False
+                if lu_max > 0 and int(active_n) <= int(lu_max):
+                    # Exact sparse LU (PETSc PCLU analogue) for small blocks.
+                    try:
+                        fac = splu(a, permc_spec="COLAMD")
+                        used_lu = True
+                    except Exception:  # noqa: BLE001
+                        fac = None
+                if fac is None:
+                    # ILU (PETSc PCILU analogue) for larger blocks.
+                    try:
+                        fac = spilu(
+                            a,
+                            drop_tol=ilu_drop_tol,
+                            fill_factor=ilu_fill_factor,
+                            permc_spec="COLAMD",
+                        )
+                    except Exception:  # noqa: BLE001
+                        fac = None
 
-                if ilu is not None:
-                    perm_r = np.asarray(ilu.perm_r, dtype=np.int32)
-                    perm_c = np.asarray(ilu.perm_c, dtype=np.int32)
+                if fac is not None:
+                    perm_r = np.asarray(fac.perm_r, dtype=np.int32)
+                    perm_c = np.asarray(fac.perm_c, dtype=np.int32)
 
-                    l_csr = ilu.L.tocsr()
-                    u_csr = ilu.U.tocsr()
+                    l_csr = fac.L.tocsr()
+                    u_csr = fac.U.tocsr()
                     n = int(active_n)
+                    # Truncating exact LU factors can severely degrade preconditioner quality.
+                    # For LU factors, allow more fill than the ILU cap, but still cap to
+                    # avoid dense padded-row allocations.
+                    row_nnz_eff = int(row_nnz_max)
+                    if used_lu and lu_full_row_nnz_max > 0:
+                        row_nnz_eff = max(int(row_nnz_eff), min(int(n), int(lu_full_row_nnz_max)))
 
                     # Strict lower-triangular part (unit diagonal assumed).
                     lower_cols: list[np.ndarray] = []
@@ -5892,8 +5948,8 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
                         mask = cols < i
                         cols = cols[mask].astype(np.int32, copy=False)
                         vals = vals[mask].astype(np.float64, copy=False)
-                        if row_nnz_max > 0 and int(cols.size) > row_nnz_max:
-                            sel = np.argpartition(np.abs(vals), -row_nnz_max)[-row_nnz_max:]
+                        if row_nnz_eff > 0 and int(cols.size) > row_nnz_eff:
+                            sel = np.argpartition(np.abs(vals), -row_nnz_eff)[-row_nnz_eff:]
                             cols = cols[sel]
                             vals = vals[sel]
                         if cols.size:
@@ -5927,8 +5983,8 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
                         mask = cols > i
                         cols_u = cols[mask].astype(np.int32, copy=False)
                         vals_u = vals[mask].astype(np.float64, copy=False)
-                        if row_nnz_max > 0 and int(cols_u.size) > row_nnz_max:
-                            sel = np.argpartition(np.abs(vals_u), -row_nnz_max)[-row_nnz_max:]
+                        if row_nnz_eff > 0 and int(cols_u.size) > row_nnz_eff:
+                            sel = np.argpartition(np.abs(vals_u), -row_nnz_eff)[-row_nnz_eff:]
                             cols_u = cols_u[sel]
                             vals_u = vals_u[sel]
                         if cols_u.size:
