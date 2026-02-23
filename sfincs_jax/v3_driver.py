@@ -274,6 +274,17 @@ class _SparseILUCache:
     l_dense: np.ndarray | None
     u_dense: np.ndarray | None
     l_unit_diag: bool
+    # JAX-native triangular-solve representation for implicit/differentiable solves.
+    # These factors incorporate SuperLU's row/column permutations via `perm_r` and
+    # `inv_perm_c` in the preconditioner apply.
+    perm_r: jnp.ndarray | None = None
+    inv_perm_c: jnp.ndarray | None = None
+    lower_idx: jnp.ndarray | None = None
+    lower_val: jnp.ndarray | None = None
+    lower_diag: jnp.ndarray | None = None
+    upper_idx: jnp.ndarray | None = None
+    upper_val: jnp.ndarray | None = None
+    upper_diag: jnp.ndarray | None = None
 
 
 _RHSMODE1_SPARSE_ILU_CACHE: dict[tuple[object, ...], _SparseILUCache] = {}
@@ -314,12 +325,161 @@ def _build_sparse_ilu_from_matvec(
     ilu_drop_tol: float,
     fill_factor: float,
     build_dense_factors: bool,
+    build_jax_factors: bool,
     build_ilu: bool,
     store_dense: bool,
     emit: Callable[[int, str], None] | None = None,
 ) -> tuple[object, object, object | None, np.ndarray | None, np.ndarray | None, np.ndarray | None, bool]:
     cached = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
     if cached is not None:
+        if build_ilu and cached.ilu is not None:
+            need_dense = bool(build_dense_factors) and (cached.l_dense is None or cached.u_dense is None)
+            need_jax = bool(build_jax_factors) and (
+                cached.perm_r is None
+                or cached.inv_perm_c is None
+                or cached.lower_idx is None
+                or cached.upper_idx is None
+            )
+            if need_dense or need_jax:
+                ilu = cached.ilu
+                assert ilu is not None
+                l_dense = cached.l_dense
+                u_dense = cached.u_dense
+                l_unit_diag = cached.l_unit_diag
+                perm_r_jnp = cached.perm_r
+                inv_perm_c_jnp = cached.inv_perm_c
+                lower_idx_jnp = cached.lower_idx
+                lower_val_jnp = cached.lower_val
+                lower_diag_jnp = cached.lower_diag
+                upper_idx_jnp = cached.upper_idx
+                upper_val_jnp = cached.upper_val
+                upper_diag_jnp = cached.upper_diag
+
+                if need_dense:
+                    l_dense = np.asarray(ilu.L.todense(), dtype=np.float64)
+                    u_dense = np.asarray(ilu.U.todense(), dtype=np.float64)
+                    diag_l = np.diag(l_dense)
+                    l_unit_diag = bool(np.allclose(diag_l, 1.0))
+
+                if need_jax:
+                    perm_r = np.asarray(ilu.perm_r, dtype=np.int32, copy=True)
+                    perm_c = np.asarray(ilu.perm_c, dtype=np.int32, copy=True)
+                    inv_perm_c = np.argsort(perm_c).astype(np.int32, copy=False)
+                    l_csr = ilu.L.tocsr()
+                    u_csr = ilu.U.tocsr()
+
+                    row_nnz_cap_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_ROW_NNZ_MAX", "").strip()
+                    try:
+                        # Cap the padded-row width to keep JAX triangular-solve preconditioner
+                        # application cheap. SuperLU ILU factors can be quite dense in a few
+                        # rows, so without a cap the padded representation can become
+                        # expensive (and can dominate runtime).
+                        row_nnz_cap = int(row_nnz_cap_env) if row_nnz_cap_env else 256
+                    except ValueError:
+                        row_nnz_cap = 256
+                    row_nnz_cap = max(0, int(row_nnz_cap))
+
+                    lower_diag = np.asarray(l_csr.diagonal(), dtype=np.float64)
+                    lower_diag = np.where(lower_diag != 0.0, lower_diag, 1.0)
+                    upper_diag = np.asarray(u_csr.diagonal(), dtype=np.float64)
+                    upper_diag = np.where(np.isfinite(upper_diag) & (upper_diag != 0.0), upper_diag, 1.0)
+
+                    # Strict lower.
+                    lower_cols: list[np.ndarray] = []
+                    lower_vals: list[np.ndarray] = []
+                    max_lower = 0
+                    for i in range(int(n)):
+                        rs = int(l_csr.indptr[i])
+                        re = int(l_csr.indptr[i + 1])
+                        cols = l_csr.indices[rs:re]
+                        vals = l_csr.data[rs:re]
+                        mask = cols < i
+                        cols = cols[mask].astype(np.int32, copy=False)
+                        vals = vals[mask].astype(np.float64, copy=False)
+                        if row_nnz_cap > 0 and int(cols.size) > row_nnz_cap:
+                            sel = np.argpartition(np.abs(vals), -row_nnz_cap)[-row_nnz_cap:]
+                            cols = cols[sel]
+                            vals = vals[sel]
+                        if cols.size:
+                            order = np.argsort(cols)
+                            cols = cols[order]
+                            vals = vals[order]
+                        lower_cols.append(cols)
+                        lower_vals.append(vals)
+                        max_lower = max(max_lower, int(cols.size))
+                    lower_idx = -np.ones((int(n), max_lower), dtype=np.int32)
+                    lower_val = np.zeros((int(n), max_lower), dtype=np.float64)
+                    for i in range(int(n)):
+                        k = int(lower_cols[i].size)
+                        if k:
+                            lower_idx[i, :k] = lower_cols[i]
+                            lower_val[i, :k] = lower_vals[i]
+
+                    # Strict upper.
+                    upper_cols: list[np.ndarray] = []
+                    upper_vals: list[np.ndarray] = []
+                    max_upper = 0
+                    for i in range(int(n)):
+                        rs = int(u_csr.indptr[i])
+                        re = int(u_csr.indptr[i + 1])
+                        cols = u_csr.indices[rs:re]
+                        vals = u_csr.data[rs:re]
+                        mask = cols > i
+                        cols_u = cols[mask].astype(np.int32, copy=False)
+                        vals_u = vals[mask].astype(np.float64, copy=False)
+                        if row_nnz_cap > 0 and int(cols_u.size) > row_nnz_cap:
+                            sel = np.argpartition(np.abs(vals_u), -row_nnz_cap)[-row_nnz_cap:]
+                            cols_u = cols_u[sel]
+                            vals_u = vals_u[sel]
+                        if cols_u.size:
+                            order = np.argsort(cols_u)
+                            cols_u = cols_u[order]
+                            vals_u = vals_u[order]
+                        upper_cols.append(cols_u)
+                        upper_vals.append(vals_u)
+                        max_upper = max(max_upper, int(cols_u.size))
+                    upper_idx = -np.ones((int(n), max_upper), dtype=np.int32)
+                    upper_val = np.zeros((int(n), max_upper), dtype=np.float64)
+                    for i in range(int(n)):
+                        k = int(upper_cols[i].size)
+                        if k:
+                            upper_idx[i, :k] = upper_cols[i]
+                            upper_val[i, :k] = upper_vals[i]
+
+                    perm_r_jnp = jnp.asarray(perm_r, dtype=jnp.int32)
+                    inv_perm_c_jnp = jnp.asarray(inv_perm_c, dtype=jnp.int32)
+                    lower_idx_jnp = jnp.asarray(lower_idx, dtype=jnp.int32)
+                    lower_val_jnp = jnp.asarray(lower_val, dtype=jnp.float64)
+                    lower_diag_jnp = jnp.asarray(lower_diag, dtype=jnp.float64)
+                    upper_idx_jnp = jnp.asarray(upper_idx, dtype=jnp.int32)
+                    upper_val_jnp = jnp.asarray(upper_val, dtype=jnp.float64)
+                    upper_diag_jnp = jnp.asarray(upper_diag, dtype=jnp.float64)
+
+                    if emit is not None:
+                        emit(
+                            1,
+                            "sparse_ilu: cached JAX factors "
+                            f"(max_lower={int(max_lower)} max_upper={int(max_upper)} cap={int(row_nnz_cap)})",
+                        )
+
+                _RHSMODE1_SPARSE_ILU_CACHE[cache_key] = _SparseILUCache(
+                    a_csr_full=cached.a_csr_full,
+                    a_csr_drop=cached.a_csr_drop,
+                    ilu=ilu,
+                    a_dense=cached.a_dense,
+                    l_dense=l_dense,
+                    u_dense=u_dense,
+                    l_unit_diag=bool(l_unit_diag),
+                    perm_r=perm_r_jnp,
+                    inv_perm_c=inv_perm_c_jnp,
+                    lower_idx=lower_idx_jnp,
+                    lower_val=lower_val_jnp,
+                    lower_diag=lower_diag_jnp,
+                    upper_idx=upper_idx_jnp,
+                    upper_val=upper_val_jnp,
+                    upper_diag=upper_diag_jnp,
+                )
+                cached = _RHSMODE1_SPARSE_ILU_CACHE[cache_key]
         return (
             cached.a_csr_full,
             cached.a_csr_drop,
@@ -335,42 +495,196 @@ def _build_sparse_ilu_from_matvec(
     a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
     a_np_full = np.array(a_dense, dtype=np.float64, copy=True)
     max_abs = float(np.max(np.abs(a_np_full))) if a_np_full.size else 0.0
-    thresh = max(float(drop_tol), float(drop_rel) * max_abs)
-    a_np_drop = a_np_full
-    if thresh > 0.0:
-        if emit is not None:
-            emit(1, f"sparse_ilu: dropping entries |a| < {thresh:.3e}")
-        a_np_drop = a_np_full.copy()
-        a_np_drop[np.abs(a_np_drop) < thresh] = 0.0
+    thresh0 = max(float(drop_tol), float(drop_rel) * max_abs)
+    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_REG", "").strip()
+    try:
+        reg = float(reg_env) if reg_env else (1.0e-12 * max_abs)
+    except ValueError:
+        reg = 1.0e-12 * max_abs
+    reg = max(0.0, float(reg))
+    attempts_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_ATTEMPTS", "").strip()
+    try:
+        attempts = int(attempts_env) if attempts_env else 3
+    except ValueError:
+        attempts = 3
+    attempts = max(1, int(attempts))
 
     import scipy.sparse as sp  # noqa: PLC0415
     from scipy.sparse.linalg import spilu  # noqa: PLC0415
 
     a_csr_full = sp.csr_matrix(a_np_full)
     a_csr_full.eliminate_zeros()
-    a_csr_drop = sp.csr_matrix(a_np_drop)
-    a_csr_drop.eliminate_zeros()
-    if emit is not None:
-        nnz = int(a_csr_drop.nnz)
-        emit(1, f"sparse_ilu: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
-
+    a_csr_drop = None
     ilu = None
-    if build_ilu:
-        ilu = spilu(
-            a_csr_drop.tocsc(),
-            drop_tol=float(ilu_drop_tol),
-            fill_factor=float(fill_factor),
-            permc_spec="COLAMD",
-        )
+    ilu_drop_tol_eff = float(ilu_drop_tol)
+    fill_factor_eff = float(fill_factor)
+    last_exc: Exception | None = None
+    for attempt in range(int(attempts if build_ilu else 1)):
+        thresh = float(thresh0) * (0.1 ** int(attempt))
+        if thresh > 0.0:
+            if emit is not None:
+                emit(1, f"sparse_ilu: dropping entries |a| < {thresh:.3e}")
+            a_np_drop = a_np_full.copy()
+            a_np_drop[np.abs(a_np_drop) < thresh] = 0.0
+        elif reg != 0.0:
+            a_np_drop = a_np_full.copy()
+        else:
+            a_np_drop = a_np_full
+
+        # Preserve the diagonal and add a small regularization to avoid exact
+        # zero pivots in the incomplete factorization.
+        if int(n) > 0 and reg != 0.0:
+            diag_idx = np.arange(int(n), dtype=np.int32)
+            a_np_drop[diag_idx, diag_idx] = a_np_full[diag_idx, diag_idx] + reg
+
+        a_csr_drop = sp.csr_matrix(a_np_drop)
+        a_csr_drop.eliminate_zeros()
+        if emit is not None:
+            nnz = int(a_csr_drop.nnz)
+            emit(1, f"sparse_ilu: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
+        if not build_ilu:
+            break
+        try:
+            ilu = spilu(
+                a_csr_drop.tocsc(),
+                drop_tol=float(ilu_drop_tol_eff),
+                fill_factor=float(fill_factor_eff),
+                permc_spec="COLAMD",
+            )
+            last_exc = None
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            msg = str(exc).lower()
+            if emit is not None:
+                emit(
+                    1,
+                    "sparse_ilu: spilu failed "
+                    f"(attempt={attempt + 1}/{int(attempts)} "
+                    f"thresh={thresh:.3e} drop_tol={ilu_drop_tol_eff:.1e} fill={fill_factor_eff:.1f}) "
+                    f"({type(exc).__name__}: {exc})",
+                )
+            if ("singular" in msg) or ("pivot" in msg) or ("dpivot" in msg) or ("zero" in msg):
+                # Retry with a denser sparsification and stronger (less dropping) ILU.
+                ilu_drop_tol_eff = max(0.0, float(ilu_drop_tol_eff) * 0.1)
+                fill_factor_eff = max(float(fill_factor_eff), float(fill_factor) * 2.0, 20.0)
+                continue
+            raise
+    if a_csr_drop is None:
+        a_csr_drop = sp.csr_matrix(a_np_full)
+        a_csr_drop.eliminate_zeros()
+    if build_ilu and ilu is None and last_exc is not None:
+        raise RuntimeError(f"sparse_ilu: spilu failed after {int(attempts)} attempts ({type(last_exc).__name__}: {last_exc})")
     a_dense = a_np_full if store_dense else None
     l_dense = None
     u_dense = None
     l_unit_diag = True
+    perm_r_jnp = None
+    inv_perm_c_jnp = None
+    lower_idx_jnp = None
+    lower_val_jnp = None
+    lower_diag_jnp = None
+    upper_idx_jnp = None
+    upper_val_jnp = None
+    upper_diag_jnp = None
     if build_dense_factors and ilu is not None:
         l_dense = np.asarray(ilu.L.todense(), dtype=np.float64)
         u_dense = np.asarray(ilu.U.todense(), dtype=np.float64)
         diag_l = np.diag(l_dense)
         l_unit_diag = bool(np.allclose(diag_l, 1.0))
+    if build_jax_factors and ilu is not None:
+        perm_r = np.asarray(ilu.perm_r, dtype=np.int32, copy=True)
+        perm_c = np.asarray(ilu.perm_c, dtype=np.int32, copy=True)
+        inv_perm_c = np.argsort(perm_c).astype(np.int32, copy=False)
+        l_csr = ilu.L.tocsr()
+        u_csr = ilu.U.tocsr()
+
+        row_nnz_cap_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_ROW_NNZ_MAX", "").strip()
+        try:
+            row_nnz_cap = int(row_nnz_cap_env) if row_nnz_cap_env else 256
+        except ValueError:
+            row_nnz_cap = 256
+        row_nnz_cap = max(0, int(row_nnz_cap))
+
+        lower_diag = np.asarray(l_csr.diagonal(), dtype=np.float64)
+        lower_diag = np.where(lower_diag != 0.0, lower_diag, 1.0)
+        upper_diag = np.asarray(u_csr.diagonal(), dtype=np.float64)
+        upper_diag = np.where(np.isfinite(upper_diag) & (upper_diag != 0.0), upper_diag, 1.0)
+
+        lower_cols: list[np.ndarray] = []
+        lower_vals: list[np.ndarray] = []
+        max_lower = 0
+        for i in range(int(n)):
+            rs = int(l_csr.indptr[i])
+            re = int(l_csr.indptr[i + 1])
+            cols = l_csr.indices[rs:re]
+            vals = l_csr.data[rs:re]
+            mask = cols < i
+            cols = cols[mask].astype(np.int32, copy=False)
+            vals = vals[mask].astype(np.float64, copy=False)
+            if row_nnz_cap > 0 and int(cols.size) > row_nnz_cap:
+                sel = np.argpartition(np.abs(vals), -row_nnz_cap)[-row_nnz_cap:]
+                cols = cols[sel]
+                vals = vals[sel]
+            if cols.size:
+                order = np.argsort(cols)
+                cols = cols[order]
+                vals = vals[order]
+            lower_cols.append(cols)
+            lower_vals.append(vals)
+            max_lower = max(max_lower, int(cols.size))
+        lower_idx = -np.ones((int(n), max_lower), dtype=np.int32)
+        lower_val = np.zeros((int(n), max_lower), dtype=np.float64)
+        for i in range(int(n)):
+            k = int(lower_cols[i].size)
+            if k:
+                lower_idx[i, :k] = lower_cols[i]
+                lower_val[i, :k] = lower_vals[i]
+
+        upper_cols: list[np.ndarray] = []
+        upper_vals: list[np.ndarray] = []
+        max_upper = 0
+        for i in range(int(n)):
+            rs = int(u_csr.indptr[i])
+            re = int(u_csr.indptr[i + 1])
+            cols = u_csr.indices[rs:re]
+            vals = u_csr.data[rs:re]
+            mask = cols > i
+            cols_u = cols[mask].astype(np.int32, copy=False)
+            vals_u = vals[mask].astype(np.float64, copy=False)
+            if row_nnz_cap > 0 and int(cols_u.size) > row_nnz_cap:
+                sel = np.argpartition(np.abs(vals_u), -row_nnz_cap)[-row_nnz_cap:]
+                cols_u = cols_u[sel]
+                vals_u = vals_u[sel]
+            if cols_u.size:
+                order = np.argsort(cols_u)
+                cols_u = cols_u[order]
+                vals_u = vals_u[order]
+            upper_cols.append(cols_u)
+            upper_vals.append(vals_u)
+            max_upper = max(max_upper, int(cols_u.size))
+        upper_idx = -np.ones((int(n), max_upper), dtype=np.int32)
+        upper_val = np.zeros((int(n), max_upper), dtype=np.float64)
+        for i in range(int(n)):
+            k = int(upper_cols[i].size)
+            if k:
+                upper_idx[i, :k] = upper_cols[i]
+                upper_val[i, :k] = upper_vals[i]
+
+        perm_r_jnp = jnp.asarray(perm_r, dtype=jnp.int32)
+        inv_perm_c_jnp = jnp.asarray(inv_perm_c, dtype=jnp.int32)
+        lower_idx_jnp = jnp.asarray(lower_idx, dtype=jnp.int32)
+        lower_val_jnp = jnp.asarray(lower_val, dtype=jnp.float64)
+        lower_diag_jnp = jnp.asarray(lower_diag, dtype=jnp.float64)
+        upper_idx_jnp = jnp.asarray(upper_idx, dtype=jnp.int32)
+        upper_val_jnp = jnp.asarray(upper_val, dtype=jnp.float64)
+        upper_diag_jnp = jnp.asarray(upper_diag, dtype=jnp.float64)
+        if emit is not None:
+            emit(
+                1,
+                "sparse_ilu: built JAX factors "
+                f"(max_lower={int(max_lower)} max_upper={int(max_upper)} cap={int(row_nnz_cap)})",
+            )
     _RHSMODE1_SPARSE_ILU_CACHE[cache_key] = _SparseILUCache(
         a_csr_full=a_csr_full,
         a_csr_drop=a_csr_drop,
@@ -379,6 +693,14 @@ def _build_sparse_ilu_from_matvec(
         l_dense=l_dense,
         u_dense=u_dense,
         l_unit_diag=l_unit_diag,
+        perm_r=perm_r_jnp,
+        inv_perm_c=inv_perm_c_jnp,
+        lower_idx=lower_idx_jnp,
+        lower_val=lower_val_jnp,
+        lower_diag=lower_diag_jnp,
+        upper_idx=upper_idx_jnp,
+        upper_val=upper_val_jnp,
+        upper_diag=upper_diag_jnp,
     )
     return a_csr_full, a_csr_drop, ilu, a_dense, l_dense, u_dense, l_unit_diag
 
@@ -706,8 +1028,16 @@ def _rhsmode1_dense_fallback_max(op: V3FullSystemOperator) -> int:
             return base_max
         return max(base_max, dense_pas_max)
     dense_fp_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FP_MAX", "").strip()
+    dense_fp_cutoff_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FP_CUTOFF", "").strip()
     try:
-        dense_fp_max = int(dense_fp_env) if dense_fp_env else 5000
+        if dense_fp_env:
+            dense_fp_max = int(dense_fp_env)
+        elif dense_fp_cutoff_env:
+            dense_fp_max = int(dense_fp_cutoff_env)
+        else:
+            # Keep the default conservative to avoid transient multi-GB allocations in
+            # the dense branch for medium FP systems.
+            dense_fp_max = 5000
     except ValueError:
         dense_fp_max = base_max
     if dense_fp_max <= 0:
@@ -6960,6 +7290,12 @@ def solve_v3_full_system_linear_gmres(
                     rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif schur_auto:
                     rhs1_precond_kind = "schur"
+                elif op.fblock.fp is not None and use_dkes:
+                    # DKES-trajectory FP cases often trigger the dense fallback probe.
+                    # Avoid building heavy (S,X,theta,zeta) block preconditioners that can
+                    # allocate O(GB) of scratch memory when we're likely to fall back to
+                    # a direct solve anyway.
+                    rhs1_precond_kind = "collision"
                 elif (
                     op.fblock.fp is not None
                     and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
@@ -7151,7 +7487,10 @@ def solve_v3_full_system_linear_gmres(
     else:
         sparse_operator_mode = "auto"
     sparse_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_MAX", "").strip()
-    default_sparse_max = 4000
+    # Assembling a sparse ILU preconditioner currently uses a dense (n^2) operator
+    # assembly, so keep the default max modest. This cap is still large enough to
+    # cover the reduced-suite FP DKES cases that otherwise trigger dense fallback.
+    default_sparse_max = 6000
     if op.fblock.pas is not None and use_dkes:
         default_sparse_max = 60000
     try:
@@ -7169,9 +7508,9 @@ def solve_v3_full_system_linear_gmres(
     except ValueError:
         sparse_drop_tol = 0.0
     try:
-        sparse_drop_rel = float(sparse_drop_rel_env) if sparse_drop_rel_env else 1.0e-6
+        sparse_drop_rel = float(sparse_drop_rel_env) if sparse_drop_rel_env else 1.0e-8
     except ValueError:
-        sparse_drop_rel = 1.0e-6
+        sparse_drop_rel = 1.0e-8
     try:
         sparse_ilu_drop_tol = float(sparse_ilu_drop_env) if sparse_ilu_drop_env else 1.0e-4
     except ValueError:
@@ -7665,6 +8004,42 @@ def solve_v3_full_system_linear_gmres(
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
         if disable_dense_pas:
             dense_fallback_max = 0
+        # FP dense-fallback probe shortcut: for medium FP systems where the probe is
+        # likely to trigger a direct solve, avoid building heavy block preconditioners
+        # that can allocate O(GB) of scratch. Use the cheap collision preconditioner
+        # for the probe instead.
+        fp_probe_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_PRECOND_PROBE", "").strip().lower()
+        fp_probe_enabled = fp_probe_env not in {"0", "false", "no", "off"}
+        fp_probe_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_PRECOND_PROBE_MIN", "").strip()
+        try:
+            fp_probe_min = int(fp_probe_min_env) if fp_probe_min_env else 2500
+        except ValueError:
+            fp_probe_min = 2500
+        heavy_precond_kinds_fp = {
+            "point",
+            "theta_line",
+            "zeta_line",
+            "theta_zeta",
+            "adi",
+            "xblock_tz",
+            "sxblock_tz",
+            "species_block",
+            "schur",
+            "pas_hybrid",
+        }
+        if (
+            fp_probe_enabled
+            and (not rhs1_precond_env)
+            and op.fblock.fp is not None
+            and (not bool(op.include_phi1))
+            and dense_fallback_max > 0
+            and int(active_size) >= int(fp_probe_min)
+            and int(active_size) <= int(dense_fallback_max)
+            and rhs1_precond_enabled
+            and solve_method_kind not in {"dense", "dense_ksp"}
+            and rhs1_precond_kind in heavy_precond_kinds_fp
+        ):
+            rhs1_precond_kind = "collision"
         early_dense_shortcut = False
         probe_shortcut = False
         probe_x0: jnp.ndarray | None = None
@@ -7979,6 +8354,7 @@ def solve_v3_full_system_linear_gmres(
                     ilu_drop_tol=sparse_ilu_drop_tol,
                     fill_factor=sparse_ilu_fill,
                     build_dense_factors=False,
+                    build_jax_factors=False,
                     build_ilu=False,
                     store_dense=False,
                     emit=emit,
@@ -8123,26 +8499,60 @@ def solve_v3_full_system_linear_gmres(
             ksp_precond_side = "none"
             ksp_solver_kind = _solver_kind("incremental")[0]
         else:
-            _mark("rhs1_krylov_solve_start")
-            res_reduced = _solve_linear(
-                matvec_fn=mv_reduced,
-                b_vec=rhs_reduced,
-                precond_fn=preconditioner_reduced,
-                x0_vec=x0_reduced,
-                tol_val=tol,
-                atol_val=atol,
-                restart_val=restart,
-                maxiter_val=maxiter,
-                solve_method_val=solve_method,
-                precond_side=gmres_precond_side,
+            # If the probe indicates the system is far from converged but the dense
+            # fallback is not allowed (e.g. medium FP DKES systems), avoid spending
+            # many matvecs on a weak/expensive preconditioner. Instead, jump directly
+            # to the sparse ILU branch.
+            skip_primary_krylov = (
+                (op.fblock.fp is not None)
+                and bool(early_dense_shortcut)
+                and (not bool(probe_shortcut))
+                and sparse_precond_mode != "off"
+                and int(active_size) <= int(sparse_max_size)
+                and solve_method_kind not in {"dense", "dense_ksp"}
             )
-            _mark("rhs1_krylov_solve_done")
-            ksp_matvec = mv_reduced
-            ksp_b = rhs_reduced
-            ksp_precond = preconditioner_reduced
-            ksp_x0 = x0_reduced
-            ksp_precond_side = gmres_precond_side
-            ksp_solver_kind = _solver_kind(solve_method)[0]
+            if skip_primary_krylov:
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: skipping initial Krylov "
+                        "(probe ratio huge, dense disabled) -> sparse ILU",
+                    )
+                if x0_reduced is None:
+                    x0_reduced = jnp.zeros_like(rhs_reduced)
+                try:
+                    r0 = rhs_reduced - mv_reduced(x0_reduced)
+                    rn0 = jnp.linalg.norm(r0)
+                except Exception:
+                    rn0 = jnp.asarray(np.inf, dtype=jnp.float64)
+                res_reduced = GMRESSolveResult(x=x0_reduced, residual_norm=jnp.asarray(rn0, dtype=jnp.float64))
+                ksp_matvec = mv_reduced
+                ksp_b = rhs_reduced
+                ksp_precond = preconditioner_reduced
+                ksp_x0 = x0_reduced
+                ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = _solver_kind(solve_method)[0]
+            else:
+                _mark("rhs1_krylov_solve_start")
+                res_reduced = _solve_linear(
+                    matvec_fn=mv_reduced,
+                    b_vec=rhs_reduced,
+                    precond_fn=preconditioner_reduced,
+                    x0_vec=x0_reduced,
+                    tol_val=tol,
+                    atol_val=atol,
+                    restart_val=restart,
+                    maxiter_val=maxiter,
+                    solve_method_val=solve_method,
+                    precond_side=gmres_precond_side,
+                )
+                _mark("rhs1_krylov_solve_done")
+                ksp_matvec = mv_reduced
+                ksp_b = rhs_reduced
+                ksp_precond = preconditioner_reduced
+                ksp_x0 = x0_reduced
+                ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = _solver_kind(solve_method)[0]
         if (not probe_shortcut) and preconditioner_reduced is not None and (not _gmres_result_is_finite(res_reduced)):
             if emit is not None:
                 emit(0, "solve_v3_full_system_linear_gmres: preconditioned reduced GMRES returned non-finite result; retrying without preconditioner")
@@ -8648,7 +9058,10 @@ def solve_v3_full_system_linear_gmres(
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind("incremental")[0]
 
-        dense_shortcut = early_dense_shortcut
+        # Only treat the probe as a "dense shortcut" when the dense branch is
+        # actually allowed (probe_shortcut). Otherwise we still want to try
+        # stronger preconditioners (e.g. sparse ILU) before giving up.
+        dense_shortcut = probe_shortcut
         if not dense_shortcut and dense_shortcut_ratio > 0:
             quick_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
             if quick_ratio >= dense_shortcut_ratio:
@@ -8706,19 +9119,10 @@ def solve_v3_full_system_linear_gmres(
                 sparse_enabled = False
             sparse_kind_use = sparse_precond_kind
             if sparse_kind_use == "auto":
-                if use_implicit or (not sparse_allow_nondiff):
-                    sparse_kind_use = "jax"
-                else:
-                    sparse_kind_use = "scipy"
-            if sparse_kind_use == "scipy" and use_implicit and (not sparse_allow_nondiff):
-                sparse_enabled = False
-                if emit is not None:
-                    emit(
-                        1,
-                        "sparse_ilu: disabled for implicit solves "
-                        "(set SFINCS_JAX_RHSMODE1_SPARSE_PRECOND=jax to enable a differentiable sparse preconditioner)",
-                    )
-            elif int(active_size) > sparse_max_size:
+                # Prefer SciPy/SuperLU ILU: factors are built on the host, then applied in
+                # JAX (including for implicit/differentiable solves) via triangular solves.
+                sparse_kind_use = "scipy"
+            if int(active_size) > sparse_max_size:
                 sparse_enabled = False
                 if emit is not None:
                     emit(1, f"sparse_ilu: disabled (size={int(active_size)} > max={int(sparse_max_size)})")
@@ -8822,6 +9226,7 @@ def solve_v3_full_system_linear_gmres(
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                         build_dense_factors=build_dense_factors,
+                        build_jax_factors=bool(use_implicit),
                         build_ilu=True,
                         store_dense=store_dense,
                         emit=emit,
@@ -8830,26 +9235,75 @@ def solve_v3_full_system_linear_gmres(
                     _mark("rhs1_sparse_precond_build_done")
 
                     if use_implicit:
-                        if l_dense is None or u_dense is None:
-                            if emit is not None:
-                                emit(1, "sparse_ilu: dense factors unavailable for implicit solve; skipping")
-                            res_sparse = None
-                        else:
+                        ilu_cache = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
+                        perm_r = None if ilu_cache is None else ilu_cache.perm_r
+                        inv_perm_c = None if ilu_cache is None else ilu_cache.inv_perm_c
+                        lower_idx = None if ilu_cache is None else ilu_cache.lower_idx
+                        lower_val = None if ilu_cache is None else ilu_cache.lower_val
+                        lower_diag = None if ilu_cache is None else ilu_cache.lower_diag
+                        upper_idx = None if ilu_cache is None else ilu_cache.upper_idx
+                        upper_val = None if ilu_cache is None else ilu_cache.upper_val
+                        upper_diag = None if ilu_cache is None else ilu_cache.upper_diag
+
+                        precond_sparse = None
+                        # Prefer dense triangular solves for small systems if available.
+                        if (
+                            l_dense is not None
+                            and u_dense is not None
+                            and perm_r is not None
+                            and inv_perm_c is not None
+                        ):
                             import jax.scipy.linalg as jla  # noqa: PLC0415
 
                             l_jnp = jnp.asarray(l_dense, dtype=jnp.float64)
                             u_jnp = jnp.asarray(u_dense, dtype=jnp.float64)
 
                             def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
-                                y = jla.solve_triangular(l_jnp, v, lower=True, unit_diagonal=l_unit_diag)
-                                return jla.solve_triangular(u_jnp, y, lower=False)
+                                v = jnp.asarray(v, dtype=jnp.float64)
+                                v_perm = v[perm_r]
+                                y = jla.solve_triangular(l_jnp, v_perm, lower=True, unit_diagonal=l_unit_diag)
+                                z = jla.solve_triangular(u_jnp, y, lower=False)
+                                return z[inv_perm_c]
 
+                            precond_sparse = _precond_sparse
+                        elif (
+                            perm_r is not None
+                            and inv_perm_c is not None
+                            and lower_idx is not None
+                            and lower_val is not None
+                            and upper_idx is not None
+                            and upper_val is not None
+                            and upper_diag is not None
+                        ):
+                            def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
+                                v = jnp.asarray(v, dtype=jnp.float64)
+                                v_perm = v[perm_r]
+                                y = _triangular_solve_lower_padded(
+                                    lower_idx=lower_idx,
+                                    lower_val=lower_val,
+                                    b=v_perm,
+                                )
+                                z = _triangular_solve_upper_padded(
+                                    upper_idx=upper_idx,
+                                    upper_val=upper_val,
+                                    upper_diag=upper_diag,
+                                    b=y,
+                                )
+                                return z[inv_perm_c]
+
+                            precond_sparse = _precond_sparse
+
+                        if precond_sparse is None:
                             if emit is not None:
-                                emit(0, "solve_v3_full_system_linear_gmres: sparse ILU (JAX) fallback")
+                                emit(1, "sparse_ilu: implicit preconditioner factors unavailable; skipping")
+                            res_sparse = None
+                        else:
+                            if emit is not None:
+                                emit(0, "solve_v3_full_system_linear_gmres: sparse ILU (implicit) fallback")
                             res_sparse = _solve_linear(
                                 matvec_fn=mv_reduced,
                                 b_vec=rhs_reduced,
-                                precond_fn=_precond_sparse,
+                                precond_fn=precond_sparse,
                                 x0_vec=res_reduced.x,
                                 tol_val=tol,
                                 atol_val=atol,
@@ -8981,7 +9435,72 @@ def solve_v3_full_system_linear_gmres(
                     f"(size={active_size} residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
                 )
             try:
-                if dense_matrix_cache is not None:
+                host_dense_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_HOST_LU", "").strip().lower()
+                if host_dense_env in {"0", "false", "no", "off"}:
+                    use_host_dense = False
+                elif host_dense_env in {"1", "true", "yes", "on"}:
+                    use_host_dense = True
+                else:
+                    # Default: avoid XLA dense-solve scratch allocations for medium/large systems.
+                    use_host_dense = bool(use_implicit) and int(active_size) >= 2000
+
+                if use_host_dense:
+                    import scipy.linalg as sla  # noqa: PLC0415
+
+                    if dense_matrix_cache is not None:
+                        a_np = np.asarray(dense_matrix_cache, dtype=np.float64)
+                    else:
+                        a_dense_jnp = assemble_dense_matrix_from_matvec(
+                            matvec=mv_reduced, n=int(active_size), dtype=rhs_reduced.dtype
+                        )
+                        a_np = np.asarray(a_dense_jnp, dtype=np.float64)
+                    # Make a contiguous copy for LAPACK.
+                    a_np = np.array(a_np, dtype=np.float64, copy=True)
+
+                    mv_dense = mv_reduced
+                    b_dense = jnp.asarray(rhs_reduced, dtype=jnp.float64)
+                    if use_row_scaled:
+                        diag_floor = 1e-12
+                        diag = np.diag(a_np).astype(np.float64, copy=False)
+                        diag_abs = np.abs(diag)
+                        diag_safe = np.where(diag_abs > diag_floor, diag, np.sign(diag) * diag_floor)
+                        diag_safe = np.where(diag_safe != 0.0, diag_safe, diag_floor)
+                        scale = (1.0 / diag_safe).astype(np.float64, copy=False)
+                        a_np = a_np * scale[:, None]
+                        scale_jnp = jnp.asarray(scale, dtype=jnp.float64)
+                        b_dense = b_dense * scale_jnp
+
+                        def mv_dense(x: jnp.ndarray) -> jnp.ndarray:
+                            return scale_jnp * mv_reduced(x)
+
+                    lu, piv = sla.lu_factor(a_np)
+
+                    out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
+
+                    def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
+                        rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                        return np.asarray(sla.lu_solve((lu, piv), rhs_np), dtype=np.float64)
+
+                    def _solveT_cb(rhs_np: np.ndarray) -> np.ndarray:
+                        rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                        return np.asarray(sla.lu_solve((lu, piv), rhs_np, trans=1), dtype=np.float64)
+
+                    def _solve_host(_mv, rhs: jnp.ndarray) -> jnp.ndarray:
+                        return jax.pure_callback(_solve_cb, out_spec, rhs)
+
+                    def _transpose_solve_host(_mv_t, rhs: jnp.ndarray) -> jnp.ndarray:
+                        return jax.pure_callback(_solveT_cb, out_spec, rhs)
+
+                    x_dense = jax.lax.custom_linear_solve(
+                        mv_dense,
+                        b_dense,
+                        solve=_solve_host,
+                        transpose_solve=_transpose_solve_host,
+                        symmetric=False,
+                    )
+                    r_dense = rhs_reduced - mv_reduced(x_dense)
+                    res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
+                elif dense_matrix_cache is not None:
                     a_dense_jnp = jnp.asarray(dense_matrix_cache, dtype=rhs_reduced.dtype)
                     if use_row_scaled:
                         x_dense, _rn = dense_solve_from_matrix_row_scaled(a=a_dense_jnp, b=rhs_reduced)
