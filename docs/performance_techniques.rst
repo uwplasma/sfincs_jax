@@ -364,7 +364,7 @@ as diagnostics. This stabilizes PAS tokamak-like cases and pairs with the
 Implementation: ``sfincs_jax.v3_driver`` (``use_pas_projection`` and
 ``_project_pas_f``). Control: ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`` (auto on for
 ``N_\zeta=1`` tokamak-like runs **except** ``geometryScheme=1`` analytic tokamak
-cases, plus DKES-trajectory PAS cases).
+cases).
 
 **Constraint-aware Schur (constraintScheme=2).** With constraint variables
 :math:`c`, the linear system is partitioned as
@@ -500,6 +500,34 @@ so scan points can reuse the same preconditioner blocks. Controls:
   reduces peak RSS by chunking :math:`(\theta,\zeta)` blocks)
 - ``SFINCS_JAX_PRECOND_DTYPE`` (default ``auto``; ``float32`` or ``float64`` to override)
 - ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)
+
+**PAS 3D :math:`(\theta,\zeta)`/L block-tridiagonal preconditioner.** For PAS-only
+RHSMode=1 systems without :math:`x` coupling, the collisionless streaming+mirror
+operator couples Legendre modes only through :math:`\Delta L=\pm 1`, so for each
+species and each :math:`x` we can write a block-tridiagonal system in :math:`L`,
+
+.. math::
+
+   A^{(L)} f^{(L)} + B^{(L)} f^{(L+1)} + C^{(L)} f^{(L-1)} = r^{(L)},
+
+where each block is of size :math:`N_\theta N_\zeta`. The diagonal blocks
+:math:`A^{(L)}` include the PAS diagonal (plus any identity shift) and the
+E×B advection terms, while :math:`B^{(L)}` and :math:`C^{(L)}`
+contain the streaming and mirror couplings (row-scaled finite-difference
+operators in :math:`\theta` and :math:`\zeta`).
+
+Rather than assembling/inverting the full per-:math:`x`
+:math:`(L,\theta,\zeta)` block (``xblock_tz``), ``sfincs_jax`` precomputes a
+block-Thomas (block-tridiagonal) factorization analytically and applies it in
+JAX. This avoids the expensive dense-matvec assembly that ``xblock_tz`` uses and
+reduces preconditioner build time and peak memory on 3D PAS cases with large
+angular blocks.
+
+Implementation: ``sfincs_jax.v3_driver`` (``_build_rhsmode1_pas_tz_preconditioner``).
+
+Auto selection: for 3D PAS-only cases, ``auto`` selects ``pas_tz`` as the Schur
+base when :math:`L_{\max} N_\theta N_\zeta` exceeds ``SFINCS_JAX_RHSMODE1_PAS_TZ_MIN``
+(default ``800``). You can force it with ``SFINCS_JAX_RHSMODE1_SCHUR_BASE=pas_tz``.
 
 **KSP history cost.** PETSc-style KSP residual histories and iteration counts are
 computed via an additional SciPy solve (to match the PETSc text). For large Krylov
