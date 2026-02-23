@@ -3309,7 +3309,12 @@ def _build_rhsmode1_schur_preconditioner(
                 # DKES-trajectory PAS runs can require a strong angular preconditioner, but using the dense
                 # xblock_tz (or truncated-L dense) base can be extremely expensive. Prefer a sparse per-x
                 # block ILU (PETSc-like PCBJACOBI+ILU) which is much cheaper to build/apply.
-                base_kind = "pas_ilu"
+                if xblock_tz_max > 0 and block_size <= xblock_tz_max:
+                    # If the full (theta,zeta,L) dense blocks are still small enough, prefer the dense
+                    # xblock_tz base: it is much faster to apply in JAX than sparse triangular solves.
+                    base_kind = "xblock_tz"
+                else:
+                    base_kind = "pas_ilu"
             elif (
                 op.fblock.pas is not None
                 and int(op.n_theta) > 1
@@ -6318,6 +6323,17 @@ def solve_v3_full_system_linear_gmres(
         and rhs1_precond_kind not in {None, "collision"}
     ):
         rhs1_bicgstab_kind = "rhs1"
+    if (
+        rhs1_bicgstab_kind == "collision"
+        and op.fblock.pas is not None
+        and use_dkes
+        and rhs1_precond_kind not in {None, "collision"}
+    ):
+        # For PAS+DKES, BiCGStab only pays off if it uses the same strong RHS1
+        # preconditioner as GMRES (typically Schur + sparse PAS blocks). A cheap
+        # collision-only preconditioner often stagnates and just triggers a GMRES
+        # fallback (wasting compile/runtime).
+        rhs1_bicgstab_kind = "rhs1"
     solve_method_kind = str(solve_method).strip().lower()
     if solve_method_kind == "dense_ksp":
         # `dense_ksp` uses its own PETSc-like block preconditioner on the assembled dense system.
@@ -6472,7 +6488,7 @@ def solve_v3_full_system_linear_gmres(
         stage2_enabled = (
             int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
-            and solver_kind_default == "gmres"
+            and solver_kind_default in {"gmres", "bicgstab"}
         )
     # Stage-2 is a "stronger" fallback solve for difficult cases. The default time cap
     # must be large enough to still trigger after any one-time preconditioner setup,

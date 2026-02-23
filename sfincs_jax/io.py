@@ -2287,6 +2287,9 @@ def write_sfincs_jax_output_h5(
         if use_dkes_val is None and phys_params is not None:
             use_dkes_val = phys_params.get("useDKESExBdrift", None)
         if use_dkes_val is None and phys_params is not None:
+            # Upstream SFINCS inputs typically use the all-caps namelist variable.
+            use_dkes_val = phys_params.get("USEDKESEXBDRIFT", None)
+        if use_dkes_val is None and phys_params is not None:
             use_dkes_val = phys_params.get("use_dkes_exb_drift", None)
         if isinstance(use_dkes_val, str):
             use_dkes = use_dkes_val.strip().lower() in {"t", "true", "1", "yes", ".true."}
