@@ -4085,6 +4085,63 @@ def _build_rhsmode1_schur_preconditioner(
                 s_inv_jnp = jnp.asarray(s_inv, dtype=precond_dtype)
                 _RHSMODE1_SCHUR_CACHE[cache_key] = s_inv_jnp
                 return s_inv_jnp
+        # Fast path: if constraints are per-(species,x) and the base preconditioner is
+        # block-diagonal in x (i.e. the operator has no x-coupling), then the approximate
+        # Schur complement S ~= C M^{-1} B is diagonal in the (species,x) index.
+        #
+        # Instead of building S column-by-column via n_constraints preconditioner applications,
+        # recover the diagonal with a *single* base-preconditioner apply by injecting all
+        # constraint sources simultaneously. This is a large win for tokamak-like PAS runs
+        # with many x points.
+        base_has_x_coupling = bool(
+            op.fblock.fp is not None or op.fblock.er_xdot is not None or op.fblock.er_xidot is not None
+        )
+        # Some bases (point/species/sxblock) deliberately introduce x-coupling even if the
+        # underlying operator is x-block-diagonal. Exclude them from the diagonal-Schur shortcut.
+        base_is_x_coupled_kind = base_kind in {"xmg", "pas_hybrid", "point", "species_block", "sxblock_tz"}
+        if (
+            int(n_constraints) == int(n_species) * int(n_x)
+            and (not base_has_x_coupling)
+            and (not base_is_x_coupled_kind)
+        ):
+            zeros_e = jnp.zeros((extra_size,), dtype=jnp.float64)
+            src = np.ones((n_species, n_x), dtype=np.float64)
+            if ix0 > 0:
+                src[:, :ix0] = 0.0
+            f_src = np.zeros(op.fblock.f_shape, dtype=np.float64)
+            f_src[:, ix0:, 0, :, :] = src[:, ix0:, None, None]
+            y_full = base_precond(
+                jnp.concatenate([jnp.asarray(f_src.reshape((-1,)), dtype=jnp.float64), zeros_e], axis=0)
+            )
+            y_f = np.asarray(y_full[:f_size], dtype=np.float64).reshape(op.fblock.f_shape)
+            factor = ((theta_w[:, None] * zeta_w[None, :]) / d_hat).astype(np.float64, copy=False)  # (T,Z)
+            diag_sx = np.einsum("tz,sxtz->sx", factor, y_f[:, :, 0, :, :])  # (S,X)
+            diag = diag_sx.reshape((-1,)).copy()
+            if ix0 > 0:
+                # For pointAtX0, the x=0 constraint rows are enforced directly.
+                for j in range(int(n_constraints)):
+                    s = int(j // int(n_x))
+                    ix = int(j - s * int(n_x))
+                    if ix < int(ix0):
+                        diag[j] = 1.0
+            reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_REG", "").strip()
+            try:
+                reg = float(reg_env) if reg_env else 1e-12
+            except ValueError:
+                reg = 1e-12
+            diag = diag + float(reg)
+            eps_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_EPS", "").strip()
+            try:
+                eps = float(eps_env) if eps_env else 1e-14
+            except ValueError:
+                eps = 1e-14
+            inv_diag = np.zeros_like(diag)
+            mask = np.abs(diag) > float(eps)
+            inv_diag[mask] = 1.0 / diag[mask]
+            s_inv = np.diag(inv_diag)
+            s_inv_jnp = jnp.asarray(s_inv, dtype=precond_dtype)
+            _RHSMODE1_SCHUR_CACHE[cache_key] = s_inv_jnp
+            return s_inv_jnp
         zeros_e = jnp.zeros((extra_size,), dtype=jnp.float64)
         s_mat = np.zeros((n_constraints, n_constraints), dtype=np.float64)
         # Build columns of S by applying M^{-1} to constraint injections.
@@ -5707,9 +5764,13 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
     # to avoid dense factors in the padded-row JAX format.
     lu_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_LU_MAX", "").strip()
     try:
-        lu_max = int(lu_max_env) if lu_max_env else 5000
+        # For DKES-like PAS systems, the sparse blocks can be much less diagonally-dominant.
+        # Default to a larger LU cutoff there for robustness. For non-DKES PAS systems,
+        # prefer ILU for medium-sized blocks to reduce factorization time and memory.
+        default_lu_max = 5000 if use_dkes_exb else 1000
+        lu_max = int(lu_max_env) if lu_max_env else default_lu_max
     except ValueError:
-        lu_max = 5000
+        lu_max = 5000 if use_dkes_exb else 1000
     lu_max = max(0, int(lu_max))
     # Row cap for *exact LU* factors. Exact sparse LU can have substantially more fill than
     # ILU; we allow a higher cap for LU factors (to keep the preconditioner strong) but
@@ -8041,6 +8102,7 @@ def solve_v3_full_system_linear_gmres(
             def mv_pc(x: jnp.ndarray) -> jnp.ndarray:
                 return preconditioner_dense(mv_dense(x))
 
+            _mark("rhs1_krylov_solve_start")
             res_reduced = _solve_linear(
                 matvec_fn=mv_pc,
                 b_vec=rhs_pc,
@@ -8053,6 +8115,7 @@ def solve_v3_full_system_linear_gmres(
                 solve_method_val="incremental",
                 precond_side="none",
             )
+            _mark("rhs1_krylov_solve_done")
             ksp_matvec = mv_pc
             ksp_b = rhs_pc
             ksp_precond = None
@@ -8060,6 +8123,7 @@ def solve_v3_full_system_linear_gmres(
             ksp_precond_side = "none"
             ksp_solver_kind = _solver_kind("incremental")[0]
         else:
+            _mark("rhs1_krylov_solve_start")
             res_reduced = _solve_linear(
                 matvec_fn=mv_reduced,
                 b_vec=rhs_reduced,
@@ -8072,6 +8136,7 @@ def solve_v3_full_system_linear_gmres(
                 solve_method_val=solve_method,
                 precond_side=gmres_precond_side,
             )
+            _mark("rhs1_krylov_solve_done")
             ksp_matvec = mv_reduced
             ksp_b = rhs_reduced
             ksp_precond = preconditioner_reduced
