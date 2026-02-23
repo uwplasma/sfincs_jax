@@ -2307,7 +2307,6 @@ def write_sfincs_jax_output_h5(
             and (not include_phi1)
             and active_total_size <= dense_fp_cutoff
             and (not force_krylov)
-            and (not use_dkes)
         ):
             solve_method = "dense"
             if emit is not None:
