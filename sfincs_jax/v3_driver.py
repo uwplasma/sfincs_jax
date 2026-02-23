@@ -6107,9 +6107,12 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
     # still cap aggressively to avoid allocating dense padded-row arrays.
     lu_full_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_LU_ROW_NNZ_MAX", "").strip()
     try:
-        lu_full_row_nnz_max = int(lu_full_env) if lu_full_env else 512
+        # Default to a lower LU row cap than earlier revisions to reduce peak RSS.
+        # If LU is needed for robustness in a particularly stiff DKES case, this can
+        # be increased via env var without touching code.
+        lu_full_row_nnz_max = int(lu_full_env) if lu_full_env else 256
     except ValueError:
-        lu_full_row_nnz_max = 512
+        lu_full_row_nnz_max = 256
     lu_full_row_nnz_max = max(0, int(lu_full_row_nnz_max))
 
     colless = op.fblock.collisionless
@@ -6292,24 +6295,26 @@ def _build_rhsmode1_pas_xblock_ilu_preconditioner(
                     a = a + sp.kron(c_stream, stream_tz, format="csc") + sp.kron(c_mirror, mirror_diag, format="csc")
                 a = a.tocsc()
 
+                # Prefer ILU for most PAS blocks to avoid SuperLU exact-LU peak allocations
+                # and the resulting resident-set spikes. Fall back to exact LU only if ILU
+                # fails to factor (e.g. due to numerical issues) and the block is small enough.
                 fac = None
                 used_lu = False
-                if lu_max > 0 and int(active_n) <= int(lu_max):
-                    # Exact sparse LU (PETSc PCLU analogue) for small blocks.
+                try:
+                    # ILU (PETSc PCILU analogue).
+                    fac = spilu(
+                        a,
+                        drop_tol=ilu_drop_tol,
+                        fill_factor=ilu_fill_factor,
+                        permc_spec="COLAMD",
+                    )
+                except Exception:  # noqa: BLE001
+                    fac = None
+                if fac is None and lu_max > 0 and int(active_n) <= int(lu_max):
+                    # Exact sparse LU (PETSc PCLU analogue) fallback for robustness.
                     try:
                         fac = splu(a, permc_spec="COLAMD")
                         used_lu = True
-                    except Exception:  # noqa: BLE001
-                        fac = None
-                if fac is None:
-                    # ILU (PETSc PCILU analogue) for larger blocks.
-                    try:
-                        fac = spilu(
-                            a,
-                            drop_tol=ilu_drop_tol,
-                            fill_factor=ilu_fill_factor,
-                            permc_spec="COLAMD",
-                        )
                     except Exception:  # noqa: BLE001
                         fac = None
 

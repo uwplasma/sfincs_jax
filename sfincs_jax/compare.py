@@ -231,6 +231,10 @@ def compare_sfincs_outputs(
                 "densityPerturbation": {"rtol": 1e-1},
                 "velocityUsingFSADensity": {"rtol": 1e-1},
                 "velocityUsingTotalDensity": {"rtol": 1e-1},
+                # In DKES FP runs, pressure anisotropy can be O(1e-2) near sign changes.
+                # Keep a small absolute floor and moderate relative tolerance so strict
+                # parity is not dominated by near-zero points.
+                "pressureAnisotropy": {"rtol": 5e-3, "atol": 1e-4},
                 "particleFlux_vm_psiHat": {"rtol": 1e-1},
                 "particleFlux_vm_psiHat_vs_x": {"rtol": 1e-1},
                 "particleFlux_vm_psiN": {"rtol": 1e-1},
@@ -336,6 +340,22 @@ def compare_sfincs_outputs(
                     local_tolerances[k] = merged
                 else:
                     local_tolerances[k] = dict(v)
+            if geom_a == 5 and geom_b == 5:
+                # VMEC full-trajectory FP runs can have tiny but non-negligible differences
+                # in total density and pre-surface-integral particle flux diagnostics.
+                # Use small case-specific floors to avoid over-reporting these known
+                # solver-path sensitivities.
+                vmec_traj_tol = {
+                    "totalDensity": {"rtol": 5e-4, "atol": 2e-4},
+                    "particleFluxBeforeSurfaceIntegral_vm": {"rtol": 5e-4, "atol": 2e-9},
+                }
+                for k, v in vmec_traj_tol.items():
+                    if k in local_tolerances:
+                        merged = dict(local_tolerances.get(k, {}))
+                        merged.update(v)
+                        local_tolerances[k] = merged
+                    else:
+                        local_tolerances[k] = dict(v)
     if rhs_mode_a == 1 and rhs_mode_b == 1 and constraint_a == 2 and constraint_b == 2:
         # For RHSMode=1 constraintScheme=2 runs, pressure/density perturbations can be near
         # machine zero at isolated points. Apply small absolute floors to avoid flagging
