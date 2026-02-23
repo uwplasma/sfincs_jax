@@ -55,165 +55,6 @@ python examples/performance/profile_transport_compile_runtime_cache.py --repeats
 Small dense fallback assemblies now skip JIT for modest matrix sizes (`n<=800`) to
 reduce overhead in tiny PAS/transport cases while keeping large systems compiled.
 
-## Parallel Scaling (Macbook M3 Max)
-
-Parallel `whichRHS` scaling for an extra‑large RHSMode=2 transport‑matrix case
-(`examples/performance/transport_parallel_xxlarge.input.namelist`, geometryScheme=2).
-Benchmark uses `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the single‑worker runtime
-in the ~1 minute range.
-Latest run (cache warm): 1 worker 65.6s, 2 workers 46.0s, 3 workers 25.7s,
-4 workers 26.0s, 5 workers 25.8s, 6 workers 25.5s, 7 workers 25.4s, 8 workers 25.6s.
-
-![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
-
-Small reduced‑suite cases (~1–3 s) do **not** speed up with extra cores; process
-startup and JIT cache sync dominate. See `docs/parallelism.rst` for the per‑case
-numbers.
-
-Quick-start knob (auto parallel + sharded matvec when helpful):
-
-```bash
-export SFINCS_JAX_CORES=8
-```
-
-Process‑parallel workers auto‑disable sharded matvec and cap XLA threads per
-worker to avoid oversubscription.
-Enable XLA thread control explicitly if your JAX build supports it:
-
-```bash
-export SFINCS_JAX_XLA_THREADS=1
-```
-
-Reproduce the scaling figure and JSON summary (cache‑warm run):
-
-```bash
-python examples/performance/benchmark_transport_parallel_scaling.py \
-  --workers 1 \
-  --repeats 1 \
-  --warmup 0 \
-  --global-warmup 0
-
-python examples/performance/benchmark_transport_parallel_scaling.py \
-  --workers 1 2 3 4 5 6 7 8 \
-  --repeats 1 \
-  --warmup 0 \
-  --global-warmup 0
-```
-
-Run with explicit worker counts and a custom input:
-
-```bash
-python examples/performance/benchmark_transport_parallel_scaling.py \
-  --input examples/performance/transport_parallel_xxlarge.input.namelist \
-  --workers 1 2 3 4 5 6 7 8 \
-  --repeats 1 \
-  --warmup 0 \
-  --global-warmup 0
-```
-
-JIT note: the commands above perform a cache‑warm run before the timed sweep so
-timings exclude compilation. A persistent JAX cache is used automatically.
-Override the transport preconditioner with `--precond` if needed.
-
-RHSMode=2 has only 3 `whichRHS` solves, so scaling naturally saturates near 3 workers.
-
-### Sharded Matvec Scaling (SPMD)
-
-Sharded matvec scaling for a larger single‑RHS operator (derived from the same
-transport case, with higher resolution to stress the matvec):
-`examples/performance/transport_parallel_sharded.input.namelist`.
-
-Latest run (cache warm, theta‑sharded with padding): per‑matvec time 1.74 ms
-(1 device), 4.08 ms (2), 6.26 ms (3), 8.06 ms (4), 8.01 ms (5),
-11.24 ms (6), 13.81 ms (7), 15.53 ms (8). CPU sharding overhead dominates at
-this size; this mode is mainly intended for very large grids or multi‑GPU nodes.
-The sharded dimension (``Ntheta`` or ``Nzeta``) must be divisible by the device
-count. Because v3 forces odd sizes, even device counts often fall back to the
-single‑device path unless `SFINCS_JAX_SHARD_PAD=1` (default) pads ghost planes
-to make sharding possible without changing outputs.
-
-![Sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_scaling.png)
-
-Reproduce the sharded matvec scaling figure:
-
-```bash
-python examples/performance/benchmark_sharded_matvec_scaling.py \
-  --input examples/performance/transport_parallel_sharded.input.namelist \
-  --axis theta \
-  --pad \
-  --devices 1 2 3 4 5 6 7 8 \
-  --repeats 1 \
-  --nrep 2000 \
-  --global-warmup 1
-```
-
-`SFINCS_JAX_MATVEC_SHARD_AXIS=x` provides an alternate sharding axis when odd
-``Ntheta``/``Nzeta`` grids limit theta/zeta sharding; see `docs/parallelism.rst`
-for details and usage notes. With `SFINCS_JAX_SHARD_PAD=1` (default), `sfincs_jax`
-pads ``Nx`` to the next multiple of the device count so x‑sharding does not
-fallback on non‑divisible ``Nx``.
-
-![X-sharded matvec scaling](docs/_static/figures/parallel/transport_sharded_matvec_x_scaling.png)
-
-Reproduce the x‑sharded scaling figure:
-
-```bash
-python examples/performance/benchmark_sharded_matvec_scaling.py \
-  --input examples/performance/transport_parallel_sharded.input.namelist \
-  --axis x \
-  --pad \
-  --devices 1 2 3 4 5 6 7 8 \
-  --repeats 1 \
-  --nrep 2000 \
-  --global-warmup 1
-```
-
-Sharded **solve** scaling (theta‑sharded GMRES) currently shows CPU overhead
-dominance for medium RHSMode=1 cases. Because v3 enforces **odd** ``Ntheta`` and
-``Nzeta``, sharding only activates when the device count divides those odd sizes
-unless `SFINCS_JAX_SHARD_PAD=1` is enabled. See `docs/parallelism.rst` for the
-full benchmark and figure.
-
-Why scaling is still poor for single‑RHS GMRES: each iteration requires global
-reductions (dot products + norms), so synchronization dominates until the
-per‑iteration workload is very large. The next steps are a domain‑decomposition
-preconditioner and communication‑avoiding Krylov variants (pipelined/s‑step GMRES).
-
-Enable parallel whichRHS solves in normal runs:
-
-```bash
-export SFINCS_JAX_CORES=8
-# Optional: disable sharded matvec while keeping process parallelism.
-# export SFINCS_JAX_SHARD=0
-```
-
-## Scaling Beyond 3 Workers
-
-To scale to dozens or hundreds of workers, use **case‑level** or **scan‑point**
-parallelism via job arrays:
-
-Suite array (cases):
-
-```bash
-#SBATCH --array=0-63
-python scripts/run_reduced_upstream_suite.py \
-  --case-index ${SLURM_ARRAY_TASK_ID} \
-  --case-stride 64 \
-  --reuse-fortran
-```
-
-Scan array (Er scan):
-
-```bash
-#SBATCH --array=0-63
-sfincs_jax scan-er \
-  --input input.namelist \
-  --out-dir scan_dir \
-  --min -2 --max 2 --n 401 \
-  --index ${SLURM_ARRAY_TASK_ID} \
-  --stride 64
-```
-
 ## Installation
 
 Install from PyPI:
@@ -245,6 +86,47 @@ pip install -e ".[docs]"   # documentation build
 pip install -e ".[viz]"    # plotting / figure scripts
 pip install -e ".[opt]"    # optax / jaxopt workflows
 ```
+
+## Quick start (Python)
+
+```python
+from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax.v3 import grids_from_namelist, geometry_from_namelist
+
+nml = read_sfincs_input("input.namelist")
+grids = grids_from_namelist(nml)
+geometry = geometry_from_namelist(nml=nml, grids=grids)
+print(geometry.b_hat.shape)
+```
+
+## Parallel Scaling (Macbook M3 Max)
+
+Parallel `whichRHS` scaling for an extra-large RHSMode=2 transport-matrix case
+(`examples/performance/transport_parallel_xxlarge.input.namelist`, geometryScheme=2).
+
+![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
+
+Latest cache-warm run (1-4 workers): 1 worker 65.6s, 2 workers 46.0s,
+3 workers 25.7s, 4 workers 26.0s.
+
+Enable parallel execution in normal runs:
+
+```bash
+export SFINCS_JAX_CORES=4
+```
+
+Reproduce the 1-4 worker scaling figure and JSON summary:
+
+```bash
+python examples/performance/benchmark_transport_parallel_scaling.py \
+  --input examples/performance/transport_parallel_xxlarge.input.namelist \
+  --workers 1 2 3 4 \
+  --repeats 1 \
+  --warmup 0 \
+  --global-warmup 0
+```
+
+For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
 
 ## What the code supports
 
@@ -282,56 +164,8 @@ Detailed parity inventory and dataset coverage:
 - VMEC geometryScheme=5 full‑FP parity uses dedicated near‑zero tolerances for flow/pressure
   diagnostics; strict tables still pass at reduced-suite tolerances (see `docs/parity.rst`).
 
-## Current profiling hotspots (reduced suite)
-
-From the latest reduced-suite run (cold JAX, `SFINCS_JAX_PROFILE=1`), the largest
-runtime disparities are:
-
-1. `sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories`
-   (F ~0.014 s, J ~1.75 s): dominated by dense RHSMode=1 solve for a tiny system.
-1. `tokamak_1species_PASCollisions_noEr` (F ~0.042 s, J ~3.83 s): dominated by RHSMode=1
-   solve + `xblock_tz` PAS preconditioner build (~1.9 s).
-1. `tokamak_1species_PASCollisions_withEr_fullTrajectories` (F ~1.34 s, J ~90–95 s):
-   dominated by collision-preconditioned GMRES (no stronger PAS precond built at this size).
-1. `transportMatrix_geometryScheme11` (F ~0.143 s, J ~8.26 s): each `whichRHS` falls back
-   to a dense solve after BiCGStab/GMRES retries; caching is active, so per‑RHS dense
-   solve cost dominates. The new dense batch fallback reduces this case to ~5.1 s
-   in profiling (see `docs/performance.rst`).
-
-See `docs/performance.rst` for the detailed profiling snapshots and next optimization targets.
-
-## Parallelism
-
-Multi-core and multi-device usage is documented in:
-
-- `docs/parallelism.rst`
-
-Highlights:
-
-- Parallel `whichRHS` transport solves via `SFINCS_JAX_TRANSPORT_PARALLEL=process`.
-- Single‑knob CPU parallelism via `SFINCS_JAX_CORES=N` (auto process parallel + sharded matvec).
-- Parallel suite/scan runs via `python scripts/run_reduced_upstream_suite.py --jobs N`.
-- Experimental sharded matvec via `SFINCS_JAX_MATVEC_SHARD_AXIS=theta|zeta`.
-
-## Quick start (Python)
-
-```python
-from sfincs_jax.namelist import read_sfincs_input
-from sfincs_jax.v3 import grids_from_namelist, geometry_from_namelist
-
-nml = read_sfincs_input("input.namelist")
-grids = grids_from_namelist(nml)
-geometry = geometry_from_namelist(nml=nml, grids=grids)
-print(geometry.b_hat.shape)
-```
-
-## Differentiability
-
-The core operator, residual, and Krylov solves are implemented in JAX and are end-to-end
-differentiable when you build inputs directly via the Python API. File I/O, VMEC/Boozer
-parsing, and SciPy-based solver-history logging use NumPy and are not differentiable.
-For gradients, supply inputs as JAX arrays and disable history logging
-(``SFINCS_JAX_FORTRAN_STDOUT=0`` and ``SFINCS_JAX_SOLVER_ITER_STATS=0``).
+Detailed performance profiling and advanced parallel modes are documented in
+`docs/performance.rst` and `docs/parallelism.rst`.
 
 ## CLI
 
@@ -399,15 +233,12 @@ python examples/utils/generate_utils_gallery.py
 
 Add `--fast` for a quick pass or `--timeout-s <seconds>` to cap each step.
 
-Reproduced SFINCS paper figures (generated by sfincs_jax, lower resolution for quick reference):
+Reproduced SFINCS paper-style figures are documented in `docs/paper_figures.rst` and can be
+generated with:
 
 ```bash
 python examples/publication_figures/generate_sfincs_paper_figs.py --fast
 ```
-
-![SFINCS paper Fig. 1 (LHD collisionality scan)](docs/_static/figures/paper/sfincs_jax_fig1_lhd_collisionality.png)
-![SFINCS paper Fig. 2 (W7-X collisionality scan)](docs/_static/figures/paper/sfincs_jax_fig2_w7x_collisionality.png)
-![SFINCS paper Fig. 3 (Simakov-Helander limits)](docs/_static/figures/paper/sfincs_jax_fig3_simakov_helander.png)
 
 The utilities honor the upstream `!ss` scan directives in `input.namelist`
 (see `docs/utils.rst`) and produce the same scan layouts as the original
@@ -416,72 +247,39 @@ SFINCS v3 scripts.
 ## Upstream SFINCS compatibility and parity status
 
 The repository vendors the upstream Fortran v3 example suite under `examples/sfincs_examples/`.
-A generated status table reports, for every upstream example input:
-
-1. whether `sfincs_jax` writes an output file for that input,
-2. whether exact output parity for that exact input is verified in-repo,
-3. and the reason when parity is not currently verified.
-
-See:
+Key docs:
 
 - `docs/fortran_examples.rst`
-- `docs/_generated/fortran_examples_output_status.rst`
+- `docs/parity.rst`
 
-Regenerate that table:
+Reproduce the compatibility/parity artifacts:
 
 ```bash
 python scripts/generate_fortran_example_output_status.py
+python scripts/run_reduced_upstream_suite.py \
+  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --reuse-fortran \
+  --max-attempts 1 \
+  --rtol 1e-4 \
+  --atol 1e-9 \
+  --jax-repeats 2
+python scripts/generate_readme_reduced_suite_table.py
 ```
 
-For fast parity iteration on reduced-resolution copies of the full upstream suite:
+Latest reduced-suite snapshot (`rtol=1e-4`, `atol=1e-9`):
 
-```bash
-python scripts/run_reduced_upstream_suite.py --timeout-s 120 --max-attempts 1 --jax-repeats 2
-```
+- **Practical parity:** 38/38 cases.
+- **Strict parity:** 37/38 cases (strict deltas remain for `HSX_PASCollisions_DKESTrajectories`).
+- **Print parity signals:** 38/38 cases.
 
-The reduced-suite runner enables a persistent JAX compilation cache by default at
-`tests/reduced_upstream_examples/.jax_compilation_cache` (override with `--jax-cache-dir`).
-The CLI also defaults to a user cache directory (`~/.cache/sfincs_jax/jax_compilation_cache`)
-and auto-enables JAX's persistent compilation cache unless explicitly disabled.
+Artifacts:
 
-Target a specific case while preserving the 30s adaptive policy:
-
-```bash
-python scripts/run_reduced_upstream_suite.py --pattern 'geometryScheme5_3species_loRes' --timeout-s 120 --max-attempts 1
-```
-
-The latest reduced-suite status table is written to:
-
+- `tests/reduced_upstream_examples/suite_report.json`
+- `tests/reduced_upstream_examples/suite_report_strict.json`
 - `docs/_generated/reduced_upstream_suite_status.rst`
 - `docs/_generated/reduced_upstream_suite_status_strict.rst`
 
-And machine-readable reports are written to:
-
-- `tests/reduced_upstream_examples/suite_report.json` (practical)
-- `tests/reduced_upstream_examples/suite_report_strict.json` (strict)
-
-Current reduced-suite snapshot (latest run):
-
-- **Practical:** 38/38 parity_ok.
-- **Strict:** 38/38 parity_ok (strict mode ignores per-case tolerance overrides; see `docs/_generated/reduced_upstream_suite_status_strict.rst`).
-- **Print parity:** 38/38 cases (all emitted signals match; 7/7 or 9/9 depending on case).
-
-Strict-mode mismatches (reduced suite, rtol=5e-4, atol=1e-9): none.
-
-### Reduced-suite outputs and mismatches (all upstream examples, reduced resolution)
-
-Each reduced-resolution upstream example produces the following outputs for the listed input:
-
-- Fortran: `sfincsOutput.h5`, `sfincs.log`
-- sfincs_jax: `sfincsOutput_jax.h5`, `sfincs_jax.log`
-
-The table below enumerates every upstream example in the reduced suite, the outputs produced,
-the Fortran vs `sfincs_jax` runtimes, and the number of mismatches relative to Fortran output
-(`bad/total`, rtol=5e-4, atol=1e-9). The `sfincs_jax` runtime is reported as the **warm** runtime
-(mean of repeats after the first run when `--jax-repeats > 1`), with persistent compilation cache enabled.
-Stdout print parity signals are 7/7 or 9/9 depending on case.
-
-Regenerate the README table after a new reduced-suite run:
+Reduced-suite comparison table (Fortran vs `sfincs_jax` runtimes, memory, and mismatches):
 
 ```bash
 python scripts/generate_readme_reduced_suite_table.py
@@ -490,68 +288,46 @@ python scripts/generate_readme_reduced_suite_table.py
 <!-- BEGIN REDUCED_SUITE_TABLE -->
 | Case | Fortran(s) | sfincs_jax(s) | Fortran MB | sfincs_jax MB | Mismatches (practical/strict) | Print parity |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
-| HSX_FPCollisions_DKESTrajectories | 1.570 | 4.098 | 143.2 | 2430.3 | 0/193 (strict 0/193) | 9/9 |
-| HSX_FPCollisions_fullTrajectories | 1.381 | 3.720 | 96.6 | 1508.7 | 0/193 (strict 0/193) | 9/9 |
-| HSX_PASCollisions_DKESTrajectories | 3.062 | 6.694 | - | 2256.2 | 0/193 (strict 0/193) | 9/9 |
-| HSX_PASCollisions_fullTrajectories | 0.122 | 2.854 | 103.3 | 617.8 | 0/193 (strict 0/193) | 9/9 |
-| filteredW7XNetCDF_2species_magneticDrifts_noEr | 0.947 | 2.037 | 128.2 | 950.2 | 0/193 (strict 0/193) | 9/9 |
-| filteredW7XNetCDF_2species_magneticDrifts_withEr | 0.774 | 2.222 | 122.4 | 552.3 | 0/193 (strict 0/193) | 9/9 |
-| filteredW7XNetCDF_2species_noEr | 0.558 | 1.658 | 121.6 | 696.0 | 0/193 (strict 0/193) | 9/9 |
-| geometryScheme4_1species_PAS_withEr_DKESTrajectories | 0.481 | 3.397 | 123.5 | 884.4 | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_PAS_noEr | 1.645 | 2.803 | 114.3 | 911.0 | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_noEr | 0.658 | 2.731 | 124.7 | 2104.4 | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_noEr_withPhi1InDKE | 0.792 | 1.880 | 123.0 | 473.2 | 0/265 (strict 0/265) | 9/9 |
-| geometryScheme4_2species_noEr_withQN | 0.772 | 1.618 | 115.1 | 443.0 | 0/265 (strict 0/265) | 9/9 |
-| geometryScheme4_2species_withEr_fullTrajectories | 0.756 | 1.756 | 108.8 | 603.6 | 0/193 (strict 0/193) | 9/9 |
-| geometryScheme4_2species_withEr_fullTrajectories_withQN | 1.324 | 1.934 | 117.1 | 515.4 | 0/251 (strict 0/251) | 9/9 |
-| geometryScheme5_3species_loRes | 0.736 | 2.983 | 154.7 | 1707.9 | 0/193 (strict 0/193) | 9/9 |
-| inductiveE_noEr | 0.504 | 1.782 | 115.6 | 860.6 | 0/207 (strict 0/207) | 9/9 |
-| monoenergetic_geometryScheme1 | 0.459 | 1.970 | 128.7 | 1520.2 | 0/203 (strict 0/203) | 9/9 |
-| monoenergetic_geometryScheme11 | 2.812 | 2.966 | 205.2 | 601.0 | 0/208 (strict 0/208) | 9/9 |
-| monoenergetic_geometryScheme5_ASCII | 0.684 | 1.825 | 164.0 | 1461.5 | 0/208 (strict 0/208) | 9/9 |
-| monoenergetic_geometryScheme5_netCDF | 0.625 | 1.769 | 161.6 | 1468.8 | 0/208 (strict 0/208) | 9/9 |
-| quick_2species_FPCollisions_noEr | 0.433 | 1.754 | 116.4 | 846.9 | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | 0.261 | 1.685 | 104.6 | 478.9 | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | 0.446 | 2.170 | 115.6 | 858.7 | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | 0.125 | 2.793 | 111.6 | 895.1 | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | 4.915 | 3.704 | - | 1187.2 | 0/207 (strict 0/207) | 9/9 |
-| tokamak_1species_FPCollisions_noEr | 0.793 | 1.590 | 112.6 | 549.9 | 0/202 (strict 0/202) | 9/9 |
-| tokamak_1species_FPCollisions_noEr_withPhi1InDKE | 1.547 | 1.957 | 143.6 | 460.5 | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_FPCollisions_noEr_withQN | 0.866 | 1.696 | 111.8 | 458.7 | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_FPCollisions_withEr_DKESTrajectories | 0.390 | 1.477 | 108.3 | 425.4 | 0/214 (strict 0/214) | 9/9 |
-| tokamak_1species_FPCollisions_withEr_fullTrajectories | 1.398 | 2.844 | 206.6 | 2010.4 | 0/214 (strict 0/214) | 9/9 |
-| tokamak_1species_PASCollisions_noEr | 1.642 | 3.001 | 553.0 | 1025.7 | 0/140 (strict 0/140) | 7/7 |
-| tokamak_1species_PASCollisions_noEr_Nx1 | 0.124 | 2.533 | 110.9 | 792.6 | 0/212 (strict 0/212) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_withQN | 0.691 | 2.654 | 176.1 | 628.8 | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_PASCollisions_withEr_fullTrajectories | 0.434 | 1.957 | 124.0 | 889.6 | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_noEr | 0.074 | 1.676 | 100.6 | 640.3 | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_withEr_fullTrajectories | 0.887 | 3.617 | 169.6 | 1173.6 | 0/212 (strict 0/212) | 9/9 |
-| transportMatrix_geometryScheme11 | 0.209 | 1.875 | 120.2 | 961.1 | 0/194 (strict 0/194) | 9/9 |
-| transportMatrix_geometryScheme2 | 0.189 | 1.711 | 115.9 | 838.1 | 0/194 (strict 0/194) | 9/9 |
+| HSX_FPCollisions_DKESTrajectories | 1.570 | 3.568 | 143.2 | 1853.7 | 0/193 (strict 0/193) | 9/9 |
+| HSX_FPCollisions_fullTrajectories | 1.381 | 3.268 | 96.6 | 909.2 | 0/193 (strict 0/193) | 9/9 |
+| HSX_PASCollisions_DKESTrajectories | 3.062 | - | - | - | 0/193 (strict 3/193) | 9/9 |
+| HSX_PASCollisions_fullTrajectories | 0.122 | 3.020 | 103.3 | 608.7 | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_noEr | 0.947 | 2.048 | 128.2 | 946.3 | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_withEr | 0.774 | 2.277 | 122.4 | 548.2 | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_noEr | 0.558 | 1.750 | 121.6 | 685.3 | 0/193 (strict 0/193) | 9/9 |
+| geometryScheme4_1species_PAS_withEr_DKESTrajectories | 0.481 | - | 123.5 | - | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_PAS_noEr | 1.645 | 2.962 | 114.3 | 901.2 | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_noEr | 0.658 | 2.178 | 124.7 | 1557.8 | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_noEr_withPhi1InDKE | 0.792 | 1.837 | 123.0 | 466.7 | 0/265 (strict 0/265) | 9/9 |
+| geometryScheme4_2species_noEr_withQN | 0.772 | 1.645 | 115.1 | 440.6 | 0/265 (strict 0/265) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories | 0.756 | 1.768 | 108.8 | 601.6 | 0/193 (strict 0/193) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories_withQN | 1.324 | 1.943 | 117.1 | 508.2 | 0/251 (strict 0/251) | 9/9 |
+| geometryScheme5_3species_loRes | 0.736 | 2.429 | 154.7 | 979.3 | 0/193 (strict 0/193) | 9/9 |
+| inductiveE_noEr | 0.504 | 1.822 | 115.6 | 838.3 | 0/207 (strict 0/207) | 9/9 |
+| monoenergetic_geometryScheme1 | 0.459 | 2.094 | 128.7 | 1522.7 | 0/203 (strict 0/203) | 9/9 |
+| monoenergetic_geometryScheme11 | 2.812 | 3.138 | 205.2 | 538.4 | 0/208 (strict 0/208) | 9/9 |
+| monoenergetic_geometryScheme5_ASCII | 0.684 | 1.973 | 164.0 | 1466.2 | 0/208 (strict 0/208) | 9/9 |
+| monoenergetic_geometryScheme5_netCDF | 0.625 | 1.929 | 161.6 | 1461.2 | 0/208 (strict 0/208) | 9/9 |
+| quick_2species_FPCollisions_noEr | 0.433 | 1.914 | 116.4 | 833.5 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | 0.261 | 1.785 | 104.6 | 473.0 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | 0.446 | 2.282 | 115.6 | 814.4 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | 0.125 | 3.027 | 111.6 | 820.2 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | 4.915 | 3.857 | - | 1169.8 | 0/207 (strict 0/207) | 9/9 |
+| tokamak_1species_FPCollisions_noEr | 0.793 | 1.633 | 112.6 | 556.8 | 0/202 (strict 0/202) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withPhi1InDKE | 1.547 | 1.997 | 143.6 | 463.9 | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withQN | 0.866 | 1.811 | 111.8 | 458.7 | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_DKESTrajectories | 0.390 | 1.578 | 108.3 | 422.3 | 0/214 (strict 0/214) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_fullTrajectories | 1.398 | 2.413 | 206.6 | 1475.3 | 0/214 (strict 0/214) | 9/9 |
+| tokamak_1species_PASCollisions_noEr | 1.642 | 3.152 | 553.0 | 1026.2 | 0/140 (strict 0/140) | 7/7 |
+| tokamak_1species_PASCollisions_noEr_Nx1 | 0.124 | 2.768 | 110.9 | 737.6 | 0/212 (strict 0/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr_withQN | 0.691 | 2.845 | 176.1 | 638.3 | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_PASCollisions_withEr_fullTrajectories | 0.434 | 2.025 | 124.0 | 836.7 | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_noEr | 0.074 | 1.795 | 100.6 | 642.1 | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_withEr_fullTrajectories | 0.887 | 3.783 | 169.6 | 1120.4 | 0/212 (strict 0/212) | 9/9 |
+| transportMatrix_geometryScheme11 | 0.209 | 1.882 | 120.2 | 993.1 | 0/194 (strict 0/194) | 9/9 |
+| transportMatrix_geometryScheme2 | 0.189 | 1.721 | 115.9 | 840.5 | 0/194 (strict 0/194) | 9/9 |
 <!-- END REDUCED_SUITE_TABLE -->
 
-
-For operator-level parity diagnosis against Fortran PETSc matrices:
-
-```bash
-python scripts/compare_fortran_matrix_to_jax_operator.py \
-  --input /path/to/input.namelist \
-  --fortran-matrix /path/to/sfincsBinary_iteration_000_whichMatrix_3 \
-  --fortran-state /path/to/sfincsBinary_iteration_000_stateVector \
-  --project-active-dofs \
-  --out-json matrix_compare.json
-```
-
-For RHSMode=1 diagnostics isolation on a frozen state vector (to separate solver-branch
-differences from postprocessing/diagnostic formulas):
-
-```bash
-python scripts/compare_rhsmode1_diagnostics_from_state.py \
-  --input /path/to/input.namelist \
-  --state /path/to/sfincsBinary_iteration_000_stateVector \
-  --fortran-h5 /path/to/sfincsOutput.h5 \
-  --out-json diagnostics_from_frozen_state.json
-```
 
 ## Documentation
 
