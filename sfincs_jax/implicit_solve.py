@@ -120,11 +120,10 @@ def _use_solver_jit(size_hint: int | None = None) -> bool:
     if env in {"0", "false", "no", "off"}:
         return False
     thresh_env = os.environ.get("SFINCS_JAX_SOLVER_JIT_MAX_SIZE", "").strip()
-    ci_env = os.environ.get("SFINCS_JAX_CI", "").strip().lower()
-    # Default: prefer JIT for medium-sized Krylov solves. This avoids Python overhead
-    # dominating runtime for common PAS / transport workloads. CI can opt into a
-    # lower threshold via `SFINCS_JAX_SOLVER_JIT_MAX_SIZE` if compile time is too high.
-    thresh_default = 20000 if (ci_env in {"1", "true", "yes", "on"} and not thresh_env) else 100000
+    # Default is intentionally conservative: JITting the full Krylov loop can yield very
+    # large XLA compilations for medium/large systems. Users can opt in via
+    # `SFINCS_JAX_SOLVER_JIT=1` or raise the cutoff with `SFINCS_JAX_SOLVER_JIT_MAX_SIZE`.
+    thresh_default = 20000
     try:
         thresh = int(thresh_env) if thresh_env else thresh_default
     except ValueError:
