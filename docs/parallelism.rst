@@ -158,8 +158,8 @@ Benchmark case: `examples/performance/transport_parallel_2min.input.namelist`
 Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg`.
 
 Latest cache‑warm sweep (1–8 workers):
-1 worker 148.6s, 2 workers 124.8s, 3 workers 117.6s, 4 workers 118.6s,
-5 workers 117.4s, 6 workers 117.7s, 7 workers 119.4s, 8 workers 117.1s.
+1 worker 149.7s, 2 workers 128.4s, 3 workers 123.3s, 4 workers 122.2s,
+5 workers 123.0s, 6 workers 122.7s, 7 workers 123.0s, 8 workers 122.7s.
 
 Process‑parallel workers automatically disable sharded matvec and cap
 XLA CPU threads per worker to avoid oversubscription when `SFINCS_JAX_CORES`
@@ -176,13 +176,17 @@ Reproduce:
      --warmup 0 \
      --global-warmup 1
 
+The benchmark script uses the transport solve-only path
+(``collect_transport_output_fields=False``) so timings isolate linear-solve
+parallel behavior instead of full diagnostics/H5 field assembly.
+
 .. figure:: _static/figures/parallel/transport_parallel_scaling.png
    :alt: Parallel whichRHS scaling on Macbook M3 Max
    :width: 90%
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this larger case, scaling reaches ~1.27× and then plateaus.
+For this larger case, scaling reaches ~1.23× and then plateaus.
 The plateau reflects that the current process-parallel transport path only
 parallelizes the per-`whichRHS` solves; shared setup/build costs remain serial
 and dominate for this case on a laptop-class CPU.

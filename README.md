@@ -107,9 +107,9 @@ Parallel `whichRHS` scaling for a >2-minute RHSMode=2 transport-matrix case
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
-Latest cache-warm run (1-8 workers): 1 worker 148.6s, 2 workers 124.8s,
-3 workers 117.6s, 4 workers 118.6s, 5 workers 117.4s, 6 workers 117.7s,
-7 workers 119.4s, 8 workers 117.1s.
+Latest cache-warm run (1-8 workers): 1 worker 149.7s, 2 workers 128.4s,
+3 workers 123.3s, 4 workers 122.2s, 5 workers 123.0s, 6 workers 122.7s,
+7 workers 123.0s, 8 workers 122.7s.
 
 Enable parallel execution in normal runs:
 
@@ -132,6 +132,10 @@ SFINCS_JAX_PERIODIC_STENCIL=1 python examples/performance/benchmark_sharded_matv
   --input examples/performance/transport_parallel_xxlarge.input.namelist \
   --axis theta --devices 1 --nrep 100 --repeats 3 --global-warmup 1
 ```
+
+The transport scaling benchmark uses the solve-only path
+(`collect_transport_output_fields=False`) so runtime reflects linear-solve
+scaling rather than H5-output diagnostics assembly.
 
 For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
 

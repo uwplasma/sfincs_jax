@@ -38,6 +38,7 @@ def _run_once(
         nml=nml,
         tol=1e-10,
         input_namelist=input_path,
+        collect_transport_output_fields=False,
     )
     return time.perf_counter() - t0
 

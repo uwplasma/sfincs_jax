@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 
 from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
+from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax.v3_driver import solve_v3_transport_matrix_linear_gmres
 
 
 def test_transport_parallel_whichrhs_matches_sequential(tmp_path, monkeypatch) -> None:
@@ -44,3 +46,54 @@ def test_transport_parallel_whichrhs_matches_sequential(tmp_path, monkeypatch) -
     for key in ("transportMatrix", "particleFlux_vm_psiHat", "heatFlux_vm_psiHat", "FSABFlow"):
         assert key in seq and key in par
         np.testing.assert_allclose(np.asarray(seq[key]), np.asarray(par[key]), rtol=5e-4, atol=1e-10)
+
+
+def test_transport_solve_minimal_outputs_matches_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Minimal transport-output mode should preserve matrix/flux diagnostics."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "transportMatrix_PAS_tiny_rhsMode2_scheme2.input.namelist"
+    assert input_path.exists()
+    nml = read_sfincs_input(input_path)
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_PARALLEL", "off")
+    monkeypatch.setenv("SFINCS_JAX_FORTRAN_STDOUT", "0")
+    monkeypatch.setenv("SFINCS_JAX_SOLVER_ITER_STATS", "0")
+
+    full = solve_v3_transport_matrix_linear_gmres(
+        nml=nml,
+        tol=1e-10,
+        input_namelist=input_path,
+        collect_transport_output_fields=True,
+    )
+    minimal = solve_v3_transport_matrix_linear_gmres(
+        nml=nml,
+        tol=1e-10,
+        input_namelist=input_path,
+        collect_transport_output_fields=False,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(minimal.transport_matrix),
+        np.asarray(full.transport_matrix),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(minimal.particle_flux_vm_psi_hat),
+        np.asarray(full.particle_flux_vm_psi_hat),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(minimal.heat_flux_vm_psi_hat),
+        np.asarray(full.heat_flux_vm_psi_hat),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(minimal.fsab_flow),
+        np.asarray(full.fsab_flow),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    assert minimal.transport_output_fields is None
