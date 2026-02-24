@@ -264,6 +264,10 @@ performance without changing the input file:
     simplified transport operator (stronger, higher setup cost).
   - ``sxblock``/``block_sx``/``species_x``: lightweight species×x block-Jacobi built from
     the FP collision operator (no matvec assembly; stronger than diagonal for FP cases).
+  - ``theta_dd``: theta-line domain-decomposition preconditioner (block-diagonal in theta)
+    for large sharded transport solves.
+  - ``zeta_dd``: zeta-line domain-decomposition preconditioner (block-diagonal in zeta)
+    for large sharded transport solves.
   - ``xmg``/``multigrid``: two-level additive x-grid preconditioner (coarse x solve +
     fine diagonal smoother).
   - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
@@ -274,6 +278,13 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_TRANSPORT_PRECOND_BLOCK_REG``: regularization added to transport block
   preconditioner diagonal blocks (default: ``1e-10``).
+
+- ``SFINCS_JAX_TRANSPORT_DD_AUTO_MIN``: when ``SFINCS_JAX_TRANSPORT_PRECOND=auto`` and
+  process parallelism is active, auto-select shard-axis-aligned DD preconditioning
+  (``theta_dd``/``zeta_dd``) above this size threshold (default: ``0``, disabled).
+
+- ``SFINCS_JAX_TRANSPORT_DD_BLOCK_T`` / ``SFINCS_JAX_TRANSPORT_DD_BLOCK_Z``: theta/zeta
+  DD block sizes for ``theta_dd``/``zeta_dd`` transport preconditioning (default: ``8``).
 
 - ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K``: low-rank Woodbury correction (rank ``K``)
   for the FP species×x transport preconditioner. ``auto`` (default when unset) selects

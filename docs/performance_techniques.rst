@@ -311,6 +311,21 @@ See ``docs/references.rst`` for Woodbury/low-rank update references.
 fine-grid collision-diagonal smoothing plus a coarse x-grid solve per species/L.
 Set ``SFINCS_JAX_XMG_STRIDE`` to control the coarsening.
 
+**Angular domain-decomposition blocks (theta/zeta).**
+
+``SFINCS_JAX_TRANSPORT_PRECOND=theta_dd`` or ``zeta_dd`` builds line-local
+block preconditioners in the selected angular direction. Each block inverts a
+local subdomain (species × active x/L × line extent) while dropping couplings
+to other lines, which keeps the preconditioner apply local and differentiable.
+This is useful when experimenting with sharded transport solves.
+
+Controls:
+
+- ``SFINCS_JAX_TRANSPORT_DD_BLOCK_T`` (theta block size, default ``8``)
+- ``SFINCS_JAX_TRANSPORT_DD_BLOCK_Z`` (zeta block size, default ``8``)
+- ``SFINCS_JAX_TRANSPORT_DD_AUTO_MIN`` (optional auto-enable threshold in
+  ``TRANSPORT_PRECOND=auto``; default ``0`` disables auto path)
+
 **JAX sparse Jacobi (optional).**
 
 ``SFINCS_JAX_TRANSPORT_PRECOND=sparse_jax`` builds a sparsified operator and applies
@@ -322,6 +337,8 @@ preconditioners while staying differentiable. Controls mirror the RHSMode=1
 **Implementation.**
 
 - ``_build_rhsmode23_sxblock_preconditioner`` in ``sfincs_jax.v3_driver``.
+- ``_build_rhsmode23_theta_dd_preconditioner`` / ``_build_rhsmode23_zeta_dd_preconditioner``
+  in ``sfincs_jax.v3_driver``.
 - Controlled by ``SFINCS_JAX_TRANSPORT_PRECOND`` (``auto``, ``sxblock``, ``collision``, etc.).
   ``auto`` picks the collision-diagonal preconditioner for the default BiCGStab transport
   solver and upgrades to species×x blocks for modest FP systems when GMRES is selected.

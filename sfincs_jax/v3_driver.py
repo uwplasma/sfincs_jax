@@ -3350,9 +3350,10 @@ def _build_rhsmode1_preconditioner_operator_theta_line(op: V3FullSystemOperator)
 def _build_rhsmode1_preconditioner_operator_theta_dd(
     op: V3FullSystemOperator, *, block: int
 ) -> V3FullSystemOperator:
-    """Return a theta-block domain-decomposition operator for preconditioning."""
-    if int(op.rhs_mode) != 1:
-        return op
+    """Return a theta-block domain-decomposition operator for preconditioning.
+
+    This operator shaping is used by RHSMode=1 and RHSMode=2/3 transport solves.
+    """
 
     fblock = op.fblock
     coll = replace(
@@ -3429,9 +3430,10 @@ def _build_rhsmode1_preconditioner_operator_zeta_line(op: V3FullSystemOperator) 
 def _build_rhsmode1_preconditioner_operator_zeta_dd(
     op: V3FullSystemOperator, *, block: int
 ) -> V3FullSystemOperator:
-    """Return a zeta-block domain-decomposition operator for preconditioning."""
-    if int(op.rhs_mode) != 1:
-        return op
+    """Return a zeta-block domain-decomposition operator for preconditioning.
+
+    This operator shaping is used by RHSMode=1 and RHSMode=2/3 transport solves.
+    """
 
     fblock = op.fblock
     coll = replace(
@@ -3763,6 +3765,38 @@ def _build_rhsmode1_block_preconditioner(
         return reduce_full(z_full)
 
     return _apply_reduced
+
+
+def _build_rhsmode23_theta_dd_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Domain-decomposition theta-block preconditioner for RHSMode=2/3 transport solves."""
+    return _build_rhsmode1_theta_dd_preconditioner(
+        op=op,
+        block=int(block),
+        reduce_full=reduce_full,
+        expand_reduced=expand_reduced,
+    )
+
+
+def _build_rhsmode23_zeta_dd_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Domain-decomposition zeta-block preconditioner for RHSMode=2/3 transport solves."""
+    return _build_rhsmode1_zeta_dd_preconditioner(
+        op=op,
+        block=int(block),
+        reduce_full=reduce_full,
+        expand_reduced=expand_reduced,
+    )
 
 
 def _build_rhsmode23_block_preconditioner(
@@ -11894,6 +11928,14 @@ def solve_v3_transport_matrix_linear_gmres(
         "species_x",
         "xmg",
         "multigrid",
+        "theta_dd",
+        "theta_block",
+        "dd_theta",
+        "dd_t",
+        "zeta_dd",
+        "zeta_block",
+        "dd_zeta",
+        "dd_z",
         "tzfft",
         "streaming_fft",
         "stream_fft",
@@ -11901,6 +11943,10 @@ def solve_v3_transport_matrix_linear_gmres(
     }:
         if transport_precond_env in {"streaming_fft", "stream_fft"}:
             transport_precond_kind = "tzfft"
+        elif transport_precond_env in {"theta_block", "dd_theta", "dd_t"}:
+            transport_precond_kind = "theta_dd"
+        elif transport_precond_env in {"zeta_block", "dd_zeta", "dd_z"}:
+            transport_precond_kind = "zeta_dd"
         else:
             transport_precond_kind = transport_precond_env
     else:
@@ -11987,6 +12033,21 @@ def solve_v3_transport_matrix_linear_gmres(
                 else:
                     precond_kind = "collision"
                     strong_precond_kind = "xmg"
+            # For large parallel transport solves, prefer a domain-decomposition preconditioner
+            # aligned with the active matvec shard axis to avoid global preconditioner work.
+            dd_auto_min_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_AUTO_MIN", "").strip()
+            try:
+                dd_auto_min = int(dd_auto_min_env) if dd_auto_min_env else 0
+            except ValueError:
+                dd_auto_min = 0
+            if int(parallel_workers) > 1 and dd_auto_min > 0 and int(op0.total_size) >= dd_auto_min:
+                shard_axis = _matvec_shard_axis(op0)
+                if shard_axis == "theta":
+                    precond_kind = "theta_dd"
+                    strong_precond_kind = "theta_dd"
+                elif shard_axis == "zeta":
+                    precond_kind = "zeta_dd"
+                    strong_precond_kind = "zeta_dd"
             if dense_mem_block and strong_precond_kind is not None:
                 precond_kind = strong_precond_kind
         precond_kind_used = precond_kind
@@ -11995,6 +12056,36 @@ def solve_v3_transport_matrix_linear_gmres(
             if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
                 preconditioner_reduced = _build_rhsmode23_xmg_preconditioner(
                     op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+        elif precond_kind == "theta_dd":
+            block_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "").strip()
+            try:
+                dd_block_t = int(block_t_env) if block_t_env else 8
+            except ValueError:
+                dd_block_t = 8
+            dd_block_t = max(1, min(int(op0.n_theta), dd_block_t))
+            preconditioner_full = _build_rhsmode23_theta_dd_preconditioner(op=op0, block=dd_block_t)
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_theta_dd_preconditioner(
+                    op=op0,
+                    block=dd_block_t,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
+                )
+        elif precond_kind == "zeta_dd":
+            block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
+            try:
+                dd_block_z = int(block_z_env) if block_z_env else 8
+            except ValueError:
+                dd_block_z = 8
+            dd_block_z = max(1, min(int(op0.n_zeta), dd_block_z))
+            preconditioner_full = _build_rhsmode23_zeta_dd_preconditioner(op=op0, block=dd_block_z)
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_zeta_dd_preconditioner(
+                    op=op0,
+                    block=dd_block_z,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
                 )
         elif precond_kind == "tzfft":
             preconditioner_full = _build_rhsmode23_tzfft_preconditioner(op=op0)
@@ -12092,6 +12183,32 @@ def solve_v3_transport_matrix_linear_gmres(
                     strong_preconditioner_reduced = _build_rhsmode23_xmg_preconditioner(
                         op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
                     )
+                elif strong_precond_kind == "theta_dd":
+                    block_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "").strip()
+                    try:
+                        dd_block_t = int(block_t_env) if block_t_env else 8
+                    except ValueError:
+                        dd_block_t = 8
+                    dd_block_t = max(1, min(int(op0.n_theta), dd_block_t))
+                    strong_preconditioner_reduced = _build_rhsmode23_theta_dd_preconditioner(
+                        op=op0,
+                        block=dd_block_t,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                    )
+                elif strong_precond_kind == "zeta_dd":
+                    block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
+                    try:
+                        dd_block_z = int(block_z_env) if block_z_env else 8
+                    except ValueError:
+                        dd_block_z = 8
+                    dd_block_z = max(1, min(int(op0.n_zeta), dd_block_z))
+                    strong_preconditioner_reduced = _build_rhsmode23_zeta_dd_preconditioner(
+                        op=op0,
+                        block=dd_block_z,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                    )
                 elif strong_precond_kind == "tzfft":
                     strong_preconditioner_reduced = _build_rhsmode23_tzfft_preconditioner(
                         op=op0, reduce_full=reduce_full, expand_reduced=expand_reduced
@@ -12112,6 +12229,22 @@ def solve_v3_transport_matrix_linear_gmres(
         if strong_preconditioner_full is None:
             if strong_precond_kind in {"xmg", "multigrid"}:
                 strong_preconditioner_full = _build_rhsmode23_xmg_preconditioner(op=op0)
+            elif strong_precond_kind == "theta_dd":
+                block_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "").strip()
+                try:
+                    dd_block_t = int(block_t_env) if block_t_env else 8
+                except ValueError:
+                    dd_block_t = 8
+                dd_block_t = max(1, min(int(op0.n_theta), dd_block_t))
+                strong_preconditioner_full = _build_rhsmode23_theta_dd_preconditioner(op=op0, block=dd_block_t)
+            elif strong_precond_kind == "zeta_dd":
+                block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
+                try:
+                    dd_block_z = int(block_z_env) if block_z_env else 8
+                except ValueError:
+                    dd_block_z = 8
+                dd_block_z = max(1, min(int(op0.n_zeta), dd_block_z))
+                strong_preconditioner_full = _build_rhsmode23_zeta_dd_preconditioner(op=op0, block=dd_block_z)
             elif strong_precond_kind == "tzfft":
                 strong_preconditioner_full = _build_rhsmode23_tzfft_preconditioner(op=op0)
             elif strong_precond_kind in {"sxblock", "block_sx", "species_x"}:

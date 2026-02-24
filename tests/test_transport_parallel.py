@@ -97,3 +97,58 @@ def test_transport_solve_minimal_outputs_matches_full(monkeypatch: pytest.Monkey
         atol=1e-10,
     )
     assert minimal.transport_output_fields is None
+
+
+def test_transport_theta_dd_preconditioner_matches_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Theta-DD transport preconditioner should preserve transport outputs on tiny PAS cases."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "transportMatrix_PAS_tiny_rhsMode2_scheme2.input.namelist"
+    assert input_path.exists()
+    nml = read_sfincs_input(input_path)
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_PARALLEL", "off")
+    monkeypatch.setenv("SFINCS_JAX_FORTRAN_STDOUT", "0")
+    monkeypatch.setenv("SFINCS_JAX_SOLVER_ITER_STATS", "0")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_DENSE_FALLBACK", "0")
+
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PRECOND", raising=False)
+    base = solve_v3_transport_matrix_linear_gmres(
+        nml=nml,
+        tol=1e-10,
+        input_namelist=input_path,
+        collect_transport_output_fields=False,
+    )
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_PRECOND", "theta_dd")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "2")
+    theta_dd = solve_v3_transport_matrix_linear_gmres(
+        nml=nml,
+        tol=1e-10,
+        input_namelist=input_path,
+        collect_transport_output_fields=False,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(theta_dd.transport_matrix),
+        np.asarray(base.transport_matrix),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(theta_dd.particle_flux_vm_psi_hat),
+        np.asarray(base.particle_flux_vm_psi_hat),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(theta_dd.heat_flux_vm_psi_hat),
+        np.asarray(base.heat_flux_vm_psi_hat),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(theta_dd.fsab_flow),
+        np.asarray(base.fsab_flow),
+        rtol=5e-4,
+        atol=1e-10,
+    )

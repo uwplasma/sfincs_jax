@@ -137,6 +137,10 @@ The transport scaling benchmark uses the solve-only path
 (`collect_transport_output_fields=False`) so runtime reflects linear-solve
 scaling rather than H5-output diagnostics assembly.
 
+Experimental transport domain-decomposition preconditioners are available via
+`SFINCS_JAX_TRANSPORT_PRECOND=theta_dd` or `zeta_dd` (block sizes:
+`SFINCS_JAX_TRANSPORT_DD_BLOCK_T`, `SFINCS_JAX_TRANSPORT_DD_BLOCK_Z`).
+
 For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
 
 ## What the code supports
