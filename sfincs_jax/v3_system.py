@@ -982,6 +982,10 @@ def _pad_exb_theta(op: ExBThetaV3Operator, *, axis: str, pad: int) -> ExBThetaV3
             d_hat=_pad_2d_theta(op.d_hat, pad, fill=0.0),
             b_hat=_pad_2d_theta(op.b_hat, pad, fill=1.0),
             b_hat_sub_zeta=_pad_2d_theta(op.b_hat_sub_zeta, pad, fill=0.0),
+            ddtheta_stencil_shifts=(),
+            ddtheta_stencil_coeffs=(),
+            ddtheta_sparse_cols=None,
+            ddtheta_sparse_vals=None,
         )
     if axis == "zeta":
         return replace(
@@ -1003,6 +1007,10 @@ def _pad_exb_zeta(op: ExBZetaV3Operator, *, axis: str, pad: int) -> ExBZetaV3Ope
             d_hat=_pad_2d_zeta(op.d_hat, pad, fill=0.0),
             b_hat=_pad_2d_zeta(op.b_hat, pad, fill=1.0),
             b_hat_sub_theta=_pad_2d_zeta(op.b_hat_sub_theta, pad, fill=0.0),
+            ddzeta_stencil_shifts=(),
+            ddzeta_stencil_coeffs=(),
+            ddzeta_sparse_cols=None,
+            ddzeta_sparse_vals=None,
         )
     if axis == "theta":
         return replace(
@@ -1032,6 +1040,14 @@ def _pad_magdrift_theta(
             db_hat_dpsi_hat=_pad_2d_theta(op.db_hat_dpsi_hat, pad, fill=0.0),
             db_hat_sub_psi_dzeta=_pad_2d_theta(op.db_hat_sub_psi_dzeta, pad, fill=0.0),
             db_hat_sub_zeta_dpsi_hat=_pad_2d_theta(op.db_hat_sub_zeta_dpsi_hat, pad, fill=0.0),
+            ddtheta_plus_stencil_shifts=(),
+            ddtheta_plus_stencil_coeffs=(),
+            ddtheta_minus_stencil_shifts=(),
+            ddtheta_minus_stencil_coeffs=(),
+            ddtheta_plus_sparse_cols=None,
+            ddtheta_plus_sparse_vals=None,
+            ddtheta_minus_sparse_cols=None,
+            ddtheta_minus_sparse_vals=None,
         )
     if axis == "zeta":
         return replace(
@@ -1066,6 +1082,14 @@ def _pad_magdrift_zeta(
             db_hat_dpsi_hat=_pad_2d_zeta(op.db_hat_dpsi_hat, pad, fill=0.0),
             db_hat_sub_theta_dpsi_hat=_pad_2d_zeta(op.db_hat_sub_theta_dpsi_hat, pad, fill=0.0),
             db_hat_sub_psi_dtheta=_pad_2d_zeta(op.db_hat_sub_psi_dtheta, pad, fill=0.0),
+            ddzeta_plus_stencil_shifts=(),
+            ddzeta_plus_stencil_coeffs=(),
+            ddzeta_minus_stencil_shifts=(),
+            ddzeta_minus_stencil_coeffs=(),
+            ddzeta_plus_sparse_cols=None,
+            ddzeta_plus_sparse_vals=None,
+            ddzeta_minus_sparse_cols=None,
+            ddzeta_minus_sparse_vals=None,
         )
     if axis == "theta":
         return replace(

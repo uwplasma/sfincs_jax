@@ -45,7 +45,7 @@ def _run_once(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark parallel whichRHS scaling.")
     repo_root = Path(__file__).resolve().parents[2]
-    default_input = repo_root / "examples" / "performance" / "transport_parallel_xxlarge.input.namelist"
+    default_input = repo_root / "examples" / "performance" / "transport_parallel_2min.input.namelist"
     default_out = repo_root / "examples" / "performance" / "output" / "transport_parallel_scaling"
     default_cache = default_out / "jax_cache"
 
@@ -102,17 +102,30 @@ def main() -> None:
     workers = sorted({int(w) for w in args.workers if int(w) >= 1})
 
     if args.global_warmup and args.global_warmup > 0:
-        for _ in range(int(args.global_warmup)):
+        for i in range(int(args.global_warmup)):
+            print(
+                f"[warmup-global {i + 1}/{int(args.global_warmup)}] workers=1 starting",
+                flush=True,
+            )
             _run_once(input_path, workers=1, cache_dir=cache_dir, precond=args.precond)
+            print(
+                f"[warmup-global {i + 1}/{int(args.global_warmup)}] workers=1 done",
+                flush=True,
+            )
 
     results = []
     for w in workers:
-        for _ in range(max(args.warmup, 0)):
+        print(f"[worker {w}] starting warmups={max(args.warmup, 0)} repeats={max(args.repeats, 1)}", flush=True)
+        for i in range(max(args.warmup, 0)):
+            print(f"[worker {w}] warmup {i + 1}/{max(args.warmup, 0)} starting", flush=True)
             _run_once(input_path, workers=w, cache_dir=cache_dir, precond=args.precond)
+            print(f"[worker {w}] warmup {i + 1}/{max(args.warmup, 0)} done", flush=True)
         times = []
-        for _ in range(max(args.repeats, 1)):
+        for i in range(max(args.repeats, 1)):
+            print(f"[worker {w}] repeat {i + 1}/{max(args.repeats, 1)} starting", flush=True)
             dt = _run_once(input_path, workers=w, cache_dir=cache_dir, precond=args.precond)
             times.append(dt)
+            print(f"[worker {w}] repeat {i + 1}/{max(args.repeats, 1)} done in {dt:.3f}s", flush=True)
         times = np.asarray(times, dtype=float)
         results.append(
             {

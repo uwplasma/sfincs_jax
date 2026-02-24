@@ -10,7 +10,11 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
-from .periodic_stencil import apply_periodic_stencil_roll, periodic_stencil_runtime_enabled
+from .periodic_stencil import (
+    apply_periodic_stencil_roll,
+    apply_sparse_row_stencil_gather,
+    periodic_stencil_runtime_enabled,
+)
 
 
 def _mask_xi(n_xi_for_x: jnp.ndarray, n_xi_max: int) -> jnp.ndarray:
@@ -44,6 +48,8 @@ class ExBThetaV3Operator:
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
     ddtheta_stencil_shifts: tuple[int, ...] = ()
     ddtheta_stencil_coeffs: tuple[float, ...] = ()
+    ddtheta_sparse_cols: jnp.ndarray | None = None
+    ddtheta_sparse_vals: jnp.ndarray | None = None
 
     def tree_flatten(self):
         children = (
@@ -56,6 +62,8 @@ class ExBThetaV3Operator:
             self.b_hat_sub_zeta,
             self.fsab_hat2,
             self.n_xi_for_x,
+            self.ddtheta_sparse_cols,
+            self.ddtheta_sparse_vals,
         )
         aux = (
             bool(self.use_dkes_exb_drift),
@@ -76,8 +84,16 @@ class ExBThetaV3Operator:
             b_hat_sub_zeta,
             fsab_hat2,
             n_xi_for_x,
+            ddtheta_sparse_cols,
+            ddtheta_sparse_vals,
         ) = children
-        use_dkes_exb_drift, ddtheta_stencil_shifts, ddtheta_stencil_coeffs = aux
+        if isinstance(aux, tuple) and len(aux) == 3:
+            use_dkes_exb_drift, ddtheta_stencil_shifts, ddtheta_stencil_coeffs = aux
+        else:
+            # Backward compatibility with older pytree metadata.
+            use_dkes_exb_drift = bool(aux)
+            ddtheta_stencil_shifts = ()
+            ddtheta_stencil_coeffs = ()
         return cls(
             alpha=alpha,
             delta=delta,
@@ -91,6 +107,8 @@ class ExBThetaV3Operator:
             n_xi_for_x=n_xi_for_x,
             ddtheta_stencil_shifts=tuple(int(v) for v in ddtheta_stencil_shifts),
             ddtheta_stencil_coeffs=tuple(float(v) for v in ddtheta_stencil_coeffs),
+            ddtheta_sparse_cols=ddtheta_sparse_cols,
+            ddtheta_sparse_vals=ddtheta_sparse_vals,
         )
 
 
@@ -114,6 +132,8 @@ class ExBZetaV3Operator:
     n_xi_for_x: jnp.ndarray  # (Nx,) int32
     ddzeta_stencil_shifts: tuple[int, ...] = ()
     ddzeta_stencil_coeffs: tuple[float, ...] = ()
+    ddzeta_sparse_cols: jnp.ndarray | None = None
+    ddzeta_sparse_vals: jnp.ndarray | None = None
 
     def tree_flatten(self):
         children = (
@@ -126,6 +146,8 @@ class ExBZetaV3Operator:
             self.b_hat_sub_theta,
             self.fsab_hat2,
             self.n_xi_for_x,
+            self.ddzeta_sparse_cols,
+            self.ddzeta_sparse_vals,
         )
         aux = (
             bool(self.use_dkes_exb_drift),
@@ -146,8 +168,15 @@ class ExBZetaV3Operator:
             b_hat_sub_theta,
             fsab_hat2,
             n_xi_for_x,
+            ddzeta_sparse_cols,
+            ddzeta_sparse_vals,
         ) = children
-        use_dkes_exb_drift, ddzeta_stencil_shifts, ddzeta_stencil_coeffs = aux
+        if isinstance(aux, tuple) and len(aux) == 3:
+            use_dkes_exb_drift, ddzeta_stencil_shifts, ddzeta_stencil_coeffs = aux
+        else:
+            use_dkes_exb_drift = bool(aux)
+            ddzeta_stencil_shifts = ()
+            ddzeta_stencil_coeffs = ()
         return cls(
             alpha=alpha,
             delta=delta,
@@ -161,6 +190,8 @@ class ExBZetaV3Operator:
             n_xi_for_x=n_xi_for_x,
             ddzeta_stencil_shifts=tuple(int(v) for v in ddzeta_stencil_shifts),
             ddzeta_stencil_coeffs=tuple(float(v) for v in ddzeta_stencil_coeffs),
+            ddzeta_sparse_cols=ddzeta_sparse_cols,
+            ddzeta_sparse_vals=ddzeta_sparse_vals,
         )
 
 
@@ -200,6 +231,17 @@ def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
             coeffs=op.ddtheta_stencil_coeffs,
             axis=3,
         )
+    elif (
+        op.ddtheta_sparse_cols is not None
+        and op.ddtheta_sparse_vals is not None
+        and int(op.ddtheta_sparse_cols.size) > 0
+    ):
+        dtheta_f = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddtheta_sparse_cols,
+            vals=op.ddtheta_sparse_vals,
+            axis=3,
+        )
     else:
         dtheta_f = jnp.einsum("ij,sxljz->sxliz", op.ddtheta, f)
     out = factor * dtheta_f * coef[None, None, None, :, :]
@@ -236,6 +278,17 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
             f,
             shifts=op.ddzeta_stencil_shifts,
             coeffs=op.ddzeta_stencil_coeffs,
+            axis=4,
+        )
+    elif (
+        op.ddzeta_sparse_cols is not None
+        and op.ddzeta_sparse_vals is not None
+        and int(op.ddzeta_sparse_cols.size) > 0
+    ):
+        dzeta_f = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddzeta_sparse_cols,
+            vals=op.ddzeta_sparse_vals,
             axis=4,
         )
     else:

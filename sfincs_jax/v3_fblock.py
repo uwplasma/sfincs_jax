@@ -615,6 +615,18 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             ddtheta_minus_shifts, ddtheta_minus_coeffs = _stencil_from_matrix(grids.ddtheta_magdrift_minus)
             ddzeta_plus_shifts, ddzeta_plus_coeffs = _stencil_from_matrix(grids.ddzeta_magdrift_plus)
             ddzeta_minus_shifts, ddzeta_minus_coeffs = _stencil_from_matrix(grids.ddzeta_magdrift_minus)
+            ddtheta_plus_sparse_cols, ddtheta_plus_sparse_vals = extract_sparse_row_stencil(
+                np.asarray(grids.ddtheta_magdrift_plus, dtype=np.float64)
+            )
+            ddtheta_minus_sparse_cols, ddtheta_minus_sparse_vals = extract_sparse_row_stencil(
+                np.asarray(grids.ddtheta_magdrift_minus, dtype=np.float64)
+            )
+            ddzeta_plus_sparse_cols, ddzeta_plus_sparse_vals = extract_sparse_row_stencil(
+                np.asarray(grids.ddzeta_magdrift_plus, dtype=np.float64)
+            )
+            ddzeta_minus_sparse_cols, ddzeta_minus_sparse_vals = extract_sparse_row_stencil(
+                np.asarray(grids.ddzeta_magdrift_minus, dtype=np.float64)
+            )
 
             magdrift_theta = MagneticDriftThetaV3Operator(
                 delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -636,6 +648,10 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
                 ddtheta_plus_stencil_coeffs=ddtheta_plus_coeffs,
                 ddtheta_minus_stencil_shifts=ddtheta_minus_shifts,
                 ddtheta_minus_stencil_coeffs=ddtheta_minus_coeffs,
+                ddtheta_plus_sparse_cols=jnp.asarray(ddtheta_plus_sparse_cols, dtype=jnp.int32),
+                ddtheta_plus_sparse_vals=jnp.asarray(ddtheta_plus_sparse_vals, dtype=jnp.float64),
+                ddtheta_minus_sparse_cols=jnp.asarray(ddtheta_minus_sparse_cols, dtype=jnp.int32),
+                ddtheta_minus_sparse_vals=jnp.asarray(ddtheta_minus_sparse_vals, dtype=jnp.float64),
             )
             magdrift_zeta = MagneticDriftZetaV3Operator(
                 delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -657,6 +673,10 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
                 ddzeta_plus_stencil_coeffs=ddzeta_plus_coeffs,
                 ddzeta_minus_stencil_shifts=ddzeta_minus_shifts,
                 ddzeta_minus_stencil_coeffs=ddzeta_minus_coeffs,
+                ddzeta_plus_sparse_cols=jnp.asarray(ddzeta_plus_sparse_cols, dtype=jnp.int32),
+                ddzeta_plus_sparse_vals=jnp.asarray(ddzeta_plus_sparse_vals, dtype=jnp.float64),
+                ddzeta_minus_sparse_cols=jnp.asarray(ddzeta_minus_sparse_cols, dtype=jnp.int32),
+                ddzeta_minus_sparse_vals=jnp.asarray(ddzeta_minus_sparse_vals, dtype=jnp.float64),
             )
             magdrift_xidot = MagneticDriftXiDotV3Operator(
                 delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -728,6 +748,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     if not dphi_is_zero:
         exb_theta_shifts, exb_theta_coeffs = _stencil_from_matrix(grids.ddtheta)
         exb_zeta_shifts, exb_zeta_coeffs = _stencil_from_matrix(grids.ddzeta)
+        exb_theta_sparse_cols, exb_theta_sparse_vals = extract_sparse_row_stencil(np.asarray(grids.ddtheta, dtype=np.float64))
+        exb_zeta_sparse_cols, exb_zeta_sparse_vals = extract_sparse_row_stencil(np.asarray(grids.ddzeta, dtype=np.float64))
         exb_theta = ExBThetaV3Operator(
             alpha=jnp.asarray(alpha, dtype=jnp.float64),
             delta=jnp.asarray(delta, dtype=jnp.float64),
@@ -741,6 +763,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             n_xi_for_x=grids.n_xi_for_x,
             ddtheta_stencil_shifts=exb_theta_shifts,
             ddtheta_stencil_coeffs=exb_theta_coeffs,
+            ddtheta_sparse_cols=jnp.asarray(exb_theta_sparse_cols, dtype=jnp.int32),
+            ddtheta_sparse_vals=jnp.asarray(exb_theta_sparse_vals, dtype=jnp.float64),
         )
         exb_zeta = ExBZetaV3Operator(
             alpha=jnp.asarray(alpha, dtype=jnp.float64),
@@ -755,6 +779,8 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
             n_xi_for_x=grids.n_xi_for_x,
             ddzeta_stencil_shifts=exb_zeta_shifts,
             ddzeta_stencil_coeffs=exb_zeta_coeffs,
+            ddzeta_sparse_cols=jnp.asarray(exb_zeta_sparse_cols, dtype=jnp.int32),
+            ddzeta_sparse_vals=jnp.asarray(exb_zeta_sparse_vals, dtype=jnp.float64),
         )
 
     er_xidot = None

@@ -10,7 +10,11 @@ import jax
 import jax.numpy as jnp
 from jax import tree_util as jtu
 
-from .periodic_stencil import apply_periodic_stencil_roll, periodic_stencil_runtime_enabled
+from .periodic_stencil import (
+    apply_periodic_stencil_roll,
+    apply_sparse_row_stencil_gather,
+    periodic_stencil_runtime_enabled,
+)
 
 
 def _mask_xi(n_xi_for_x: jnp.ndarray, n_xi_max: int) -> jnp.ndarray:
@@ -93,6 +97,10 @@ class MagneticDriftThetaV3Operator:
     ddtheta_plus_stencil_coeffs: tuple[float, ...] = ()
     ddtheta_minus_stencil_shifts: tuple[int, ...] = ()
     ddtheta_minus_stencil_coeffs: tuple[float, ...] = ()
+    ddtheta_plus_sparse_cols: jnp.ndarray | None = None
+    ddtheta_plus_sparse_vals: jnp.ndarray | None = None
+    ddtheta_minus_sparse_cols: jnp.ndarray | None = None
+    ddtheta_minus_sparse_vals: jnp.ndarray | None = None
 
     def tree_flatten(self):
         children = (
@@ -111,6 +119,10 @@ class MagneticDriftThetaV3Operator:
             self.db_hat_sub_psi_dzeta,
             self.db_hat_sub_zeta_dpsi_hat,
             self.n_xi_for_x,
+            self.ddtheta_plus_sparse_cols,
+            self.ddtheta_plus_sparse_vals,
+            self.ddtheta_minus_sparse_cols,
+            self.ddtheta_minus_sparse_vals,
         )
         aux = (
             self.ddtheta_plus_stencil_shifts,
@@ -138,6 +150,10 @@ class MagneticDriftThetaV3Operator:
             db_hat_sub_psi_dzeta,
             db_hat_sub_zeta_dpsi_hat,
             n_xi_for_x,
+            ddtheta_plus_sparse_cols,
+            ddtheta_plus_sparse_vals,
+            ddtheta_minus_sparse_cols,
+            ddtheta_minus_sparse_vals,
         ) = children
         if aux is None:
             ddtheta_plus_stencil_shifts = ()
@@ -171,6 +187,10 @@ class MagneticDriftThetaV3Operator:
             ddtheta_plus_stencil_coeffs=tuple(float(v) for v in ddtheta_plus_stencil_coeffs),
             ddtheta_minus_stencil_shifts=tuple(int(v) for v in ddtheta_minus_stencil_shifts),
             ddtheta_minus_stencil_coeffs=tuple(float(v) for v in ddtheta_minus_stencil_coeffs),
+            ddtheta_plus_sparse_cols=ddtheta_plus_sparse_cols,
+            ddtheta_plus_sparse_vals=ddtheta_plus_sparse_vals,
+            ddtheta_minus_sparse_cols=ddtheta_minus_sparse_cols,
+            ddtheta_minus_sparse_vals=ddtheta_minus_sparse_vals,
         )
 
 
@@ -201,6 +221,10 @@ class MagneticDriftZetaV3Operator:
     ddzeta_plus_stencil_coeffs: tuple[float, ...] = ()
     ddzeta_minus_stencil_shifts: tuple[int, ...] = ()
     ddzeta_minus_stencil_coeffs: tuple[float, ...] = ()
+    ddzeta_plus_sparse_cols: jnp.ndarray | None = None
+    ddzeta_plus_sparse_vals: jnp.ndarray | None = None
+    ddzeta_minus_sparse_cols: jnp.ndarray | None = None
+    ddzeta_minus_sparse_vals: jnp.ndarray | None = None
 
     def tree_flatten(self):
         children = (
@@ -219,6 +243,10 @@ class MagneticDriftZetaV3Operator:
             self.db_hat_sub_theta_dpsi_hat,
             self.db_hat_sub_psi_dtheta,
             self.n_xi_for_x,
+            self.ddzeta_plus_sparse_cols,
+            self.ddzeta_plus_sparse_vals,
+            self.ddzeta_minus_sparse_cols,
+            self.ddzeta_minus_sparse_vals,
         )
         aux = (
             self.ddzeta_plus_stencil_shifts,
@@ -246,6 +274,10 @@ class MagneticDriftZetaV3Operator:
             db_hat_sub_theta_dpsi_hat,
             db_hat_sub_psi_dtheta,
             n_xi_for_x,
+            ddzeta_plus_sparse_cols,
+            ddzeta_plus_sparse_vals,
+            ddzeta_minus_sparse_cols,
+            ddzeta_minus_sparse_vals,
         ) = children
         if aux is None:
             ddzeta_plus_stencil_shifts = ()
@@ -279,6 +311,10 @@ class MagneticDriftZetaV3Operator:
             ddzeta_plus_stencil_coeffs=tuple(float(v) for v in ddzeta_plus_stencil_coeffs),
             ddzeta_minus_stencil_shifts=tuple(int(v) for v in ddzeta_minus_stencil_shifts),
             ddzeta_minus_stencil_coeffs=tuple(float(v) for v in ddzeta_minus_stencil_coeffs),
+            ddzeta_plus_sparse_cols=ddzeta_plus_sparse_cols,
+            ddzeta_plus_sparse_vals=ddzeta_plus_sparse_vals,
+            ddzeta_minus_sparse_cols=ddzeta_minus_sparse_cols,
+            ddzeta_minus_sparse_vals=ddzeta_minus_sparse_vals,
         )
 
 
@@ -386,6 +422,17 @@ def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: 
             coeffs=op.ddtheta_plus_stencil_coeffs,
             axis=3,
         )
+    elif (
+        op.ddtheta_plus_sparse_cols is not None
+        and op.ddtheta_plus_sparse_vals is not None
+        and int(op.ddtheta_plus_sparse_cols.size) > 0
+    ):
+        dtheta_plus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddtheta_plus_sparse_cols,
+            vals=op.ddtheta_plus_sparse_vals,
+            axis=3,
+        )
     else:
         dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
     if periodic_stencil_runtime_enabled() and op.ddtheta_minus_stencil_shifts:
@@ -393,6 +440,17 @@ def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: 
             f,
             shifts=op.ddtheta_minus_stencil_shifts,
             coeffs=op.ddtheta_minus_stencil_coeffs,
+            axis=3,
+        )
+    elif (
+        op.ddtheta_minus_sparse_cols is not None
+        and op.ddtheta_minus_sparse_vals is not None
+        and int(op.ddtheta_minus_sparse_cols.size) > 0
+    ):
+        dtheta_minus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddtheta_minus_sparse_cols,
+            vals=op.ddtheta_minus_sparse_vals,
             axis=3,
         )
     else:
@@ -458,6 +516,17 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
             coeffs=op.ddtheta_plus_stencil_coeffs,
             axis=3,
         )
+    elif (
+        op.ddtheta_plus_sparse_cols is not None
+        and op.ddtheta_plus_sparse_vals is not None
+        and int(op.ddtheta_plus_sparse_cols.size) > 0
+    ):
+        dtheta_plus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddtheta_plus_sparse_cols,
+            vals=op.ddtheta_plus_sparse_vals,
+            axis=3,
+        )
     else:
         dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
     if periodic_stencil_runtime_enabled() and op.ddtheta_minus_stencil_shifts:
@@ -465,6 +534,17 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
             f,
             shifts=op.ddtheta_minus_stencil_shifts,
             coeffs=op.ddtheta_minus_stencil_coeffs,
+            axis=3,
+        )
+    elif (
+        op.ddtheta_minus_sparse_cols is not None
+        and op.ddtheta_minus_sparse_vals is not None
+        and int(op.ddtheta_minus_sparse_cols.size) > 0
+    ):
+        dtheta_minus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddtheta_minus_sparse_cols,
+            vals=op.ddtheta_minus_sparse_vals,
             axis=3,
         )
     else:
@@ -523,6 +603,17 @@ def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jn
             coeffs=op.ddzeta_plus_stencil_coeffs,
             axis=4,
         )
+    elif (
+        op.ddzeta_plus_sparse_cols is not None
+        and op.ddzeta_plus_sparse_vals is not None
+        and int(op.ddzeta_plus_sparse_cols.size) > 0
+    ):
+        dzeta_plus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddzeta_plus_sparse_cols,
+            vals=op.ddzeta_plus_sparse_vals,
+            axis=4,
+        )
     else:
         dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
     if periodic_stencil_runtime_enabled() and op.ddzeta_minus_stencil_shifts:
@@ -530,6 +621,17 @@ def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jn
             f,
             shifts=op.ddzeta_minus_stencil_shifts,
             coeffs=op.ddzeta_minus_stencil_coeffs,
+            axis=4,
+        )
+    elif (
+        op.ddzeta_minus_sparse_cols is not None
+        and op.ddzeta_minus_sparse_vals is not None
+        and int(op.ddzeta_minus_sparse_cols.size) > 0
+    ):
+        dzeta_minus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddzeta_minus_sparse_cols,
+            vals=op.ddzeta_minus_sparse_vals,
             axis=4,
         )
     else:
@@ -592,6 +694,17 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
             coeffs=op.ddzeta_plus_stencil_coeffs,
             axis=4,
         )
+    elif (
+        op.ddzeta_plus_sparse_cols is not None
+        and op.ddzeta_plus_sparse_vals is not None
+        and int(op.ddzeta_plus_sparse_cols.size) > 0
+    ):
+        dzeta_plus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddzeta_plus_sparse_cols,
+            vals=op.ddzeta_plus_sparse_vals,
+            axis=4,
+        )
     else:
         dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
     if periodic_stencil_runtime_enabled() and op.ddzeta_minus_stencil_shifts:
@@ -599,6 +712,17 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
             f,
             shifts=op.ddzeta_minus_stencil_shifts,
             coeffs=op.ddzeta_minus_stencil_coeffs,
+            axis=4,
+        )
+    elif (
+        op.ddzeta_minus_sparse_cols is not None
+        and op.ddzeta_minus_sparse_vals is not None
+        and int(op.ddzeta_minus_sparse_cols.size) > 0
+    ):
+        dzeta_minus = apply_sparse_row_stencil_gather(
+            f,
+            cols=op.ddzeta_minus_sparse_cols,
+            vals=op.ddzeta_minus_sparse_vals,
             axis=4,
         )
     else:

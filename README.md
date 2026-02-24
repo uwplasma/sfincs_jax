@@ -101,13 +101,15 @@ print(geometry.b_hat.shape)
 
 ## Parallel Scaling (Macbook M3 Max)
 
-Parallel `whichRHS` scaling for an extra-large RHSMode=2 transport-matrix case
-(`examples/performance/transport_parallel_xxlarge.input.namelist`, geometryScheme=2).
+Parallel `whichRHS` scaling for a >2-minute RHSMode=2 transport-matrix case
+(`examples/performance/transport_parallel_2min.input.namelist`, geometryScheme=2,
+`Ntheta=21`, `Nzeta=21`, `Nxi=6`, `NL=6`, `Nx=6`).
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
-Latest cache-warm run (1-4 workers): 1 worker 65.6s, 2 workers 46.0s,
-3 workers 25.7s, 4 workers 26.0s.
+Latest cache-warm run (1-8 workers): 1 worker 148.6s, 2 workers 124.8s,
+3 workers 117.6s, 4 workers 118.6s, 5 workers 117.4s, 6 workers 117.7s,
+7 workers 119.4s, 8 workers 117.1s.
 
 Enable parallel execution in normal runs:
 
@@ -115,15 +117,15 @@ Enable parallel execution in normal runs:
 export SFINCS_JAX_CORES=4
 ```
 
-Reproduce the 1-4 worker scaling figure and JSON summary:
+Reproduce the 1-8 worker scaling figure and JSON summary:
 
 ```bash
 python examples/performance/benchmark_transport_parallel_scaling.py \
-  --input examples/performance/transport_parallel_xxlarge.input.namelist \
-  --workers 1 2 3 4 \
+  --input examples/performance/transport_parallel_2min.input.namelist \
+  --workers 1 2 3 4 5 6 7 8 \
   --repeats 1 \
   --warmup 0 \
-  --global-warmup 0
+  --global-warmup 1
 
 # Derivative kernel microbenchmark (single device):
 SFINCS_JAX_PERIODIC_STENCIL=1 python examples/performance/benchmark_sharded_matvec_scaling.py \

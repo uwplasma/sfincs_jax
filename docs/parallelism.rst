@@ -152,15 +152,14 @@ so worker processes can import the main module cleanly.
 
 **Measured scaling (Macbook M3 Max, 14‑core)**
 
-Benchmark case: `examples/performance/transport_parallel_xxlarge.input.namelist`
-(RHSMode=2, geometryScheme=2, Ntheta=15, Nzeta=15, Nxi=6, NL=4, Nx=5).
+Benchmark case: `examples/performance/transport_parallel_2min.input.namelist`
+(RHSMode=2, geometryScheme=2, Ntheta=21, Nzeta=21, Nxi=6, NL=6, Nx=6).
 
-Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg` to keep the
-single‑worker runtime near ~1 minute while preserving parity.
+Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg`.
 
 Latest cache‑warm sweep (1–8 workers):
-1 worker 65.6s, 2 workers 46.0s, 3 workers 25.7s, 4 workers 26.0s,
-5 workers 25.8s, 6 workers 25.5s, 7 workers 25.4s, 8 workers 25.6s.
+1 worker 148.6s, 2 workers 124.8s, 3 workers 117.6s, 4 workers 118.6s,
+5 workers 117.4s, 6 workers 117.7s, 7 workers 119.4s, 8 workers 117.1s.
 
 Process‑parallel workers automatically disable sharded matvec and cap
 XLA CPU threads per worker to avoid oversubscription when `SFINCS_JAX_CORES`
@@ -171,6 +170,7 @@ Reproduce:
 .. code-block:: bash
 
    python examples/performance/benchmark_transport_parallel_scaling.py \
+     --input examples/performance/transport_parallel_2min.input.namelist \
      --workers 1 2 3 4 5 6 7 8 \
      --repeats 1 \
      --warmup 0 \
@@ -182,10 +182,10 @@ Reproduce:
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this larger case, scaling reaches ~2.6× by 3–4 workers before flattening.
-The plateau reflects process overhead and shared‑resource contention on a
-laptop‑class CPU. Larger multi‑RHS runs on server‑class nodes should show
-stronger scaling.
+For this larger case, scaling reaches ~1.27× and then plateaus.
+The plateau reflects that the current process-parallel transport path only
+parallelizes the per-`whichRHS` solves; shared setup/build costs remain serial
+and dominate for this case on a laptop-class CPU.
 
 Note: RHSMode=2 has only **3** right‑hand sides. A 4th worker has no extra RHS
 to solve, so speedup naturally saturates near 3 workers.
@@ -195,7 +195,7 @@ Earlier runs (smaller grids)
 
 We also benchmarked smaller RHSMode=2 cases (7–45 s single‑worker time). These
 showed weaker scaling because process startup and JIT overheads dominate at
-small problem sizes. The longer xxlarge case above is required to observe clear
+small problem sizes. The longer 2min case above is required to observe clear
 speedup on laptop CPUs.
 
 Reduced‑suite parallel sanity checks
@@ -235,7 +235,7 @@ JIT/compilation notes
 To avoid skew from compilation:
 
 - The results above were collected after a one‑off warm run (workers=1) to populate
-  the persistent JAX cache, with ``--warmup 0 --global-warmup 0`` for the timing run.
+  the persistent JAX cache, with ``--warmup 0 --global-warmup 1`` for the timing run.
 - To reproduce, either run once with ``--workers 1`` before timing or set
   ``--global-warmup 1`` and keep ``--warmup 0`` for the timed measurements.
 - A persistent `JAX_CACHE_DIR` is used so processes can reuse compiled kernels.
@@ -342,11 +342,12 @@ On GPUs, JAX will automatically see all local devices.
   `sfincs_jax` defaults to a **local line preconditioner** along the sharded
   axis (theta‑line or zeta‑line). This keeps the preconditioner apply local
   to each shard, mirroring PETSc-style block‑Jacobi behavior.
-- Collisionless derivative kernels now use a sparse-row gather apply when the
-  differentiation matrices are banded/sparse (common 3‑point/5‑point schemes).
-  This reduces single-device matvec cost and keeps the operator matrix-free and
-  differentiable. The periodic roll kernel is enabled only on single-device
-  runs by default; on multi-device sharded runs it is disabled unless
+- Collisionless, ExB, and magnetic-drift derivative kernels now use a
+  sparse-row gather apply when the differentiation matrices are banded/sparse
+  (common 3‑point/5‑point schemes). This keeps the operator matrix-free and
+  differentiable while reducing dense derivative apply cost. The periodic roll
+  kernel is enabled only on single-device runs by default; on multi-device
+  sharded runs it is disabled unless
   ``SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED=1`` is set.
 - This mirrors Fortran DMDA splitting along :math:`\theta` or :math:`\zeta`,
   with the same intent: distribute matvec and preconditioner cost.
