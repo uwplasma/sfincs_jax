@@ -6,6 +6,7 @@ import os
 import time
 from pathlib import Path
 
+import jax
 import numpy as np
 
 from sfincs_jax.namelist import read_sfincs_input
@@ -34,12 +35,13 @@ def _run_once(
 
     nml = read_sfincs_input(input_path)
     t0 = time.perf_counter()
-    solve_v3_transport_matrix_linear_gmres(
+    res = solve_v3_transport_matrix_linear_gmres(
         nml=nml,
         tol=1e-10,
         input_namelist=input_path,
         collect_transport_output_fields=False,
     )
+    jax.block_until_ready(res.transport_matrix)
     return time.perf_counter() - t0
 
 

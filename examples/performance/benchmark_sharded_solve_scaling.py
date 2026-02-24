@@ -8,39 +8,80 @@ import sys
 import time
 from pathlib import Path
 
+import jax
 import numpy as np
 
 from sfincs_jax.namelist import read_sfincs_input
 from sfincs_jax.v3_driver import solve_v3_full_system_linear_gmres
 
 
-def _run_once(input_path: Path) -> float:
+def _run_once(
+    input_path: Path,
+    *,
+    shard_axis: str,
+    gmres_distributed: str,
+    periodic_stencil_on_sharded: str,
+    nsolve: int,
+    rhs1_precond: str,
+) -> float:
     os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     os.environ["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
-    os.environ["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "theta"
-    os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] = "1"
+    os.environ["SFINCS_JAX_MATVEC_SHARD_AXIS"] = shard_axis
+    os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] = gmres_distributed
     os.environ["SFINCS_JAX_AUTO_SHARD"] = "0"
     os.environ["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
     os.environ["SFINCS_JAX_SHARD_PAD"] = "1"
+    if rhs1_precond:
+        os.environ["SFINCS_JAX_RHSMODE1_PRECONDITIONER"] = rhs1_precond
+    else:
+        os.environ.pop("SFINCS_JAX_RHSMODE1_PRECONDITIONER", None)
+    if periodic_stencil_on_sharded == "off":
+        os.environ["SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED"] = "0"
+    elif periodic_stencil_on_sharded == "on":
+        os.environ["SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED"] = "1"
+    else:
+        os.environ.pop("SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED", None)
     nml = read_sfincs_input(input_path)
     t0 = time.perf_counter()
-    solve_v3_full_system_linear_gmres(
-        nml=nml,
-        tol=1e-10,
-    )
+    for _ in range(max(1, int(nsolve))):
+        res = solve_v3_full_system_linear_gmres(
+            nml=nml,
+            tol=1e-10,
+        )
+        jax.block_until_ready(res.x)
     return time.perf_counter() - t0
 
 
-def _run_once_subprocess(*, input_path: Path, devices: int, cache_dir: Path | None) -> float:
+def _run_once_subprocess(
+    *,
+    input_path: Path,
+    devices: int,
+    cache_dir: Path | None,
+    shard_axis: str,
+    gmres_distributed: str,
+    periodic_stencil_on_sharded: str,
+    nsolve: int,
+    rhs1_precond: str,
+) -> float:
     env = os.environ.copy()
     env["SFINCS_JAX_CPU_DEVICES"] = str(int(devices))
-    env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = "theta"
-    env["SFINCS_JAX_GMRES_DISTRIBUTED"] = "1"
+    env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = shard_axis
+    env["SFINCS_JAX_GMRES_DISTRIBUTED"] = gmres_distributed
     env["SFINCS_JAX_AUTO_SHARD"] = "0"
     env["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
     env["SFINCS_JAX_SHARD_PAD"] = "1"
     env["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     env["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
+    if rhs1_precond:
+        env["SFINCS_JAX_RHSMODE1_PRECONDITIONER"] = rhs1_precond
+    else:
+        env.pop("SFINCS_JAX_RHSMODE1_PRECONDITIONER", None)
+    if periodic_stencil_on_sharded == "off":
+        env["SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED"] = "0"
+    elif periodic_stencil_on_sharded == "on":
+        env["SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED"] = "1"
+    else:
+        env.pop("SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED", None)
     if cache_dir is not None:
         env["JAX_COMPILATION_CACHE_DIR"] = str(cache_dir)
 
@@ -50,6 +91,8 @@ def _run_once_subprocess(*, input_path: Path, devices: int, cache_dir: Path | No
         "--run-once",
         "--input",
         str(input_path),
+        "--nsolve",
+        str(int(nsolve)),
     ]
     out = subprocess.check_output(cmd, env=env, text=True)
     return float(out.strip().splitlines()[-1])
@@ -75,7 +118,19 @@ def main() -> None:
         default=list(range(1, 5)),
         help="CPU device counts to benchmark (default 1..4).",
     )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=1,
+        help="Warmup runs per device count.",
+    )
     parser.add_argument("--repeats", type=int, default=1, help="Timing repeats per device count.")
+    parser.add_argument(
+        "--nsolve",
+        type=int,
+        default=1,
+        help="Number of RHSMode=1 solves per timed sample.",
+    )
     parser.add_argument(
         "--global-warmup",
         type=int,
@@ -99,6 +154,31 @@ def main() -> None:
         action="store_true",
         help="Run once and print wall time (internal).",
     )
+    parser.add_argument(
+        "--shard-axis",
+        type=str,
+        default="theta",
+        help="Matvec shard axis for distributed solve benchmark (theta/zeta/x/flat/off).",
+    )
+    parser.add_argument(
+        "--gmres-distributed",
+        type=str,
+        default="1",
+        help="Value for SFINCS_JAX_GMRES_DISTRIBUTED (default: 1).",
+    )
+    parser.add_argument(
+        "--periodic-stencil-on-sharded",
+        type=str,
+        default="auto",
+        choices=("auto", "on", "off"),
+        help="Control SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED for this benchmark.",
+    )
+    parser.add_argument(
+        "--rhs1-precond",
+        type=str,
+        default="",
+        help="Optional SFINCS_JAX_RHSMODE1_PRECONDITIONER override for this benchmark.",
+    )
     args = parser.parse_args()
 
     input_path = args.input
@@ -106,7 +186,14 @@ def main() -> None:
         raise FileNotFoundError(str(input_path))
 
     if args.run_once:
-        dt = _run_once(input_path)
+        dt = _run_once(
+            input_path,
+            shard_axis=str(args.shard_axis),
+            gmres_distributed=str(args.gmres_distributed),
+            periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
+            nsolve=int(args.nsolve),
+            rhs1_precond=str(args.rhs1_precond),
+        )
         print(f"{dt:.6f}")
         return
 
@@ -119,14 +206,54 @@ def main() -> None:
 
     if args.global_warmup and args.global_warmup > 0:
         for _ in range(int(args.global_warmup)):
-            _run_once_subprocess(input_path=input_path, devices=1, cache_dir=cache_dir)
+            _run_once_subprocess(
+                input_path=input_path,
+                devices=1,
+                cache_dir=cache_dir,
+                shard_axis=str(args.shard_axis),
+                gmres_distributed=str(args.gmres_distributed),
+                periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
+                nsolve=int(args.nsolve),
+                rhs1_precond=str(args.rhs1_precond),
+            )
 
     results = []
     for d in devices:
+        print(
+            f"[device {d}] warmups={max(args.warmup, 0)} repeats={max(args.repeats, 1)} "
+            f"shard_axis={args.shard_axis} gmres_distributed={args.gmres_distributed} "
+            f"stencil_on_sharded={args.periodic_stencil_on_sharded} "
+            f"nsolve={int(args.nsolve)} rhs1_precond={args.rhs1_precond or 'auto'}",
+            flush=True,
+        )
+        for i in range(max(args.warmup, 0)):
+            print(f"[device {d}] warmup {i + 1}/{max(args.warmup, 0)} starting", flush=True)
+            _run_once_subprocess(
+                input_path=input_path,
+                devices=d,
+                cache_dir=cache_dir,
+                shard_axis=str(args.shard_axis),
+                gmres_distributed=str(args.gmres_distributed),
+                periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
+                nsolve=int(args.nsolve),
+                rhs1_precond=str(args.rhs1_precond),
+            )
+            print(f"[device {d}] warmup {i + 1}/{max(args.warmup, 0)} done", flush=True)
         times = []
-        for _ in range(max(args.repeats, 1)):
-            dt = _run_once_subprocess(input_path=input_path, devices=d, cache_dir=cache_dir)
+        for i in range(max(args.repeats, 1)):
+            print(f"[device {d}] repeat {i + 1}/{max(args.repeats, 1)} starting", flush=True)
+            dt = _run_once_subprocess(
+                input_path=input_path,
+                devices=d,
+                cache_dir=cache_dir,
+                shard_axis=str(args.shard_axis),
+                gmres_distributed=str(args.gmres_distributed),
+                periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
+                nsolve=int(args.nsolve),
+                rhs1_precond=str(args.rhs1_precond),
+            )
             times.append(dt)
+            print(f"[device {d}] repeat {i + 1}/{max(args.repeats, 1)} done in {dt:.3f}s", flush=True)
         times = np.asarray(times, dtype=float)
         results.append(
             {
@@ -151,6 +278,11 @@ def main() -> None:
         "case": input_path.stem.replace(".input", ""),
         "devices": devices,
         "results": results,
+        "shard_axis": str(args.shard_axis),
+        "gmres_distributed": str(args.gmres_distributed),
+        "periodic_stencil_on_sharded": str(args.periodic_stencil_on_sharded),
+        "nsolve": int(args.nsolve),
+        "rhs1_precond": str(args.rhs1_precond),
     }
 
     json_path = out_dir / "sharded_solve_scaling.json"

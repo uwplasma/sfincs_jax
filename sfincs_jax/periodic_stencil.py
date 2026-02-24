@@ -6,19 +6,38 @@ import jax.numpy as jnp
 import numpy as np
 
 
+def _sharding_active_hint() -> bool:
+    shard_axis = os.environ.get("SFINCS_JAX_MATVEC_SHARD_AXIS", "").strip().lower()
+    if shard_axis in {"theta", "zeta", "x", "flat", "vector", "p"}:
+        return True
+    if shard_axis in {"off", "none", "0", "false", "no"}:
+        return False
+    gmres_dist = os.environ.get("SFINCS_JAX_GMRES_DISTRIBUTED", "").strip().lower()
+    if gmres_dist in {"1", "true", "yes", "on", "auto", "theta", "zeta"}:
+        return True
+    return False
+
+
 def periodic_stencil_runtime_enabled() -> bool:
     env = os.environ.get("SFINCS_JAX_PERIODIC_STENCIL", "").strip().lower()
     if env in {"0", "false", "no", "off"}:
         return False
     on_sharded = os.environ.get("SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED", "").strip().lower()
-    if on_sharded not in {"1", "true", "yes", "on"}:
-        try:
-            import jax  # noqa: PLC0415
+    try:
+        import jax  # noqa: PLC0415
 
-            if int(jax.local_device_count()) > 1:
-                return False
-        except Exception:
-            pass
+        n_local = int(jax.local_device_count())
+    except Exception:
+        n_local = 1
+    if n_local > 1:
+        if on_sharded in {"0", "false", "no", "off"}:
+            return False
+        if on_sharded in {"1", "true", "yes", "on"}:
+            return True
+        # Auto mode: enable on sharded runs so derivatives use local stencil/halo
+        # kernels instead of dense contractions.
+        if not _sharding_active_hint():
+            return False
     return True
 
 

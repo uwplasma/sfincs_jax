@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import jax
 import numpy as np
 import jax.numpy as jnp
+import pytest
 
 from sfincs_jax.grids import uniform_diff_matrices
 from sfincs_jax.periodic_stencil import (
@@ -9,6 +11,7 @@ from sfincs_jax.periodic_stencil import (
     apply_sparse_row_stencil_gather,
     extract_sparse_circulant_stencil,
     extract_sparse_row_stencil,
+    periodic_stencil_runtime_enabled,
 )
 
 
@@ -56,3 +59,21 @@ def test_apply_sparse_row_stencil_matches_dense_theta_einsum() -> None:
         axis=3,
     )
     np.testing.assert_allclose(np.asarray(y_sparse), np.asarray(y_dense), rtol=0.0, atol=1e-12)
+
+
+def test_periodic_stencil_auto_enables_on_sharded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_PERIODIC_STENCIL", "1")
+    monkeypatch.delenv("SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED", raising=False)
+    monkeypatch.setenv("SFINCS_JAX_MATVEC_SHARD_AXIS", "theta")
+    monkeypatch.setenv("SFINCS_JAX_GMRES_DISTRIBUTED", "1")
+    monkeypatch.setattr(jax, "local_device_count", lambda: 2)
+    assert periodic_stencil_runtime_enabled() is True
+
+
+def test_periodic_stencil_auto_disables_when_unsharded_multidevice(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_PERIODIC_STENCIL", "1")
+    monkeypatch.delenv("SFINCS_JAX_PERIODIC_STENCIL_ON_SHARDED", raising=False)
+    monkeypatch.setenv("SFINCS_JAX_MATVEC_SHARD_AXIS", "off")
+    monkeypatch.setenv("SFINCS_JAX_GMRES_DISTRIBUTED", "off")
+    monkeypatch.setattr(jax, "local_device_count", lambda: 2)
+    assert periodic_stencil_runtime_enabled() is False

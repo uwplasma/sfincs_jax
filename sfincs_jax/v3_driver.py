@@ -158,16 +158,8 @@ def _resolve_distributed_gmres_axis(
     n_devices = jax.local_device_count()
     if n_devices <= 1:
         return None
-    if op is None:
-        return axis
-    n_dim = int(op.n_theta) if axis == "theta" else int(op.n_zeta)
-    if n_dim % n_devices != 0:
-        if emit is not None:
-            emit(
-                1,
-                f"distributed GMRES disabled: {axis} dimension {n_dim} not divisible by {n_devices} devices.",
-            )
-        return None
+    # Keep distributed GMRES enabled for non-divisible theta/zeta grids.
+    # Padding/masking in the sharded matvec path handles irregular partitions.
     return axis
 
 
@@ -7568,6 +7560,36 @@ def solve_v3_full_system_linear_gmres(
         pre_zeta = 0
     rhs1_precond_kind: str | None
     rhs1_xblock_tz_lmax: int | None = None
+    def _parse_rhs1_dd_block(axis: str) -> int:
+        if axis == "theta":
+            env_key = "SFINCS_JAX_RHSMODE1_DD_BLOCK_T"
+            n = int(op.n_theta)
+        else:
+            env_key = "SFINCS_JAX_RHSMODE1_DD_BLOCK_Z"
+            n = int(op.n_zeta)
+        env = os.environ.get(env_key, "").strip()
+        try:
+            block = int(env) if env else 8
+        except ValueError:
+            block = 8
+        return max(1, min(max(1, n), int(block)))
+
+    def _parse_rhs1_dd_overlap(axis: str, *, default: int) -> int:
+        if axis == "theta":
+            axis_key = "SFINCS_JAX_RHSMODE1_DD_OVERLAP_T"
+            n = int(op.n_theta)
+        else:
+            axis_key = "SFINCS_JAX_RHSMODE1_DD_OVERLAP_Z"
+            n = int(op.n_zeta)
+        env_axis = os.environ.get(axis_key, "").strip()
+        env_generic = os.environ.get("SFINCS_JAX_RHSMODE1_DD_OVERLAP", "").strip()
+        raw = env_axis if env_axis else env_generic
+        try:
+            overlap = int(raw) if raw else int(default)
+        except ValueError:
+            overlap = int(default)
+        return max(0, min(max(0, n - 1), int(overlap)))
+
     if rhs1_precond_env:
         if rhs1_precond_env in {"0", "false", "no", "off"}:
             rhs1_precond_kind = None
@@ -7575,6 +7597,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "theta_line"
         elif rhs1_precond_env in {"theta_dd", "theta_block", "dd_theta", "dd_t"}:
             rhs1_precond_kind = "theta_dd"
+        elif rhs1_precond_env in {"theta_schwarz", "schwarz_theta", "ras_theta", "theta_ras"}:
+            rhs1_precond_kind = "theta_schwarz"
         elif rhs1_precond_env in {"theta_line_xdiag", "theta_xdiag", "theta_line_diagx"}:
             rhs1_precond_kind = "theta_line_xdiag"
         elif rhs1_precond_env in {"xdiag", "point_xdiag", "block_xdiag"}:
@@ -7601,6 +7625,8 @@ def solve_v3_full_system_linear_gmres(
             rhs1_precond_kind = "zeta_line"
         elif rhs1_precond_env in {"zeta_dd", "zeta_block", "dd_zeta", "dd_z"}:
             rhs1_precond_kind = "zeta_dd"
+        elif rhs1_precond_env in {"zeta_schwarz", "schwarz_zeta", "ras_zeta", "zeta_ras"}:
+            rhs1_precond_kind = "zeta_schwarz"
         elif rhs1_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
             rhs1_precond_kind = "adi"
         elif rhs1_precond_env in {"1", "true", "yes", "on", "point", "point_block"}:
@@ -7847,7 +7873,15 @@ def solve_v3_full_system_linear_gmres(
     if rhs1_precond_env == "" and rhs1_precond_kind in {None, "point"}:
         shard_axis = _matvec_shard_axis(op)
         if shard_axis in {"theta", "zeta"} and jax.device_count() > 1:
-            rhs1_precond_kind = "theta_line" if shard_axis == "theta" else "zeta_line"
+            schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
+            try:
+                schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
+            except ValueError:
+                schwarz_auto_min = 4000
+            if int(op.total_size) >= max(1, int(schwarz_auto_min)):
+                rhs1_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+            else:
+                rhs1_precond_kind = "theta_line" if shard_axis == "theta" else "zeta_line"
     if str(solve_method).strip().lower() in {"dense", "dense_ksp", "dense_row_scaled"}:
         rhs1_precond_kind = None
     rhs1_precond_enabled = (
@@ -8476,7 +8510,9 @@ def solve_v3_full_system_linear_gmres(
         heavy_precond_kinds_fp = {
             "point",
             "theta_line",
+            "theta_schwarz",
             "zeta_line",
+            "zeta_schwarz",
             "theta_zeta",
             "adi",
             "xblock_tz",
@@ -8611,13 +8647,29 @@ def solve_v3_full_system_linear_gmres(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             elif rhs1_precond_kind == "theta_dd":
-                dd_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_DD_BLOCK_T", "").strip()
-                try:
-                    dd_block = int(dd_block_env) if dd_block_env else 8
-                except ValueError:
-                    dd_block = 8
-                precond = _build_rhsmode1_theta_dd_preconditioner(
-                    op=op, block=dd_block, reduce_full=reduce_full, expand_reduced=expand_reduced
+                dd_block = _parse_rhs1_dd_block("theta")
+                dd_overlap = _parse_rhs1_dd_overlap("theta", default=0)
+                if dd_overlap > 0:
+                    precond = _build_rhsmode1_theta_schwarz_preconditioner(
+                        op=op,
+                        block=dd_block,
+                        overlap=dd_overlap,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                    )
+                else:
+                    precond = _build_rhsmode1_theta_dd_preconditioner(
+                        op=op, block=dd_block, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+            elif rhs1_precond_kind == "theta_schwarz":
+                dd_block = _parse_rhs1_dd_block("theta")
+                dd_overlap = _parse_rhs1_dd_overlap("theta", default=1)
+                precond = _build_rhsmode1_theta_schwarz_preconditioner(
+                    op=op,
+                    block=dd_block,
+                    overlap=dd_overlap,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
                 )
             elif rhs1_precond_kind == "theta_line_xdiag":
                 precond = _build_rhsmode1_theta_line_xdiag_preconditioner(
@@ -8686,13 +8738,29 @@ def solve_v3_full_system_linear_gmres(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
                 )
             elif rhs1_precond_kind == "zeta_dd":
-                dd_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_DD_BLOCK_Z", "").strip()
-                try:
-                    dd_block = int(dd_block_env) if dd_block_env else 8
-                except ValueError:
-                    dd_block = 8
-                precond = _build_rhsmode1_zeta_dd_preconditioner(
-                    op=op, block=dd_block, reduce_full=reduce_full, expand_reduced=expand_reduced
+                dd_block = _parse_rhs1_dd_block("zeta")
+                dd_overlap = _parse_rhs1_dd_overlap("zeta", default=0)
+                if dd_overlap > 0:
+                    precond = _build_rhsmode1_zeta_schwarz_preconditioner(
+                        op=op,
+                        block=dd_block,
+                        overlap=dd_overlap,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                    )
+                else:
+                    precond = _build_rhsmode1_zeta_dd_preconditioner(
+                        op=op, block=dd_block, reduce_full=reduce_full, expand_reduced=expand_reduced
+                    )
+            elif rhs1_precond_kind == "zeta_schwarz":
+                dd_block = _parse_rhs1_dd_block("zeta")
+                dd_overlap = _parse_rhs1_dd_overlap("zeta", default=1)
+                precond = _build_rhsmode1_zeta_schwarz_preconditioner(
+                    op=op,
+                    block=dd_block,
+                    overlap=dd_overlap,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
                 )
             elif rhs1_precond_kind == "schur":
                 precond = _build_rhsmode1_schur_preconditioner(
@@ -9288,6 +9356,8 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind = None
         elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
             strong_precond_kind = "theta_line"
+        elif strong_precond_env in {"theta_schwarz", "schwarz_theta", "ras_theta", "theta_ras"}:
+            strong_precond_kind = "theta_schwarz"
         elif strong_precond_env in {"theta_line_xdiag", "theta_xdiag", "theta_line_diagx"}:
             strong_precond_kind = "theta_line_xdiag"
         elif strong_precond_env in {"species", "species_block", "speciesblock"}:
@@ -9298,6 +9368,8 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind = "sxblock_tz"
         elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
             strong_precond_kind = "zeta_line"
+        elif strong_precond_env in {"zeta_schwarz", "schwarz_zeta", "ras_zeta", "zeta_ras"}:
+            strong_precond_kind = "zeta_schwarz"
         elif strong_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
             strong_precond_kind = "xblock_tz"
         elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
@@ -9351,7 +9423,20 @@ def solve_v3_full_system_linear_gmres(
                 elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
                     strong_precond_kind = "theta_zeta"
                 else:
-                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                    shard_axis = _matvec_shard_axis(op)
+                    schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
+                    try:
+                        schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
+                    except ValueError:
+                        schwarz_auto_min = 4000
+                    if (
+                        shard_axis in {"theta", "zeta"}
+                        and jax.device_count() > 1
+                        and int(active_size) >= max(1, int(schwarz_auto_min))
+                    ):
+                        strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+                    else:
+                        strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 
         if strong_precond_kind == "theta_line":
             line_size = int(np.sum(nxi_for_x)) * int(op.n_theta)
@@ -9393,7 +9478,20 @@ def solve_v3_full_system_linear_gmres(
                 elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
                     strong_precond_kind = "theta_zeta"
                 else:
-                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                    shard_axis = _matvec_shard_axis(op)
+                    schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
+                    try:
+                        schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
+                    except ValueError:
+                        schwarz_auto_min = 4000
+                    if (
+                        shard_axis in {"theta", "zeta"}
+                        and jax.device_count() > 1
+                        and int(active_size) >= max(1, int(schwarz_auto_min))
+                    ):
+                        strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+                    else:
+                        strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 
         if (
             strong_precond_kind is not None
@@ -9412,6 +9510,16 @@ def solve_v3_full_system_linear_gmres(
             if strong_precond_kind == "theta_line":
                 strong_preconditioner_reduced = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "theta_schwarz":
+                dd_block = _parse_rhs1_dd_block("theta")
+                dd_overlap = _parse_rhs1_dd_overlap("theta", default=1)
+                strong_preconditioner_reduced = _build_rhsmode1_theta_schwarz_preconditioner(
+                    op=op,
+                    block=dd_block,
+                    overlap=dd_overlap,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
                 )
             elif strong_precond_kind == "theta_line_xdiag":
                 strong_preconditioner_reduced = _build_rhsmode1_theta_line_xdiag_preconditioner(
@@ -9455,6 +9563,16 @@ def solve_v3_full_system_linear_gmres(
             elif strong_precond_kind == "zeta_line":
                 strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "zeta_schwarz":
+                dd_block = _parse_rhs1_dd_block("zeta")
+                dd_overlap = _parse_rhs1_dd_overlap("zeta", default=1)
+                strong_preconditioner_reduced = _build_rhsmode1_zeta_schwarz_preconditioner(
+                    op=op,
+                    block=dd_block,
+                    overlap=dd_overlap,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
                 )
             elif strong_precond_kind == "schur":
                 strong_preconditioner_reduced = _build_rhsmode1_schur_preconditioner(
@@ -10111,6 +10229,21 @@ def solve_v3_full_system_linear_gmres(
                     emit(1, f"solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner={rhs1_precond_kind}")
                 if rhs1_precond_kind == "theta_line":
                     precond = _build_rhsmode1_theta_line_preconditioner(op=op)
+                elif rhs1_precond_kind == "theta_dd":
+                    dd_block = _parse_rhs1_dd_block("theta")
+                    dd_overlap = _parse_rhs1_dd_overlap("theta", default=0)
+                    if dd_overlap > 0:
+                        precond = _build_rhsmode1_theta_schwarz_preconditioner(
+                            op=op, block=dd_block, overlap=dd_overlap
+                        )
+                    else:
+                        precond = _build_rhsmode1_theta_dd_preconditioner(op=op, block=dd_block)
+                elif rhs1_precond_kind == "theta_schwarz":
+                    dd_block = _parse_rhs1_dd_block("theta")
+                    dd_overlap = _parse_rhs1_dd_overlap("theta", default=1)
+                    precond = _build_rhsmode1_theta_schwarz_preconditioner(
+                        op=op, block=dd_block, overlap=dd_overlap
+                    )
                 elif rhs1_precond_kind == "theta_line_xdiag":
                     precond = _build_rhsmode1_theta_line_xdiag_preconditioner(op=op)
                     if op.fblock.fp is not None or op.fblock.pas is not None:
@@ -10132,6 +10265,21 @@ def solve_v3_full_system_linear_gmres(
                     precond = _build_rhsmode1_theta_zeta_preconditioner(op=op)
                 elif rhs1_precond_kind == "zeta_line":
                     precond = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                elif rhs1_precond_kind == "zeta_dd":
+                    dd_block = _parse_rhs1_dd_block("zeta")
+                    dd_overlap = _parse_rhs1_dd_overlap("zeta", default=0)
+                    if dd_overlap > 0:
+                        precond = _build_rhsmode1_zeta_schwarz_preconditioner(
+                            op=op, block=dd_block, overlap=dd_overlap
+                        )
+                    else:
+                        precond = _build_rhsmode1_zeta_dd_preconditioner(op=op, block=dd_block)
+                elif rhs1_precond_kind == "zeta_schwarz":
+                    dd_block = _parse_rhs1_dd_block("zeta")
+                    dd_overlap = _parse_rhs1_dd_overlap("zeta", default=1)
+                    precond = _build_rhsmode1_zeta_schwarz_preconditioner(
+                        op=op, block=dd_block, overlap=dd_overlap
+                    )
                 elif rhs1_precond_kind == "schur":
                     precond = _build_rhsmode1_schur_preconditioner(op=op)
                 elif rhs1_precond_kind == "collision":
@@ -10414,6 +10562,8 @@ def solve_v3_full_system_linear_gmres(
                 strong_precond_kind = None
             elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
                 strong_precond_kind = "theta_line"
+            elif strong_precond_env in {"theta_schwarz", "schwarz_theta", "ras_theta", "theta_ras"}:
+                strong_precond_kind = "theta_schwarz"
             elif strong_precond_env in {"theta_line_xdiag", "theta_xdiag", "theta_line_diagx"}:
                 strong_precond_kind = "theta_line_xdiag"
             elif strong_precond_env in {"species", "species_block", "speciesblock"}:
@@ -10422,6 +10572,8 @@ def solve_v3_full_system_linear_gmres(
                 strong_precond_kind = "sxblock_tz"
             elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
                 strong_precond_kind = "zeta_line"
+            elif strong_precond_env in {"zeta_schwarz", "schwarz_zeta", "ras_zeta", "zeta_ras"}:
+                strong_precond_kind = "zeta_schwarz"
             elif strong_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
                 strong_precond_kind = "xblock_tz"
             elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
@@ -10471,7 +10623,20 @@ def solve_v3_full_system_linear_gmres(
                     ):
                         strong_precond_kind = "xblock_tz"
                     else:
-                        strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                        shard_axis = _matvec_shard_axis(op)
+                        schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
+                        try:
+                            schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
+                        except ValueError:
+                            schwarz_auto_min = 4000
+                        if (
+                            shard_axis in {"theta", "zeta"}
+                            and jax.device_count() > 1
+                            and int(op.total_size) >= max(1, int(schwarz_auto_min))
+                        ):
+                            strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+                        else:
+                            strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif (
                     rhs1_precond_env == ""
                     and int(op.rhs_mode) == 1
@@ -10501,7 +10666,20 @@ def solve_v3_full_system_linear_gmres(
                     elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
                         strong_precond_kind = "theta_zeta"
                     else:
-                        strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                        shard_axis = _matvec_shard_axis(op)
+                        schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
+                        try:
+                            schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
+                        except ValueError:
+                            schwarz_auto_min = 4000
+                        if (
+                            shard_axis in {"theta", "zeta"}
+                            and jax.device_count() > 1
+                            and int(op.total_size) >= max(1, int(schwarz_auto_min))
+                        ):
+                            strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+                        else:
+                            strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 
             if strong_precond_kind == "theta_line":
                 nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
@@ -10525,6 +10703,12 @@ def solve_v3_full_system_linear_gmres(
 
                 if strong_precond_kind == "theta_line":
                     strong_preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
+                elif strong_precond_kind == "theta_schwarz":
+                    dd_block = _parse_rhs1_dd_block("theta")
+                    dd_overlap = _parse_rhs1_dd_overlap("theta", default=1)
+                    strong_preconditioner_full = _build_rhsmode1_theta_schwarz_preconditioner(
+                        op=op, block=dd_block, overlap=dd_overlap
+                    )
                 elif strong_precond_kind == "theta_line_xdiag":
                     strong_preconditioner_full = _build_rhsmode1_theta_line_xdiag_preconditioner(op=op)
                     if op.fblock.fp is not None or op.fblock.pas is not None:
@@ -10548,6 +10732,12 @@ def solve_v3_full_system_linear_gmres(
                     strong_preconditioner_full = _build_rhsmode1_theta_zeta_preconditioner(op=op)
                 elif strong_precond_kind == "zeta_line":
                     strong_preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                elif strong_precond_kind == "zeta_schwarz":
+                    dd_block = _parse_rhs1_dd_block("zeta")
+                    dd_overlap = _parse_rhs1_dd_overlap("zeta", default=1)
+                    strong_preconditioner_full = _build_rhsmode1_zeta_schwarz_preconditioner(
+                        op=op, block=dd_block, overlap=dd_overlap
+                    )
                 elif strong_precond_kind == "schur":
                     strong_preconditioner_full = _build_rhsmode1_schur_preconditioner(op=op)
                 else:

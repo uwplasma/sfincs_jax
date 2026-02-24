@@ -441,7 +441,7 @@ def _gmres_solve_core(
     atol: float = 0.0,
     restart: int = 50,
     maxiter: int | None = None,
-    solve_method: str = "batched",
+    solve_method: str = "incremental",
     precondition_side: str = "left",
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Solve `A x = b` using JAX's GMRES.
@@ -573,7 +573,7 @@ def gmres_solve(
     atol: float = 0.0,
     restart: int = 50,
     maxiter: int | None = None,
-    solve_method: str = "batched",
+    solve_method: str = "incremental",
     precondition_side: str = "left",
 ) -> GMRESSolveResult:
     x, r = _gmres_solve_core(
@@ -601,7 +601,7 @@ def gmres_solve_with_residual(
     atol: float = 0.0,
     restart: int = 50,
     maxiter: int | None = None,
-    solve_method: str = "batched",
+    solve_method: str = "incremental",
     precondition_side: str = "left",
 ) -> tuple[GMRESSolveResult, jnp.ndarray]:
     x, r = _gmres_solve_core(
@@ -675,7 +675,7 @@ def gmres_solve_distributed(
     atol: float = 0.0,
     restart: int = 50,
     maxiter: int | None = None,
-    solve_method: str = "batched",
+    solve_method: str = "incremental",
     precondition_side: str = "left",
 ) -> GMRESSolveResult:
     axis_name = _distributed_gmres_axis() if axis_name is None else axis_name
@@ -772,7 +772,7 @@ def gmres_solve_with_residual_distributed(
     atol: float = 0.0,
     restart: int = 50,
     maxiter: int | None = None,
-    solve_method: str = "batched",
+    solve_method: str = "incremental",
     precondition_side: str = "left",
 ) -> tuple[GMRESSolveResult, jnp.ndarray]:
     axis_name = _distributed_gmres_axis() if axis_name is None else axis_name
@@ -812,6 +812,7 @@ def gmres_solve_with_residual_distributed(
     n = int(b_use.size)
     n_devices = int(np.prod(mesh.devices.shape))
     pad = (-n) % n_devices if n_devices > 0 else 0
+    preconditioner_use = preconditioner
     if pad:
         b_use = jnp.pad(b_use, (0, pad))
         x0_use = jnp.pad(x0_use, (0, pad))
