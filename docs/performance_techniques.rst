@@ -550,7 +550,10 @@ so scan points can reuse the same preconditioner blocks. Controls:
 - ``SFINCS_JAX_RHSMODE1_SCHUR_MODE`` / ``SFINCS_JAX_RHSMODE1_SCHUR_FULL_MAX``
 - ``SFINCS_JAX_RHSMODE1_SCHUR_AUTO_MIN`` (auto Schur cutoff by total size)
 - ``SFINCS_JAX_RHSMODE1_DKES_XBLOCK_TZ_SMALL_MAX`` (DKES PAS only: cap on dense xblock_tz base; default matches ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX``)
-- ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (auto switch to the lightweight PAS x‑multigrid preconditioner for large systems; default ``50000``)
+- ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (auto switch to the lightweight PAS x‑multigrid preconditioner for large systems; default ``80000``)
+- ``SFINCS_JAX_RHSMODE1_FP_XMG_MAX`` (near-zero-``Er`` FP systems below this size use x‑multigrid preconditioning by default; default ``100000``)
+- ``SFINCS_JAX_RHSMODE1_SXBLOCK_TZ_ACTIVE_MAX`` (caps auto ``sxblock_tz`` selection for FP systems to avoid expensive setup on large RHSMode=1 runs; default ``20000``)
+- ``SFINCS_JAX_BICGSTAB_FALLBACK_ABS_FLOOR`` (absolute residual floor before forcing BiCGStab→GMRES fallback; default auto floor on distributed PAS runs)
 - ``SFINCS_JAX_RHSMODE1_XMG_STRIDE`` (coarse‑x stride for the PAS x‑multigrid preconditioner)
 - ``SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN`` (auto switch to point‑block x‑diagonal preconditioner for large PAS runs; default disabled)
 - ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX`` (truncate L in PAS x‑block :math:`(\theta,\zeta)` preconditioning)

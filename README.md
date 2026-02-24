@@ -144,7 +144,10 @@ Single-RHS sharded solves now default to a communication-reduced distributed
 Krylov preference (`SFINCS_JAX_DISTRIBUTED_KRYLOV=auto`, BiCGStab-first with
 GMRES available via `SFINCS_JAX_DISTRIBUTED_KRYLOV=gmres`), but still need
 additional communication-avoiding Krylov work to show strong scaling on
-5+ CPU devices.
+5+ CPU devices. On the current long benchmark
+(`examples/performance/rhsmode1_sharded_scaling.input.namelist`, `nsolve=240`,
+baseline 136.25 s at 1 core), measured sharded solve times are 98.70 s (2 cores),
+105.33 s (3 cores), and 110.78 s (4 cores).
 
 For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
 

@@ -7563,6 +7563,29 @@ def solve_v3_full_system_linear_gmres(
         pre_zeta = 0
     rhs1_precond_kind: str | None
     rhs1_xblock_tz_lmax: int | None = None
+    def _rhs1_dd_sharded_axis() -> str | None:
+        gmres_dist_env = os.environ.get("SFINCS_JAX_GMRES_DISTRIBUTED", "").strip().lower()
+        if gmres_dist_env in {"0", "false", "no", "off"}:
+            return None
+        if jax.device_count() <= 1:
+            return None
+        if gmres_dist_env in {"theta", "zeta"}:
+            return gmres_dist_env
+        axis_auto = _matvec_shard_axis(op)
+        return axis_auto if axis_auto in {"theta", "zeta"} else None
+
+    def _rhs1_dd_patch_dof_target() -> int:
+        target_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_PATCH_DOF_TARGET", "").strip()
+        try:
+            target = int(target_env) if target_env else 1200
+        except ValueError:
+            target = 1200
+        return max(128, int(target))
+
+    def _rhs1_dd_sum_nxi() -> int:
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        return max(1, int(np.sum(nxi_for_x)))
+
     def _parse_rhs1_dd_block(axis: str) -> int:
         if axis == "theta":
             env_key = "SFINCS_JAX_RHSMODE1_DD_BLOCK_T"
@@ -7572,8 +7595,17 @@ def solve_v3_full_system_linear_gmres(
             n = int(op.n_zeta)
         env = os.environ.get(env_key, "").strip()
         try:
-            block = int(env) if env else 8
+            block = int(env) if env else 0
         except ValueError:
+            block = 0
+        if block <= 0 and _rhs1_dd_sharded_axis() == axis:
+            n_dev = max(1, int(jax.device_count()))
+            local_n = (int(n) + n_dev - 1) // n_dev
+            sum_nxi = _rhs1_dd_sum_nxi()
+            dof_cap = max(2, int(_rhs1_dd_patch_dof_target()) // max(1, int(sum_nxi)))
+            block = min(int(n), int(local_n), int(dof_cap))
+            block = max(2, int(block))
+        if block <= 0:
             block = 8
         return max(1, min(max(1, n), int(block)))
 
@@ -7588,8 +7620,18 @@ def solve_v3_full_system_linear_gmres(
         env_generic = os.environ.get("SFINCS_JAX_RHSMODE1_DD_OVERLAP", "").strip()
         raw = env_axis if env_axis else env_generic
         try:
-            overlap = int(raw) if raw else int(default)
+            overlap = int(raw) if raw else -1
         except ValueError:
+            overlap = -1
+        if overlap < 0 and _rhs1_dd_sharded_axis() == axis:
+            block_auto = _parse_rhs1_dd_block(axis)
+            sum_nxi = _rhs1_dd_sum_nxi()
+            target = _rhs1_dd_patch_dof_target()
+            overlap = 2 if int(block_auto) >= 4 else 1
+            while overlap > 1 and int(block_auto + 2 * overlap) * int(sum_nxi) > int(target):
+                overlap -= 1
+            overlap = max(1, int(overlap))
+        if overlap < 0:
             overlap = int(default)
         return max(0, min(max(0, n - 1), int(overlap)))
 
@@ -7687,6 +7729,11 @@ def solve_v3_full_system_linear_gmres(
                     sxblock_tz_max = int(sxblock_tz_max_env) if sxblock_tz_max_env else 0
                 except ValueError:
                     sxblock_tz_max = 0
+                sxblock_tz_active_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SXBLOCK_TZ_ACTIVE_MAX", "").strip()
+                try:
+                    sxblock_tz_active_max = int(sxblock_tz_active_max_env) if sxblock_tz_active_max_env else 20000
+                except ValueError:
+                    sxblock_tz_active_max = 20000
                 if sxblock_tz_max == 0 and op.fblock.fp is not None and (
                     int(op.n_theta) > 1 or int(op.n_zeta) > 1
                 ):
@@ -7695,6 +7742,7 @@ def solve_v3_full_system_linear_gmres(
                     sxblock_tz_max = 2000
                 sxblock_size = int(int(op.n_species) * local_per_species)
                 sxblock_tz_size = int(int(op.n_species) * int(op.n_x) * int(op.n_theta) * int(op.n_zeta))
+                active_size = int(getattr(op, "active_size", op.total_size))
                 schur_auto = False
                 if (
                     int(op.constraint_scheme) == 2
@@ -7726,9 +7774,9 @@ def solve_v3_full_system_linear_gmres(
                     sxblock_tz_max = 2000
                 schur_er_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_ER_ABS_MIN", "").strip()
                 try:
-                    schur_er_min = float(schur_er_env) if schur_er_env else 0.0
+                    schur_er_min = float(schur_er_env) if schur_er_env else 1.0e-12
                 except ValueError:
-                    schur_er_min = 0.0
+                    schur_er_min = 1.0e-12
                 pas_xdiag_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XDIAG_MIN", "").strip()
                 try:
                     pas_xdiag_min = int(pas_xdiag_env) if pas_xdiag_env else 1000000000
@@ -7736,9 +7784,14 @@ def solve_v3_full_system_linear_gmres(
                     pas_xdiag_min = 1000000000
                 pas_xmg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XMG_MIN", "").strip()
                 try:
-                    pas_xmg_min = int(pas_xmg_env) if pas_xmg_env else 50000
+                    pas_xmg_min = int(pas_xmg_env) if pas_xmg_env else 80000
                 except ValueError:
-                    pas_xmg_min = 50000
+                    pas_xmg_min = 80000
+                fp_xmg_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XMG_MAX", "").strip()
+                try:
+                    fp_xmg_max = int(fp_xmg_env) if fp_xmg_env else 100000
+                except ValueError:
+                    fp_xmg_max = 100000
                 schur_tokamak_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_TOKAMAK", "").strip().lower()
                 schur_tokamak = schur_tokamak_env in {"1", "true", "yes", "on"}
                 tokamak_like = int(op.n_zeta) == 1
@@ -7759,7 +7812,22 @@ def solve_v3_full_system_linear_gmres(
                             else:
                                 rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                     else:
-                        if op.fblock.pas is not None and int(op.total_size) >= pas_xmg_min:
+                        if (
+                            op.fblock.pas is not None
+                            and er_abs <= schur_er_min
+                            and int(op.total_size) < pas_xmg_min
+                        ):
+                            # For constrained PAS near-zero-Er systems below the Schur regime,
+                            # prefer x-coarsened preconditioning to avoid expensive global Schur
+                            # setup while retaining good Krylov convergence.
+                            rhs1_precond_kind = "xmg"
+                        elif (
+                            op.fblock.fp is not None
+                            and er_abs <= schur_er_min
+                            and int(op.total_size) < fp_xmg_max
+                        ):
+                            rhs1_precond_kind = "xmg"
+                        elif op.fblock.pas is not None and int(op.total_size) >= pas_xmg_min:
                             # Constrained PAS+Er systems can be stiff in x due to the v3 Er xDot term.
                             # Use a Schur preconditioner (with an x-coarse base) to preserve constraints
                             # while capturing the dominant dense-x coupling.
@@ -7774,7 +7842,20 @@ def solve_v3_full_system_linear_gmres(
                         else:
                             rhs1_precond_kind = "schur"
                 elif full_precond_requested and (int(op.n_theta) > 1 or int(op.n_zeta) > 1):
-                    rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                    if (
+                        op.fblock.pas is not None
+                        and er_abs <= schur_er_min
+                        and int(op.total_size) < pas_xmg_min
+                    ):
+                        rhs1_precond_kind = "xmg"
+                    elif (
+                        op.fblock.fp is not None
+                        and er_abs <= schur_er_min
+                        and int(op.total_size) < fp_xmg_max
+                    ):
+                        rhs1_precond_kind = "xmg"
+                    else:
+                        rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif schur_auto:
                     rhs1_precond_kind = "schur"
                 elif op.fblock.fp is not None and use_dkes:
@@ -7785,8 +7866,18 @@ def solve_v3_full_system_linear_gmres(
                     rhs1_precond_kind = "collision"
                 elif (
                     op.fblock.fp is not None
+                    and er_abs <= schur_er_min
+                    and int(active_size) < fp_xmg_max
+                ):
+                    # For moderate-size FP systems at near-zero Er, x-coarsened
+                    # preconditioning is typically much cheaper than (S,X,theta,zeta)
+                    # blocks and preserves parity for RHSMode=1.
+                    rhs1_precond_kind = "xmg"
+                elif (
+                    op.fblock.fp is not None
                     and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
                     and sxblock_tz_max > 0
+                    and int(op.total_size) <= max(1, int(sxblock_tz_active_max))
                     and sxblock_tz_size <= sxblock_tz_max
                 ):
                     rhs1_precond_kind = "sxblock_tz"
@@ -7821,24 +7912,31 @@ def solve_v3_full_system_linear_gmres(
                 ):
                     rhs1_precond_kind = "theta_zeta"
                 else:
-                    collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
-                    try:
-                        collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 600
-                    except ValueError:
-                        collision_precond_min = 600
-                    use_collision_precond = (
-                        (op.fblock.fp is not None or op.fblock.pas is not None)
-                        and int(op.total_size) >= collision_precond_min
-                    )
                     if (
-                        use_collision_precond
-                        and full_precond_requested
-                        and op.fblock.pas is not None
-                        and int(op.total_size) >= pas_xdiag_min
+                        op.fblock.pas is not None
+                        and er_abs <= schur_er_min
+                        and int(active_size) < pas_xmg_min
                     ):
-                        rhs1_precond_kind = "point_xdiag"
+                        rhs1_precond_kind = "xmg"
                     else:
-                        rhs1_precond_kind = "collision" if use_collision_precond else "point"
+                        collision_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_COLLISION_PRECOND_MIN", "").strip()
+                        try:
+                            collision_precond_min = int(collision_precond_min_env) if collision_precond_min_env else 600
+                        except ValueError:
+                            collision_precond_min = 600
+                        use_collision_precond = (
+                            (op.fblock.fp is not None or op.fblock.pas is not None)
+                            and int(op.total_size) >= collision_precond_min
+                        )
+                        if (
+                            use_collision_precond
+                            and full_precond_requested
+                            and op.fblock.pas is not None
+                            and int(op.total_size) >= pas_xdiag_min
+                        ):
+                            rhs1_precond_kind = "point_xdiag"
+                        else:
+                            rhs1_precond_kind = "collision" if use_collision_precond else "point"
                 theta_line_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_THETA_LINE_MAX", "").strip()
                 try:
                     theta_line_max = int(theta_line_max_env) if theta_line_max_env else 0
@@ -7873,18 +7971,52 @@ def solve_v3_full_system_linear_gmres(
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
         rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
-    if rhs1_precond_env == "" and rhs1_precond_kind in {None, "point"}:
+    if rhs1_precond_env == "" and rhs1_precond_kind in {None, "point", "theta_line", "zeta_line", "xmg", "collision"}:
         shard_axis = _matvec_shard_axis(op)
         if shard_axis in {"theta", "zeta"} and jax.device_count() > 1:
             schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
             try:
-                schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
+                schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 120000
             except ValueError:
-                schwarz_auto_min = 4000
-            if int(op.total_size) >= max(1, int(schwarz_auto_min)):
+                schwarz_auto_min = 120000
+            force_schwarz = bool(schwarz_auto_min_env) and int(schwarz_auto_min) <= 0
+            if rhs1_precond_kind in {"theta_line", "zeta_line"} and rhs1_precond_kind != f"{shard_axis}_line":
+                pass
+            elif force_schwarz or int(op.total_size) >= max(1, int(schwarz_auto_min)):
                 rhs1_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
             else:
                 rhs1_precond_kind = "theta_line" if shard_axis == "theta" else "zeta_line"
+    if (
+        rhs1_precond_env == ""
+        and rhs1_precond_kind == "schur"
+        and op.fblock.pas is not None
+        and (not bool(op.include_phi1))
+    ):
+        # In sharded multi-device PAS runs, the global Schur preconditioner can dominate
+        # wall time for moderate-size systems. Prefer shard-local Schwarz blocks when
+        # Er is near zero, where this branch is typically more than sufficient.
+        shard_axis = _matvec_shard_axis(op)
+        if shard_axis in {"theta", "zeta"} and jax.device_count() > 1:
+            schur_shard_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_SHARD_MAX", "").strip()
+            try:
+                schur_shard_max = int(schur_shard_max_env) if schur_shard_max_env else 30000
+            except ValueError:
+                schur_shard_max = 30000
+            schur_shard_er_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_SHARD_ER_MAX", "").strip()
+            try:
+                schur_shard_er_max = float(schur_shard_er_env) if schur_shard_er_env else 1.0e-8
+            except ValueError:
+                schur_shard_er_max = 1.0e-8
+            if int(op.total_size) <= max(1, int(schur_shard_max)) and float(er_abs) <= max(
+                0.0, float(schur_shard_er_max)
+            ):
+                rhs1_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: sharded PAS near-zero-Er -> "
+                        f"{rhs1_precond_kind} preconditioner",
+                    )
     if str(solve_method).strip().lower() in {"dense", "dense_ksp", "dense_row_scaled"}:
         rhs1_precond_kind = None
     rhs1_precond_enabled = (
@@ -8695,6 +8827,12 @@ def solve_v3_full_system_linear_gmres(
             elif rhs1_precond_kind == "theta_schwarz":
                 dd_block = _parse_rhs1_dd_block("theta")
                 dd_overlap = _parse_rhs1_dd_overlap("theta", default=1)
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: theta_schwarz "
+                        f"(block={int(dd_block)}, overlap={int(dd_overlap)})",
+                    )
                 precond = _build_rhsmode1_theta_schwarz_preconditioner(
                     op=op,
                     block=dd_block,
@@ -8786,6 +8924,12 @@ def solve_v3_full_system_linear_gmres(
             elif rhs1_precond_kind == "zeta_schwarz":
                 dd_block = _parse_rhs1_dd_block("zeta")
                 dd_overlap = _parse_rhs1_dd_overlap("zeta", default=1)
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: zeta_schwarz "
+                        f"(block={int(dd_block)}, overlap={int(dd_overlap)})",
+                    )
                 precond = _build_rhsmode1_zeta_schwarz_preconditioner(
                     op=op,
                     block=dd_block,
@@ -9215,15 +9359,29 @@ def solve_v3_full_system_linear_gmres(
                     f"(ratio={res_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
                 )
         solver_kind = _solver_kind(solve_method)[0]
+        bicgstab_fallback_target = float(target_reduced)
+        if bicgstab_fallback_strict:
+            fallback_floor_env = os.environ.get("SFINCS_JAX_BICGSTAB_FALLBACK_ABS_FLOOR", "").strip()
+            default_floor = 0.0
+            if distributed_axis is not None and op.fblock.pas is not None and (not bool(op.include_phi1)):
+                # In distributed PAS runs, BiCGStab often reaches solutions that are
+                # already parity-accurate, but the strict relative target is tiny due to
+                # small RHS norms. Avoid an expensive GMRES polish when residual is tiny.
+                default_floor = 1.0e-7
+            try:
+                fallback_floor = float(fallback_floor_env) if fallback_floor_env else default_floor
+            except ValueError:
+                fallback_floor = default_floor
+            bicgstab_fallback_target = max(float(target_reduced), max(0.0, float(fallback_floor)))
         if solver_kind == "bicgstab" and (
             (not _gmres_result_is_finite(res_reduced))
-            or (bicgstab_fallback_strict and float(res_reduced.residual_norm) > target_reduced)
+            or (bicgstab_fallback_strict and float(res_reduced.residual_norm) > bicgstab_fallback_target)
         ):
             if emit is not None:
                 emit(
                     0,
                     "solve_v3_full_system_linear_gmres: BiCGStab fallback to GMRES "
-                    f"(residual={float(res_reduced.residual_norm):.3e} > target={target_reduced:.3e})",
+                    f"(residual={float(res_reduced.residual_norm):.3e} > target={bicgstab_fallback_target:.3e})",
                 )
             if preconditioner_reduced is None and rhs1_precond_enabled:
                 preconditioner_reduced = _build_rhs1_preconditioner_reduced()
@@ -10447,15 +10605,26 @@ def solve_v3_full_system_linear_gmres(
                 stage2_ratio = min(float(stage2_ratio), 1.0)
             stage2_trigger = bool(res_ratio > stage2_ratio) if stage2_ratio > 0 else True
             solver_kind = _solver_kind(solve_method)[0]
+            bicgstab_fallback_target = float(target)
+            if bicgstab_fallback_strict:
+                fallback_floor_env = os.environ.get("SFINCS_JAX_BICGSTAB_FALLBACK_ABS_FLOOR", "").strip()
+                default_floor = 0.0
+                if distributed_axis is not None and op.fblock.pas is not None and (not bool(op.include_phi1)):
+                    default_floor = 1.0e-7
+                try:
+                    fallback_floor = float(fallback_floor_env) if fallback_floor_env else default_floor
+                except ValueError:
+                    fallback_floor = default_floor
+                bicgstab_fallback_target = max(float(target), max(0.0, float(fallback_floor)))
             if solver_kind == "bicgstab" and (
                 (not _gmres_result_is_finite(result))
-                or (bicgstab_fallback_strict and float(result.residual_norm) > target)
+                or (bicgstab_fallback_strict and float(result.residual_norm) > bicgstab_fallback_target)
             ):
                 if emit is not None:
                     emit(
                         0,
                         "solve_v3_full_system_linear_gmres: BiCGStab fallback to GMRES "
-                        f"(residual={float(result.residual_norm):.3e} > target={target:.3e})",
+                        f"(residual={float(result.residual_norm):.3e} > target={bicgstab_fallback_target:.3e})",
                     )
                 if preconditioner_full is None and rhs1_precond_enabled:
                     preconditioner_full = _build_rhs1_preconditioner_full()

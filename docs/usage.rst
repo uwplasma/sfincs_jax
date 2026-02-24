@@ -196,7 +196,11 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN``: for large PAS systems that request full
   preconditioning, switch to the lightweight x‑multigrid preconditioner when
-  ``total_size`` exceeds this threshold (default: ``50000``).
+  ``total_size`` exceeds this threshold (default: ``80000``).
+
+- ``SFINCS_JAX_RHSMODE1_FP_XMG_MAX``: for near-zero-``Er`` full-FP systems,
+  use the x‑multigrid preconditioner below this size threshold
+  (default: ``100000``).
 
 - ``SFINCS_JAX_RHSMODE1_XMG_STRIDE``: coarse‑grid stride for the RHSMode=1 x‑multigrid
   preconditioner (default: ``2``; falls back to ``SFINCS_JAX_XMG_STRIDE`` if unset).

@@ -484,11 +484,11 @@ We also benchmarked a **single RHSMode=1 solve** with theta-sharded matvecs:
 
    python examples/performance/benchmark_sharded_solve_scaling.py \
      --input examples/performance/rhsmode1_sharded_scaling.input.namelist \
-     --devices 1 2 3 4 5 \
+     --devices 1 2 3 4 \
      --warmup 0 \
      --repeats 1 \
-     --global-warmup 1 \
-     --nsolve 24 \
+     --global-warmup 0 \
+     --nsolve 240 \
      --shard-axis theta \
      --gmres-distributed 1 \
      --distributed-krylov auto
@@ -496,9 +496,15 @@ We also benchmarked a **single RHSMode=1 solve** with theta-sharded matvecs:
 Input: `examples/performance/rhsmode1_sharded_scaling.input.namelist`
 (``Ntheta=30, Nzeta=10, Nxi=12, NL=8, Nx=12``).
 
-Latest run (cache warm, Macbook M3 Max, comm-reduced distributed Krylov auto):
-1 device 10.39 s, 2 devices 55.13 s, 3 devices 55.08 s, 4 devices 55.91 s,
-5 devices 131.08 s.
+Latest long-run measurement (Macbook M3 Max, ``nsolve=240``, baseline >2 min):
+
+- 1 device: 136.25 s
+- 2 devices: 98.70 s (1.38x speedup)
+- 3 devices: 105.33 s (1.29x speedup)
+- 4 devices: 110.78 s (1.23x speedup)
+
+The benchmark now runs with implicit linear solves enabled
+(``SFINCS_JAX_IMPLICIT_SOLVE=1``) to match production defaults.
 
 For A/B comparison against distributed GMRES on the same setup, run:
 
@@ -506,18 +512,16 @@ For A/B comparison against distributed GMRES on the same setup, run:
 
    python examples/performance/benchmark_sharded_solve_scaling.py \
      --input examples/performance/rhsmode1_sharded_scaling.input.namelist \
-     --devices 1 2 3 4 5 \
+     --devices 1 2 3 4 \
      --warmup 0 \
      --repeats 1 \
-     --global-warmup 1 \
-     --nsolve 24 \
+     --global-warmup 0 \
+     --nsolve 240 \
      --shard-axis theta \
      --gmres-distributed 1 \
      --distributed-krylov gmres
 
-In single-repeat A/B runs, comm-reduced distributed Krylov cut wall-time at
-2/3/5 devices (up to ~1.69x at 5 devices), while 4-device performance remained
-noisy across runs.
+In A/B runs, ``distributed_krylov=auto`` remains the best default on this host.
 
 This confirms parity-safe sharded execution, but not strong scaling yet.
 Single-RHS GMRES remains reduction-heavy, and the current implementation still

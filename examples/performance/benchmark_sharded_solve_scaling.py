@@ -31,7 +31,7 @@ def _run_once(
     os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] = gmres_distributed
     os.environ["SFINCS_JAX_DISTRIBUTED_KRYLOV"] = distributed_krylov
     os.environ["SFINCS_JAX_AUTO_SHARD"] = "0"
-    os.environ["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
+    os.environ["SFINCS_JAX_IMPLICIT_SOLVE"] = "1"
     os.environ["SFINCS_JAX_SHARD_PAD"] = "1"
     if rhs1_precond:
         os.environ["SFINCS_JAX_RHSMODE1_PRECONDITIONER"] = rhs1_precond
@@ -72,7 +72,7 @@ def _run_once_subprocess(
     env["SFINCS_JAX_GMRES_DISTRIBUTED"] = gmres_distributed
     env["SFINCS_JAX_DISTRIBUTED_KRYLOV"] = distributed_krylov
     env["SFINCS_JAX_AUTO_SHARD"] = "0"
-    env["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
+    env["SFINCS_JAX_IMPLICIT_SOLVE"] = "1"
     env["SFINCS_JAX_SHARD_PAD"] = "1"
     env["SFINCS_JAX_FORTRAN_STDOUT"] = "0"
     env["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"

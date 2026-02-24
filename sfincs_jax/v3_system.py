@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 import os
 import contextlib
 import weakref
@@ -880,7 +880,38 @@ _PADDED_OPERATOR_CACHE: dict[
 ] = {}
 
 
+def _value_contains_tracer(value: object, *, depth: int = 3) -> bool:
+    if depth < 0:
+        return False
+    if isinstance(value, jax.core.Tracer):
+        return True
+    if is_dataclass(value):
+        for fld in fields(value):
+            try:
+                v = getattr(value, fld.name)
+            except Exception:
+                continue
+            if _value_contains_tracer(v, depth=depth - 1):
+                return True
+        return False
+    if isinstance(value, (tuple, list)):
+        for v in value:
+            if _value_contains_tracer(v, depth=depth - 1):
+                return True
+        return False
+    return False
+
+
+def _op_cacheable(op: V3FullSystemOperator) -> bool:
+    try:
+        return not _value_contains_tracer(op, depth=4)
+    except Exception:
+        return False
+
+
 def _operator_signature_cached(op: V3FullSystemOperator) -> tuple[object, ...]:
+    if not _op_cacheable(op):
+        return _operator_signature(op)
     key = id(op)
     cached = _OPERATOR_SIGNATURE_CACHE.get(key)
     if cached is not None:
@@ -1275,14 +1306,7 @@ def _pad_fblock_operator(
 
 
 def _pad_full_system_operator(op: V3FullSystemOperator, *, axis: str, pad: int) -> V3FullSystemOperator:
-    key = (id(op), axis, pad)
-    cached = _PADDED_OPERATOR_CACHE.get(key)
-    if cached is not None:
-        ref, value = cached
-        if ref() is op:
-            return value
     if pad <= 0:
-        _PADDED_OPERATOR_CACHE[key] = (weakref.ref(op), op)
         return op
     fblock = _pad_fblock_operator(op.fblock, axis=axis, pad=pad)
     theta_weights = _pad_1d(op.theta_weights, pad, fill=0.0) if axis == "theta" else op.theta_weights
@@ -1318,7 +1342,6 @@ def _pad_full_system_operator(op: V3FullSystemOperator, *, axis: str, pad: int) 
         x_weights=x_weights,
         ddx=ddx,
     )
-    _PADDED_OPERATOR_CACHE[key] = (weakref.ref(op), padded)
     return padded
 
 
