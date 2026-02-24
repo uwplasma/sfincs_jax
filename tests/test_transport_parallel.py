@@ -152,3 +152,59 @@ def test_transport_theta_dd_preconditioner_matches_default(monkeypatch: pytest.M
         rtol=5e-4,
         atol=1e-10,
     )
+
+
+def test_transport_theta_schwarz_preconditioner_matches_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Theta-Schwarz transport preconditioner should preserve transport outputs on tiny PAS cases."""
+    here = Path(__file__).parent
+    input_path = here / "ref" / "transportMatrix_PAS_tiny_rhsMode2_scheme2.input.namelist"
+    assert input_path.exists()
+    nml = read_sfincs_input(input_path)
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_PARALLEL", "off")
+    monkeypatch.setenv("SFINCS_JAX_FORTRAN_STDOUT", "0")
+    monkeypatch.setenv("SFINCS_JAX_SOLVER_ITER_STATS", "0")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_DENSE_FALLBACK", "0")
+
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PRECOND", raising=False)
+    base = solve_v3_transport_matrix_linear_gmres(
+        nml=nml,
+        tol=1e-10,
+        input_namelist=input_path,
+        collect_transport_output_fields=False,
+    )
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_PRECOND", "theta_schwarz")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "2")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_DD_OVERLAP", "1")
+    theta_schwarz = solve_v3_transport_matrix_linear_gmres(
+        nml=nml,
+        tol=1e-10,
+        input_namelist=input_path,
+        collect_transport_output_fields=False,
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(theta_schwarz.transport_matrix),
+        np.asarray(base.transport_matrix),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(theta_schwarz.particle_flux_vm_psi_hat),
+        np.asarray(base.particle_flux_vm_psi_hat),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(theta_schwarz.heat_flux_vm_psi_hat),
+        np.asarray(base.heat_flux_vm_psi_hat),
+        rtol=5e-4,
+        atol=1e-10,
+    )
+    np.testing.assert_allclose(
+        np.asarray(theta_schwarz.fsab_flow),
+        np.asarray(base.fsab_flow),
+        rtol=5e-4,
+        atol=1e-10,
+    )

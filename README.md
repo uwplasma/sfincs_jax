@@ -139,7 +139,9 @@ scaling rather than H5-output diagnostics assembly.
 
 Experimental transport domain-decomposition preconditioners are available via
 `SFINCS_JAX_TRANSPORT_PRECOND=theta_dd` or `zeta_dd` (block sizes:
-`SFINCS_JAX_TRANSPORT_DD_BLOCK_T`, `SFINCS_JAX_TRANSPORT_DD_BLOCK_Z`).
+`SFINCS_JAX_TRANSPORT_DD_BLOCK_T`, `SFINCS_JAX_TRANSPORT_DD_BLOCK_Z`), with
+overlap-RAS variants `theta_schwarz` / `zeta_schwarz`
+(`SFINCS_JAX_TRANSPORT_DD_OVERLAP`).
 
 For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
 

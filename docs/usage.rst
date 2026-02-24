@@ -268,6 +268,8 @@ performance without changing the input file:
     for large sharded transport solves.
   - ``zeta_dd``: zeta-line domain-decomposition preconditioner (block-diagonal in zeta)
     for large sharded transport solves.
+  - ``theta_schwarz``: theta-line restricted additive Schwarz preconditioner with overlap.
+  - ``zeta_schwarz``: zeta-line restricted additive Schwarz preconditioner with overlap.
   - ``xmg``/``multigrid``: two-level additive x-grid preconditioner (coarse x solve +
     fine diagonal smoother).
   - ``collision``: collision-diagonal preconditioner (PAS/FP + identity shift).
@@ -285,6 +287,9 @@ performance without changing the input file:
 
 - ``SFINCS_JAX_TRANSPORT_DD_BLOCK_T`` / ``SFINCS_JAX_TRANSPORT_DD_BLOCK_Z``: theta/zeta
   DD block sizes for ``theta_dd``/``zeta_dd`` transport preconditioning (default: ``8``).
+
+- ``SFINCS_JAX_TRANSPORT_DD_OVERLAP``: overlap width for ``theta_schwarz``/``zeta_schwarz``
+  transport preconditioning (default: ``1``). Set to ``0`` to recover non-overlap RAS.
 
 - ``SFINCS_JAX_TRANSPORT_FP_LOW_RANK_K``: low-rank Woodbury correction (rank ``K``)
   for the FP species×x transport preconditioner. ``auto`` (default when unset) selects

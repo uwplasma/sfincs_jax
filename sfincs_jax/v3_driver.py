@@ -195,6 +195,20 @@ _RHSMODE1_PRECOND_LIST_CACHE: dict[tuple[object, ...], _RHSMode1PrecondListCache
 
 
 @dataclass(frozen=True)
+class _RHSMode1SchwarzPrecondCache:
+    inv_padded_jnp: jnp.ndarray
+    patch_idx_padded_jnp: jnp.ndarray
+    core_idx_padded_jnp: jnp.ndarray
+    core_local_padded_jnp: jnp.ndarray
+    core_mask_padded_jnp: jnp.ndarray
+    extra_idx_jnp: jnp.ndarray
+    extra_inv_jnp: jnp.ndarray | None
+
+
+_RHSMODE1_SCHWARZ_PRECOND_CACHE: dict[tuple[object, ...], _RHSMode1SchwarzPrecondCache] = {}
+
+
+@dataclass(frozen=True)
 class _RHSMode1PrecondGlobalCache:
     idx_map_jnp: jnp.ndarray
     flat_idx_jnp: jnp.ndarray
@@ -3217,6 +3231,20 @@ def _block_diag_only(m: jnp.ndarray, block: int) -> jnp.ndarray:
     return jnp.asarray(mat_np, dtype=m.dtype)
 
 
+def _dd_core_patch_ranges(n: int, block: int, overlap: int) -> list[tuple[int, int, int, int]]:
+    """Return (core_start, core_end, patch_start, patch_end) ranges for DD/RAS blocks."""
+    n = int(n)
+    block = max(1, int(block))
+    overlap = max(0, int(overlap))
+    ranges: list[tuple[int, int, int, int]] = []
+    for core_start in range(0, n, block):
+        core_end = min(n, core_start + block)
+        patch_start = max(0, core_start - overlap)
+        patch_end = min(n, core_end + overlap)
+        ranges.append((core_start, core_end, patch_start, patch_end))
+    return ranges
+
+
 def _build_rhsmode1_preconditioner_operator_point(op: V3FullSystemOperator) -> V3FullSystemOperator:
     """Return a simplified RHSMode=1 operator for point-block preconditioning.
 
@@ -3794,6 +3822,42 @@ def _build_rhsmode23_zeta_dd_preconditioner(
     return _build_rhsmode1_zeta_dd_preconditioner(
         op=op,
         block=int(block),
+        reduce_full=reduce_full,
+        expand_reduced=expand_reduced,
+    )
+
+
+def _build_rhsmode23_theta_schwarz_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    overlap: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Restricted additive Schwarz theta-line preconditioner for transport solves."""
+    return _build_rhsmode1_theta_schwarz_preconditioner(
+        op=op,
+        block=int(block),
+        overlap=int(overlap),
+        reduce_full=reduce_full,
+        expand_reduced=expand_reduced,
+    )
+
+
+def _build_rhsmode23_zeta_schwarz_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    overlap: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Restricted additive Schwarz zeta-line preconditioner for transport solves."""
+    return _build_rhsmode1_zeta_schwarz_preconditioner(
+        op=op,
+        block=int(block),
+        overlap=int(overlap),
         reduce_full=reduce_full,
         expand_reduced=expand_reduced,
     )
@@ -4997,6 +5061,355 @@ def _build_rhsmode1_zeta_dd_preconditioner(
 
     def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
         z_full = _apply_full(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_theta_schwarz_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    overlap: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Restricted additive Schwarz preconditioner on theta lines.
+
+    Uses local theta patches with configurable overlap and writes only each
+    patch's non-overlapped core region (RAS), avoiding duplicate writes while
+    still capturing nearest-neighbor line coupling across block boundaries.
+    """
+    block = max(1, min(int(op.n_theta), int(block)))
+    overlap = max(0, min(int(op.n_theta) - 1, int(overlap)))
+    cache_key = _rhsmode1_precond_cache_key(op, f"theta_schwarz_b{block}_o{overlap}")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_SCHWARZ_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        block_pc = max(block, block + 2 * overlap)
+        op_pc = _build_rhsmode1_preconditioner_operator_theta_dd(op, block=block_pc)
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        inv_list: list[np.ndarray] = []
+        patch_idx_list: list[np.ndarray] = []
+        core_idx_list: list[np.ndarray] = []
+        core_local_list: list[np.ndarray] = []
+
+        ranges = _dd_core_patch_ranges(n=n_theta, block=block, overlap=overlap)
+        for s in range(n_species):
+            for iz in range(n_zeta):
+                for core_start, core_end, patch_start, patch_end in ranges:
+                    patch_idx: list[int] = []
+                    core_idx: list[int] = []
+                    core_local: list[int] = []
+                    k = 0
+                    for it in range(patch_start, patch_end):
+                        for ix in range(n_x):
+                            max_l = int(nxi_for_x[ix])
+                            for il in range(max_l):
+                                idx = int(((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz))
+                                patch_idx.append(idx)
+                                if core_start <= it < core_end:
+                                    core_idx.append(idx)
+                                    core_local.append(k)
+                                k += 1
+                    if not patch_idx:
+                        continue
+                    patch_idx_np = np.asarray(patch_idx, dtype=np.int32)
+                    core_idx_np = np.asarray(core_idx, dtype=np.int32)
+                    core_local_np = np.asarray(core_local, dtype=np.int32)
+                    chunk_cols = _precond_chunk_cols(total_size, int(patch_idx_np.shape[0]))
+                    y_sub = _matvec_submatrix(
+                        op_pc,
+                        col_idx=patch_idx_np,
+                        row_idx=patch_idx_np,
+                        total_size=total_size,
+                        chunk_cols=chunk_cols,
+                    )
+                    a = np.asarray(y_sub.T, dtype=np.float64)
+                    a = a + reg * np.eye(int(patch_idx_np.shape[0]), dtype=np.float64)
+                    try:
+                        inv = np.linalg.inv(a)
+                    except np.linalg.LinAlgError:
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    if not np.all(np.isfinite(inv)):
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    inv_list.append(inv)
+                    patch_idx_list.append(patch_idx_np)
+                    core_idx_list.append(core_idx_np)
+                    core_local_list.append(core_local_np)
+
+        if not inv_list:
+            return _build_rhsmode1_theta_dd_preconditioner(
+                op=op,
+                block=block,
+                reduce_full=reduce_full,
+                expand_reduced=expand_reduced,
+            )
+
+        n_patch = len(inv_list)
+        max_patch = max(int(v.shape[0]) for v in patch_idx_list)
+        max_core = max(int(v.shape[0]) for v in core_idx_list)
+        inv_padded = np.zeros((n_patch, max_patch, max_patch), dtype=np.float64)
+        patch_idx_padded = np.zeros((n_patch, max_patch), dtype=np.int32)
+        core_idx_padded = np.zeros((n_patch, max_core), dtype=np.int32)
+        core_local_padded = np.zeros((n_patch, max_core), dtype=np.int32)
+        core_mask_padded = np.zeros((n_patch, max_core), dtype=np.float64)
+        for i in range(n_patch):
+            patch_n = int(patch_idx_list[i].shape[0])
+            core_n = int(core_idx_list[i].shape[0])
+            inv_padded[i, :patch_n, :patch_n] = inv_list[i]
+            patch_idx_padded[i, :patch_n] = patch_idx_list[i]
+            core_idx_padded[i, :core_n] = core_idx_list[i]
+            core_local_padded[i, :core_n] = core_local_list[i]
+            core_mask_padded[i, :core_n] = 1.0
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1SchwarzPrecondCache(
+            inv_padded_jnp=jnp.asarray(inv_padded, dtype=precond_dtype),
+            patch_idx_padded_jnp=jnp.asarray(patch_idx_padded, dtype=jnp.int32),
+            core_idx_padded_jnp=jnp.asarray(core_idx_padded, dtype=jnp.int32),
+            core_local_padded_jnp=jnp.asarray(core_local_padded, dtype=jnp.int32),
+            core_mask_padded_jnp=jnp.asarray(core_mask_padded, dtype=precond_dtype),
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_SCHWARZ_PRECOND_CACHE[cache_key] = cached
+
+    inv_padded_jnp = cached.inv_padded_jnp
+    patch_idx_padded_jnp = cached.patch_idx_padded_jnp
+    core_idx_padded_jnp = cached.core_idx_padded_jnp
+    core_local_padded_jnp = cached.core_local_padded_jnp
+    core_mask_padded_jnp = cached.core_mask_padded_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+    n_patch = int(inv_padded_jnp.shape[0])
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        z_full = jnp.zeros_like(r_full)
+        for ip in range(n_patch):
+            r_patch = r_full[patch_idx_padded_jnp[ip]]
+            z_patch = inv_padded_jnp[ip] @ r_patch
+            z_core = z_patch[core_local_padded_jnp[ip]] * core_mask_padded_jnp[ip]
+            z_full = z_full.at[core_idx_padded_jnp[ip]].add(z_core)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    apply_full_safe = _safe_preconditioner(_apply_full)
+    if reduce_full is None or expand_reduced is None:
+        return apply_full_safe
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = apply_full_safe(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _build_rhsmode1_zeta_schwarz_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    block: int,
+    overlap: int,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Restricted additive Schwarz preconditioner on zeta lines."""
+    block = max(1, min(int(op.n_zeta), int(block)))
+    overlap = max(0, min(int(op.n_zeta) - 1, int(overlap)))
+    cache_key = _rhsmode1_precond_cache_key(op, f"zeta_schwarz_b{block}_o{overlap}")
+    precond_dtype = _precond_dtype()
+    cached = _RHSMODE1_SCHWARZ_PRECOND_CACHE.get(cache_key)
+    if cached is None:
+        block_pc = max(block, block + 2 * overlap)
+        op_pc = _build_rhsmode1_preconditioner_operator_zeta_dd(op, block=block_pc)
+        n_species = int(op.n_species)
+        n_x = int(op.n_x)
+        n_l = int(op.n_xi)
+        n_theta = int(op.n_theta)
+        n_zeta = int(op.n_zeta)
+        total_size = int(op.total_size)
+
+        nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        reg = np.float64(reg_val)
+
+        inv_list: list[np.ndarray] = []
+        patch_idx_list: list[np.ndarray] = []
+        core_idx_list: list[np.ndarray] = []
+        core_local_list: list[np.ndarray] = []
+
+        ranges = _dd_core_patch_ranges(n=n_zeta, block=block, overlap=overlap)
+        for s in range(n_species):
+            for it in range(n_theta):
+                for core_start, core_end, patch_start, patch_end in ranges:
+                    patch_idx: list[int] = []
+                    core_idx: list[int] = []
+                    core_local: list[int] = []
+                    k = 0
+                    for iz in range(patch_start, patch_end):
+                        for ix in range(n_x):
+                            max_l = int(nxi_for_x[ix])
+                            for il in range(max_l):
+                                idx = int(((((s * n_x + ix) * n_l + il) * n_theta + it) * n_zeta + iz))
+                                patch_idx.append(idx)
+                                if core_start <= iz < core_end:
+                                    core_idx.append(idx)
+                                    core_local.append(k)
+                                k += 1
+                    if not patch_idx:
+                        continue
+                    patch_idx_np = np.asarray(patch_idx, dtype=np.int32)
+                    core_idx_np = np.asarray(core_idx, dtype=np.int32)
+                    core_local_np = np.asarray(core_local, dtype=np.int32)
+                    chunk_cols = _precond_chunk_cols(total_size, int(patch_idx_np.shape[0]))
+                    y_sub = _matvec_submatrix(
+                        op_pc,
+                        col_idx=patch_idx_np,
+                        row_idx=patch_idx_np,
+                        total_size=total_size,
+                        chunk_cols=chunk_cols,
+                    )
+                    a = np.asarray(y_sub.T, dtype=np.float64)
+                    a = a + reg * np.eye(int(patch_idx_np.shape[0]), dtype=np.float64)
+                    try:
+                        inv = np.linalg.inv(a)
+                    except np.linalg.LinAlgError:
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    if not np.all(np.isfinite(inv)):
+                        inv = np.linalg.pinv(a, rcond=1e-12)
+                    inv_list.append(inv)
+                    patch_idx_list.append(patch_idx_np)
+                    core_idx_list.append(core_idx_np)
+                    core_local_list.append(core_local_np)
+
+        if not inv_list:
+            return _build_rhsmode1_zeta_dd_preconditioner(
+                op=op,
+                block=block,
+                reduce_full=reduce_full,
+                expand_reduced=expand_reduced,
+            )
+
+        n_patch = len(inv_list)
+        max_patch = max(int(v.shape[0]) for v in patch_idx_list)
+        max_core = max(int(v.shape[0]) for v in core_idx_list)
+        inv_padded = np.zeros((n_patch, max_patch, max_patch), dtype=np.float64)
+        patch_idx_padded = np.zeros((n_patch, max_patch), dtype=np.int32)
+        core_idx_padded = np.zeros((n_patch, max_core), dtype=np.int32)
+        core_local_padded = np.zeros((n_patch, max_core), dtype=np.int32)
+        core_mask_padded = np.zeros((n_patch, max_core), dtype=np.float64)
+        for i in range(n_patch):
+            patch_n = int(patch_idx_list[i].shape[0])
+            core_n = int(core_idx_list[i].shape[0])
+            inv_padded[i, :patch_n, :patch_n] = inv_list[i]
+            patch_idx_padded[i, :patch_n] = patch_idx_list[i]
+            core_idx_padded[i, :core_n] = core_idx_list[i]
+            core_local_padded[i, :core_n] = core_local_list[i]
+            core_mask_padded[i, :core_n] = 1.0
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        extra_idx_jnp = jnp.asarray(extra_idx_np, dtype=jnp.int32)
+        extra_inv_jnp: jnp.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op_pc,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + reg * np.eye(extra_size, dtype=np.float64)
+            try:
+                ee_inv = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(ee_inv)):
+                ee_inv = np.linalg.pinv(ee, rcond=1e-12)
+            extra_inv_jnp = jnp.asarray(ee_inv, dtype=precond_dtype)
+
+        cached = _RHSMode1SchwarzPrecondCache(
+            inv_padded_jnp=jnp.asarray(inv_padded, dtype=precond_dtype),
+            patch_idx_padded_jnp=jnp.asarray(patch_idx_padded, dtype=jnp.int32),
+            core_idx_padded_jnp=jnp.asarray(core_idx_padded, dtype=jnp.int32),
+            core_local_padded_jnp=jnp.asarray(core_local_padded, dtype=jnp.int32),
+            core_mask_padded_jnp=jnp.asarray(core_mask_padded, dtype=precond_dtype),
+            extra_idx_jnp=extra_idx_jnp,
+            extra_inv_jnp=extra_inv_jnp,
+        )
+        _RHSMODE1_SCHWARZ_PRECOND_CACHE[cache_key] = cached
+
+    inv_padded_jnp = cached.inv_padded_jnp
+    patch_idx_padded_jnp = cached.patch_idx_padded_jnp
+    core_idx_padded_jnp = cached.core_idx_padded_jnp
+    core_local_padded_jnp = cached.core_local_padded_jnp
+    core_mask_padded_jnp = cached.core_mask_padded_jnp
+    extra_idx_jnp = cached.extra_idx_jnp
+    extra_inv_jnp = cached.extra_inv_jnp
+    n_patch = int(inv_padded_jnp.shape[0])
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_full = jnp.asarray(r_full, dtype=precond_dtype)
+        z_full = jnp.zeros_like(r_full)
+        for ip in range(n_patch):
+            r_patch = r_full[patch_idx_padded_jnp[ip]]
+            z_patch = inv_padded_jnp[ip] @ r_patch
+            z_core = z_patch[core_local_padded_jnp[ip]] * core_mask_padded_jnp[ip]
+            z_full = z_full.at[core_idx_padded_jnp[ip]].add(z_core)
+        if extra_inv_jnp is not None:
+            r_extra = r_full[extra_idx_jnp]
+            z_extra = extra_inv_jnp @ r_extra
+            z_full = z_full.at[extra_idx_jnp].set(z_extra, unique_indices=True)
+        return jnp.asarray(z_full, dtype=jnp.float64)
+
+    apply_full_safe = _safe_preconditioner(_apply_full)
+    if reduce_full is None or expand_reduced is None:
+        return apply_full_safe
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = apply_full_safe(expand_reduced(r_reduced))
         return reduce_full(z_full)
 
     return _apply_reduced
@@ -11932,10 +12345,14 @@ def solve_v3_transport_matrix_linear_gmres(
         "theta_block",
         "dd_theta",
         "dd_t",
+        "theta_schwarz",
+        "schwarz_theta",
         "zeta_dd",
         "zeta_block",
         "dd_zeta",
         "dd_z",
+        "zeta_schwarz",
+        "schwarz_zeta",
         "tzfft",
         "streaming_fft",
         "stream_fft",
@@ -11945,8 +12362,12 @@ def solve_v3_transport_matrix_linear_gmres(
             transport_precond_kind = "tzfft"
         elif transport_precond_env in {"theta_block", "dd_theta", "dd_t"}:
             transport_precond_kind = "theta_dd"
+        elif transport_precond_env in {"theta_schwarz", "schwarz_theta"}:
+            transport_precond_kind = "theta_schwarz"
         elif transport_precond_env in {"zeta_block", "dd_zeta", "dd_z"}:
             transport_precond_kind = "zeta_dd"
+        elif transport_precond_env in {"zeta_schwarz", "schwarz_zeta"}:
+            transport_precond_kind = "zeta_schwarz"
         else:
             transport_precond_kind = transport_precond_env
     else:
@@ -12043,11 +12464,11 @@ def solve_v3_transport_matrix_linear_gmres(
             if int(parallel_workers) > 1 and dd_auto_min > 0 and int(op0.total_size) >= dd_auto_min:
                 shard_axis = _matvec_shard_axis(op0)
                 if shard_axis == "theta":
-                    precond_kind = "theta_dd"
-                    strong_precond_kind = "theta_dd"
+                    precond_kind = "theta_schwarz"
+                    strong_precond_kind = "theta_schwarz"
                 elif shard_axis == "zeta":
-                    precond_kind = "zeta_dd"
-                    strong_precond_kind = "zeta_dd"
+                    precond_kind = "zeta_schwarz"
+                    strong_precond_kind = "zeta_schwarz"
             if dense_mem_block and strong_precond_kind is not None:
                 precond_kind = strong_precond_kind
         precond_kind_used = precond_kind
@@ -12072,6 +12493,32 @@ def solve_v3_transport_matrix_linear_gmres(
                     reduce_full=reduce_full,
                     expand_reduced=expand_reduced,
                 )
+        elif precond_kind == "theta_schwarz":
+            block_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "").strip()
+            overlap_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_OVERLAP", "").strip()
+            try:
+                dd_block_t = int(block_t_env) if block_t_env else 8
+            except ValueError:
+                dd_block_t = 8
+            try:
+                dd_overlap_t = int(overlap_t_env) if overlap_t_env else 1
+            except ValueError:
+                dd_overlap_t = 1
+            dd_block_t = max(1, min(int(op0.n_theta), dd_block_t))
+            dd_overlap_t = max(0, min(dd_block_t - 1, dd_overlap_t))
+            preconditioner_full = _build_rhsmode23_theta_schwarz_preconditioner(
+                op=op0,
+                block=dd_block_t,
+                overlap=dd_overlap_t,
+            )
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_theta_schwarz_preconditioner(
+                    op=op0,
+                    block=dd_block_t,
+                    overlap=dd_overlap_t,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
+                )
         elif precond_kind == "zeta_dd":
             block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
             try:
@@ -12084,6 +12531,32 @@ def solve_v3_transport_matrix_linear_gmres(
                 preconditioner_reduced = _build_rhsmode23_zeta_dd_preconditioner(
                     op=op0,
                     block=dd_block_z,
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
+                )
+        elif precond_kind == "zeta_schwarz":
+            block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
+            overlap_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_OVERLAP", "").strip()
+            try:
+                dd_block_z = int(block_z_env) if block_z_env else 8
+            except ValueError:
+                dd_block_z = 8
+            try:
+                dd_overlap_z = int(overlap_z_env) if overlap_z_env else 1
+            except ValueError:
+                dd_overlap_z = 1
+            dd_block_z = max(1, min(int(op0.n_zeta), dd_block_z))
+            dd_overlap_z = max(0, min(dd_block_z - 1, dd_overlap_z))
+            preconditioner_full = _build_rhsmode23_zeta_schwarz_preconditioner(
+                op=op0,
+                block=dd_block_z,
+                overlap=dd_overlap_z,
+            )
+            if use_active_dof_mode and reduce_full is not None and expand_reduced is not None:
+                preconditioner_reduced = _build_rhsmode23_zeta_schwarz_preconditioner(
+                    op=op0,
+                    block=dd_block_z,
+                    overlap=dd_overlap_z,
                     reduce_full=reduce_full,
                     expand_reduced=expand_reduced,
                 )
@@ -12196,6 +12669,26 @@ def solve_v3_transport_matrix_linear_gmres(
                         reduce_full=reduce_full,
                         expand_reduced=expand_reduced,
                     )
+                elif strong_precond_kind == "theta_schwarz":
+                    block_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "").strip()
+                    overlap_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_OVERLAP", "").strip()
+                    try:
+                        dd_block_t = int(block_t_env) if block_t_env else 8
+                    except ValueError:
+                        dd_block_t = 8
+                    try:
+                        dd_overlap_t = int(overlap_t_env) if overlap_t_env else 1
+                    except ValueError:
+                        dd_overlap_t = 1
+                    dd_block_t = max(1, min(int(op0.n_theta), dd_block_t))
+                    dd_overlap_t = max(0, min(dd_block_t - 1, dd_overlap_t))
+                    strong_preconditioner_reduced = _build_rhsmode23_theta_schwarz_preconditioner(
+                        op=op0,
+                        block=dd_block_t,
+                        overlap=dd_overlap_t,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                    )
                 elif strong_precond_kind == "zeta_dd":
                     block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
                     try:
@@ -12206,6 +12699,26 @@ def solve_v3_transport_matrix_linear_gmres(
                     strong_preconditioner_reduced = _build_rhsmode23_zeta_dd_preconditioner(
                         op=op0,
                         block=dd_block_z,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                    )
+                elif strong_precond_kind == "zeta_schwarz":
+                    block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
+                    overlap_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_OVERLAP", "").strip()
+                    try:
+                        dd_block_z = int(block_z_env) if block_z_env else 8
+                    except ValueError:
+                        dd_block_z = 8
+                    try:
+                        dd_overlap_z = int(overlap_z_env) if overlap_z_env else 1
+                    except ValueError:
+                        dd_overlap_z = 1
+                    dd_block_z = max(1, min(int(op0.n_zeta), dd_block_z))
+                    dd_overlap_z = max(0, min(dd_block_z - 1, dd_overlap_z))
+                    strong_preconditioner_reduced = _build_rhsmode23_zeta_schwarz_preconditioner(
+                        op=op0,
+                        block=dd_block_z,
+                        overlap=dd_overlap_z,
                         reduce_full=reduce_full,
                         expand_reduced=expand_reduced,
                     )
@@ -12237,6 +12750,24 @@ def solve_v3_transport_matrix_linear_gmres(
                     dd_block_t = 8
                 dd_block_t = max(1, min(int(op0.n_theta), dd_block_t))
                 strong_preconditioner_full = _build_rhsmode23_theta_dd_preconditioner(op=op0, block=dd_block_t)
+            elif strong_precond_kind == "theta_schwarz":
+                block_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_T", "").strip()
+                overlap_t_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_OVERLAP", "").strip()
+                try:
+                    dd_block_t = int(block_t_env) if block_t_env else 8
+                except ValueError:
+                    dd_block_t = 8
+                try:
+                    dd_overlap_t = int(overlap_t_env) if overlap_t_env else 1
+                except ValueError:
+                    dd_overlap_t = 1
+                dd_block_t = max(1, min(int(op0.n_theta), dd_block_t))
+                dd_overlap_t = max(0, min(dd_block_t - 1, dd_overlap_t))
+                strong_preconditioner_full = _build_rhsmode23_theta_schwarz_preconditioner(
+                    op=op0,
+                    block=dd_block_t,
+                    overlap=dd_overlap_t,
+                )
             elif strong_precond_kind == "zeta_dd":
                 block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
                 try:
@@ -12245,6 +12776,24 @@ def solve_v3_transport_matrix_linear_gmres(
                     dd_block_z = 8
                 dd_block_z = max(1, min(int(op0.n_zeta), dd_block_z))
                 strong_preconditioner_full = _build_rhsmode23_zeta_dd_preconditioner(op=op0, block=dd_block_z)
+            elif strong_precond_kind == "zeta_schwarz":
+                block_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_BLOCK_Z", "").strip()
+                overlap_z_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_OVERLAP", "").strip()
+                try:
+                    dd_block_z = int(block_z_env) if block_z_env else 8
+                except ValueError:
+                    dd_block_z = 8
+                try:
+                    dd_overlap_z = int(overlap_z_env) if overlap_z_env else 1
+                except ValueError:
+                    dd_overlap_z = 1
+                dd_block_z = max(1, min(int(op0.n_zeta), dd_block_z))
+                dd_overlap_z = max(0, min(dd_block_z - 1, dd_overlap_z))
+                strong_preconditioner_full = _build_rhsmode23_zeta_schwarz_preconditioner(
+                    op=op0,
+                    block=dd_block_z,
+                    overlap=dd_overlap_z,
+                )
             elif strong_precond_kind == "tzfft":
                 strong_preconditioner_full = _build_rhsmode23_tzfft_preconditioner(op=op0)
             elif strong_precond_kind in {"sxblock", "block_sx", "species_x"}:

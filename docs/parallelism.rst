@@ -530,6 +530,9 @@ for experimentation in both RHSMode=1 and transport (RHSMode=2/3):
 - Transport: ``SFINCS_JAX_TRANSPORT_PRECOND=theta_dd`` / ``zeta_dd``
   (block sizes via ``SFINCS_JAX_TRANSPORT_DD_BLOCK_T`` /
   ``SFINCS_JAX_TRANSPORT_DD_BLOCK_Z``).
+  A local-overlap Schwarz variant is also available via
+  ``SFINCS_JAX_TRANSPORT_PRECOND=theta_schwarz`` / ``zeta_schwarz``
+  (overlap via ``SFINCS_JAX_TRANSPORT_DD_OVERLAP``).
 
 These are stepping stones toward true overlapping Schwarz and remain opt-in
 by default.

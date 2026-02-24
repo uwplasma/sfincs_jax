@@ -319,10 +319,23 @@ local subdomain (species × active x/L × line extent) while dropping couplings
 to other lines, which keeps the preconditioner apply local and differentiable.
 This is useful when experimenting with sharded transport solves.
 
+``SFINCS_JAX_TRANSPORT_PRECOND=theta_schwarz`` or ``zeta_schwarz`` enables a
+restricted additive Schwarz (RAS) variant with overlap:
+
+.. math::
+
+   M^{-1}_{RAS} r = \sum_i R_i^T \tilde{A}_i^{-1} R_i r,
+
+where :math:`R_i` restricts to an overlapped patch and the correction is written
+back to the non-overlapped core (RAS update). This improves conditioning across
+block boundaries compared with pure block-diagonal DD. The path is currently
+opt-in because setup/apply overhead can dominate on small-medium runs.
+
 Controls:
 
 - ``SFINCS_JAX_TRANSPORT_DD_BLOCK_T`` (theta block size, default ``8``)
 - ``SFINCS_JAX_TRANSPORT_DD_BLOCK_Z`` (zeta block size, default ``8``)
+- ``SFINCS_JAX_TRANSPORT_DD_OVERLAP`` (overlap width for Schwarz, default ``1``)
 - ``SFINCS_JAX_TRANSPORT_DD_AUTO_MIN`` (optional auto-enable threshold in
   ``TRANSPORT_PRECOND=auto``; default ``0`` disables auto path)
 
@@ -339,6 +352,8 @@ preconditioners while staying differentiable. Controls mirror the RHSMode=1
 - ``_build_rhsmode23_sxblock_preconditioner`` in ``sfincs_jax.v3_driver``.
 - ``_build_rhsmode23_theta_dd_preconditioner`` / ``_build_rhsmode23_zeta_dd_preconditioner``
   in ``sfincs_jax.v3_driver``.
+- ``_build_rhsmode23_theta_schwarz_preconditioner`` /
+  ``_build_rhsmode23_zeta_schwarz_preconditioner`` in ``sfincs_jax.v3_driver``.
 - Controlled by ``SFINCS_JAX_TRANSPORT_PRECOND`` (``auto``, ``sxblock``, ``collision``, etc.).
   ``auto`` picks the collision-diagonal preconditioner for the default BiCGStab transport
   solver and upgrades to species×x blocks for modest FP systems when GMRES is selected.
