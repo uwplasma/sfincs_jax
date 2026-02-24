@@ -157,9 +157,9 @@ Benchmark case: `examples/performance/transport_parallel_2min.input.namelist`
 
 Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg`.
 
-Latest cache‑warm sweep (1–8 workers):
-1 worker 149.7s, 2 workers 128.4s, 3 workers 123.3s, 4 workers 122.2s,
-5 workers 123.0s, 6 workers 122.7s, 7 workers 123.0s, 8 workers 122.7s.
+Latest cache‑warm sweep (1–5 workers):
+1 worker 165.3s, 2 workers 142.8s, 3 workers 125.4s, 4 workers 141.7s,
+5 workers 169.9s.
 
 Process‑parallel workers automatically disable sharded matvec and cap
 XLA CPU threads per worker to avoid oversubscription when `SFINCS_JAX_CORES`
@@ -171,9 +171,9 @@ Reproduce:
 
    python examples/performance/benchmark_transport_parallel_scaling.py \
      --input examples/performance/transport_parallel_2min.input.namelist \
-     --workers 1 2 3 4 5 6 7 8 \
+     --workers 1 2 3 4 5 \
      --repeats 1 \
-     --warmup 0 \
+     --warmup 1 \
      --global-warmup 1
 
 The benchmark script uses the transport solve-only path
@@ -186,7 +186,7 @@ parallel behavior instead of full diagnostics/H5 field assembly.
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this larger case, scaling reaches ~1.23× and then plateaus.
+For this larger case, scaling reaches ~1.32× (3 workers) and then regresses.
 The plateau reflects that the current process-parallel transport path only
 parallelizes the per-`whichRHS` solves; shared setup/build costs remain serial
 and dominate for this case on a laptop-class CPU.
@@ -336,16 +336,21 @@ On GPUs, JAX will automatically see all local devices.
   divisible by the device count. Because v3 forces **odd** ``Ntheta``/``Nzeta``,
   only odd device counts activate theta/zeta sharding by default. Set
   ``SFINCS_JAX_SHARD_PAD=1`` (default) to pad ghost planes so even device counts
-  can still shard without changing outputs.
+  can still shard without changing outputs in the cached/pjit matvec path.
+  (The current RHSMode=1 distributed-GMRES matvec path still requires
+  divisible theta/zeta partitions.)
 - ``x`` sharding is available as a fallback when odd ``Ntheta``/``Nzeta`` block
   theta/zeta sharding. Use ``SFINCS_JAX_MATVEC_SHARD_AXIS=x`` or set
   ``SFINCS_JAX_MATVEC_SHARD_PREFER_X=1`` with a large ``Nx``. With
   ``SFINCS_JAX_SHARD_PAD=1`` (default), `sfincs_jax` pads ``Nx`` to the next
   multiple of the device count so x‑sharding can still activate.
 - When sharding is active and no explicit RHSMode=1 preconditioner is requested,
-  `sfincs_jax` defaults to a **local line preconditioner** along the sharded
-  axis (theta‑line or zeta‑line). This keeps the preconditioner apply local
-  to each shard, mirroring PETSc-style block‑Jacobi behavior.
+  `sfincs_jax` defaults to an angular-local preconditioner along the sharded
+  axis. For larger systems this can auto-upgrade to overlap-RAS
+  (``theta_schwarz`` / ``zeta_schwarz`` via
+  ``SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN``), otherwise it uses theta/zeta line
+  blocks. This keeps the preconditioner apply local to each shard, mirroring
+  PETSc-style block-Jacobi/Schwarz behavior.
 - Collisionless, ExB, and magnetic-drift derivative kernels now use a
   sparse-row gather apply when the differentiation matrices are banded/sparse
   (common 3‑point/5‑point schemes). This keeps the operator matrix-free and
@@ -466,34 +471,32 @@ Reproduce:
      --nrep 2000 \
      --global-warmup 1
 
-Sharded solve scaling (distributed GMRES)
------------------------------------------
+Sharded solve scaling (single RHSMode=1)
+----------------------------------------
 
-We also benchmarked a **single RHSMode=1 solve** with theta‑sharded matvecs and
-distributed GMRES enabled:
+We also benchmarked a **single RHSMode=1 solve** with theta-sharded matvecs:
 
 .. code-block:: bash
 
    python examples/performance/benchmark_sharded_solve_scaling.py \
-     --devices 1 2 3 4 5 6 7 8 \
+     --input examples/performance/rhsmode1_sharded_scaling.input.namelist \
+     --devices 1 2 3 4 5 \
+     --warmup 1 \
      --repeats 1 \
-     --global-warmup 1
+     --global-warmup 1 \
+     --shard-axis theta \
+     --gmres-distributed 0
 
-Input: `examples/performance/rhsmode1_sharded.input.namelist`
-(``Ntheta=127, Nzeta=127, Nxi=14, NL=10, Nx=20``).
+Input: `examples/performance/rhsmode1_sharded_scaling.input.namelist`
+(``Ntheta=30, Nzeta=10, Nxi=12, NL=8, Nx=12``).
 
 Latest run (cache warm, Macbook M3 Max):
-1 device 1.22 s, 2 devices 9.93 s, 3 devices 14.88 s, 4 devices 10.15 s,
-5 devices 10.42 s, 6 devices 15.50 s, 7 devices 10.87 s, 8 devices 11.07 s.
+1 device 1.93 s, 2 devices 3.43 s, 3 devices 3.43 s, 4 devices 3.47 s,
+5 devices 9.24 s.
 
-Because SFINCS enforces **odd** ``Ntheta``/``Nzeta``, theta/zeta sharding only
-activates when the device count divides the sharded dimension (e.g. 1, 3, 7 for
-``Ntheta=63``). With ``SFINCS_JAX_SHARD_PAD=1`` (default), `sfincs_jax` pads
-ghost planes so **even device counts can still shard** without changing outputs.
-Scaling is still overhead‑dominated for these medium cases; achieving strong
-scaling for a *single* RHS will require a true domain‑decomposition GMRES with
-local preconditioning and communication‑avoiding reductions. That remains the
-next step for multi‑node scaling.
+This confirms parity-safe sharded execution, but not strong scaling yet.
+Single-RHS GMRES remains reduction-heavy, and the current implementation still
+pays substantial synchronization/compile overhead on >1 CPU device.
 
 Why scaling is still poor for single‑RHS GMRES
 ----------------------------------------------
@@ -527,6 +530,11 @@ for experimentation in both RHSMode=1 and transport (RHSMode=2/3):
 - RHSMode=1: ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_dd`` / ``zeta_dd``
   (block sizes via ``SFINCS_JAX_RHSMODE1_DD_BLOCK_T`` /
   ``SFINCS_JAX_RHSMODE1_DD_BLOCK_Z``).
+  A local-overlap Schwarz variant is available via
+  ``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_schwarz`` / ``zeta_schwarz``
+  (overlap via ``SFINCS_JAX_RHSMODE1_DD_OVERLAP``). In auto mode, sharded runs
+  can pick Schwarz preconditioning above
+  ``SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN``.
 - Transport: ``SFINCS_JAX_TRANSPORT_PRECOND=theta_dd`` / ``zeta_dd``
   (block sizes via ``SFINCS_JAX_TRANSPORT_DD_BLOCK_T`` /
   ``SFINCS_JAX_TRANSPORT_DD_BLOCK_Z``).

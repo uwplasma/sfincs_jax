@@ -378,6 +378,8 @@ RHSMode=1 preconditioning (matrix-free)
 
 - **Point-block Jacobi**: local (x,L) blocks at each :math:`(\theta,\zeta)`.
 - **Theta-line / Zeta-line / ADI**: 1D line solves across angular dimensions.
+- **Theta/Zeta DD + Schwarz**: angular block-Jacobi and overlap-RAS variants
+  (``theta_dd``, ``zeta_dd``, ``theta_schwarz``, ``zeta_schwarz``).
 - **Species-block (PAS)**: full (x,L,θ,ζ) block per species for strong PAS conditioning.
 - **Collision diagonal / xblock / sxblock**: analytic blocks from PAS/FP collisions.
 - **Constraint-aware Schur**: enforces constraintScheme=2 source constraints via a
@@ -398,6 +400,19 @@ Implementation: ``sfincs_jax.v3_driver`` (``use_pas_projection`` and
 ``_project_pas_f``). Control: ``SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`` (auto on for
 ``N_\zeta=1`` tokamak-like runs **except** ``geometryScheme=1`` analytic tokamak
 cases).
+
+**RHSMode=1 angular DD / overlap Schwarz.** ``sfincs_jax`` now exposes
+theta/zeta domain-decomposition preconditioners for RHSMode=1:
+``SFINCS_JAX_RHSMODE1_PRECONDITIONER=theta_dd`` / ``zeta_dd`` (block-Jacobi) and
+``theta_schwarz`` / ``zeta_schwarz`` (overlap-RAS). Controls:
+
+- ``SFINCS_JAX_RHSMODE1_DD_BLOCK_T`` / ``SFINCS_JAX_RHSMODE1_DD_BLOCK_Z``.
+- ``SFINCS_JAX_RHSMODE1_DD_OVERLAP`` (or axis-specific ``..._OVERLAP_T/Z``).
+- ``SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN``: auto-select Schwarz on sharded runs
+  above the size threshold (default ``4000``).
+
+This keeps preconditioner application local and differentiable while improving
+coupling across angular block boundaries relative to pure block-diagonal DD.
 
 **Constraint-aware Schur (constraintScheme=2).** With constraint variables
 :math:`c`, the linear system is partitioned as

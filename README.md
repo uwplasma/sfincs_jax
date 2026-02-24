@@ -107,9 +107,8 @@ Parallel `whichRHS` scaling for a >2-minute RHSMode=2 transport-matrix case
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
-Latest cache-warm run (1-8 workers): 1 worker 149.7s, 2 workers 128.4s,
-3 workers 123.3s, 4 workers 122.2s, 5 workers 123.0s, 6 workers 122.7s,
-7 workers 123.0s, 8 workers 122.7s.
+Latest cache-warm run (1-5 workers): 1 worker 165.3s, 2 workers 142.8s,
+3 workers 125.4s, 4 workers 141.7s, 5 workers 169.9s.
 
 Enable parallel execution in normal runs:
 
@@ -117,20 +116,15 @@ Enable parallel execution in normal runs:
 export SFINCS_JAX_CORES=4
 ```
 
-Reproduce the 1-8 worker scaling figure and JSON summary:
+Reproduce the 1-5 worker scaling figure and JSON summary:
 
 ```bash
 python examples/performance/benchmark_transport_parallel_scaling.py \
   --input examples/performance/transport_parallel_2min.input.namelist \
-  --workers 1 2 3 4 5 6 7 8 \
+  --workers 1 2 3 4 5 \
   --repeats 1 \
-  --warmup 0 \
+  --warmup 1 \
   --global-warmup 1
-
-# Derivative kernel microbenchmark (single device):
-SFINCS_JAX_PERIODIC_STENCIL=1 python examples/performance/benchmark_sharded_matvec_scaling.py \
-  --input examples/performance/transport_parallel_xxlarge.input.namelist \
-  --axis theta --devices 1 --nrep 100 --repeats 3 --global-warmup 1
 ```
 
 The transport scaling benchmark uses the solve-only path
@@ -142,6 +136,10 @@ Experimental transport domain-decomposition preconditioners are available via
 `SFINCS_JAX_TRANSPORT_DD_BLOCK_T`, `SFINCS_JAX_TRANSPORT_DD_BLOCK_Z`), with
 overlap-RAS variants `theta_schwarz` / `zeta_schwarz`
 (`SFINCS_JAX_TRANSPORT_DD_OVERLAP`).
+
+Single-RHS sharded GMRES is available (see `docs/parallelism.rst`) but still
+needs additional communication-avoiding Krylov work to show strong scaling on
+5+ CPU devices.
 
 For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
 
