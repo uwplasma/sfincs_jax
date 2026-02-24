@@ -8,6 +8,7 @@ import pytest
 
 from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
 from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax import v3_driver
 from sfincs_jax.v3_driver import solve_v3_transport_matrix_linear_gmres
 
 
@@ -208,3 +209,71 @@ def test_transport_theta_schwarz_preconditioner_matches_default(monkeypatch: pyt
         rtol=5e-4,
         atol=1e-10,
     )
+
+
+def test_transport_parallel_pool_reuses_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Persistent transport pool should be reused across repeated requests."""
+
+    class _DummyPool:
+        init_calls = 0
+        shutdown_calls = 0
+
+        def __init__(self, **_kwargs):
+            type(self).init_calls += 1
+            self._shutdown = False
+
+        def shutdown(self, wait: bool = True, cancel_futures: bool = True) -> None:
+            _ = (wait, cancel_futures)
+            if not self._shutdown:
+                self._shutdown = True
+                type(self).shutdown_calls += 1
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_POOL_PERSIST", "1")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_MP_START_METHOD", "spawn")
+    monkeypatch.setattr(v3_driver.concurrent.futures, "ProcessPoolExecutor", _DummyPool)
+    monkeypatch.setattr(v3_driver.mp, "get_context", lambda _name: object())
+
+    v3_driver._shutdown_transport_parallel_pool()
+    try:
+        pool_1 = v3_driver._get_transport_parallel_pool(parallel_workers=2)
+        pool_2 = v3_driver._get_transport_parallel_pool(parallel_workers=2)
+        assert pool_1 is pool_2
+        assert _DummyPool.init_calls == 1
+    finally:
+        v3_driver._shutdown_transport_parallel_pool()
+    assert _DummyPool.shutdown_calls == 1
+
+
+def test_transport_parallel_pool_rebuilds_on_worker_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Persistent transport pool should rebuild when parallel worker count changes."""
+
+    class _DummyPool:
+        init_calls = 0
+        shutdown_calls = 0
+
+        def __init__(self, **_kwargs):
+            type(self).init_calls += 1
+            self._shutdown = False
+
+        def shutdown(self, wait: bool = True, cancel_futures: bool = True) -> None:
+            _ = (wait, cancel_futures)
+            if not self._shutdown:
+                self._shutdown = True
+                type(self).shutdown_calls += 1
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_POOL_PERSIST", "1")
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_MP_START_METHOD", "spawn")
+    monkeypatch.setattr(v3_driver.concurrent.futures, "ProcessPoolExecutor", _DummyPool)
+    monkeypatch.setattr(v3_driver.mp, "get_context", lambda _name: object())
+
+    v3_driver._shutdown_transport_parallel_pool()
+    try:
+        pool_1 = v3_driver._get_transport_parallel_pool(parallel_workers=2)
+        pool_2 = v3_driver._get_transport_parallel_pool(parallel_workers=3)
+        assert pool_1 is not pool_2
+        assert _DummyPool.init_calls == 2
+        # First pool should be shut down on key change.
+        assert _DummyPool.shutdown_calls == 1
+    finally:
+        v3_driver._shutdown_transport_parallel_pool()
+    assert _DummyPool.shutdown_calls == 2

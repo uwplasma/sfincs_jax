@@ -116,6 +116,9 @@ Enable parallel execution in normal runs:
 export SFINCS_JAX_CORES=4
 ```
 
+`whichRHS` process pools are persistent by default (`SFINCS_JAX_TRANSPORT_POOL_PERSIST=1`)
+to reduce warm-run overhead across repeated transport solves.
+
 Reproduce the 1-5 worker scaling figure and JSON summary:
 
 ```bash

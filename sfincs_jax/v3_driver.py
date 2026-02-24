@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import atexit
 import contextlib
 import hashlib
+import multiprocessing as mp
+import threading
 
 from jax import config as _jax_config
 
@@ -11760,6 +11763,97 @@ def _transport_parallel_worker(payload: dict[str, object]) -> dict[str, object]:
     }
 
 
+_TRANSPORT_PARALLEL_POOL_LOCK = threading.Lock()
+_TRANSPORT_PARALLEL_POOL: concurrent.futures.ProcessPoolExecutor | None = None
+_TRANSPORT_PARALLEL_POOL_KEY: tuple[object, ...] | None = None
+
+
+def _transport_parallel_start_method() -> str:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_MP_START_METHOD", "").strip().lower()
+    if env in {"", "auto"}:
+        # Spawn is the safest default across Linux/macOS with JAX runtime state.
+        return "spawn"
+    if env in {"spawn", "fork", "forkserver"}:
+        return env
+    return "spawn"
+
+
+def _transport_parallel_persistent_pool_enabled() -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_POOL_PERSIST", "").strip().lower()
+    return env not in {"0", "false", "no", "off"}
+
+
+def _transport_parallel_pool_key(parallel_workers: int) -> tuple[object, ...]:
+    return (
+        int(parallel_workers),
+        _transport_parallel_start_method(),
+        os.environ.get("SFINCS_JAX_TRANSPORT_PIN_THREADS", "").strip().lower(),
+        os.environ.get("SFINCS_JAX_CORES", "").strip(),
+    )
+
+
+def _transport_parallel_pool_executor_kwargs(
+    *,
+    parallel_workers: int,
+    emit: Callable[[int, str], None] | None = None,
+) -> dict[str, object]:
+    kwargs: dict[str, object] = {"max_workers": int(parallel_workers)}
+    start_method = _transport_parallel_start_method()
+    try:
+        kwargs["mp_context"] = mp.get_context(start_method)
+    except ValueError:
+        kwargs["mp_context"] = mp.get_context("spawn")
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: invalid "
+                f"SFINCS_JAX_TRANSPORT_MP_START_METHOD={start_method!r}; using 'spawn'.",
+            )
+    return kwargs
+
+
+def _shutdown_transport_parallel_pool() -> None:
+    global _TRANSPORT_PARALLEL_POOL, _TRANSPORT_PARALLEL_POOL_KEY
+    with _TRANSPORT_PARALLEL_POOL_LOCK:
+        pool = _TRANSPORT_PARALLEL_POOL
+        _TRANSPORT_PARALLEL_POOL = None
+        _TRANSPORT_PARALLEL_POOL_KEY = None
+    if pool is not None:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+atexit.register(_shutdown_transport_parallel_pool)
+
+
+def _get_transport_parallel_pool(
+    *,
+    parallel_workers: int,
+    emit: Callable[[int, str], None] | None = None,
+) -> concurrent.futures.ProcessPoolExecutor:
+    global _TRANSPORT_PARALLEL_POOL, _TRANSPORT_PARALLEL_POOL_KEY
+
+    key = _transport_parallel_pool_key(parallel_workers)
+    with _TRANSPORT_PARALLEL_POOL_LOCK:
+        if _TRANSPORT_PARALLEL_POOL is not None and _TRANSPORT_PARALLEL_POOL_KEY == key:
+            return _TRANSPORT_PARALLEL_POOL
+        old_pool = _TRANSPORT_PARALLEL_POOL
+        _TRANSPORT_PARALLEL_POOL = None
+        _TRANSPORT_PARALLEL_POOL_KEY = None
+
+    if old_pool is not None:
+        old_pool.shutdown(wait=True, cancel_futures=True)
+
+    with _transport_parallel_worker_env(int(parallel_workers)):
+        pool = concurrent.futures.ProcessPoolExecutor(
+            **_transport_parallel_pool_executor_kwargs(parallel_workers=parallel_workers, emit=emit)
+        )
+
+    with _TRANSPORT_PARALLEL_POOL_LOCK:
+        _TRANSPORT_PARALLEL_POOL = pool
+        _TRANSPORT_PARALLEL_POOL_KEY = key
+    return pool
+
+
 def _transport_active_dof_indices(op: V3FullSystemOperator) -> np.ndarray:
     """Return full-vector indices for active transport solve DOFs.
 
@@ -12017,12 +12111,35 @@ def solve_v3_transport_matrix_linear_gmres(
             )
 
         results: list[dict[str, object]] = []
-        with _transport_parallel_worker_env(int(parallel_workers)):
+        use_persistent_pool = _transport_parallel_persistent_pool_enabled()
+        if use_persistent_pool:
             try:
-                with concurrent.futures.ProcessPoolExecutor(max_workers=int(parallel_workers)) as pool:
+                pool = _get_transport_parallel_pool(parallel_workers=int(parallel_workers), emit=emit)
+                futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
+                for fut in concurrent.futures.as_completed(futures):
+                    results.append(fut.result())
+            except concurrent.futures.process.BrokenProcessPool as exc:
+                # Rebuild a stale/broken persistent pool once, then retry.
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_transport_matrix_linear_gmres: persistent transport pool broke "
+                        f"({type(exc).__name__}: {exc}); restarting pool once",
+                    )
+                _shutdown_transport_parallel_pool()
+                try:
+                    pool = _get_transport_parallel_pool(parallel_workers=int(parallel_workers), emit=emit)
                     futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
                     for fut in concurrent.futures.as_completed(futures):
                         results.append(fut.result())
+                except Exception as retry_exc:
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_transport_matrix_linear_gmres: persistent transport pool retry failed "
+                            f"({type(retry_exc).__name__}: {retry_exc}); falling back to sequential whichRHS",
+                        )
+                    results = [_transport_parallel_worker(payload) for payload in payloads]
             except (PermissionError, NotImplementedError, OSError) as exc:
                 # Some platforms / sandboxed environments cannot create process pools due to
                 # missing semaphore support or restricted sysconf calls. Fall back to a safe,
@@ -12034,6 +12151,26 @@ def solve_v3_transport_matrix_linear_gmres(
                         f"({type(exc).__name__}: {exc}); falling back to sequential whichRHS",
                     )
                 results = [_transport_parallel_worker(payload) for payload in payloads]
+        else:
+            with _transport_parallel_worker_env(int(parallel_workers)):
+                try:
+                    with concurrent.futures.ProcessPoolExecutor(
+                        **_transport_parallel_pool_executor_kwargs(parallel_workers=int(parallel_workers), emit=emit)
+                    ) as pool:
+                        futures = [pool.submit(_transport_parallel_worker, payload) for payload in payloads]
+                        for fut in concurrent.futures.as_completed(futures):
+                            results.append(fut.result())
+                except (PermissionError, NotImplementedError, OSError) as exc:
+                    # Some platforms / sandboxed environments cannot create process pools due to
+                    # missing semaphore support or restricted sysconf calls. Fall back to a safe,
+                    # sequential execution path to preserve correctness.
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_transport_matrix_linear_gmres: process parallelism unavailable "
+                            f"({type(exc).__name__}: {exc}); falling back to sequential whichRHS",
+                        )
+                    results = [_transport_parallel_worker(payload) for payload in payloads]
 
         s = int(op0.n_species)
         diag_pf = np.zeros((s, n), dtype=np.float64)

@@ -144,6 +144,10 @@ path; outputs are merged deterministically by column.
   per‑RHS fluxes plus transport diagnostics.
 - The master merges columns deterministically and reconstructs the transport
   matrix.
+- By default, the process pool is persistent across repeated transport solves
+  (`SFINCS_JAX_TRANSPORT_POOL_PERSIST=1`), which avoids worker re-spawn and
+  repeated worker-side JAX startup/JIT overhead for warm runs. Set
+  `SFINCS_JAX_TRANSPORT_POOL_PERSIST=0` to force one-shot pools.
 
 **Platform note (macOS)**
 
