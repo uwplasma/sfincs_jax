@@ -485,22 +485,46 @@ We also benchmarked a **single RHSMode=1 solve** with theta-sharded matvecs:
    python examples/performance/benchmark_sharded_solve_scaling.py \
      --input examples/performance/rhsmode1_sharded_scaling.input.namelist \
      --devices 1 2 3 4 5 \
-     --warmup 1 \
+     --warmup 0 \
      --repeats 1 \
      --global-warmup 1 \
+     --nsolve 24 \
      --shard-axis theta \
-     --gmres-distributed 0
+     --gmres-distributed 1 \
+     --distributed-krylov auto
 
 Input: `examples/performance/rhsmode1_sharded_scaling.input.namelist`
 (``Ntheta=30, Nzeta=10, Nxi=12, NL=8, Nx=12``).
 
-Latest run (cache warm, Macbook M3 Max):
-1 device 1.93 s, 2 devices 3.43 s, 3 devices 3.43 s, 4 devices 3.47 s,
-5 devices 9.24 s.
+Latest run (cache warm, Macbook M3 Max, comm-reduced distributed Krylov auto):
+1 device 10.39 s, 2 devices 55.13 s, 3 devices 55.08 s, 4 devices 55.91 s,
+5 devices 131.08 s.
+
+For A/B comparison against distributed GMRES on the same setup, run:
+
+.. code-block:: bash
+
+   python examples/performance/benchmark_sharded_solve_scaling.py \
+     --input examples/performance/rhsmode1_sharded_scaling.input.namelist \
+     --devices 1 2 3 4 5 \
+     --warmup 0 \
+     --repeats 1 \
+     --global-warmup 1 \
+     --nsolve 24 \
+     --shard-axis theta \
+     --gmres-distributed 1 \
+     --distributed-krylov gmres
+
+In single-repeat A/B runs, comm-reduced distributed Krylov cut wall-time at
+2/3/5 devices (up to ~1.69x at 5 devices), while 4-device performance remained
+noisy across runs.
 
 This confirms parity-safe sharded execution, but not strong scaling yet.
 Single-RHS GMRES remains reduction-heavy, and the current implementation still
 pays substantial synchronization/compile overhead on >1 CPU device.
+
+On this host, long 8-device CPU runs still hit occasional XLA rendezvous timeouts,
+so published strong-scaling results are currently capped at 5 devices.
 
 Why scaling is still poor for single‑RHS GMRES
 ----------------------------------------------

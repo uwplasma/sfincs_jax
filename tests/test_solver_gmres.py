@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 import jax.numpy as jnp
+import pytest
 
 from sfincs_jax.solver import (
+    _distributed_solver_kind,
     assemble_dense_matrix_from_matvec,
     bicgstab_solve_with_residual,
     dense_solve_from_matrix,
@@ -109,3 +111,17 @@ def test_bicgstab_solve_with_residual_matches_matvec() -> None:
         rtol=1e-12,
         atol=1e-12,
     )
+
+
+def test_distributed_solver_kind_auto_defaults_to_bicgstab(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_DISTRIBUTED_KRYLOV", raising=False)
+    kind, method = _distributed_solver_kind("auto")
+    assert kind == "bicgstab"
+    assert method == "batched"
+
+
+def test_distributed_solver_kind_auto_can_force_gmres(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_DISTRIBUTED_KRYLOV", "gmres")
+    kind, method = _distributed_solver_kind("auto")
+    assert kind == "gmres"
+    assert method == "incremental"

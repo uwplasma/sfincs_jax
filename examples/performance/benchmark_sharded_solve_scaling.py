@@ -20,6 +20,7 @@ def _run_once(
     *,
     shard_axis: str,
     gmres_distributed: str,
+    distributed_krylov: str,
     periodic_stencil_on_sharded: str,
     nsolve: int,
     rhs1_precond: str,
@@ -28,6 +29,7 @@ def _run_once(
     os.environ["SFINCS_JAX_SOLVER_ITER_STATS"] = "0"
     os.environ["SFINCS_JAX_MATVEC_SHARD_AXIS"] = shard_axis
     os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] = gmres_distributed
+    os.environ["SFINCS_JAX_DISTRIBUTED_KRYLOV"] = distributed_krylov
     os.environ["SFINCS_JAX_AUTO_SHARD"] = "0"
     os.environ["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
     os.environ["SFINCS_JAX_SHARD_PAD"] = "1"
@@ -59,6 +61,7 @@ def _run_once_subprocess(
     cache_dir: Path | None,
     shard_axis: str,
     gmres_distributed: str,
+    distributed_krylov: str,
     periodic_stencil_on_sharded: str,
     nsolve: int,
     rhs1_precond: str,
@@ -67,6 +70,7 @@ def _run_once_subprocess(
     env["SFINCS_JAX_CPU_DEVICES"] = str(int(devices))
     env["SFINCS_JAX_MATVEC_SHARD_AXIS"] = shard_axis
     env["SFINCS_JAX_GMRES_DISTRIBUTED"] = gmres_distributed
+    env["SFINCS_JAX_DISTRIBUTED_KRYLOV"] = distributed_krylov
     env["SFINCS_JAX_AUTO_SHARD"] = "0"
     env["SFINCS_JAX_IMPLICIT_SOLVE"] = "0"
     env["SFINCS_JAX_SHARD_PAD"] = "1"
@@ -167,6 +171,12 @@ def main() -> None:
         help="Value for SFINCS_JAX_GMRES_DISTRIBUTED (default: 1).",
     )
     parser.add_argument(
+        "--distributed-krylov",
+        type=str,
+        default="auto",
+        help="Value for SFINCS_JAX_DISTRIBUTED_KRYLOV (default: auto).",
+    )
+    parser.add_argument(
         "--periodic-stencil-on-sharded",
         type=str,
         default="auto",
@@ -190,6 +200,7 @@ def main() -> None:
             input_path,
             shard_axis=str(args.shard_axis),
             gmres_distributed=str(args.gmres_distributed),
+            distributed_krylov=str(args.distributed_krylov),
             periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
             nsolve=int(args.nsolve),
             rhs1_precond=str(args.rhs1_precond),
@@ -212,6 +223,7 @@ def main() -> None:
                 cache_dir=cache_dir,
                 shard_axis=str(args.shard_axis),
                 gmres_distributed=str(args.gmres_distributed),
+                distributed_krylov=str(args.distributed_krylov),
                 periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
                 nsolve=int(args.nsolve),
                 rhs1_precond=str(args.rhs1_precond),
@@ -222,6 +234,7 @@ def main() -> None:
         print(
             f"[device {d}] warmups={max(args.warmup, 0)} repeats={max(args.repeats, 1)} "
             f"shard_axis={args.shard_axis} gmres_distributed={args.gmres_distributed} "
+            f"distributed_krylov={args.distributed_krylov} "
             f"stencil_on_sharded={args.periodic_stencil_on_sharded} "
             f"nsolve={int(args.nsolve)} rhs1_precond={args.rhs1_precond or 'auto'}",
             flush=True,
@@ -234,6 +247,7 @@ def main() -> None:
                 cache_dir=cache_dir,
                 shard_axis=str(args.shard_axis),
                 gmres_distributed=str(args.gmres_distributed),
+                distributed_krylov=str(args.distributed_krylov),
                 periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
                 nsolve=int(args.nsolve),
                 rhs1_precond=str(args.rhs1_precond),
@@ -248,6 +262,7 @@ def main() -> None:
                 cache_dir=cache_dir,
                 shard_axis=str(args.shard_axis),
                 gmres_distributed=str(args.gmres_distributed),
+                distributed_krylov=str(args.distributed_krylov),
                 periodic_stencil_on_sharded=str(args.periodic_stencil_on_sharded),
                 nsolve=int(args.nsolve),
                 rhs1_precond=str(args.rhs1_precond),
@@ -280,6 +295,7 @@ def main() -> None:
         "results": results,
         "shard_axis": str(args.shard_axis),
         "gmres_distributed": str(args.gmres_distributed),
+        "distributed_krylov": str(args.distributed_krylov),
         "periodic_stencil_on_sharded": str(args.periodic_stencil_on_sharded),
         "nsolve": int(args.nsolve),
         "rhs1_precond": str(args.rhs1_precond),

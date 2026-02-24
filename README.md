@@ -140,8 +140,10 @@ Experimental transport domain-decomposition preconditioners are available via
 overlap-RAS variants `theta_schwarz` / `zeta_schwarz`
 (`SFINCS_JAX_TRANSPORT_DD_OVERLAP`).
 
-Single-RHS sharded GMRES is available (see `docs/parallelism.rst`) but still
-needs additional communication-avoiding Krylov work to show strong scaling on
+Single-RHS sharded solves now default to a communication-reduced distributed
+Krylov preference (`SFINCS_JAX_DISTRIBUTED_KRYLOV=auto`, BiCGStab-first with
+GMRES available via `SFINCS_JAX_DISTRIBUTED_KRYLOV=gmres`), but still need
+additional communication-avoiding Krylov work to show strong scaling on
 5+ CPU devices.
 
 For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.

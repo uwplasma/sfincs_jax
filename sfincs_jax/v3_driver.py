@@ -7940,6 +7940,13 @@ def solve_v3_full_system_linear_gmres(
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
     distributed_axis = _resolve_distributed_gmres_axis(op=op, emit=emit)
     use_sharded_matvec = distributed_axis in {"theta", "zeta"} and (not use_implicit)
+    distributed_auto_solver_env = os.environ.get("SFINCS_JAX_DISTRIBUTED_KRYLOV", "").strip().lower()
+    if distributed_auto_solver_env in {"", "auto", "comm_reduced", "short_recurrence", "bicgstab", "bicgstab_jax"}:
+        distributed_auto_solver = "bicgstab"
+    elif distributed_auto_solver_env in {"gmres", "incremental", "batched"}:
+        distributed_auto_solver = "gmres"
+    else:
+        distributed_auto_solver = "bicgstab"
     if use_sharded_matvec:
         def mv(x):
             return apply_v3_full_system_operator(op, x, allow_sharding=True)
@@ -8047,6 +8054,10 @@ def solve_v3_full_system_linear_gmres(
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
         if method_l in {"auto", "default"}:
+            # On distributed/sharded single-RHS solves, prefer short-recurrence
+            # Krylov by default to reduce synchronization pressure.
+            if distributed_axis is not None and int(op.rhs_mode) == 1 and distributed_auto_solver == "bicgstab":
+                return "bicgstab", "batched"
             # Transport matrices involve constrained/near-singular systems; GMRES is
             # generally more reliable for parity, while BiCGStab remains available.
             if int(op.rhs_mode) in {2, 3}:
@@ -8111,6 +8122,8 @@ def solve_v3_full_system_linear_gmres(
                 # Use the *actual* system size (active/reduced sizing) for solver-JIT heuristics.
                 size_hint=int(b_vec.shape[0]),
             )
+        solver_kind, gmres_method = _solver_kind(solve_method_val)
+        solve_method_dispatch = "bicgstab" if solver_kind == "bicgstab" else gmres_method
         return _gmres_solve_dispatch(
             matvec=matvec_fn,
             b=b_vec,
@@ -8120,7 +8133,7 @@ def solve_v3_full_system_linear_gmres(
             atol=atol_val,
             restart=restart_val,
             maxiter=maxiter_val,
-            solve_method=solve_method_val,
+            solve_method=solve_method_dispatch,
             distributed_axis=distributed_axis,
             precondition_side=precond_side,
         )
@@ -8155,6 +8168,21 @@ def solve_v3_full_system_linear_gmres(
                 size_hint=int(b_vec.shape[0]),
             )
         if solver_kind == "bicgstab":
+            if distributed_axis is not None:
+                with sharding_constraints(True):
+                    return gmres_solve_with_residual_distributed(
+                        matvec=matvec_fn,
+                        b=b_vec,
+                        preconditioner=precond_fn,
+                        x0=x0_vec,
+                        tol=tol_val,
+                        atol=atol_val,
+                        restart=restart_val,
+                        maxiter=maxiter_val,
+                        solve_method="bicgstab",
+                        precondition_side=precond_side,
+                        axis_name=distributed_axis,
+                    )
             solver_fn = bicgstab_solve_with_residual_jit if _use_solver_jit() else bicgstab_solve_with_residual
             return solver_fn(
                 matvec=matvec_fn,
@@ -12472,6 +12500,21 @@ def solve_v3_transport_matrix_linear_gmres(
                 size_hint=int(op0.total_size),
             )
         if solver_kind == "bicgstab":
+            if distributed_axis is not None:
+                with sharding_constraints(True):
+                    return gmres_solve_with_residual_distributed(
+                        matvec=matvec_fn,
+                        b=b_vec,
+                        preconditioner=preconditioner_val,
+                        x0=x0_vec,
+                        tol=tol_val,
+                        atol=atol_val,
+                        restart=restart_val,
+                        maxiter=maxiter_val,
+                        solve_method="bicgstab",
+                        precondition_side=precondition_side_val,
+                        axis_name=distributed_axis,
+                    )
             solver_fn = bicgstab_solve_with_residual_jit if use_solver_jit else bicgstab_solve_with_residual
             return solver_fn(
                 matvec=matvec_fn,

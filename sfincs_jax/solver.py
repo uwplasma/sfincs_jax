@@ -646,6 +646,29 @@ def _distributed_gmres_axis() -> str | None:
     return None
 
 
+def _distributed_krylov_preference() -> str:
+    """Preferred distributed Krylov method for auto/default solves."""
+    env = os.environ.get("SFINCS_JAX_DISTRIBUTED_KRYLOV", "").strip().lower()
+    if env in {"", "auto", "comm_reduced", "short_recurrence"}:
+        return "bicgstab"
+    if env in {"bicgstab", "bicgstab_jax"}:
+        return "bicgstab"
+    if env in {"gmres", "incremental", "batched"}:
+        return "gmres"
+    return "bicgstab"
+
+
+def _distributed_solver_kind(solve_method: str) -> tuple[str, str]:
+    method = str(solve_method).strip().lower()
+    if method in {"bicgstab", "bicgstab_jax"}:
+        return "bicgstab", "batched"
+    if method in {"auto", "default"}:
+        if _distributed_krylov_preference() == "gmres":
+            return "gmres", "incremental"
+        return "bicgstab", "batched"
+    return "gmres", method
+
+
 @lru_cache(maxsize=4)
 def _get_gmres_mesh(axis_name: str) -> Mesh | None:
     if Mesh is None:
@@ -707,10 +730,8 @@ def gmres_solve_distributed(
             precondition_side=precondition_side,
         )
 
-    method = str(solve_method).lower()
-    solve_method_use = "incremental" if method in {"auto", "default", "bicgstab", "bicgstab_jax"} else solve_method
+    solver_kind, solve_method_use = _distributed_solver_kind(solve_method)
     b_use = jnp.asarray(b)
-    b_orig = b_use
     x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
     n = int(b_use.size)
     n_devices = int(np.prod(mesh.devices.shape))
@@ -731,18 +752,30 @@ def gmres_solve_distributed(
         matvec_use = matvec
 
     def _solve(b_in: jnp.ndarray, x0_in: jnp.ndarray):
-        res = gmres_solve(
-            matvec=matvec_use,
-            b=b_in,
-            preconditioner=preconditioner_use,
-            x0=x0_in,
-            tol=tol,
-            atol=atol,
-            restart=restart,
-            maxiter=maxiter,
-            solve_method=solve_method_use,
-            precondition_side=precondition_side,
-        )
+        if solver_kind == "bicgstab":
+            res = bicgstab_solve(
+                matvec=matvec_use,
+                b=b_in,
+                preconditioner=preconditioner_use,
+                x0=x0_in,
+                tol=tol,
+                atol=atol,
+                maxiter=maxiter,
+                precondition_side=precondition_side,
+            )
+        else:
+            res = gmres_solve(
+                matvec=matvec_use,
+                b=b_in,
+                preconditioner=preconditioner_use,
+                x0=x0_in,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method=solve_method_use,
+                precondition_side=precondition_side,
+            )
         return res.x, res.residual_norm
 
     solve_pjit = _pjit.pjit(
@@ -804,10 +837,8 @@ def gmres_solve_with_residual_distributed(
             precondition_side=precondition_side,
         )
 
-    method = str(solve_method).lower()
-    solve_method_use = "incremental" if method in {"auto", "default", "bicgstab", "bicgstab_jax"} else solve_method
+    solver_kind, solve_method_use = _distributed_solver_kind(solve_method)
     b_use = jnp.asarray(b)
-    b_orig = b_use
     x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
     n = int(b_use.size)
     n_devices = int(np.prod(mesh.devices.shape))
@@ -828,18 +859,30 @@ def gmres_solve_with_residual_distributed(
         matvec_use = matvec
 
     def _solve(b_in: jnp.ndarray, x0_in: jnp.ndarray):
-        res, r = gmres_solve_with_residual(
-            matvec=matvec_use,
-            b=b_in,
-            preconditioner=preconditioner_use,
-            x0=x0_in,
-            tol=tol,
-            atol=atol,
-            restart=restart,
-            maxiter=maxiter,
-            solve_method=solve_method_use,
-            precondition_side=precondition_side,
-        )
+        if solver_kind == "bicgstab":
+            res, r = bicgstab_solve_with_residual(
+                matvec=matvec_use,
+                b=b_in,
+                preconditioner=preconditioner_use,
+                x0=x0_in,
+                tol=tol,
+                atol=atol,
+                maxiter=maxiter,
+                precondition_side=precondition_side,
+            )
+        else:
+            res, r = gmres_solve_with_residual(
+                matvec=matvec_use,
+                b=b_in,
+                preconditioner=preconditioner_use,
+                x0=x0_in,
+                tol=tol,
+                atol=atol,
+                restart=restart,
+                maxiter=maxiter,
+                solve_method=solve_method_use,
+                precondition_side=precondition_side,
+            )
         return res.x, res.residual_norm, r
 
     solve_pjit = _pjit.pjit(

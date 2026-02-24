@@ -427,6 +427,9 @@ performance without changing the input file:
 - ``SFINCS_JAX_GMRES_DISTRIBUTED``: enable distributed GMRES when using ``flat``
   sharding. Set to ``1`` to run the Krylov solver under `pjit`, keeping vectors
   sharded across devices. Default: off (fall back to single‑device GMRES).
+- ``SFINCS_JAX_DISTRIBUTED_KRYLOV``: distributed Krylov preference for
+  ``solve_method=auto`` under sharded solves. ``auto`` (default) selects
+  communication-reduced BiCGStab, while ``gmres`` forces distributed GMRES.
 
 - ``SFINCS_JAX_DISTRIBUTED``: enable JAX multi‑host initialization (default: off).
   When set, also provide:
