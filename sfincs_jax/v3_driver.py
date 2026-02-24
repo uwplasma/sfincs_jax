@@ -7298,9 +7298,28 @@ def solve_v3_full_system_linear_gmres(
             maxiter = int(maxiter_env)
         except ValueError:
             pass
+    geom_params_hint = nml.group("geometryParameters")
+    geom_scheme_hint = int(
+        geom_params_hint.get(
+            "GEOMETRYSCHEME",
+            geom_params_hint.get("geometryScheme", geom_params_hint.get("geometryscheme", 0)),
+        )
+        or 0
+    )
+    vmec_operator_timer: Timer | None = None
     if emit is not None:
         emit(1, "solve_v3_full_system_linear_gmres: building operator")
+        if geom_scheme_hint == 5:
+            eq_hint = geom_params_hint.get(
+                "EQUILIBRIUMFILE",
+                geom_params_hint.get("equilibriumFile", geom_params_hint.get("equilibriumfile", "")),
+            )
+            eq_name = Path(str(eq_hint)).name if eq_hint else "VMEC equilibrium"
+            emit(1, f"solve_v3_full_system_linear_gmres: VMEC operator build start ({eq_name})")
+            vmec_operator_timer = Timer()
     op = full_system_operator_from_namelist(nml=nml, identity_shift=identity_shift, phi1_hat_base=phi1_hat_base)
+    if emit is not None and vmec_operator_timer is not None:
+        emit(1, f"solve_v3_full_system_linear_gmres: VMEC operator build done elapsed_s={vmec_operator_timer.elapsed_s():.3f}")
     _mark("operator_built")
     _set_precond_size_hint(int(op.total_size))
     if int(op.rhs_mode) in {2, 3}:
@@ -7319,6 +7338,13 @@ def solve_v3_full_system_linear_gmres(
     rhs_norm = jnp.linalg.norm(rhs)
     if emit is not None:
         emit(2, f"solve_v3_full_system_linear_gmres: rhs_norm={float(rhs_norm):.6e}")
+    progress_size_env = os.environ.get("SFINCS_JAX_PROGRESS_SIZE_MIN", "").strip()
+    try:
+        progress_size_min = int(progress_size_env) if progress_size_env else 80000
+    except ValueError:
+        progress_size_min = 80000
+    progress_large_rhs1 = int(op.rhs_mode) == 1 and int(op.total_size) >= max(1, int(progress_size_min))
+    progress_notes_emitted = {"precond": False, "solve": False}
 
     recycle_k_env = os.environ.get("SFINCS_JAX_RHSMODE1_RECYCLE_K", "").strip()
     try:
@@ -7857,7 +7883,27 @@ def solve_v3_full_system_linear_gmres(
                     else:
                         rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
                 elif schur_auto:
-                    rhs1_precond_kind = "schur"
+                    # For sharded multi-device PAS near-zero-Er runs, Schur can become
+                    # communication-dominated as device count increases. Prefer x-coarsening
+                    # here to keep Krylov/preconditioner cost closer to shard-local.
+                    shard_axis_auto = _matvec_shard_axis(op)
+                    if (
+                        op.fblock.pas is not None
+                        and (not bool(op.include_phi1))
+                        and float(er_abs) <= float(schur_er_min)
+                        and shard_axis_auto in {"theta", "zeta"}
+                        and jax.device_count() > 1
+                        and int(op.total_size) <= max(1, int(pas_xmg_min))
+                    ):
+                        rhs1_precond_kind = "xmg"
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: sharded PAS near-zero-Er "
+                                "schur_auto -> xmg preconditioner",
+                            )
+                    else:
+                        rhs1_precond_kind = "schur"
                 elif op.fblock.fp is not None and use_dkes:
                     # DKES-trajectory FP cases often trigger the dense fallback probe.
                     # Avoid building heavy (S,X,theta,zeta) block preconditioners that can
@@ -8805,6 +8851,13 @@ def solve_v3_full_system_linear_gmres(
                     "solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner="
                     f"{rhs1_precond_kind} (active-DOF)",
                 )
+                if progress_large_rhs1 and (not progress_notes_emitted["precond"]):
+                    emit(
+                        0,
+                        " solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner "
+                        f"({rhs1_precond_kind}); this stage can take a while for large systems.",
+                    )
+                    progress_notes_emitted["precond"] = True
             if rhs1_precond_kind == "theta_line":
                 precond = _build_rhsmode1_theta_line_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
@@ -9179,6 +9232,9 @@ def solve_v3_full_system_linear_gmres(
             def mv_pc(x: jnp.ndarray) -> jnp.ndarray:
                 return preconditioner_dense(mv_dense(x))
 
+            if emit is not None and progress_large_rhs1 and (not progress_notes_emitted["solve"]):
+                emit(0, " solve_v3_full_system_linear_gmres: starting Krylov iterations.")
+                progress_notes_emitted["solve"] = True
             _mark("rhs1_krylov_solve_start")
             res_reduced = _solve_linear(
                 matvec_fn=mv_pc,
@@ -9234,6 +9290,9 @@ def solve_v3_full_system_linear_gmres(
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind(solve_method)[0]
             else:
+                if emit is not None and progress_large_rhs1 and (not progress_notes_emitted["solve"]):
+                    emit(0, " solve_v3_full_system_linear_gmres: starting Krylov iterations.")
+                    progress_notes_emitted["solve"] = True
                 _mark("rhs1_krylov_solve_start")
                 res_reduced = _solve_linear(
                     matvec_fn=mv_reduced,
@@ -10416,6 +10475,13 @@ def solve_v3_full_system_linear_gmres(
                 _mark("rhs1_precond_build_start")
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner={rhs1_precond_kind}")
+                    if progress_large_rhs1 and (not progress_notes_emitted["precond"]):
+                        emit(
+                            0,
+                            " solve_v3_full_system_linear_gmres: building RHSMode=1 preconditioner "
+                            f"({rhs1_precond_kind}); this stage can take a while for large systems.",
+                        )
+                        progress_notes_emitted["precond"] = True
                 if rhs1_precond_kind == "theta_line":
                     precond = _build_rhsmode1_theta_line_preconditioner(op=op)
                 elif rhs1_precond_kind == "theta_dd":
@@ -10549,6 +10615,9 @@ def solve_v3_full_system_linear_gmres(
                             r1 = jnp.linalg.norm(mv(x0_recycled) - rhs)
                             if jnp.isfinite(r1) and (not jnp.isfinite(r0) or float(r1) < float(r0)):
                                 x0 = x0_recycled
+            if emit is not None and progress_large_rhs1 and (not progress_notes_emitted["solve"]):
+                emit(0, " solve_v3_full_system_linear_gmres: starting Krylov iterations.")
+                progress_notes_emitted["solve"] = True
             _mark("rhs1_krylov_solve_start")
             result, residual_vec = _solve_linear_with_residual(
                 matvec_fn=mv,

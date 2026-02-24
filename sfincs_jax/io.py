@@ -5,6 +5,7 @@ import math
 import os
 import re
 import shutil
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -2017,6 +2018,12 @@ def write_sfincs_jax_output_h5(
 
     nml = read_sfincs_input(input_namelist)
     _mark("read_namelist")
+    geom_params_hint = nml.group("geometryParameters")
+    geom_scheme_hint = _get_int(geom_params_hint, "geometryScheme", 0)
+    eq_file_hint = geom_params_hint.get(
+        "EQUILIBRIUMFILE",
+        geom_params_hint.get("equilibriumFile", geom_params_hint.get("equilibriumfile", "")),
+    )
 
     # -------------------------------------------------------------------------
     # Fortran-style preamble (subset) to ease migration from upstream v3.
@@ -2118,9 +2125,20 @@ def write_sfincs_jax_output_h5(
             min_x_for_l.append(int(idx[0] + 1) if idx.size else int(nx))
         if min_x_for_l:
             emit(0, f" min_x_for_L: {''.join(f'{v:12d}' for v in min_x_for_l)}")
+    if emit is not None and int(geom_scheme_hint) == 5:
+        eq_name = Path(str(eq_file_hint)).name if eq_file_hint else "VMEC equilibrium"
+        emit(0, f" VMEC: starting geometry build from {eq_name} (this can take a while for high resolution).")
+    vmec_geom_t0 = time.perf_counter() if int(geom_scheme_hint) == 5 else 0.0
     geom_full = geometry_from_namelist(nml=nml, grids=grids)
+    if emit is not None and int(geom_scheme_hint) == 5:
+        emit(0, f" VMEC: geometry build complete in {time.perf_counter() - vmec_geom_t0:.2f} s.")
     export_cfg = _export_f_config(nml=nml, grids=grids, geom=geom_full)
+    if emit is not None and int(geom_scheme_hint) == 5:
+        emit(0, " VMEC: assembling geometry-derived output fields.")
+    vmec_out_t0 = time.perf_counter() if int(geom_scheme_hint) == 5 else 0.0
     data = sfincs_jax_output_dict(nml=nml, grids=grids, geom=geom_full, export_cfg=export_cfg)
+    if emit is not None and int(geom_scheme_hint) == 5:
+        emit(0, f" VMEC: output geometry fields ready in {time.perf_counter() - vmec_out_t0:.2f} s.")
     _mark("sfincs_jax_output_dict")
     if emit is not None:
         geom_params = nml.group("geometryParameters")
@@ -2263,6 +2281,12 @@ def write_sfincs_jax_output_h5(
                 " The matrix is"
                 f"{_fmt_fortran_i(active_total_size)} x{_fmt_fortran_i(active_total_size)}  elements.",
             )
+            if int(active_total_size) >= 80000:
+                emit(
+                    0,
+                    " Solver note: large system detected; preconditioner setup and Krylov solve "
+                    "can take several minutes.",
+                )
         dense_active_cutoff_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF", "").strip()
         try:
             dense_active_cutoff = int(dense_active_cutoff_env) if dense_active_cutoff_env else 5000
