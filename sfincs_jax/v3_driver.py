@@ -8237,8 +8237,15 @@ def solve_v3_full_system_linear_gmres(
     ):
         # Keep large full-trajectory FP cases inside the 120s regression budget by
         # capping default Krylov work when xmg is selected automatically.
-        maxiter = min(int(maxiter if maxiter is not None else 400), 160)
-        restart = max(80, min(int(restart), 100))
+        #
+        # On a single host device (the default CPU execution mode), we can afford a
+        # larger Krylov budget to recover better parity on sensitive flow diagnostics.
+        # On multi-device sharded runs, keep the cap tighter to avoid long tails from
+        # communication-heavy iterations.
+        fp_auto_maxiter = 400 if int(jax.device_count()) <= 1 else 160
+        maxiter = min(int(maxiter if maxiter is not None else 400), int(fp_auto_maxiter))
+        fp_auto_restart_max = 120 if int(jax.device_count()) <= 1 else 100
+        restart = max(80, min(int(restart), int(fp_auto_restart_max)))
         if emit is not None:
             emit(
                 1,
@@ -10534,6 +10541,196 @@ def solve_v3_full_system_linear_gmres(
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
             _mark("rhs1_dense_fallback_done")
+        # Cheap post-solve polish for large FP systems:
+        # Apply a few damped preconditioned-residual correction steps to improve
+        # low-order moments (flow/Mach/jHat) without paying for a full second GMRES pass.
+        if (
+            int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and op.fblock.fp is not None
+            and op.fblock.pas is None
+            and rhs1_precond_kind == "xmg"
+            and preconditioner_reduced is not None
+        ):
+            polish_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_MIN", "").strip()
+            try:
+                polish_min = int(polish_min_env) if polish_min_env else 80000
+            except ValueError:
+                polish_min = 80000
+            polish_steps_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_STEPS", "").strip()
+            try:
+                polish_steps = int(polish_steps_env) if polish_steps_env else 2
+            except ValueError:
+                polish_steps = 2
+            polish_steps = max(0, min(int(polish_steps), 6))
+            if polish_steps > 0 and int(active_size) >= max(1, int(polish_min)):
+                polish_omega_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_OMEGA", "").strip()
+                try:
+                    polish_omega = float(polish_omega_env) if polish_omega_env else 1.0
+                except ValueError:
+                    polish_omega = 1.0
+                polish_omega = max(1.0e-3, min(float(polish_omega), 1.5))
+                polish_backtrack_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_BACKTRACK", "").strip()
+                try:
+                    polish_backtrack = int(polish_backtrack_env) if polish_backtrack_env else 3
+                except ValueError:
+                    polish_backtrack = 3
+                polish_backtrack = max(0, min(int(polish_backtrack), 6))
+
+                x_polish = jnp.asarray(res_reduced.x, dtype=jnp.float64)
+                rn_best = float(res_reduced.residual_norm)
+                improved_any = False
+                for _ in range(polish_steps):
+                    r_polish = rhs_reduced - mv_reduced(x_polish)
+                    rn_r = float(jnp.linalg.norm(r_polish))
+                    if (not np.isfinite(rn_r)) or rn_r <= target_reduced:
+                        break
+                    delta = preconditioner_reduced(r_polish)
+                    omega_try = float(polish_omega)
+                    step_accepted = False
+                    for _bt in range(polish_backtrack + 1):
+                        x_try = x_polish + omega_try * delta
+                        r_try = rhs_reduced - mv_reduced(x_try)
+                        rn_try = float(jnp.linalg.norm(r_try))
+                        if np.isfinite(rn_try) and rn_try < rn_best:
+                            x_polish = x_try
+                            rn_best = rn_try
+                            step_accepted = True
+                            improved_any = True
+                            break
+                        omega_try *= 0.5
+                    if not step_accepted:
+                        break
+                if improved_any and rn_best < float(res_reduced.residual_norm):
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_full_system_linear_gmres: FP polish improved residual "
+                            f"{float(res_reduced.residual_norm):.3e} -> {rn_best:.3e}",
+                        )
+                    res_reduced = GMRESSolveResult(
+                        x=jnp.asarray(x_polish, dtype=jnp.float64),
+                        residual_norm=jnp.asarray(rn_best, dtype=jnp.float64),
+                    )
+                # L=1 targeted polish (flow channel): solve a small projected system
+                # on the L=1 active modes only. This is a cheap way to improve flow/Mach
+                # parity when the full-system solve stalls above the strict target.
+                l1_polish_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH", "").strip().lower()
+                l1_polish_enabled = l1_polish_env not in {"0", "false", "no", "off"}
+                if l1_polish_enabled and float(res_reduced.residual_norm) > target_reduced:
+                    n_s = int(op.n_species)
+                    n_x = int(op.n_x)
+                    n_l = int(op.n_xi)
+                    n_t = int(op.n_theta)
+                    n_z = int(op.n_zeta)
+                    nxi_for_x_np = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+                    l1_full_idx: list[int] = []
+                    if use_active_dof_mode and full_to_active_jnp is not None:
+                        full_to_active_np = np.asarray(full_to_active_jnp, dtype=np.int32)
+                        for s_idx in range(n_s):
+                            for ix in range(n_x):
+                                if int(nxi_for_x_np[ix]) <= 1:
+                                    continue
+                                il = 1
+                                for it in range(n_t):
+                                    for iz in range(n_z):
+                                        f_idx = int(((((s_idx * n_x + ix) * n_l + il) * n_t + it) * n_z + iz))
+                                        l1_full_idx.append(f_idx)
+                        if l1_full_idx:
+                            l1_full_idx_np = np.asarray(l1_full_idx, dtype=np.int32)
+                            l1_active_idx_np = full_to_active_np[l1_full_idx_np] - 1
+                            l1_active_idx_np = l1_active_idx_np[l1_active_idx_np >= 0]
+                        else:
+                            l1_active_idx_np = np.asarray([], dtype=np.int32)
+                    else:
+                        l1_active_idx_np = np.asarray([], dtype=np.int32)
+
+                    if int(l1_active_idx_np.size) > 0:
+                        l1_idx_jnp = jnp.asarray(np.unique(l1_active_idx_np), dtype=jnp.int32)
+                        l1_n = int(l1_idx_jnp.shape[0])
+                        l1_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_MAXITER", "").strip()
+                        l1_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_RESTART", "").strip()
+                        try:
+                            l1_maxiter = int(l1_maxiter_env) if l1_maxiter_env else 60
+                        except ValueError:
+                            l1_maxiter = 60
+                        try:
+                            l1_restart = int(l1_restart_env) if l1_restart_env else 40
+                        except ValueError:
+                            l1_restart = 40
+                        l1_maxiter = max(5, min(int(l1_maxiter), 200))
+                        l1_restart = max(5, min(int(l1_restart), max(5, l1_maxiter)))
+
+                        def _l1_reduce(v: jnp.ndarray) -> jnp.ndarray:
+                            return v[l1_idx_jnp]
+
+                        def _l1_expand(v: jnp.ndarray) -> jnp.ndarray:
+                            out = jnp.zeros((int(active_size),), dtype=jnp.float64)
+                            return out.at[l1_idx_jnp].set(v, unique_indices=True)
+
+                        x_l1_base = jnp.asarray(res_reduced.x, dtype=jnp.float64)
+                        r_l1_full = rhs_reduced - mv_reduced(x_l1_base)
+                        b_l1 = _l1_reduce(r_l1_full)
+                        rn_full_base = float(jnp.linalg.norm(r_l1_full))
+                        b_l1_norm = float(jnp.linalg.norm(b_l1))
+                        if np.isfinite(b_l1_norm) and b_l1_norm > 0.0:
+                            def _mv_l1(v: jnp.ndarray) -> jnp.ndarray:
+                                return _l1_reduce(mv_reduced(_l1_expand(v)))
+
+                            def _pre_l1(v: jnp.ndarray) -> jnp.ndarray:
+                                return _l1_reduce(preconditioner_reduced(_l1_expand(v)))
+
+                            tol_l1_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_TOL", "").strip()
+                            try:
+                                tol_l1 = float(tol_l1_env) if tol_l1_env else 1.0e-10
+                            except ValueError:
+                                tol_l1 = 1.0e-10
+                            tol_l1 = max(1.0e-14, float(tol_l1))
+                            if emit is not None:
+                                emit(
+                                    1,
+                                    "solve_v3_full_system_linear_gmres: FP L1 polish "
+                                    f"(size={l1_n} restart={l1_restart} maxiter={l1_maxiter})",
+                                )
+                            try:
+                                l1_corr = _solve_linear(
+                                    matvec_fn=_mv_l1,
+                                    b_vec=b_l1,
+                                    precond_fn=_pre_l1,
+                                    x0_vec=None,
+                                    tol_val=tol_l1,
+                                    atol_val=0.0,
+                                    restart_val=l1_restart,
+                                    maxiter_val=l1_maxiter,
+                                    solve_method_val="incremental",
+                                    precond_side=gmres_precond_side,
+                                )
+                                x_l1_try = x_l1_base + _l1_expand(l1_corr.x)
+                                r_try = rhs_reduced - mv_reduced(x_l1_try)
+                                rn_try = float(jnp.linalg.norm(r_try))
+                                b_l1_try = _l1_reduce(r_try)
+                                rn_l1_try = float(jnp.linalg.norm(b_l1_try))
+                                accept_l1 = (
+                                    np.isfinite(rn_l1_try)
+                                    and rn_l1_try < b_l1_norm
+                                    and np.isfinite(rn_try)
+                                    and rn_try <= max(float(rn_full_base) * 1.05, float(rn_full_base) + 1.0e-10)
+                                )
+                                if accept_l1:
+                                    if emit is not None:
+                                        emit(
+                                            1,
+                                            "solve_v3_full_system_linear_gmres: FP L1 polish improved residual "
+                                            f"full {float(rn_full_base):.3e} -> {rn_try:.3e}; "
+                                            f"L1 {b_l1_norm:.3e} -> {rn_l1_try:.3e}",
+                                        )
+                                    res_reduced = GMRESSolveResult(
+                                        x=jnp.asarray(x_l1_try, dtype=jnp.float64),
+                                        residual_norm=jnp.asarray(rn_try, dtype=jnp.float64),
+                                    )
+                            except Exception as exc:  # noqa: BLE001
+                                if emit is not None:
+                                    emit(1, f"solve_v3_full_system_linear_gmres: FP L1 polish failed ({type(exc).__name__}: {exc})")
         if use_pas_projection:
             f_full = _expand_active_f(res_reduced.x)
             f_full = _project_pas_f(f_full)
