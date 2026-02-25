@@ -1554,6 +1554,7 @@ def _build_rhsmode1_xmg_preconditioner(
     op: V3FullSystemOperator,
     reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    stride_override: int | None = None,
 ) -> Callable[[jnp.ndarray], jnp.ndarray]:
     """Two-level additive x-grid preconditioner for RHSMode=1 collision operators.
 
@@ -1570,7 +1571,9 @@ def _build_rhsmode1_xmg_preconditioner(
     if not stride_env:
         stride_env = os.environ.get("SFINCS_JAX_XMG_STRIDE", "").strip()
     try:
-        if stride_env:
+        if stride_override is not None:
+            stride = int(stride_override)
+        elif stride_env:
             stride = int(stride_env)
         else:
             # Large FP systems benefit from a slightly coarser x-grid in the default
@@ -7423,6 +7426,31 @@ def solve_v3_full_system_linear_gmres(
         emit(1, f"solve_v3_full_system_linear_gmres: VMEC operator build done elapsed_s={vmec_operator_timer.elapsed_s():.3f}")
     _mark("operator_built")
     _set_precond_size_hint(int(op.total_size))
+    # FP-only large systems: tighten tolerance automatically to recover flow/Mach parity.
+    # This avoids relying on dense fallbacks while keeping the default solverTolerance
+    # unchanged for smaller cases.
+    fp_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_TOL", "").strip()
+    fp_tol_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_TOL_MIN_SIZE", "").strip()
+    try:
+        fp_tol = float(fp_tol_env) if fp_tol_env else 1.0e-8
+    except ValueError:
+        fp_tol = 1.0e-8
+    try:
+        fp_tol_min = int(fp_tol_min_env) if fp_tol_min_env else 80000
+    except ValueError:
+        fp_tol_min = 80000
+    if (
+        int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.fp is not None
+        and op.fblock.pas is None
+        and int(op.total_size) >= max(1, int(fp_tol_min))
+        and fp_tol > 0.0
+    ):
+        tol_old = float(tol)
+        tol = min(float(tol), float(fp_tol))
+        if emit is not None and float(tol) < tol_old:
+            emit(1, f"solve_v3_full_system_linear_gmres: FP tol tightened {tol_old:.1e} -> {float(tol):.1e}")
     if int(op.rhs_mode) in {2, 3}:
         # v3 sets (dnHatdpsiHats, dTHatdpsiHats, EParallelHat) internally based on whichRHS.
         # If the input file omits gradients (common for monoenergetic runs), callers must select whichRHS.
@@ -8235,16 +8263,16 @@ def solve_v3_full_system_linear_gmres(
         and rhs1_precond_kind == "xmg"
         and int(op.total_size) >= 120000
     ):
-        # Keep large full-trajectory FP cases inside the 120s regression budget by
+        # Keep large full-trajectory FP cases inside the regression budget by
         # capping default Krylov work when xmg is selected automatically.
         #
         # On a single host device (the default CPU execution mode), we can afford a
         # larger Krylov budget to recover better parity on sensitive flow diagnostics.
         # On multi-device sharded runs, keep the cap tighter to avoid long tails from
         # communication-heavy iterations.
-        fp_auto_maxiter = 400 if int(jax.device_count()) <= 1 else 160
+        fp_auto_maxiter = 800 if int(jax.device_count()) <= 1 else 200
         maxiter = min(int(maxiter if maxiter is not None else 400), int(fp_auto_maxiter))
-        fp_auto_restart_max = 120 if int(jax.device_count()) <= 1 else 100
+        fp_auto_restart_max = 160 if int(jax.device_count()) <= 1 else 120
         restart = max(80, min(int(restart), int(fp_auto_restart_max)))
         if emit is not None:
             emit(
@@ -9256,6 +9284,69 @@ def solve_v3_full_system_linear_gmres(
                         1,
                         "solve_v3_full_system_linear_gmres: PAS hybrid precond non-finite -> collision",
                     )
+        # FP-only large systems: optionally augment the base preconditioner with a
+        # low-L block correction to improve flow/Mach convergence without dense fallback.
+        if (
+            preconditioner_reduced is not None
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and op.fblock.fp is not None
+            and op.fblock.pas is None
+        ):
+            fp_l1_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_HYBRID", "").strip().lower()
+            fp_l1_enabled = fp_l1_env in {"1", "true", "yes", "on"}
+            fp_l1_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_HYBRID_MIN", "").strip()
+            fp_l1_lmax_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_HYBRID_LMAX", "").strip()
+            fp_l1_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_HYBRID_BLOCK_MAX", "").strip()
+            try:
+                fp_l1_min = int(fp_l1_min_env) if fp_l1_min_env else 80000
+            except ValueError:
+                fp_l1_min = 80000
+            try:
+                fp_l1_lmax = int(fp_l1_lmax_env) if fp_l1_lmax_env else 1
+            except ValueError:
+                fp_l1_lmax = 1
+            try:
+                fp_l1_block_max = int(fp_l1_block_env) if fp_l1_block_env else 1500
+            except ValueError:
+                fp_l1_block_max = 1500
+            fp_l1_lmax = max(1, min(int(fp_l1_lmax), int(op.n_xi)))
+            if fp_l1_enabled and int(active_size) >= max(1, int(fp_l1_min)):
+                n_theta = int(op.n_theta)
+                n_zeta = int(op.n_zeta)
+                block_size = int(fp_l1_lmax * n_theta * n_zeta)
+                if block_size > 0 and block_size <= int(fp_l1_block_max):
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_full_system_linear_gmres: FP L1 hybrid preconditioner "
+                            f"(lmax={fp_l1_lmax} block={block_size})",
+                        )
+                    try:
+                        l1_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(
+                            op=op,
+                            lmax=int(fp_l1_lmax),
+                            reduce_full=reduce_full,
+                            expand_reduced=expand_reduced,
+                        )
+                        base_precond = preconditioner_reduced
+
+                        def _fp_l1_hybrid(v: jnp.ndarray) -> jnp.ndarray:
+                            z0 = base_precond(v)
+                            r1 = v - mv_reduced(z0)
+                            z1 = l1_precond(r1)
+                            return z0 + z1
+
+                        preconditioner_reduced = _fp_l1_hybrid
+                        if rhs1_bicgstab_kind == "rhs1":
+                            bicgstab_preconditioner_reduced = preconditioner_reduced
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: FP L1 hybrid precond failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
         sparse_operator_use = False
         if sparse_operator_mode == "on":
             sparse_operator_use = True
@@ -9787,6 +9878,7 @@ def solve_v3_full_system_linear_gmres(
         ):
             strong_precond_auto = True
         strong_precond_kind: str | None = None
+        strong_xblock_tz_lmax: int | None = None
         if strong_precond_disabled:
             strong_precond_kind = None
         elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
@@ -9807,6 +9899,8 @@ def solve_v3_full_system_linear_gmres(
             strong_precond_kind = "zeta_schwarz"
         elif strong_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
             strong_precond_kind = "xblock_tz"
+        elif strong_precond_env in {"xblock_tz_lmax", "xblock_tz_trunc", "xblock_tz_cut"}:
+            strong_precond_kind = "xblock_tz_lmax"
         elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
             strong_precond_kind = "xmg"
         elif strong_precond_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
@@ -9872,6 +9966,43 @@ def solve_v3_full_system_linear_gmres(
                         strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
                     else:
                         strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+            elif (
+                rhs1_precond_env == ""
+                and int(op.rhs_mode) == 1
+                and (not bool(op.include_phi1))
+                and op.fblock.fp is not None
+                and int(active_size) >= strong_precond_min
+                and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+            ):
+                tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+                try:
+                    tz_max = int(tz_max_env) if tz_max_env else 128
+                except ValueError:
+                    tz_max = 128
+                xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+                default_xblock_tz_max = 1200
+                try:
+                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else default_xblock_tz_max
+                except ValueError:
+                    xblock_tz_max = default_xblock_tz_max
+                max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+                lmax_auto = 0
+                if int(op.n_theta) > 0 and int(op.n_zeta) > 0:
+                    lmax_auto = int(xblock_tz_max // (int(op.n_theta) * int(op.n_zeta)))
+                lmax_auto = max(0, min(max_l, lmax_auto))
+                if (
+                    int(op.n_theta) > 1
+                    and xblock_tz_max > 0
+                    and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+                ):
+                    strong_precond_kind = "xblock_tz"
+                elif lmax_auto >= 1:
+                    strong_precond_kind = "xblock_tz_lmax"
+                    strong_xblock_tz_lmax = int(lmax_auto)
+                elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
+                    strong_precond_kind = "theta_zeta"
+                else:
+                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 
         if strong_precond_kind == "theta_line":
             line_size = int(np.sum(nxi_for_x)) * int(op.n_theta)
@@ -9994,6 +10125,20 @@ def solve_v3_full_system_linear_gmres(
             elif strong_precond_kind == "xblock_tz":
                 strong_preconditioner_reduced = _build_rhsmode1_xblock_tz_preconditioner(
                     op=op, reduce_full=reduce_full, expand_reduced=expand_reduced
+                )
+            elif strong_precond_kind == "xblock_tz_lmax":
+                lmax_use = strong_xblock_tz_lmax or 0
+                if lmax_use <= 0:
+                    lmax_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX", "").strip()
+                    try:
+                        lmax_use = int(lmax_env) if lmax_env else 0
+                    except ValueError:
+                        lmax_use = 0
+                strong_preconditioner_reduced = _build_rhsmode1_xblock_tz_lmax_preconditioner(
+                    op=op,
+                    lmax=int(lmax_use),
+                    reduce_full=reduce_full,
+                    expand_reduced=expand_reduced,
                 )
             elif strong_precond_kind == "zeta_line":
                 strong_preconditioner_reduced = _build_rhsmode1_zeta_line_preconditioner(
@@ -10576,6 +10721,23 @@ def solve_v3_full_system_linear_gmres(
                 except ValueError:
                     polish_backtrack = 3
                 polish_backtrack = max(0, min(int(polish_backtrack), 6))
+                polish_hybrid_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_HYBRID", "").strip().lower()
+                polish_hybrid = polish_hybrid_env not in {"0", "false", "no", "off"}
+                polish_precond = preconditioner_reduced
+                if polish_hybrid:
+                    precond_collision = _build_rhsmode1_collision_preconditioner(
+                        op=op,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                    )
+
+                    def _hybrid_precond(v: jnp.ndarray) -> jnp.ndarray:
+                        z0 = preconditioner_reduced(v)
+                        r1 = v - mv_reduced(z0)
+                        z1 = precond_collision(r1)
+                        return z0 + z1
+
+                    polish_precond = _hybrid_precond
 
                 x_polish = jnp.asarray(res_reduced.x, dtype=jnp.float64)
                 rn_best = float(res_reduced.residual_norm)
@@ -10585,7 +10747,7 @@ def solve_v3_full_system_linear_gmres(
                     rn_r = float(jnp.linalg.norm(r_polish))
                     if (not np.isfinite(rn_r)) or rn_r <= target_reduced:
                         break
-                    delta = preconditioner_reduced(r_polish)
+                    delta = polish_precond(r_polish)
                     omega_try = float(polish_omega)
                     step_accepted = False
                     for _bt in range(polish_backtrack + 1):
@@ -10612,12 +10774,78 @@ def solve_v3_full_system_linear_gmres(
                         x=jnp.asarray(x_polish, dtype=jnp.float64),
                         residual_norm=jnp.asarray(rn_best, dtype=jnp.float64),
                     )
+                # Optional FP-specific angular/x preconditioner polish (low-L blocks).
+                fp_lmax_polish_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_LMAX", "").strip()
+                fp_lmax_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_LMAX_BLOCK_MAX", "").strip()
+                fp_lmax_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_LMAX_RESTART", "").strip()
+                fp_lmax_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_POLISH_LMAX_MAXITER", "").strip()
+                try:
+                    fp_lmax_default = int(fp_lmax_polish_env) if fp_lmax_polish_env else 2
+                except ValueError:
+                    fp_lmax_default = 2
+                try:
+                    fp_lmax_block_max = int(fp_lmax_max_env) if fp_lmax_max_env else 1500
+                except ValueError:
+                    fp_lmax_block_max = 1500
+                try:
+                    fp_lmax_restart = int(fp_lmax_restart_env) if fp_lmax_restart_env else 80
+                except ValueError:
+                    fp_lmax_restart = 80
+                try:
+                    fp_lmax_maxiter = int(fp_lmax_maxiter_env) if fp_lmax_maxiter_env else 120
+                except ValueError:
+                    fp_lmax_maxiter = 120
+                lmax_precond_for_l1: Callable[[jnp.ndarray], jnp.ndarray] | None = None
+                if float(res_reduced.residual_norm) > target_reduced:
+                    nxi_for_x_np = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+                    max_l = int(np.max(nxi_for_x_np)) if nxi_for_x_np.size else 0
+                    lmax_use = max(0, min(int(max_l), int(fp_lmax_default)))
+                    block_size = int(lmax_use) * int(op.n_theta) * int(op.n_zeta)
+                    if lmax_use > 0 and block_size > 0 and block_size <= int(fp_lmax_block_max):
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: FP low-L polish "
+                                f"(lmax={int(lmax_use)} block={block_size} restart={int(fp_lmax_restart)} "
+                                f"maxiter={int(fp_lmax_maxiter)})",
+                            )
+                        try:
+                            lmax_precond = _build_rhsmode1_xblock_tz_lmax_preconditioner(
+                                op=op,
+                                lmax=int(lmax_use),
+                                reduce_full=reduce_full,
+                                expand_reduced=expand_reduced,
+                            )
+                            lmax_precond_for_l1 = lmax_precond
+                            res_lmax = _solve_linear(
+                                matvec_fn=mv_reduced,
+                                b_vec=rhs_reduced,
+                                precond_fn=lmax_precond,
+                                x0_vec=res_reduced.x,
+                                tol_val=tol,
+                                atol_val=atol,
+                                restart_val=int(fp_lmax_restart),
+                                maxiter_val=int(fp_lmax_maxiter),
+                                solve_method_val="incremental",
+                                precond_side=gmres_precond_side,
+                            )
+                            if float(res_lmax.residual_norm) < float(res_reduced.residual_norm):
+                                if emit is not None:
+                                    emit(
+                                        1,
+                                        "solve_v3_full_system_linear_gmres: FP low-L polish improved residual "
+                                        f"{float(res_reduced.residual_norm):.3e} -> {float(res_lmax.residual_norm):.3e}",
+                                    )
+                                res_reduced = res_lmax
+                        except Exception as exc:  # noqa: BLE001
+                            if emit is not None:
+                                emit(1, f"solve_v3_full_system_linear_gmres: FP low-L polish failed ({type(exc).__name__}: {exc})")
                 # L=1 targeted polish (flow channel): solve a small projected system
                 # on the L=1 active modes only. This is a cheap way to improve flow/Mach
                 # parity when the full-system solve stalls above the strict target.
                 l1_polish_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH", "").strip().lower()
                 l1_polish_enabled = l1_polish_env not in {"0", "false", "no", "off"}
-                if l1_polish_enabled and float(res_reduced.residual_norm) > target_reduced:
+                if l1_polish_enabled:
                     n_s = int(op.n_species)
                     n_x = int(op.n_x)
                     n_l = int(op.n_xi)
@@ -10643,7 +10871,16 @@ def solve_v3_full_system_linear_gmres(
                         else:
                             l1_active_idx_np = np.asarray([], dtype=np.int32)
                     else:
-                        l1_active_idx_np = np.asarray([], dtype=np.int32)
+                        for s_idx in range(n_s):
+                            for ix in range(n_x):
+                                if int(nxi_for_x_np[ix]) <= 1:
+                                    continue
+                                il = 1
+                                for it in range(n_t):
+                                    for iz in range(n_z):
+                                        f_idx = int(((((s_idx * n_x + ix) * n_l + il) * n_t + it) * n_z + iz))
+                                        l1_full_idx.append(f_idx)
+                        l1_active_idx_np = np.asarray(l1_full_idx, dtype=np.int32)
 
                     if int(l1_active_idx_np.size) > 0:
                         l1_idx_jnp = jnp.asarray(np.unique(l1_active_idx_np), dtype=jnp.int32)
@@ -10651,13 +10888,13 @@ def solve_v3_full_system_linear_gmres(
                         l1_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_MAXITER", "").strip()
                         l1_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_RESTART", "").strip()
                         try:
-                            l1_maxiter = int(l1_maxiter_env) if l1_maxiter_env else 60
+                            l1_maxiter = int(l1_maxiter_env) if l1_maxiter_env else 120
                         except ValueError:
-                            l1_maxiter = 60
+                            l1_maxiter = 120
                         try:
-                            l1_restart = int(l1_restart_env) if l1_restart_env else 40
+                            l1_restart = int(l1_restart_env) if l1_restart_env else 80
                         except ValueError:
-                            l1_restart = 40
+                            l1_restart = 80
                         l1_maxiter = max(5, min(int(l1_maxiter), 200))
                         l1_restart = max(5, min(int(l1_restart), max(5, l1_maxiter)))
 
@@ -10673,12 +10910,31 @@ def solve_v3_full_system_linear_gmres(
                         b_l1 = _l1_reduce(r_l1_full)
                         rn_full_base = float(jnp.linalg.norm(r_l1_full))
                         b_l1_norm = float(jnp.linalg.norm(b_l1))
-                        if np.isfinite(b_l1_norm) and b_l1_norm > 0.0:
+                        l1_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_RATIO", "").strip()
+                        l1_abs_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_ABS", "").strip()
+                        try:
+                            l1_ratio = float(l1_ratio_env) if l1_ratio_env else 2.0
+                        except ValueError:
+                            l1_ratio = 2.0
+                        try:
+                            l1_abs = float(l1_abs_env) if l1_abs_env else 1.0e-8
+                        except ValueError:
+                            l1_abs = 1.0e-8
+                        l1_thresh = max(float(target_reduced) * max(1.0, float(l1_ratio)), float(l1_abs))
+                        if np.isfinite(b_l1_norm) and b_l1_norm > l1_thresh:
+                            if emit is not None:
+                                emit(
+                                    1,
+                                    "solve_v3_full_system_linear_gmres: FP L1 polish "
+                                    f"(size={l1_n} restart={l1_restart} maxiter={l1_maxiter} b_norm={b_l1_norm:.3e})",
+                                )
                             def _mv_l1(v: jnp.ndarray) -> jnp.ndarray:
                                 return _l1_reduce(mv_reduced(_l1_expand(v)))
 
                             def _pre_l1(v: jnp.ndarray) -> jnp.ndarray:
-                                return _l1_reduce(preconditioner_reduced(_l1_expand(v)))
+                                if lmax_precond_for_l1 is not None:
+                                    return _l1_reduce(lmax_precond_for_l1(_l1_expand(v)))
+                                return _l1_reduce(polish_precond(_l1_expand(v)))
 
                             tol_l1_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_TOL", "").strip()
                             try:
@@ -10686,12 +10942,6 @@ def solve_v3_full_system_linear_gmres(
                             except ValueError:
                                 tol_l1 = 1.0e-10
                             tol_l1 = max(1.0e-14, float(tol_l1))
-                            if emit is not None:
-                                emit(
-                                    1,
-                                    "solve_v3_full_system_linear_gmres: FP L1 polish "
-                                    f"(size={l1_n} restart={l1_restart} maxiter={l1_maxiter})",
-                                )
                             try:
                                 l1_corr = _solve_linear(
                                     matvec_fn=_mv_l1,
@@ -10710,11 +10960,17 @@ def solve_v3_full_system_linear_gmres(
                                 rn_try = float(jnp.linalg.norm(r_try))
                                 b_l1_try = _l1_reduce(r_try)
                                 rn_l1_try = float(jnp.linalg.norm(b_l1_try))
+                                l1_full_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_L1_POLISH_FULL_RATIO", "").strip()
+                                try:
+                                    l1_full_ratio = float(l1_full_ratio_env) if l1_full_ratio_env else 1.2
+                                except ValueError:
+                                    l1_full_ratio = 1.2
+                                l1_full_ratio = max(1.0, float(l1_full_ratio))
                                 accept_l1 = (
                                     np.isfinite(rn_l1_try)
                                     and rn_l1_try < b_l1_norm
                                     and np.isfinite(rn_try)
-                                    and rn_try <= max(float(rn_full_base) * 1.05, float(rn_full_base) + 1.0e-10)
+                                    and rn_try <= max(float(rn_full_base) * l1_full_ratio, float(rn_full_base) + 1.0e-10)
                                 )
                                 if accept_l1:
                                     if emit is not None:
@@ -10731,6 +10987,61 @@ def solve_v3_full_system_linear_gmres(
                             except Exception as exc:  # noqa: BLE001
                                 if emit is not None:
                                     emit(1, f"solve_v3_full_system_linear_gmres: FP L1 polish failed ({type(exc).__name__}: {exc})")
+                # Optional BiCGStab polish for large FP systems: short-recurrence Krylov
+                # can reduce residuals further when restarted GMRES stagnates.
+                fp_bi_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_BICGSTAB_POLISH", "").strip().lower()
+                fp_bi_enabled = fp_bi_env in {"1", "true", "yes", "on"}
+                fp_bi_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_BICGSTAB_MIN", "").strip()
+                try:
+                    fp_bi_min = int(fp_bi_min_env) if fp_bi_min_env else 80000
+                except ValueError:
+                    fp_bi_min = 80000
+                if fp_bi_enabled and int(active_size) >= max(1, int(fp_bi_min)) and float(res_reduced.residual_norm) > target_reduced:
+                    fp_bi_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_BICGSTAB_MAXITER", "").strip()
+                    fp_bi_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_BICGSTAB_TOL", "").strip()
+                    fp_bi_atol_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_BICGSTAB_ATOL", "").strip()
+                    try:
+                        fp_bi_maxiter = int(fp_bi_maxiter_env) if fp_bi_maxiter_env else 120
+                    except ValueError:
+                        fp_bi_maxiter = 120
+                    try:
+                        fp_bi_tol = float(fp_bi_tol_env) if fp_bi_tol_env else min(float(tol), 1.0e-10)
+                    except ValueError:
+                        fp_bi_tol = min(float(tol), 1.0e-10)
+                    try:
+                        fp_bi_atol = float(fp_bi_atol_env) if fp_bi_atol_env else float(atol)
+                    except ValueError:
+                        fp_bi_atol = float(atol)
+                    fp_bi_maxiter = max(5, min(int(fp_bi_maxiter), 400))
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_full_system_linear_gmres: FP BiCGStab polish "
+                            f"(maxiter={fp_bi_maxiter} tol={fp_bi_tol:.1e})",
+                        )
+                    precond_bi = preconditioner_reduced
+                    if precond_bi is None and polish_hybrid:
+                        precond_bi = polish_precond
+                    res_bi = _solve_linear(
+                        matvec_fn=mv_reduced,
+                        b_vec=rhs_reduced,
+                        precond_fn=precond_bi,
+                        x0_vec=res_reduced.x,
+                        tol_val=fp_bi_tol,
+                        atol_val=fp_bi_atol,
+                        restart_val=restart,
+                        maxiter_val=fp_bi_maxiter,
+                        solve_method_val="bicgstab",
+                        precond_side=gmres_precond_side,
+                    )
+                    if float(res_bi.residual_norm) < float(res_reduced.residual_norm):
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: FP BiCGStab polish improved residual "
+                                f"{float(res_reduced.residual_norm):.3e} -> {float(res_bi.residual_norm):.3e}",
+                            )
+                        res_reduced = res_bi
         if use_pas_projection:
             f_full = _expand_active_f(res_reduced.x)
             f_full = _project_pas_f(f_full)
