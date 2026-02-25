@@ -813,6 +813,9 @@ class _XUpwindPrecondCache:
 
     diag: jnp.ndarray  # (S, X, L)
     sub: jnp.ndarray  # (S, X, L) with sub[:, 0, :] ignored
+    lblock: int = 0
+    block_inv: jnp.ndarray | None = None  # (S, X, Lb, Lb)
+    block_sub: jnp.ndarray | None = None  # (S, X, Lb, Lb)
 
 
 @dataclass(frozen=True)
@@ -1567,7 +1570,21 @@ def _build_rhsmode1_xmg_preconditioner(
     if not stride_env:
         stride_env = os.environ.get("SFINCS_JAX_XMG_STRIDE", "").strip()
     try:
-        stride = int(stride_env) if stride_env else 2
+        if stride_env:
+            stride = int(stride_env)
+        else:
+            # Large FP systems benefit from a slightly coarser x-grid in the default
+            # xmg preconditioner: it improves conditioning of the coarse correction and
+            # lowers setup/apply cost enough to keep large CPU runs within practical
+            # wall-clock limits.
+            if (
+                op.fblock.fp is not None
+                and op.fblock.pas is None
+                and int(op.total_size) >= 120000
+            ):
+                stride = 4
+            else:
+                stride = 2
     except ValueError:
         stride = 2
     stride = max(1, stride)
@@ -1888,7 +1905,13 @@ def _build_rhsmode1_xupwind_preconditioner(
         return _build_rhsmode1_xmg_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
 
     precond_dtype = _precond_dtype()
-    cache_key = _rhsmode1_precond_cache_key(op, "xupwind")
+    lblock_env = os.environ.get("SFINCS_JAX_RHSMODE1_XUPWIND_LBLOCK", "").strip()
+    try:
+        lblock_req = int(lblock_env) if lblock_env else 8
+    except ValueError:
+        lblock_req = 8
+    lblock_req = max(0, int(lblock_req))
+    cache_key = _rhsmode1_precond_cache_key(op, f"xupwind_lb{lblock_req}")
     cached = _RHSMODE1_XUPWIND_PRECOND_CACHE.get(cache_key)
     if cached is None:
         f_shape = op.fblock.f_shape
@@ -1954,6 +1977,13 @@ def _build_rhsmode1_xupwind_preconditioner(
         denom = (2.0 * l_vec + 3.0) * (2.0 * l_vec - 1.0)
         diag_coef = 2.0 * (3.0 * l_vec * l_vec + 3.0 * l_vec - 2.0) / denom
         c_l = diag_coef * float(xdot_rms)  # (L,)
+        sup2 = np.zeros((n_l,), dtype=np.float64)
+        sub2 = np.zeros((n_l,), dtype=np.float64)
+        if n_l >= 3:
+            l0 = l_vec[:-2]
+            sup2[:-2] = (l0 + 1.0) * (l0 + 2.0) / ((2.0 * l0 + 5.0) * (2.0 * l0 + 3.0))
+            l2 = l_vec[2:]
+            sub2[2:] = l2 * (l2 - 1.0) / ((2.0 * l2 - 3.0) * (2.0 * l2 - 1.0))
 
         x_arr = np.asarray(op.fblock.er_xdot.x, dtype=np.float64)
         dx = np.diff(x_arr)
@@ -1972,14 +2002,64 @@ def _build_rhsmode1_xupwind_preconditioner(
                 if not bool(active[ix, l]):
                     sub[:, ix, l] = 0.0
 
+        lblock = int(min(max(0, lblock_req), n_l))
+        block_inv: np.ndarray | None = None
+        block_sub: np.ndarray | None = None
+        if lblock >= 3 and float(xdot_rms) != 0.0:
+            block_inv = np.zeros((n_species, n_x, lblock, lblock), dtype=np.float64)
+            block_sub = np.zeros((n_species, n_x, lblock, lblock), dtype=np.float64)
+            pinv_env = os.environ.get("SFINCS_JAX_RHSMODE1_XUPWIND_PINV_RCOND", "").strip()
+            try:
+                pinv_rcond = float(pinv_env) if pinv_env else 1e-12
+            except ValueError:
+                pinv_rcond = 1e-12
+            for s in range(n_species):
+                for ix in range(n_x):
+                    c_x = float(x_over_dx[ix])
+                    a0 = np.zeros((lblock, lblock), dtype=np.float64)
+                    a1 = np.zeros((lblock, lblock), dtype=np.float64)
+                    for l in range(lblock):
+                        a0[l, l] = float(diag_base[s, ix, l]) + c_x * float(c_l[l])
+                        a1[l, l] = -c_x * float(c_l[l])
+                        if l + 2 < lblock:
+                            v = c_x * float(sup2[l] * xdot_rms)
+                            a0[l, l + 2] += v
+                            a1[l, l + 2] -= v
+                        if l - 2 >= 0:
+                            v = c_x * float(sub2[l] * xdot_rms)
+                            a0[l, l - 2] += v
+                            a1[l, l - 2] -= v
+                    n_active = int(min(max(0, int(nxi_for_x[ix])), lblock))
+                    if n_active < lblock:
+                        for l in range(n_active, lblock):
+                            a0[l, :] = 0.0
+                            a0[:, l] = 0.0
+                            a0[l, l] = 1.0
+                            a1[l, :] = 0.0
+                            a1[:, l] = 0.0
+                    try:
+                        inv = np.linalg.inv(a0)
+                    except np.linalg.LinAlgError:
+                        inv = np.linalg.pinv(a0, rcond=pinv_rcond)
+                    if not np.all(np.isfinite(inv)):
+                        inv = np.linalg.pinv(a0, rcond=pinv_rcond)
+                    block_inv[s, ix, :, :] = inv
+                    block_sub[s, ix, :, :] = a1
+
         cached = _XUpwindPrecondCache(
             diag=jnp.asarray(diag, dtype=precond_dtype),
             sub=jnp.asarray(sub, dtype=precond_dtype),
+            lblock=int(lblock),
+            block_inv=(None if block_inv is None else jnp.asarray(block_inv, dtype=precond_dtype)),
+            block_sub=(None if block_sub is None else jnp.asarray(block_sub, dtype=precond_dtype)),
         )
         _RHSMODE1_XUPWIND_PRECOND_CACHE[cache_key] = cached
 
     diag = cached.diag  # (S,X,L)
     sub = cached.sub  # (S,X,L)
+    lblock = int(cached.lblock)
+    block_inv = cached.block_inv
+    block_sub = cached.block_sub
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=precond_dtype)
@@ -1987,16 +2067,37 @@ def _build_rhsmode1_xupwind_preconditioner(
         f_x = jnp.transpose(f, (1, 0, 2, 3, 4))  # (X,S,L,T,Z)
         diag_x = jnp.transpose(diag, (1, 0, 2))  # (X,S,L)
         sub_x = jnp.transpose(sub, (1, 0, 2))  # (X,S,L)
+        use_block = bool(block_inv is not None and block_sub is not None and lblock > 0)
+        if use_block:
+            block_inv_x = jnp.transpose(block_inv, (1, 0, 2, 3))  # (X,S,Lb,Lb)
+            block_sub_x = jnp.transpose(block_sub, (1, 0, 2, 3))  # (X,S,Lb,Lb)
+        else:
+            block_inv_x = jnp.zeros((f_x.shape[0], f_x.shape[1], 0, 0), dtype=precond_dtype)
+            block_sub_x = jnp.zeros((f_x.shape[0], f_x.shape[1], 0, 0), dtype=precond_dtype)
 
         def _step(z_prev, inp):
-            rhs_i, diag_i, sub_i = inp
+            rhs_i, diag_i, sub_i, binv_i, bsub_i = inp
             diag_b = diag_i[..., None, None]
             sub_b = sub_i[..., None, None]
-            z_i = (rhs_i - sub_b * z_prev) / diag_b
+            if (not use_block) or lblock <= 0:
+                z_i = (rhs_i - sub_b * z_prev) / diag_b
+                return z_i, z_i
+
+            rhs_lo = rhs_i[:, :lblock, :, :]
+            zprev_lo = z_prev[:, :lblock, :, :]
+            rhs_lo = rhs_lo - jnp.einsum("sij,sjtz->sitz", bsub_i, zprev_lo)
+            z_lo = jnp.einsum("sij,sjtz->sitz", binv_i, rhs_lo)
+            if rhs_i.shape[1] > lblock:
+                rhs_hi = rhs_i[:, lblock:, :, :]
+                zprev_hi = z_prev[:, lblock:, :, :]
+                z_hi = (rhs_hi - sub_b[:, lblock:, :, :] * zprev_hi) / diag_b[:, lblock:, :, :]
+                z_i = jnp.concatenate([z_lo, z_hi], axis=1)
+            else:
+                z_i = z_lo
             return z_i, z_i
 
         z0 = jnp.zeros_like(f_x[0])
-        _, z_x = jax.lax.scan(_step, z0, (f_x, diag_x, sub_x))
+        _, z_x = jax.lax.scan(_step, z0, (f_x, diag_x, sub_x, block_inv_x, block_sub_x))
         z_f = jnp.transpose(z_x, (1, 0, 2, 3, 4))  # (S,X,L,T,Z)
         tail = r_full[op.f_size :]
         z_full = jnp.concatenate([z_f.reshape((-1,)), tail], axis=0)
@@ -7815,9 +7916,12 @@ def solve_v3_full_system_linear_gmres(
                     pas_xmg_min = 80000
                 fp_xmg_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XMG_MAX", "").strip()
                 try:
-                    fp_xmg_max = int(fp_xmg_env) if fp_xmg_env else 100000
+                    # Keep xmg as the default for larger FP systems as long as we are still
+                    # in the matrix-free Krylov regime; this avoids expensive Schwarz builds
+                    # that can dominate runtime in high-resolution single-RHS runs.
+                    fp_xmg_max = int(fp_xmg_env) if fp_xmg_env else 200000
                 except ValueError:
-                    fp_xmg_max = 100000
+                    fp_xmg_max = 200000
                 schur_tokamak_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHUR_TOKAMAK", "").strip().lower()
                 schur_tokamak = schur_tokamak_env in {"1", "true", "yes", "on"}
                 tokamak_like = int(op.n_zeta) == 1
@@ -7841,6 +7945,7 @@ def solve_v3_full_system_linear_gmres(
                         if (
                             op.fblock.pas is not None
                             and er_abs <= schur_er_min
+                            and (not schur_tokamak)
                             and int(op.total_size) < pas_xmg_min
                         ):
                             # For constrained PAS near-zero-Er systems below the Schur regime,
@@ -7871,6 +7976,7 @@ def solve_v3_full_system_linear_gmres(
                     if (
                         op.fblock.pas is not None
                         and er_abs <= schur_er_min
+                        and (not schur_tokamak)
                         and int(op.total_size) < pas_xmg_min
                     ):
                         rhs1_precond_kind = "xmg"
@@ -7957,6 +8063,14 @@ def solve_v3_full_system_linear_gmres(
                     and int(op.n_theta) * int(op.n_zeta) <= tz_max
                 ):
                     rhs1_precond_kind = "theta_zeta"
+                elif (
+                    op.fblock.pas is not None
+                    and int(active_size) >= pas_xmg_min
+                ):
+                    # Large PAS systems tend to be x/L-coupling dominated. Prefer the
+                    # x-coarsened PAS preconditioner over weak collision/point
+                    # preconditioners that often trigger expensive fallback branches.
+                    rhs1_precond_kind = "xmg"
                 else:
                     if (
                         op.fblock.pas is not None
@@ -8013,6 +8127,30 @@ def solve_v3_full_system_linear_gmres(
         # PAS hybrid (line + x-coarse) preconditioner by default. The PAS probe can
         # still downgrade to a collision preconditioner if it suffices.
         rhs1_precond_kind = "pas_hybrid"
+    if (
+        rhs1_precond_env == ""
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.fp is not None
+        and op.fblock.pas is None
+        and float(er_abs) <= float(schur_er_min)
+    ):
+        fp_force_xmg_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_FORCE_XMG_MIN", "").strip()
+        try:
+            fp_force_xmg_min = int(fp_force_xmg_min_env) if fp_force_xmg_min_env else 120000
+        except ValueError:
+            fp_force_xmg_min = 120000
+        if (
+            int(op.total_size) >= max(1, int(fp_force_xmg_min))
+            and rhs1_precond_kind in {None, "collision", "point", "theta_line", "zeta_line", "theta_schwarz", "zeta_schwarz"}
+        ):
+            rhs1_precond_kind = "xmg"
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: large FP near-zero-Er "
+                    "auto override -> xmg preconditioner",
+                )
     rhs1_precond_kind_requested = rhs1_precond_kind
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
@@ -8020,6 +8158,26 @@ def solve_v3_full_system_linear_gmres(
     if rhs1_precond_env == "" and rhs1_precond_kind in {None, "point", "theta_line", "zeta_line", "xmg", "collision"}:
         shard_axis = _matvec_shard_axis(op)
         if shard_axis in {"theta", "zeta"} and jax.device_count() > 1:
+            pas_shard_xmg_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SHARD_XMG_MIN", "").strip()
+            try:
+                pas_shard_xmg_min = int(pas_shard_xmg_min_env) if pas_shard_xmg_min_env else 80000
+            except ValueError:
+                pas_shard_xmg_min = 80000
+            fp_shard_xmg_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_SHARD_XMG_MIN", "").strip()
+            try:
+                fp_shard_xmg_min = int(fp_shard_xmg_min_env) if fp_shard_xmg_min_env else 120000
+            except ValueError:
+                fp_shard_xmg_min = 120000
+            keep_xmg_for_large_pas_er = bool(
+                rhs1_precond_kind == "xmg"
+                and op.fblock.pas is not None
+                and int(op.total_size) >= max(1, int(pas_shard_xmg_min))
+            )
+            keep_xmg_for_large_fp = bool(
+                rhs1_precond_kind == "xmg"
+                and op.fblock.fp is not None
+                and int(op.total_size) >= max(1, int(fp_shard_xmg_min))
+            )
             schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
             try:
                 schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 120000
@@ -8027,6 +8185,8 @@ def solve_v3_full_system_linear_gmres(
                 schwarz_auto_min = 120000
             force_schwarz = bool(schwarz_auto_min_env) and int(schwarz_auto_min) <= 0
             if rhs1_precond_kind in {"theta_line", "zeta_line"} and rhs1_precond_kind != f"{shard_axis}_line":
+                pass
+            elif keep_xmg_for_large_pas_er or keep_xmg_for_large_fp:
                 pass
             elif force_schwarz or int(op.total_size) >= max(1, int(schwarz_auto_min)):
                 rhs1_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
@@ -8065,6 +8225,26 @@ def solve_v3_full_system_linear_gmres(
                     )
     if str(solve_method).strip().lower() in {"dense", "dense_ksp", "dense_row_scaled"}:
         rhs1_precond_kind = None
+    if (
+        (not rhs1_precond_env)
+        and maxiter_env == ""
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.fp is not None
+        and op.fblock.pas is None
+        and rhs1_precond_kind == "xmg"
+        and int(op.total_size) >= 120000
+    ):
+        # Keep large full-trajectory FP cases inside the 120s regression budget by
+        # capping default Krylov work when xmg is selected automatically.
+        maxiter = min(int(maxiter if maxiter is not None else 400), 160)
+        restart = max(80, min(int(restart), 100))
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_full_system_linear_gmres: large FP auto-tune "
+                f"(precond=xmg restart={int(restart)} maxiter={int(maxiter)})",
+            )
     rhs1_precond_enabled = (
         rhs1_precond_kind is not None
         and int(op.rhs_mode) == 1
