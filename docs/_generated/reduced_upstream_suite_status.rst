@@ -450,45 +450,45 @@
    * - tokamak_1species_PASCollisions_noEr
      - parity_ok
      - none
-     - NTHETA=37,NX=46,NXI=60,NZETA=1
+     - NTHETA=40,NX=50,NXI=64,NZETA=1
      - 1
      - 0
      - 2.259
-     - -
+     - 157.183
      - 717.6
-     - -
+     - 826.0
      - 0/140
      - S:0 P:0
      - 7/7
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=0/140
    * - tokamak_1species_PASCollisions_noEr_Nx1
      - parity_ok
      - none
-     - NTHETA=33,NX=6,NXI=30,NZETA=5
+     - NTHETA=32,NX=6,NXI=30,NZETA=5
      - 1
      - 0
      - 2.124
-     - -
+     - 291.549
      - 250.9
-     - -
-     - 40/212
-     - S:12 P:0
+     - 1448.2
+     - 0/212
+     - S:0 P:0
      - 9/9
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=33/212
    * - tokamak_1species_PASCollisions_noEr_withQN
      - parity_ok
      - none
-     - NTHETA=9,NX=7,NXI=10,NZETA=11
+     - NTHETA=14,NX=8,NXI=16,NZETA=14
      - 1
      - 0
      - 5.465
-     - -
+     - 238.705
      - 380.5
-     - -
+     - 594.4
      - 0/275
      - S:0 P:0
      - 9/9
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=0/275
    * - tokamak_1species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none
@@ -506,17 +506,17 @@
    * - tokamak_2species_PASCollisions_noEr
      - parity_ok
      - none
-     - NTHETA=21,NX=6,NXI=36,NZETA=9
+     - NTHETA=20,NX=6,NXI=36,NZETA=9
      - 1
      - 0
      - 5.667
-     - -
+     - 65.170
      - 478.3
-     - -
+     - 1834.6
      - 0/212
      - S:0 P:0
      - 9/9
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none
@@ -524,13 +524,13 @@
      - 1
      - 0
      - 15.875
-     - -
+     - 186.849
      - 442.1
-     - -
-     - 1/212
-     - S:1 P:0
+     - 1665.4
+     - 0/212
+     - S:0 P:0
      - 9/9
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=1/212
    * - transportMatrix_geometryScheme11
      - parity_ok
      - none

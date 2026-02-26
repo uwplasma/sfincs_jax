@@ -103,17 +103,17 @@ print(geometry.b_hat.shape)
 
 Parallel `whichRHS` scaling for a >2-minute RHSMode=2 transport-matrix case
 (`examples/performance/transport_parallel_2min.input.namelist`, geometryScheme=2,
-`Ntheta=21`, `Nzeta=21`, `Nxi=6`, `NL=6`, `Nx=6`).
+`Ntheta=21`, `Nzeta=21`, `Nxi=6`, `NL=6`, `Nx=6`), measured on 1–4 workers.
 
 ![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
 
-Latest cache-warm run (1-5 workers): 1 worker 165.3s, 2 workers 142.8s,
-3 workers 125.4s, 4 workers 141.7s, 5 workers 169.9s.
+Latest cache-warm run (1–4 workers): 1 worker 147.4s, 2 workers 122.3s,
+3 workers 115.8s, 4 workers 114.8s.
 
-Enable parallel execution in normal runs:
+Enable parallel execution in normal runs (no environment variables required):
 
 ```bash
-export SFINCS_JAX_CORES=4
+sfincs_jax --cores 4 /path/to/input.namelist
 ```
 
 `whichRHS` process pools are persistent by default (`SFINCS_JAX_TRANSPORT_POOL_PERSIST=1`)
@@ -124,9 +124,9 @@ Reproduce the 1-5 worker scaling figure and JSON summary:
 ```bash
 python examples/performance/benchmark_transport_parallel_scaling.py \
   --input examples/performance/transport_parallel_2min.input.namelist \
-  --workers 1 2 3 4 5 \
+  --workers 1 2 3 4 \
   --repeats 1 \
-  --warmup 1 \
+  --warmup 0 \
   --global-warmup 1
 ```
 
@@ -192,7 +192,13 @@ Detailed performance profiling and advanced parallel modes are documented in
 
 ## CLI
 
-Write SFINCS-style output:
+Run a SFINCS input file (default mode, matches Fortran v3 behavior):
+
+```bash
+sfincs_jax /path/to/input.namelist
+```
+
+Write SFINCS-style output explicitly:
 
 ```bash
 sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
@@ -341,12 +347,12 @@ python scripts/generate_readme_reduced_suite_table.py
 | tokamak_1species_FPCollisions_noEr_withQN | 6.150 | 1.608 | 127.1 | 463.3 | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_FPCollisions_withEr_DKESTrajectories | 4.400 | 1.383 | 116.8 | 459.9 | 0/214 (strict 0/214) | 9/9 |
 | tokamak_1species_FPCollisions_withEr_fullTrajectories | 55.728 | 3.655 | 334.2 | 1834.7 | 0/142 (strict 0/142) | 7/7 |
-| tokamak_1species_PASCollisions_noEr | 2.259 | - | 717.6 | - | 0/140 (strict 0/140) | 7/7 |
-| tokamak_1species_PASCollisions_noEr_Nx1 | 2.124 | - | 250.9 | - | 40/212 (strict 40/212) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_withQN | 5.465 | - | 380.5 | - | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_PASCollisions_noEr | 2.259 | 157.183 | 717.6 | 826.0 | 0/140 (strict 0/140) | 7/7 |
+| tokamak_1species_PASCollisions_noEr_Nx1 | 2.124 | 291.549 | 250.9 | 1448.2 | 0/212 (strict 33/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr_withQN | 5.465 | 238.705 | 380.5 | 594.4 | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_PASCollisions_withEr_fullTrajectories | 49.530 | 86.972 | 574.4 | 1701.9 | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_noEr | 5.667 | - | 478.3 | - | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_withEr_fullTrajectories | 15.875 | - | 442.1 | - | 1/212 (strict 1/212) | 9/9 |
+| tokamak_2species_PASCollisions_noEr | 5.667 | 65.170 | 478.3 | 1834.6 | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_withEr_fullTrajectories | 15.875 | 186.849 | 442.1 | 1665.4 | 0/212 (strict 1/212) | 9/9 |
 | transportMatrix_geometryScheme11 | 0.303 | 1.850 | 129.2 | 1010.7 | 0/194 (strict 0/194) | 9/9 |
 | transportMatrix_geometryScheme2 | 0.236 | 1.643 | 118.8 | 803.7 | 0/194 (strict 0/194) | 9/9 |
 <!-- END REDUCED_SUITE_TABLE -->

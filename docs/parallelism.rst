@@ -84,8 +84,14 @@ preserving differentiability:
    `sfincs_jax.v3_system` with `pjit` + `with_sharding_constraint`.
 
    **Host‑device setup (CPU).** To emulate MPI‑style domain decomposition on a
-   multi‑core CPU, request multiple host devices *before importing JAX*. The
-   simplest user‑facing knob is ``SFINCS_JAX_CORES``:
+   multi‑core CPU, request multiple host devices *before importing JAX*. You can
+   do this from the CLI without environment variables:
+
+   .. code-block:: bash
+
+      sfincs_jax --cores 8 /path/to/input.namelist
+
+   The equivalent environment variable remains available:
 
    .. code-block:: bash
 
@@ -161,9 +167,8 @@ Benchmark case: `examples/performance/transport_parallel_2min.input.namelist`
 
 Benchmark preconditioner: `SFINCS_JAX_TRANSPORT_PRECOND=xmg`.
 
-Latest cache‑warm sweep (1–5 workers):
-1 worker 165.3s, 2 workers 142.8s, 3 workers 125.4s, 4 workers 141.7s,
-5 workers 169.9s.
+Latest cache‑warm sweep (1–4 workers):
+1 worker 147.4s, 2 workers 122.3s, 3 workers 115.8s, 4 workers 114.8s.
 
 Process‑parallel workers automatically disable sharded matvec and cap
 XLA CPU threads per worker to avoid oversubscription when `SFINCS_JAX_CORES`
@@ -175,9 +180,9 @@ Reproduce:
 
    python examples/performance/benchmark_transport_parallel_scaling.py \
      --input examples/performance/transport_parallel_2min.input.namelist \
-     --workers 1 2 3 4 5 \
+     --workers 1 2 3 4 \
      --repeats 1 \
-     --warmup 1 \
+     --warmup 0 \
      --global-warmup 1
 
 The benchmark script uses the transport solve-only path
@@ -190,13 +195,12 @@ parallel behavior instead of full diagnostics/H5 field assembly.
 
    Parallel whichRHS scaling (runtime + speedup vs workers).
 
-For this larger case, scaling reaches ~1.32× (3 workers) and then regresses.
+For this larger case, scaling reaches ~1.28× (4 workers).
 The plateau reflects that the current process-parallel transport path only
 parallelizes the per-`whichRHS` solves; shared setup/build costs remain serial
 and dominate for this case on a laptop-class CPU.
-
-Note: RHSMode=2 has only **3** right‑hand sides. A 4th worker has no extra RHS
-to solve, so speedup naturally saturates near 3 workers.
+Note: RHSMode=2 has only **3** right‑hand sides, so speedup naturally saturates
+near 3–4 workers.
 
 Earlier runs (smaller grids)
 ----------------------------

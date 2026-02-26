@@ -8600,9 +8600,12 @@ def solve_v3_full_system_linear_gmres(
         rhs1_precond_kind = "pas_tz"
     if (
         tokamak_like
+        and rhs1_precond_env in {"", "auto", "default"}
         and rhs1_precond_kind in {"pas_lite", "pas_hybrid", "pas_tokamak_theta", "pas_tz", "xmg", "collision", "point"}
         and op.fblock.pas is not None
         and op.fblock.fp is None
+        and (not _pas_tz_preconditioner_applicable(op))
+        and (not _pas_tokamak_theta_preconditioner_applicable(op))
     ):
         rhs1_precond_kind = "pas_schur"
     if (

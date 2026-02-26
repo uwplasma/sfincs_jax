@@ -653,6 +653,16 @@ Writing `sfincsOutput.h5` with `sfincs_jax`
 
 .. code-block:: bash
 
+   # Default CLI mode (matches Fortran v3 behavior)
+   sfincs_jax /path/to/input.namelist
+
+.. code-block:: bash
+
+   # Parallel CPU run without environment variables
+   sfincs_jax --cores 4 /path/to/input.namelist
+
+.. code-block:: bash
+
    sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
 
 .. code-block:: bash

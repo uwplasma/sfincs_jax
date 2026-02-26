@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
 import time
 
 import numpy as np
@@ -286,10 +287,102 @@ def _cmd_ambipolar_solve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_cores_setting(cores: int | None) -> None:
+    if cores is None:
+        return
+    try:
+        cores_val = int(cores)
+    except (TypeError, ValueError):
+        return
+    if cores_val <= 0:
+        return
+    os.environ["SFINCS_JAX_CORES"] = str(cores_val)
+    if cores_val > 1:
+        os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL", "process")
+        os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", str(cores_val))
+    # Ensure host device count and XLA threading reflect the requested cores.
+    xla_flags = os.environ.get("XLA_FLAGS", "")
+    xla_parts = [p for p in xla_flags.split() if not p.startswith("--xla_force_host_platform_device_count=")]
+    xla_parts.append(f"--xla_force_host_platform_device_count={cores_val}")
+    os.environ["XLA_FLAGS"] = " ".join(xla_parts).strip()
+    os.environ.setdefault("SFINCS_JAX_CPU_DEVICES", str(cores_val))
+    # Enable auto-sharding unless explicitly disabled.
+    shard_env = os.environ.get("SFINCS_JAX_SHARD", "").strip().lower()
+    if cores_val > 1 and shard_env not in {"0", "false", "no", "off"}:
+        os.environ.setdefault("SFINCS_JAX_MATVEC_SHARD_AXIS", "auto")
+        os.environ.setdefault("SFINCS_JAX_AUTO_SHARD", "1")
+
+
+def _normalize_default_argv(argv: list[str]) -> list[str]:
+    if not argv:
+        return argv
+    known_cmds = {
+        "solve-v3",
+        "scan-er",
+        "ambipolar-solve",
+        "run-fortran",
+        "write-output",
+        "transport-matrix-v3",
+        "dump-h5",
+        "compare-h5",
+        "postprocess-upstream",
+    }
+    if any(tok in known_cmds for tok in argv):
+        return argv
+    global_opts_with_val = {"--cores"}
+    global_opts_no_val = {
+        "-v",
+        "--verbose",
+        "-q",
+        "--quiet",
+        "--fortran-stdout",
+        "--no-fortran-stdout",
+    }
+    global_args: list[str] = []
+    rest: list[str] = []
+    input_path: str | None = None
+    idx = 0
+    while idx < len(argv):
+        tok = argv[idx]
+        if tok in global_opts_with_val:
+            if idx + 1 < len(argv):
+                global_args.extend([tok, argv[idx + 1]])
+                idx += 2
+                continue
+        if tok.startswith("--cores="):
+            global_args.append(tok)
+            idx += 1
+            continue
+        if tok in global_opts_no_val:
+            global_args.append(tok)
+            idx += 1
+            continue
+        if tok.startswith("-"):
+            rest.append(tok)
+            idx += 1
+            continue
+        if input_path is None:
+            input_path = tok
+        else:
+            rest.append(tok)
+        idx += 1
+    if input_path is None:
+        return argv
+    return [*global_args, "write-output", "--input", input_path, *rest]
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:]) if argv is None else list(argv)
+    argv = _normalize_default_argv(argv)
     parser = argparse.ArgumentParser(prog="sfincs_jax")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (repeatable).")
     parser.add_argument("-q", "--quiet", action="store_true", help="Reduce output to a minimum.")
+    parser.add_argument(
+        "--cores",
+        type=int,
+        default=None,
+        help="Number of host CPU devices/cores to use (sets SFINCS_JAX_CORES).",
+    )
     parser.add_argument(
         "--fortran-stdout",
         dest="fortran_stdout",
@@ -472,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
     p_pp.set_defaults(func=_cmd_postprocess_upstream)
 
     args = parser.parse_args(argv)
+    _apply_cores_setting(args.cores)
     if args.fortran_stdout is True:
         os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "1"
     elif args.fortran_stdout is False:
