@@ -311,13 +311,44 @@ python scripts/generate_readme_reduced_suite_table.py
 <!-- BEGIN REDUCED_SUITE_TABLE -->
 | Case | Fortran(s) | sfincs_jax(s) | Fortran MB | sfincs_jax MB | Mismatches (practical/strict) | Print parity |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
-| geometryScheme4_1species_PAS_withEr_DKESTrajectories | 8.228 | - | 484.1 | - | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_PAS_noEr | 0.401 | 3.599 | 139.0 | 930.8 | 0/207 (strict 0/207) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_Nx1 | 2.208 | - | - | - | 40/212 (strict 40/212) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_withQN | 4.608 | - | 390.1 | - | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_PASCollisions_withEr_fullTrajectories | 49.605 | 9.479 | 574.3 | 989.9 | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_noEr | 5.511 | - | 477.8 | - | 0/212 (strict 0/212) | 9/9 |
-| tokamak_2species_PASCollisions_withEr_fullTrajectories | 15.173 | - | 442.5 | - | 1/212 (strict 1/212) | 9/9 |
+| HSX_FPCollisions_DKESTrajectories | 0.888 | 10.339 | 146.6 | 606.4 | 39/193 (strict 39/193) | 9/9 |
+| HSX_FPCollisions_fullTrajectories | 2.860 | 4.082 | 99.9 | 1307.9 | 40/193 (strict 40/193) | 9/9 |
+| HSX_PASCollisions_DKESTrajectories | 3.047 | 28.745 | 346.0 | 2307.7 | 0/193 (strict 0/193) | 9/9 |
+| HSX_PASCollisions_fullTrajectories | 33.195 | 102.237 | 467.0 | 2179.0 | 4/193 (strict 3/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_noEr | 3.766 | 3.383 | 138.0 | 591.0 | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_withEr | 4.506 | 4.036 | 137.5 | 643.1 | 0/193 (strict 0/193) | 9/9 |
+| filteredW7XNetCDF_2species_noEr | 5.137 | 2.413 | 136.0 | 868.6 | 0/193 (strict 0/193) | 9/9 |
+| geometryScheme4_1species_PAS_withEr_DKESTrajectories | 8.408 | - | 484.6 | - | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_PAS_noEr | 0.449 | 3.225 | 139.0 | 857.7 | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_noEr | 0.401 | 8.596 | 134.5 | 594.2 | 35/207 (strict 35/207) | 9/9 |
+| geometryScheme4_2species_noEr_withPhi1InDKE | 0.180 | 3.073 | 129.6 | 613.7 | 0/265 (strict 0/265) | 9/9 |
+| geometryScheme4_2species_noEr_withQN | 0.128 | 2.261 | 112.3 | 558.3 | 0/265 (strict 0/265) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories | 0.182 | 4.691 | 118.4 | 1022.6 | 0/193 (strict 0/193) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories_withQN | 0.142 | 3.012 | 117.0 | 607.2 | 0/251 (strict 0/251) | 9/9 |
+| geometryScheme5_3species_loRes | 1.904 | 3.231 | 163.1 | 1407.5 | 36/193 (strict 36/193) | 9/9 |
+| inductiveE_noEr | 0.242 | 2.106 | 129.0 | 873.1 | 0/207 (strict 0/207) | 9/9 |
+| monoenergetic_geometryScheme1 | 0.720 | 2.192 | 133.7 | 1678.6 | 15/203 (strict 15/203) | 9/9 |
+| monoenergetic_geometryScheme11 | 3.074 | 3.325 | 204.3 | 612.7 | 0/208 (strict 0/208) | 9/9 |
+| monoenergetic_geometryScheme5_ASCII | 1.155 | 2.138 | 158.8 | 1475.5 | 4/208 (strict 4/208) | 9/9 |
+| monoenergetic_geometryScheme5_netCDF | 1.118 | 1.868 | 151.1 | 1410.8 | 4/208 (strict 4/208) | 9/9 |
+| quick_2species_FPCollisions_noEr | 0.292 | 1.758 | 127.8 | 803.7 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | 0.189 | 1.972 | 113.9 | 634.3 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | 0.289 | 2.679 | 126.8 | 927.2 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | 2.649 | 11.978 | 263.1 | 1618.3 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | 4.966 | 5.035 | 375.5 | 1310.1 | 0/207 (strict 0/207) | 9/9 |
+| tokamak_1species_FPCollisions_noEr | 9.823 | 2.476 | 132.8 | 1070.0 | 26/202 (strict 26/202) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withPhi1InDKE | 13.447 | 3.074 | 141.0 | 539.9 | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withQN | 6.236 | 2.511 | 127.1 | 530.8 | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_DKESTrajectories | 4.467 | 1.978 | 116.8 | 544.5 | 0/214 (strict 0/214) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_fullTrajectories | 55.872 | 4.653 | 334.2 | 2210.2 | 0/142 (strict 0/142) | 7/7 |
+| tokamak_1species_PASCollisions_noEr | 4.443 | - | 717.6 | - | 0/140 (strict 0/140) | 7/7 |
+| tokamak_1species_PASCollisions_noEr_Nx1 | 2.244 | - | 250.9 | - | 40/212 (strict 40/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr_withQN | 5.573 | - | 380.5 | - | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_PASCollisions_withEr_fullTrajectories | 49.671 | 8.912 | 574.4 | 930.5 | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_noEr | 5.812 | - | 478.3 | - | 0/212 (strict 0/212) | 9/9 |
+| tokamak_2species_PASCollisions_withEr_fullTrajectories | 15.995 | - | 442.1 | - | 1/212 (strict 1/212) | 9/9 |
+| transportMatrix_geometryScheme11 | 2.382 | 2.149 | 129.2 | 998.2 | 0/194 (strict 0/194) | 9/9 |
+| transportMatrix_geometryScheme2 | 2.268 | 1.989 | 118.8 | 851.7 | 12/194 (strict 0/194) | 9/9 |
 <!-- END REDUCED_SUITE_TABLE -->
 
 
