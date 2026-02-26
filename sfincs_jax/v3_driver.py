@@ -853,6 +853,7 @@ class _PasTokamakThetaPrecondCache:
     m_theta: jnp.ndarray  # (S, T, T) row-scaled theta-derivative matrix
     mirror_factor: jnp.ndarray  # (S, T) diagonal mirror factor in theta
     mask_active: jnp.ndarray  # (X, L) float mask (1.0 active, 0.0 inactive)
+    n_l_build: int  # L truncation used for the preconditioner
 
 
 @dataclass(frozen=True)
@@ -2381,7 +2382,19 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
     if not _pas_tokamak_theta_preconditioner_applicable(op):
         return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
 
-    cache_key = _rhsmode1_precond_cache_key(op, "pas_tokamak_theta")
+    n_x = int(op.n_x)
+    n_l_total = int(op.n_xi)
+    n_theta = int(op.n_theta)
+    n_l_build = n_l_total
+    lmax_env = os.environ.get("SFINCS_JAX_PAS_TOKAMAK_LMAX", "").strip()
+    if lmax_env:
+        try:
+            n_l_build = max(2, int(lmax_env))
+        except ValueError:
+            n_l_build = n_l_total
+    n_l_build = max(2, min(n_l_total, n_l_build))
+
+    cache_key = _rhsmode1_precond_cache_key(op, f"pas_tokamak_theta_l{int(n_l_build)}")
     precond_dtype = _precond_dtype()
     cached = _RHSMODE1_PAS_TOKAMAK_THETA_CACHE.get(cache_key)
     if cached is None:
@@ -2391,14 +2404,10 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
         assert pas is not None
 
         n_species = int(op.n_species)
-        n_x = int(op.n_x)
-        n_l = int(op.n_xi)
-        n_l_build = n_l
-        n_theta = int(op.n_theta)
 
         if n_theta <= 1:
             return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
-        if n_l < 2:
+        if n_l_total < 2:
             # The (L,theta) block-tridiagonal structure requires at least L=0,1.
             return _build_rhsmode1_block_preconditioner(op=op, reduce_full=reduce_full, expand_reduced=expand_reduced)
 
@@ -2413,7 +2422,7 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
         m_hats = np.asarray(cl.m_hats, dtype=np.float64)  # (S,)
         nxi_for_x = np.asarray(cl.n_xi_for_x, dtype=np.int32)  # (X,)
 
-        l_arr = np.arange(n_l, dtype=np.float64)
+        l_arr = np.arange(n_l_build, dtype=np.float64)
         coef_plus = (l_arr + 1.0) / (2.0 * l_arr + 3.0)
         coef_minus = np.where(l_arr > 0, l_arr / (2.0 * l_arr - 1.0), 0.0)
         coef_mirror_plus = (l_arr + 1.0) * (l_arr + 2.0) / (2.0 * l_arr + 3.0)
@@ -2424,14 +2433,15 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
         coef_mirror_plus_x = x[:, None] * coef_mirror_plus[None, :]  # (X,L)
         coef_mirror_minus_x = x[:, None] * coef_mirror_minus[None, :]  # (X,L)
 
-        mask_active = (np.arange(n_l, dtype=np.int32)[None, :] < nxi_for_x[:, None]).astype(np.float64)  # (X,L)
-        mask_plus = (mask_active[:, :-1] * mask_active[:, 1:]).astype(np.float64)  # (X,L-1)
+        mask_active_full = (np.arange(n_l_total, dtype=np.int32)[None, :] < nxi_for_x[:, None]).astype(np.float64)
+        mask_active = mask_active_full[:, :n_l_build]  # (X,L_build)
+        mask_plus = (mask_active[:, :-1] * mask_active[:, 1:]).astype(np.float64)  # (X,L_build-1)
         mask_minus = mask_plus  # same condition, just shifted in index
 
-        b_stream = np.zeros((n_x, n_l), dtype=np.float64)
-        b_mirror = np.zeros((n_x, n_l), dtype=np.float64)
-        c_stream = np.zeros((n_x, n_l), dtype=np.float64)
-        c_mirror = np.zeros((n_x, n_l), dtype=np.float64)
+        b_stream = np.zeros((n_x, n_l_build), dtype=np.float64)
+        b_mirror = np.zeros((n_x, n_l_build), dtype=np.float64)
+        c_stream = np.zeros((n_x, n_l_build), dtype=np.float64)
+        c_mirror = np.zeros((n_x, n_l_build), dtype=np.float64)
         b_stream[:, :-1] = coef_plus_x[:, :-1] * mask_plus
         b_mirror[:, :-1] = coef_mirror_plus_x[:, :-1] * mask_plus
         c_stream[:, 1:] = coef_minus_x[:, 1:] * mask_minus
@@ -2453,9 +2463,9 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
             reg = 1e-12
         reg = max(float(reg), 0.0)
 
-        pas_coef = np.asarray(pas.coef, dtype=np.float64)  # (S,X,L)
+        pas_coef = np.asarray(pas.coef, dtype=np.float64)[:, :, :n_l_build]  # (S,X,L_build)
         identity_shift = float(op.fblock.identity_shift)
-        diag_vals = pas_coef + identity_shift + reg  # (S,X,L)
+        diag_vals = pas_coef + identity_shift + reg  # (S,X,L_build)
         # For inactive (x,L), decouple by setting diag=1 and couplings=0 (handled above).
         diag_vals = diag_vals * mask_active[None, :, :] + (1.0 - mask_active)[None, :, :]
 
@@ -2477,8 +2487,8 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
         twot = 2 * n_theta
         inv_a01 = np.zeros((n_species, n_x, twot, twot), dtype=np.float64)
         g01 = np.zeros((n_species, n_x, twot, n_theta), dtype=np.float64)
-        inv_a = np.zeros((n_species, n_x, max(0, n_l - 2), n_theta, n_theta), dtype=np.float64)
-        g = np.zeros((n_species, n_x, max(0, n_l - 3), n_theta, n_theta), dtype=np.float64)
+        inv_a = np.zeros((n_species, n_x, max(0, n_l_build - 2), n_theta, n_theta), dtype=np.float64)
+        g = np.zeros((n_species, n_x, max(0, n_l_build - 3), n_theta, n_theta), dtype=np.float64)
 
         for s in range(n_species):
             m_s = m_theta[s, :, :]
@@ -2516,7 +2526,7 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
 
                 # Eliminate L>=2 using standard block-Thomas with previous G having shape (2T,T) for l=2.
                 g_prev = g01_loc
-                for l in range(2, n_l):
+                for l in range(2, n_l_build):
                     a_diag = float(diag_vals[s, ix, l])
                     if l == 2:
                         c2 = float(c_stream[ix, l]) * m_s + float(c_mirror[ix, l]) * mir_s
@@ -2533,7 +2543,7 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
                     if not np.all(np.isfinite(a_inv)):
                         a_inv = np.linalg.pinv(a_eff, rcond=1e-12)
                     inv_a[s, ix, l - 2, :, :] = a_inv
-                    if l < n_l - 1:
+                    if l < n_l_build - 1:
                         b_l = float(b_stream[ix, l]) * m_s + float(b_mirror[ix, l]) * mir_s
                         g_l = a_inv @ b_l
                         g[s, ix, l - 2, :, :] = g_l
@@ -2548,7 +2558,8 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
             c_mirror=jnp.asarray(c_mirror, dtype=precond_dtype),
             m_theta=jnp.asarray(m_theta, dtype=precond_dtype),
             mirror_factor=jnp.asarray(mirror_factor, dtype=precond_dtype),
-            mask_active=jnp.asarray(mask_active, dtype=precond_dtype),
+            mask_active=jnp.asarray(mask_active_full, dtype=precond_dtype),
+            n_l_build=int(n_l_build),
         )
         _RHSMODE1_PAS_TOKAMAK_THETA_CACHE[cache_key] = cached
 
@@ -2561,26 +2572,29 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
     m_theta = cached.m_theta
     mirror_factor = cached.mirror_factor
     mask_active = cached.mask_active
+    n_l_build = int(cached.n_l_build)
 
     f_shape = op.fblock.f_shape  # (S,X,L,T,Z)
-    n_l = int(f_shape[2])
+    n_l_total = int(f_shape[2])
     n_theta = int(f_shape[3])
     n_zeta = int(f_shape[4])
 
     def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
         r_full = jnp.asarray(r_full, dtype=jnp.float64)
-        f_rhs = r_full[: op.f_size].reshape(f_shape)  # (S,X,L,T,Z)
-        f_rhs = jnp.asarray(f_rhs, dtype=precond_dtype)
-        f_rhs = f_rhs * mask_active[None, :, :, None, None]
+        f_rhs_full = r_full[: op.f_size].reshape(f_shape)  # (S,X,L,T,Z)
+        f_rhs_full = jnp.asarray(f_rhs_full, dtype=precond_dtype)
+        f_rhs_full = f_rhs_full * mask_active[None, :, :, None, None]
 
         if n_zeta == 1:
-            f_rhs = f_rhs[:, :, :, :, 0]  # (S,X,L,T)
+            f_rhs_full = f_rhs_full[:, :, :, :, 0]  # (S,X,L,T)
+            f_rhs = f_rhs_full[:, :, :n_l_build, :]
+            f_rhs_high = f_rhs_full[:, :, n_l_build:, :]
             rhs0 = f_rhs[:, :, 0, :]  # (S,X,T)
             rhs1 = f_rhs[:, :, 1, :]  # (S,X,T)
             rhs01 = jnp.concatenate([rhs0, rhs1], axis=-1)  # (S,X,2T)
             d01 = jnp.einsum("sxij,sxj->sxi", inv_a01, rhs01)  # (S,X,2T)
 
-            if n_l == 2:
+            if n_l_build == 2:
                 f0 = d01[:, :, :n_theta]
                 f1 = d01[:, :, n_theta:]
                 f_all = jnp.concatenate([f0[:, :, None, :], f1[:, :, None, :]], axis=2)  # (S,X,2,T)
@@ -2604,7 +2618,7 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
                 d_rest = jnp.transpose(d_out, (1, 2, 0, 3))  # (S,X,L-2,T)
 
                 f_last = d_rest[:, :, -1, :]  # (S,X,T)
-                if n_l > 3:
+                if n_l_build > 3:
                     g_l = jnp.transpose(g, (2, 0, 1, 3, 4))  # (L-3,S,X,T,T)
                     d_rev = jnp.transpose(d_rest[:, :, :-1, :], (2, 0, 1, 3))[::-1]  # (L-3,S,X,T)
                     g_rev = g_l[::-1]
@@ -2631,18 +2645,22 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
                     axis=2,
                 )  # (S,X,L,T)
 
+            if n_l_build < n_l_total:
+                f_all = jnp.concatenate([f_all, f_rhs_high], axis=2)
             f_all = f_all * mask_active[None, :, :, None]
             f_all = jnp.asarray(f_all, dtype=jnp.float64)
             z_f = f_all[:, :, :, :, None].reshape((-1,))
         else:
             # Apply the same theta/L preconditioner independently to each zeta plane.
-            f_rhs_z = jnp.transpose(f_rhs, (4, 0, 1, 2, 3))  # (Z,S,X,L,T)
+            f_rhs_z_full = jnp.transpose(f_rhs_full, (4, 0, 1, 2, 3))  # (Z,S,X,L,T)
+            f_rhs_z = f_rhs_z_full[:, :, :, :n_l_build, :]
+            f_rhs_z_high = f_rhs_z_full[:, :, :, n_l_build:, :]
             rhs0 = f_rhs_z[:, :, :, 0, :]  # (Z,S,X,T)
             rhs1 = f_rhs_z[:, :, :, 1, :]  # (Z,S,X,T)
             rhs01 = jnp.concatenate([rhs0, rhs1], axis=-1)  # (Z,S,X,2T)
             d01 = jnp.einsum("sxij,zsxj->zsxi", inv_a01, rhs01)  # (Z,S,X,2T)
 
-            if n_l == 2:
+            if n_l_build == 2:
                 f0 = d01[:, :, :, :n_theta]
                 f1 = d01[:, :, :, n_theta:]
                 f_all = jnp.concatenate([f0[:, :, :, None, :], f1[:, :, :, None, :]], axis=3)  # (Z,S,X,2,T)
@@ -2666,7 +2684,7 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
                 d_rest = jnp.transpose(d_out, (1, 2, 3, 0, 4))  # (Z,S,X,L-2,T)
 
                 f_last = d_rest[:, :, :, -1, :]  # (Z,S,X,T)
-                if n_l > 3:
+                if n_l_build > 3:
                     g_l = jnp.transpose(g, (2, 0, 1, 3, 4))  # (L-3,S,X,T,T)
                     d_rev = jnp.transpose(d_rest[:, :, :, :-1, :], (3, 0, 1, 2, 4))[::-1]  # (L-3,Z,S,X,T)
                     g_rev = g_l[::-1]
@@ -2693,6 +2711,8 @@ def _build_rhsmode1_pas_tokamak_theta_preconditioner(
                     axis=3,
                 )  # (Z,S,X,L,T)
 
+            if n_l_build < n_l_total:
+                f_all = jnp.concatenate([f_all, f_rhs_z_high], axis=3)
             f_all = f_all * mask_active[None, None, :, :, None]
             f_all = jnp.asarray(f_all, dtype=jnp.float64)
             f_all = jnp.transpose(f_all, (1, 2, 3, 4, 0))  # (S,X,L,T,Z)
@@ -7726,15 +7746,19 @@ def solve_v3_full_system_linear_gmres(
         if emit is not None and float(tol) < tol_old:
             emit(1, f"solve_v3_full_system_linear_gmres: FP tol tightened {tol_old:.1e} -> {float(tol):.1e}")
     pas_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_TOL", "").strip()
-    try:
-        pas_tol = float(pas_tol_env) if pas_tol_env else 1.0e-8
-    except ValueError:
-        pas_tol = 1.0e-8
+    if pas_tol_env:
+        try:
+            pas_tol = float(pas_tol_env)
+        except ValueError:
+            pas_tol = None
+    else:
+        pas_tol = None
     if (
         int(op.rhs_mode) == 1
         and (not bool(op.include_phi1))
         and op.fblock.pas is not None
         and int(op.constraint_scheme) == 2
+        and pas_tol is not None
         and pas_tol > 0.0
     ):
         tol_old = float(tol)
@@ -10440,6 +10464,11 @@ def solve_v3_full_system_linear_gmres(
             }
         ):
             strong_ratio = max(float(strong_ratio), 1.0e2)
+            if rhs1_precond_kind == "pas_tokamak_theta":
+                # Avoid expensive strong-preconditioner fallbacks for large tokamak PAS
+                # runs; the tokamak theta preconditioner typically converges without
+                # needing xblock_tz_lmax, and the fallback cost dominates runtime.
+                strong_ratio = max(float(strong_ratio), 1.0e4)
         strong_precond_trigger = bool(res_ratio > strong_ratio) if strong_ratio > 0 else True
         fp_strong_abs_env = os.environ.get("SFINCS_JAX_FP_STRONG_ABS", "").strip()
         try:

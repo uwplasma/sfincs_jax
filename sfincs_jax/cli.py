@@ -574,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cores is None and not os.environ.get("SFINCS_JAX_CORES"):
         if not (os.environ.get("SFINCS_JAX_CI") or os.environ.get("CI")):
-            cores_auto = min(8, os.cpu_count() or 1)
+            cores_auto = min(3, os.cpu_count() or 1)
             if cores_auto > 1:
                 args.cores = cores_auto
     _apply_cores_setting(args.cores)

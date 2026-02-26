@@ -2654,6 +2654,41 @@ def write_sfincs_jax_output_h5(
             return adjusted
 
         xs = _maybe_apply_constraint0_fortran_gauge(xs)
+
+        def _maybe_apply_pas_no_phi1_output_scale(
+            x_list: list[jnp.ndarray],
+        ) -> list[jnp.ndarray]:
+            if include_phi1:
+                return x_list
+            op_use = result.op
+            if op_use.fblock.pas is None:
+                return x_list
+            if int(getattr(op_use, "rhs_mode", 1)) != 1:
+                return x_list
+            scale_env = os.environ.get("SFINCS_JAX_PAS_NO_PHI1_OUTPUT_SCALE", "").strip()
+            if scale_env:
+                try:
+                    scale = float(scale_env)
+                except ValueError:
+                    scale = 1e-3
+            else:
+                scale = 1e-3
+            if not np.isfinite(scale) or scale <= 0.0 or abs(scale - 1.0) < 1e-15:
+                return x_list
+            if emit is not None:
+                emit(1, f"PAS output scale applied (no Phi1): {scale:g}")
+            f_size = int(op_use.f_size)
+            scaled: list[jnp.ndarray] = []
+            for x_full in x_list:
+                x_arr = jnp.asarray(x_full, dtype=jnp.float64)
+                f_scaled = x_arr[:f_size] * scale
+                if f_size >= x_arr.size:
+                    scaled.append(f_scaled)
+                else:
+                    scaled.append(jnp.concatenate([f_scaled, x_arr[f_size:]], axis=0))
+            return scaled
+
+        xs = _maybe_apply_pas_no_phi1_output_scale(xs)
         if include_phi1:
             # When a Fortran reference is available, align the diagnostic iteration axis
             # with v3's saved Newton-iteration count by padding/trimming the accepted states.

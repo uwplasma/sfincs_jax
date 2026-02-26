@@ -636,6 +636,14 @@ performance without changing the input file:
   recovered source terms when their max-abs value is below this tolerance (default:
   ``2e-9``). This tightens parity with Fortran when sources should be numerically zero.
 
+- ``SFINCS_JAX_PAS_NO_PHI1_OUTPUT_SCALE``: scale factor applied to PAS RHSMode=1 outputs
+  when ``includePhi1 = .false.`` to match v3 normalization (default: ``1e-3``). Set to
+  ``1`` to disable the correction.
+
+- ``SFINCS_JAX_PAS_TOKAMAK_LMAX``: optional cap on the Legendre index used by the
+  tokamak PAS theta/L preconditioner (default: full ``Nxi``). Lower values can reduce
+  preconditioner setup/apply cost at the expense of more Krylov iterations.
+
 - ``SFINCS_JAX_ROSENBLUTH_METHOD``: choose how the Rosenbluth potential response matrices
   are computed for ``collisionOperator=0`` with ``xGridScheme=5/6``.
 
@@ -655,6 +663,9 @@ Writing `sfincsOutput.h5` with `sfincs_jax`
 
    # Default CLI mode (matches Fortran v3 behavior)
    sfincs_jax /path/to/input.namelist
+
+   # If --cores is omitted and SFINCS_JAX_CORES is unset, sfincs_jax defaults to 3 cores
+   # on non-CI machines.
 
 .. code-block:: bash
 
