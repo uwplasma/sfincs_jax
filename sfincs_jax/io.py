@@ -2365,12 +2365,9 @@ def write_sfincs_jax_output_h5(
             and active_total_size <= dense_pas_cutoff
             and (not force_krylov)
         ):
-            solve_method = "dense"
-            if emit is not None:
-                if use_dkes:
-                    emit(1, "write_sfincs_jax_output_h5: PAS constraintScheme=2 + DKES -> using dense solve")
-                else:
-                    emit(1, "write_sfincs_jax_output_h5: PAS RHSMode=1 small system -> using dense solve")
+            # Default to Krylov for PAS constraintScheme=2 to preserve parity; dense solves
+            # can converge to a different nullspace component for these singular systems.
+            solve_method = "incremental"
         elif include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
             # For includePhi1 + linear kinetic equation runs, use a dense solve for
             # small systems to preserve fixture parity, otherwise fall back to GMRES.

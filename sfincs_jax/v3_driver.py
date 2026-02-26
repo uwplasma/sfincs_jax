@@ -1025,7 +1025,8 @@ def _rhsmode1_dense_fallback_max(op: V3FullSystemOperator) -> int:
     if op.fblock.fp is None:
         # PAS operators are sensitive to dense fallback (can drift from PETSc-style
         # approximate solutions), so disable by default unless explicitly overridden
-        # or constraintScheme=0.
+        # or constraintScheme=0. Allow a small-size carve-out for tiny PAS systems
+        # to keep parity with reference fixtures.
         dense_pas_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX", "").strip()
         if dense_pas_env:
             try:
@@ -2059,6 +2060,9 @@ def _build_rhsmode1_xupwind_preconditioner(
             block_sub=(None if block_sub is None else jnp.asarray(block_sub, dtype=precond_dtype)),
         )
         _RHSMODE1_XUPWIND_PRECOND_CACHE[cache_key] = cached
+        alias_key = _rhsmode1_precond_cache_key(op, "xupwind")
+        if alias_key not in _RHSMODE1_XUPWIND_PRECOND_CACHE:
+            _RHSMODE1_XUPWIND_PRECOND_CACHE[alias_key] = cached
 
     diag = cached.diag  # (S,X,L)
     sub = cached.sub  # (S,X,L)
@@ -2785,6 +2789,11 @@ def _build_rhsmode1_pas_tz_preconditioner(
             pas_tz_lmax = 8
         else:
             pas_tz_lmax = 12
+        if op.fblock.exb_theta is None and op.fblock.exb_zeta is None and op.fblock.magdrift_theta is None and op.fblock.magdrift_zeta is None and op.fblock.magdrift_xidot is None and op.fblock.er_xdot is None and op.fblock.er_xidot is None:
+            # Pure PAS (no drift/Er) systems are block-diagonal in x; use full-L coupling
+            # to reduce Krylov iterations even on moderately sized angular grids.
+            if n_tz <= 256:
+                pas_tz_lmax = n_l_full
     if n_l_full >= 2:
         n_l_use = min(n_l_full, max(2, int(pas_tz_lmax)))
     else:
@@ -7918,6 +7927,14 @@ def solve_v3_full_system_linear_gmres(
         and int(op.phi1_size) == 0
     )
     if use_pas_projection:
+        pas_project_min_env = os.environ.get("SFINCS_JAX_PAS_PROJECT_MIN", "").strip()
+        try:
+            pas_project_min = int(pas_project_min_env) if pas_project_min_env else 2000
+        except ValueError:
+            pas_project_min = 2000
+        if int(op.total_size) < max(0, int(pas_project_min)):
+            use_pas_projection = False
+    if use_pas_projection:
         # Force a reduced system when projecting out constraintScheme=2 sources.
         use_active_dof_mode = True
 
@@ -7952,6 +7969,18 @@ def solve_v3_full_system_linear_gmres(
             active_size = int(active_idx_np.shape[0])
             if emit is not None:
                 emit(1, f"solve_v3_full_system_linear_gmres: active-DOF mode enabled (size={active_size}/{int(op.total_size)})")
+
+    # Tiny PAS systems can be ill-conditioned; allow full-restart GMRES to reach
+    # the tight PETSc-style tolerances used in parity fixtures.
+    pas_full_gmres_env = os.environ.get("SFINCS_JAX_PAS_FULL_GMRES_MAX", "").strip()
+    try:
+        pas_full_gmres_max = int(pas_full_gmres_env) if pas_full_gmres_env else 1200
+    except ValueError:
+        pas_full_gmres_max = 1200
+    if op.fblock.pas is not None and int(active_size) <= max(0, int(pas_full_gmres_max)):
+        restart = max(int(restart), int(active_size))
+        if maxiter is None or int(maxiter) < int(active_size):
+            maxiter = int(active_size)
 
     full_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_FULL_PRECOND", "").strip().lower()
     if full_precond_env in {"0", "false", "no", "off"}:
@@ -8289,9 +8318,23 @@ def solve_v3_full_system_linear_gmres(
                 if full_precond_requested and int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
                     if tokamak_like and (not schur_tokamak) and er_abs <= schur_er_min:
                         if op.fblock.pas is not None:
-                            # Tokamak-like PAS systems benefit from the PAS hybrid (line + x-coarse)
-                            # preconditioner; avoid the expensive global Schur/xblock path here.
-                            rhs1_precond_kind = "pas_hybrid"
+                            # For tiny tokamak PAS systems, prefer the xblock_tz preconditioner
+                            # (matches legacy fixtures). For larger systems, keep the lighter
+                            # PAS hybrid to avoid expensive dense angular blocks.
+                            xblock_small_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_SMALL_MAX", "").strip()
+                            try:
+                                xblock_small_max = int(xblock_small_env) if xblock_small_env else 4000
+                            except ValueError:
+                                xblock_small_max = 4000
+                            if (
+                                int(op.total_size) <= max(1, int(xblock_small_max))
+                                and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= max(1, int(xblock_tz_max))
+                            ):
+                                rhs1_precond_kind = "xblock_tz"
+                            else:
+                                # Tokamak-like PAS systems benefit from the PAS hybrid (line + x-coarse)
+                                # preconditioner; avoid the expensive global Schur/xblock path here.
+                                rhs1_precond_kind = "pas_hybrid"
                         else:
                             pas_schur_small_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SCHUR_SMALL_MAX", "").strip()
                             try:
@@ -8662,7 +8705,7 @@ def solve_v3_full_system_linear_gmres(
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
         rhs1_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
-    if rhs1_precond_env == "" and rhs1_precond_kind in {None, "point", "theta_line", "zeta_line", "xmg", "collision"}:
+    if rhs1_precond_env == "":
         shard_axis = _matvec_shard_axis(op)
         if shard_axis in {"theta", "zeta"} and jax.device_count() > 1:
             pas_shard_xmg_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SHARD_XMG_MIN", "").strip()
@@ -8691,14 +8734,31 @@ def solve_v3_full_system_linear_gmres(
             except ValueError:
                 schwarz_auto_min = 120000
             force_schwarz = bool(schwarz_auto_min_env) and int(schwarz_auto_min) <= 0
-            if rhs1_precond_kind in {"theta_line", "zeta_line"} and rhs1_precond_kind != f"{shard_axis}_line":
-                pass
-            elif keep_xmg_for_large_pas_er or keep_xmg_for_large_fp:
-                pass
-            elif force_schwarz or int(op.total_size) >= max(1, int(schwarz_auto_min)):
+            if force_schwarz:
                 rhs1_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
-            else:
-                rhs1_precond_kind = "theta_line" if shard_axis == "theta" else "zeta_line"
+            elif rhs1_precond_kind in {
+                None,
+                "point",
+                "point_xdiag",
+                "theta_line",
+                "theta_line_xdiag",
+                "zeta_line",
+                "xmg",
+                "collision",
+                "pas_lite",
+                "pas_hybrid",
+                "pas_tz",
+                "pas_tokamak_theta",
+                "pas_ilu",
+            }:
+                if rhs1_precond_kind in {"theta_line", "zeta_line"} and rhs1_precond_kind != f"{shard_axis}_line":
+                    pass
+                elif keep_xmg_for_large_pas_er or keep_xmg_for_large_fp:
+                    pass
+                elif int(op.total_size) >= max(1, int(schwarz_auto_min)):
+                    rhs1_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+                else:
+                    rhs1_precond_kind = "theta_line" if shard_axis == "theta" else "zeta_line"
     if (
         rhs1_precond_env == ""
         and rhs1_precond_kind == "schur"
@@ -8874,6 +8934,13 @@ def solve_v3_full_system_linear_gmres(
         sparse_max_size = int(sparse_max_env) if sparse_max_env else default_sparse_max
     except ValueError:
         sparse_max_size = default_sparse_max
+    pas_sparse_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SPARSE_ILU_MIN", "").strip()
+    try:
+        pas_sparse_min = int(pas_sparse_min_env) if pas_sparse_min_env else 2000
+    except ValueError:
+        pas_sparse_min = 2000
+    if op.fblock.pas is not None and int(active_size) < max(0, int(pas_sparse_min)):
+        sparse_precond_mode = "off"
     sparse_drop_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DROP_TOL", "").strip()
     sparse_drop_rel_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DROP_REL", "").strip()
     sparse_ilu_drop_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_DROP_TOL", "").strip()
@@ -9407,7 +9474,14 @@ def solve_v3_full_system_linear_gmres(
             and (not bool(op.include_phi1))
             and int(op.constraint_scheme) != 0
         )
-        if disable_dense_pas:
+        pas_dense_allow_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_DENSE_ALLOW_MAX", "").strip()
+        try:
+            pas_dense_allow_max = int(pas_dense_allow_env) if pas_dense_allow_env else 4000
+        except ValueError:
+            pas_dense_allow_max = 4000
+        if disable_dense_pas and int(active_size) <= max(0, int(pas_dense_allow_max)):
+            disable_dense_pas = False
+        if disable_dense_pas or op.fblock.pas is not None:
             dense_shortcut_ratio = 0.0
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
         if disable_dense_pas:
@@ -10711,9 +10785,15 @@ def solve_v3_full_system_linear_gmres(
                 and rhs1_precond_kind in {"pas_lite", "pas_hybrid", "pas_tz"}
                 and np.isfinite(float(res_reduced.residual_norm))
             ):
-                # Avoid expensive Schur builds when PAS-lite/hybrid is already active and
-                # the residual is finite; keep PAS-specific strong preconditioner instead.
-                strong_precond_kind = "pas_hybrid"
+                pas_schur_small_env = os.environ.get("SFINCS_JAX_PAS_SCHUR_SMALL_MAX", "").strip()
+                try:
+                    pas_schur_small_max = int(pas_schur_small_env) if pas_schur_small_env else 2000
+                except ValueError:
+                    pas_schur_small_max = 2000
+                if int(active_size) > max(0, int(pas_schur_small_max)):
+                    # Avoid expensive Schur builds when PAS-lite/hybrid is already active
+                    # and the residual is finite; keep PAS-specific strong preconditioner instead.
+                    strong_precond_kind = "pas_hybrid"
             _mark("rhs1_strong_precond_build_start")
             if emit is not None:
                 emit(
@@ -11252,6 +11332,8 @@ def solve_v3_full_system_linear_gmres(
                 else:
                     # Default: avoid XLA dense-solve scratch allocations for medium/large systems.
                     use_host_dense = bool(use_implicit) and int(active_size) >= 2000
+                if op.fblock.pas is not None and int(active_size) <= 2000:
+                    use_host_dense = True
 
                 if use_host_dense:
                     import scipy.linalg as sla  # noqa: PLC0415
@@ -11307,15 +11389,28 @@ def solve_v3_full_system_linear_gmres(
                         lu, piv = sla.lu_factor(a_np)
 
                     if lu is not None and piv is not None:
+                        refine_steps = 0
+                        if op.fblock.pas is not None and int(active_size) <= 2000:
+                            refine_steps = 2
                         out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
 
                         def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
                             rhs_np = np.asarray(rhs_np, dtype=np.float64)
-                            return np.asarray(sla.lu_solve((lu, piv), rhs_np), dtype=np.float64)
+                            x_np = np.asarray(sla.lu_solve((lu, piv), rhs_np), dtype=np.float64)
+                            for _ in range(int(refine_steps)):
+                                r_np = rhs_np - a_np @ x_np
+                                dx_np = np.asarray(sla.lu_solve((lu, piv), r_np), dtype=np.float64)
+                                x_np = x_np + dx_np
+                            return x_np
 
                         def _solveT_cb(rhs_np: np.ndarray) -> np.ndarray:
                             rhs_np = np.asarray(rhs_np, dtype=np.float64)
-                            return np.asarray(sla.lu_solve((lu, piv), rhs_np, trans=1), dtype=np.float64)
+                            x_np = np.asarray(sla.lu_solve((lu, piv), rhs_np, trans=1), dtype=np.float64)
+                            for _ in range(int(refine_steps)):
+                                r_np = rhs_np - a_np.T @ x_np
+                                dx_np = np.asarray(sla.lu_solve((lu, piv), r_np, trans=1), dtype=np.float64)
+                                x_np = x_np + dx_np
+                            return x_np
 
                         def _solve_host(_mv, rhs: jnp.ndarray) -> jnp.ndarray:
                             return jax.pure_callback(_solve_cb, out_spec, rhs)
