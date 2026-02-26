@@ -10426,6 +10426,10 @@ def solve_v3_full_system_linear_gmres(
             and op.fblock.pas is not None
             and rhs1_precond_kind
             in {
+                "theta_line",
+                "theta_line_xdiag",
+                "theta_dd",
+                "theta_schwarz",
                 "xblock_tz",
                 "xblock_tz_lmax",
                 "pas_hybrid",
