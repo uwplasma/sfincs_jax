@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -69,6 +71,40 @@ def _sparse_row_stencil_max_nnz() -> int:
         return max(1, int(env))
     except ValueError:
         return 9
+
+
+@lru_cache(maxsize=8)
+def _ppermute_pairs(axis_size: int) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+    axis_size = max(1, int(axis_size))
+    left = tuple((i, (i + 1) % axis_size) for i in range(axis_size))
+    right = tuple((i, (i - 1) % axis_size) for i in range(axis_size))
+    return left, right
+
+
+def _periodic_halo_exchange(
+    f: jnp.ndarray,
+    *,
+    axis: int,
+    axis_name: str,
+    width: int,
+    axis_size: int,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    if width <= 0:
+        return jnp.zeros_like(f), jnp.zeros_like(f)
+    left, right = _ppermute_pairs(int(axis_size))
+    n_local = int(f.shape[axis])
+    if n_local <= 0:
+        return jnp.zeros_like(f), jnp.zeros_like(f)
+    width = min(int(width), int(n_local))
+    left_send = jnp.take(f, jnp.arange(width), axis=axis)
+    right_send = jnp.take(f, jnp.arange(n_local - width, n_local), axis=axis)
+    if axis_size <= 1:
+        left_halo = right_send
+        right_halo = left_send
+    else:
+        left_halo = jax.lax.ppermute(right_send, axis_name, perm=left)
+        right_halo = jax.lax.ppermute(left_send, axis_name, perm=right)
+    return left_halo, right_halo
 
 
 def extract_sparse_circulant_stencil(
@@ -150,6 +186,43 @@ def apply_periodic_stencil_roll(
     for shift, coeff in zip(shifts, coeffs):
         if coeff != 0.0:
             out = out + jnp.asarray(coeff, dtype=f.dtype) * jnp.roll(f, shift=int(shift), axis=axis)
+    return out
+
+
+def apply_periodic_stencil_halo(
+    f: jnp.ndarray,
+    *,
+    shifts: tuple[int, ...],
+    coeffs: tuple[float, ...],
+    axis: int,
+    axis_name: str,
+    axis_size: int | None = None,
+) -> jnp.ndarray:
+    """Apply a periodic stencil with halo exchange along a sharded axis."""
+    if not shifts:
+        return jnp.zeros_like(f)
+    width = max(abs(int(s)) for s in shifts)
+    if width <= 0:
+        return apply_periodic_stencil_roll(f, shifts=shifts, coeffs=coeffs, axis=axis)
+    axis_size_use = int(axis_size) if axis_size is not None else int(jax.local_device_count())
+    n_local = int(f.shape[axis])
+    if n_local <= width:
+        # Fall back to roll if the local shard is too small.
+        return apply_periodic_stencil_roll(f, shifts=shifts, coeffs=coeffs, axis=axis)
+    left_halo, right_halo = _periodic_halo_exchange(
+        f, axis=axis, axis_name=axis_name, width=width, axis_size=axis_size_use
+    )
+    f_ext = jnp.concatenate([left_halo, f, right_halo], axis=axis)
+    out = jnp.zeros_like(f)
+    slice_sizes = list(f.shape)
+    for shift, coeff in zip(shifts, coeffs):
+        if coeff == 0.0:
+            continue
+        start = width + int(shift)
+        start_idx = [0] * f_ext.ndim
+        start_idx[axis] = int(start)
+        block = jax.lax.dynamic_slice(f_ext, start_idx, slice_sizes)
+        out = out + jnp.asarray(coeff, dtype=f.dtype) * block
     return out
 
 

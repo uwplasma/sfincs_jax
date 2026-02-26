@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from .periodic_stencil import (
+    apply_periodic_stencil_halo,
     apply_periodic_stencil_roll,
     apply_sparse_row_stencil_gather,
     periodic_stencil_runtime_enabled,
@@ -195,7 +196,12 @@ class ExBZetaV3Operator:
         )
 
 
-def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
+def apply_exb_theta_v3(
+    op: ExBThetaV3Operator,
+    f: jnp.ndarray,
+    *,
+    shard_axis: str | None = None,
+) -> jnp.ndarray:
     """Apply the ExB `d/dtheta` term to `f`.
 
     Parameters
@@ -225,12 +231,21 @@ def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     factor = (op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat)
 
     if periodic_stencil_runtime_enabled() and op.ddtheta_stencil_shifts:
-        dtheta_f = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddtheta_stencil_shifts,
-            coeffs=op.ddtheta_stencil_coeffs,
-            axis=3,
-        )
+        if shard_axis == "theta" and jax.device_count() > 1:
+            dtheta_f = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddtheta_stencil_shifts,
+                coeffs=op.ddtheta_stencil_coeffs,
+                axis=3,
+                axis_name="theta",
+            )
+        else:
+            dtheta_f = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddtheta_stencil_shifts,
+                coeffs=op.ddtheta_stencil_coeffs,
+                axis=3,
+            )
     elif (
         op.ddtheta_sparse_cols is not None
         and op.ddtheta_sparse_vals is not None
@@ -250,7 +265,12 @@ def apply_exb_theta_v3(op: ExBThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     return out * mask[None, :, :, None, None]
 
 
-def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
+def apply_exb_zeta_v3(
+    op: ExBZetaV3Operator,
+    f: jnp.ndarray,
+    *,
+    shard_axis: str | None = None,
+) -> jnp.ndarray:
     """Apply the ExB `d/dzeta` term to `f`."""
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
@@ -274,12 +294,21 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     factor = (-op.alpha * op.delta * 0.5 * op.dphi_hat_dpsi_hat)
 
     if periodic_stencil_runtime_enabled() and op.ddzeta_stencil_shifts:
-        dzeta_f = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddzeta_stencil_shifts,
-            coeffs=op.ddzeta_stencil_coeffs,
-            axis=4,
-        )
+        if shard_axis == "zeta" and jax.device_count() > 1:
+            dzeta_f = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddzeta_stencil_shifts,
+                coeffs=op.ddzeta_stencil_coeffs,
+                axis=4,
+                axis_name="zeta",
+            )
+        else:
+            dzeta_f = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddzeta_stencil_shifts,
+                coeffs=op.ddzeta_stencil_coeffs,
+                axis=4,
+            )
     elif (
         op.ddzeta_sparse_cols is not None
         and op.ddzeta_sparse_vals is not None
@@ -299,5 +328,5 @@ def apply_exb_zeta_v3(op: ExBZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
     return out * mask[None, :, :, None, None]
 
 
-apply_exb_theta_v3_jit = jax.jit(apply_exb_theta_v3, static_argnums=())
-apply_exb_zeta_v3_jit = jax.jit(apply_exb_zeta_v3, static_argnums=())
+apply_exb_theta_v3_jit = jax.jit(apply_exb_theta_v3, static_argnames=("shard_axis",))
+apply_exb_zeta_v3_jit = jax.jit(apply_exb_zeta_v3, static_argnames=("shard_axis",))

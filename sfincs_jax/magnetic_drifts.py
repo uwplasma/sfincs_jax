@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from .periodic_stencil import (
+    apply_periodic_stencil_halo,
     apply_periodic_stencil_roll,
     apply_sparse_row_stencil_gather,
     periodic_stencil_runtime_enabled,
@@ -21,6 +22,13 @@ def _mask_xi(n_xi_for_x: jnp.ndarray, n_xi_max: int) -> jnp.ndarray:
     # (Nx, Nxi)
     l = jnp.arange(n_xi_max, dtype=jnp.int32)[None, :]
     return l < n_xi_for_x[:, None]
+
+
+def _apply_xi_mask(f: jnp.ndarray, n_xi_for_x: jnp.ndarray) -> jnp.ndarray:
+    """Zero invalid xi modes so truncated-L blocks do not leak via L-coupling."""
+    n_xi = f.shape[2]
+    mask = _mask_xi(n_xi_for_x.astype(jnp.int32), int(n_xi)).astype(f.dtype)  # (X,L)
+    return f * mask[None, :, :, None, None]
 
 
 def _offdiag2_coupling_plus(n_xi: int) -> jnp.ndarray:
@@ -400,6 +408,7 @@ def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: 
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     f = jnp.asarray(f, dtype=jnp.float64)
+    f = _apply_xi_mask(f, op.n_xi_for_x)
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_theta != op.ddtheta_plus.shape[0]:
         raise ValueError("f theta axis does not match ddtheta_plus/minus")
@@ -482,7 +491,12 @@ def apply_magnetic_drift_theta_v3_offdiag2(op: MagneticDriftThetaV3Operator, f: 
     return out * mask[None, :, :, None, None]
 
 
-def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
+def apply_magnetic_drift_theta_v3(
+    op: MagneticDriftThetaV3Operator,
+    f: jnp.ndarray,
+    *,
+    shard_axis: str | None = None,
+) -> jnp.ndarray:
     """Apply the full magnetic-drift d/dtheta term for the currently supported physics.
 
     Notes
@@ -495,6 +509,7 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     f = jnp.asarray(f, dtype=jnp.float64)
+    f = _apply_xi_mask(f, op.n_xi_for_x)
     _n_species, n_x, n_xi, n_theta, _n_zeta = f.shape
     if n_theta != op.ddtheta_plus.shape[0]:
         raise ValueError("f theta axis does not match ddtheta_plus/minus")
@@ -510,12 +525,21 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
     if periodic_stencil_runtime_enabled() and op.ddtheta_plus_stencil_shifts:
-        dtheta_plus = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddtheta_plus_stencil_shifts,
-            coeffs=op.ddtheta_plus_stencil_coeffs,
-            axis=3,
-        )
+        if shard_axis == "theta" and jax.device_count() > 1:
+            dtheta_plus = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddtheta_plus_stencil_shifts,
+                coeffs=op.ddtheta_plus_stencil_coeffs,
+                axis=3,
+                axis_name="theta",
+            )
+        else:
+            dtheta_plus = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddtheta_plus_stencil_shifts,
+                coeffs=op.ddtheta_plus_stencil_coeffs,
+                axis=3,
+            )
     elif (
         op.ddtheta_plus_sparse_cols is not None
         and op.ddtheta_plus_sparse_vals is not None
@@ -530,12 +554,21 @@ def apply_magnetic_drift_theta_v3(op: MagneticDriftThetaV3Operator, f: jnp.ndarr
     else:
         dtheta_plus = jnp.einsum("ij,sxljz->sxliz", op.ddtheta_plus.astype(jnp.float64), f)
     if periodic_stencil_runtime_enabled() and op.ddtheta_minus_stencil_shifts:
-        dtheta_minus = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddtheta_minus_stencil_shifts,
-            coeffs=op.ddtheta_minus_stencil_coeffs,
-            axis=3,
-        )
+        if shard_axis == "theta" and jax.device_count() > 1:
+            dtheta_minus = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddtheta_minus_stencil_shifts,
+                coeffs=op.ddtheta_minus_stencil_coeffs,
+                axis=3,
+                axis_name="theta",
+            )
+        else:
+            dtheta_minus = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddtheta_minus_stencil_shifts,
+                coeffs=op.ddtheta_minus_stencil_coeffs,
+                axis=3,
+            )
     elif (
         op.ddtheta_minus_sparse_cols is not None
         and op.ddtheta_minus_sparse_vals is not None
@@ -582,6 +615,7 @@ def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jn
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     f = jnp.asarray(f, dtype=jnp.float64)
+    f = _apply_xi_mask(f, op.n_xi_for_x)
     _n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_zeta != op.ddzeta_plus.shape[0]:
         raise ValueError("f zeta axis does not match ddzeta_plus/minus")
@@ -661,7 +695,12 @@ def apply_magnetic_drift_zeta_v3_offdiag2(op: MagneticDriftZetaV3Operator, f: jn
     return out * mask[None, :, :, None, None]
 
 
-def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray) -> jnp.ndarray:
+def apply_magnetic_drift_zeta_v3(
+    op: MagneticDriftZetaV3Operator,
+    f: jnp.ndarray,
+    *,
+    shard_axis: str | None = None,
+) -> jnp.ndarray:
     """Apply the full magnetic-drift d/dzeta term for the currently supported physics.
 
     Notes
@@ -673,6 +712,7 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     f = jnp.asarray(f, dtype=jnp.float64)
+    f = _apply_xi_mask(f, op.n_xi_for_x)
     _n_species, n_x, n_xi, _n_theta, n_zeta = f.shape
     if n_zeta != op.ddzeta_plus.shape[0]:
         raise ValueError("f zeta axis does not match ddzeta_plus/minus")
@@ -688,12 +728,21 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
     x2 = (op.x.astype(jnp.float64) ** 2)  # (X,)
 
     if periodic_stencil_runtime_enabled() and op.ddzeta_plus_stencil_shifts:
-        dzeta_plus = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddzeta_plus_stencil_shifts,
-            coeffs=op.ddzeta_plus_stencil_coeffs,
-            axis=4,
-        )
+        if shard_axis == "zeta" and jax.device_count() > 1:
+            dzeta_plus = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddzeta_plus_stencil_shifts,
+                coeffs=op.ddzeta_plus_stencil_coeffs,
+                axis=4,
+                axis_name="zeta",
+            )
+        else:
+            dzeta_plus = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddzeta_plus_stencil_shifts,
+                coeffs=op.ddzeta_plus_stencil_coeffs,
+                axis=4,
+            )
     elif (
         op.ddzeta_plus_sparse_cols is not None
         and op.ddzeta_plus_sparse_vals is not None
@@ -708,12 +757,21 @@ def apply_magnetic_drift_zeta_v3(op: MagneticDriftZetaV3Operator, f: jnp.ndarray
     else:
         dzeta_plus = jnp.einsum("ij,sxltj->sxlti", op.ddzeta_plus.astype(jnp.float64), f)
     if periodic_stencil_runtime_enabled() and op.ddzeta_minus_stencil_shifts:
-        dzeta_minus = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddzeta_minus_stencil_shifts,
-            coeffs=op.ddzeta_minus_stencil_coeffs,
-            axis=4,
-        )
+        if shard_axis == "zeta" and jax.device_count() > 1:
+            dzeta_minus = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddzeta_minus_stencil_shifts,
+                coeffs=op.ddzeta_minus_stencil_coeffs,
+                axis=4,
+                axis_name="zeta",
+            )
+        else:
+            dzeta_minus = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddzeta_minus_stencil_shifts,
+                coeffs=op.ddzeta_minus_stencil_coeffs,
+                axis=4,
+            )
     elif (
         op.ddzeta_minus_sparse_cols is not None
         and op.ddzeta_minus_sparse_vals is not None
@@ -759,6 +817,7 @@ def apply_magnetic_drift_xidot_v3_offdiag2(op: MagneticDriftXiDotV3Operator, f: 
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     f = jnp.asarray(f, dtype=jnp.float64)
+    f = _apply_xi_mask(f, op.n_xi_for_x)
     _n_species, n_x, n_xi, _n_theta, _n_zeta = f.shape
     if n_x != op.x.shape[0]:
         raise ValueError("f x axis does not match x")
@@ -790,6 +849,7 @@ def apply_magnetic_drift_xidot_v3(op: MagneticDriftXiDotV3Operator, f: jnp.ndarr
     if f.ndim != 5:
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
     f = jnp.asarray(f, dtype=jnp.float64)
+    f = _apply_xi_mask(f, op.n_xi_for_x)
     _n_species, n_x, n_xi, _n_theta, _n_zeta = f.shape
     if n_x != op.x.shape[0]:
         raise ValueError("f x axis does not match x")
@@ -823,6 +883,6 @@ apply_magnetic_drift_theta_v3_offdiag2_jit = jax.jit(apply_magnetic_drift_theta_
 apply_magnetic_drift_zeta_v3_offdiag2_jit = jax.jit(apply_magnetic_drift_zeta_v3_offdiag2, static_argnums=())
 apply_magnetic_drift_xidot_v3_offdiag2_jit = jax.jit(apply_magnetic_drift_xidot_v3_offdiag2, static_argnums=())
 
-apply_magnetic_drift_theta_v3_jit = jax.jit(apply_magnetic_drift_theta_v3, static_argnums=())
-apply_magnetic_drift_zeta_v3_jit = jax.jit(apply_magnetic_drift_zeta_v3, static_argnums=())
+apply_magnetic_drift_theta_v3_jit = jax.jit(apply_magnetic_drift_theta_v3, static_argnames=("shard_axis",))
+apply_magnetic_drift_zeta_v3_jit = jax.jit(apply_magnetic_drift_zeta_v3, static_argnames=("shard_axis",))
 apply_magnetic_drift_xidot_v3_jit = jax.jit(apply_magnetic_drift_xidot_v3, static_argnums=())

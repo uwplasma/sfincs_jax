@@ -11,6 +11,7 @@ import jax.numpy as jnp
 from jax import tree_util as jtu
 
 from .periodic_stencil import (
+    apply_periodic_stencil_halo,
     apply_periodic_stencil_roll,
     apply_sparse_row_stencil_gather,
     periodic_stencil_runtime_enabled,
@@ -150,7 +151,12 @@ def _mask_xi(n_xi_for_x: jnp.ndarray, n_xi_max: int) -> jnp.ndarray:
     return l < n_xi_for_x[:, None]
 
 
-def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.ndarray:
+def apply_collisionless_v3(
+    op: CollisionlessV3Operator,
+    f: jnp.ndarray,
+    *,
+    shard_axis: str | None = None,
+) -> jnp.ndarray:
     """Apply streaming+mirror terms to `f`.
 
     Parameters
@@ -167,6 +173,12 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
         raise ValueError("f must have shape (Nspecies, Nx, Nxi, Ntheta, Nzeta)")
 
     f = jnp.asarray(f, dtype=jnp.float64)
+    # Zero out invalid xi modes so truncated-L blocks do not leak into valid
+    # rows through L-coupling. Fortran excludes these DOFs entirely.
+    n_xi = f.shape[2]
+    mask_xi = _mask_xi(op.n_xi_for_x.astype(jnp.int32), int(n_xi)).astype(f.dtype)  # (X,L)
+    f = f * mask_xi[None, :, :, None, None]
+
     n_species, n_x, n_xi, n_theta, n_zeta = f.shape
     if n_species != op.t_hats.shape[0]:
         raise ValueError("f species axis does not match t_hats")
@@ -193,12 +205,21 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
 
     # d/dtheta applied to f at each (s,x,l,zeta): (S,X,L,T,Z)
     if periodic_stencil_runtime_enabled() and op.ddtheta_stencil_shifts:
-        dtheta_f = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddtheta_stencil_shifts,
-            coeffs=op.ddtheta_stencil_coeffs,
-            axis=3,
-        )
+        if shard_axis == "theta" and jax.device_count() > 1:
+            dtheta_f = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddtheta_stencil_shifts,
+                coeffs=op.ddtheta_stencil_coeffs,
+                axis=3,
+                axis_name="theta",
+            )
+        else:
+            dtheta_f = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddtheta_stencil_shifts,
+                coeffs=op.ddtheta_stencil_coeffs,
+                axis=3,
+            )
     elif (
         op.ddtheta_sparse_cols is not None
         and op.ddtheta_sparse_vals is not None
@@ -216,12 +237,21 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
 
     # d/dzeta applied to f at each (s,x,l,theta): (S,X,L,T,Z)
     if periodic_stencil_runtime_enabled() and op.ddzeta_stencil_shifts:
-        dzeta_f = apply_periodic_stencil_roll(
-            f,
-            shifts=op.ddzeta_stencil_shifts,
-            coeffs=op.ddzeta_stencil_coeffs,
-            axis=4,
-        )
+        if shard_axis == "zeta" and jax.device_count() > 1:
+            dzeta_f = apply_periodic_stencil_halo(
+                f,
+                shifts=op.ddzeta_stencil_shifts,
+                coeffs=op.ddzeta_stencil_coeffs,
+                axis=4,
+                axis_name="zeta",
+            )
+        else:
+            dzeta_f = apply_periodic_stencil_roll(
+                f,
+                shifts=op.ddzeta_stencil_shifts,
+                coeffs=op.ddzeta_stencil_coeffs,
+                axis=4,
+            )
     elif (
         op.ddzeta_sparse_cols is not None
         and op.ddzeta_sparse_vals is not None
@@ -286,4 +316,4 @@ def apply_collisionless_v3(op: CollisionlessV3Operator, f: jnp.ndarray) -> jnp.n
     return out
 
 
-apply_collisionless_v3_jit = jax.jit(apply_collisionless_v3, static_argnums=())
+apply_collisionless_v3_jit = jax.jit(apply_collisionless_v3, static_argnames=("shard_axis",))

@@ -839,7 +839,13 @@ def fblock_operator_from_namelist(*, nml: Namelist, identity_shift: float = 0.0)
     )
 
 
-def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_base: jnp.ndarray | None = None) -> jnp.ndarray:
+def apply_v3_fblock_operator(
+    op: V3FBlockOperator,
+    f: jnp.ndarray,
+    *,
+    phi1_hat_base: jnp.ndarray | None = None,
+    shard_axis: str | None = None,
+) -> jnp.ndarray:
     remat_env = os.environ.get("SFINCS_JAX_REMAT_COLLISIONS", "").strip().lower()
     if remat_env in {"1", "true", "yes", "on"}:
         use_remat_collisions = True
@@ -862,15 +868,15 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_b
 
     out = op.identity_shift * f
     if use_fused:
-        terms = [apply_collisionless_v3(op.collisionless, f)]
+        terms = [apply_collisionless_v3(op.collisionless, f, shard_axis=shard_axis)]
         if op.exb_theta is not None:
-            terms.append(apply_exb_theta_v3(op.exb_theta, f))
+            terms.append(apply_exb_theta_v3(op.exb_theta, f, shard_axis=shard_axis))
         if op.exb_zeta is not None:
-            terms.append(apply_exb_zeta_v3(op.exb_zeta, f))
+            terms.append(apply_exb_zeta_v3(op.exb_zeta, f, shard_axis=shard_axis))
         if op.magdrift_theta is not None:
-            terms.append(apply_magnetic_drift_theta_v3(op.magdrift_theta, f))
+            terms.append(apply_magnetic_drift_theta_v3(op.magdrift_theta, f, shard_axis=shard_axis))
         if op.magdrift_zeta is not None:
-            terms.append(apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f))
+            terms.append(apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f, shard_axis=shard_axis))
         if op.magdrift_xidot is not None:
             terms.append(apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f))
         if op.er_xidot is not None:
@@ -887,15 +893,15 @@ def apply_v3_fblock_operator(op: V3FBlockOperator, f: jnp.ndarray, *, phi1_hat_b
             terms.append(_maybe_remat(apply_fokker_planck_v3_phi1)(op.fp_phi1, f, phi1_hat=phi1_hat_base))
         out = out + functools.reduce(operator.add, terms)
     else:
-        out = out + apply_collisionless_v3(op.collisionless, f)
+        out = out + apply_collisionless_v3(op.collisionless, f, shard_axis=shard_axis)
         if op.exb_theta is not None:
-            out = out + apply_exb_theta_v3(op.exb_theta, f)
+            out = out + apply_exb_theta_v3(op.exb_theta, f, shard_axis=shard_axis)
         if op.exb_zeta is not None:
-            out = out + apply_exb_zeta_v3(op.exb_zeta, f)
+            out = out + apply_exb_zeta_v3(op.exb_zeta, f, shard_axis=shard_axis)
         if op.magdrift_theta is not None:
-            out = out + apply_magnetic_drift_theta_v3(op.magdrift_theta, f)
+            out = out + apply_magnetic_drift_theta_v3(op.magdrift_theta, f, shard_axis=shard_axis)
         if op.magdrift_zeta is not None:
-            out = out + apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f)
+            out = out + apply_magnetic_drift_zeta_v3(op.magdrift_zeta, f, shard_axis=shard_axis)
         if op.magdrift_xidot is not None:
             out = out + apply_magnetic_drift_xidot_v3(op.magdrift_xidot, f)
         if op.er_xidot is not None:

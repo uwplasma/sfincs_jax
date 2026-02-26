@@ -484,7 +484,12 @@ def apply_v3_full_system_operator(
         else:
             phi1_for_collisions = phi1 if phi1 is not None else op.phi1_hat_base
 
-    y_f = apply_v3_fblock_operator(op.fblock, f, phi1_hat_base=phi1_for_collisions)
+    y_f = apply_v3_fblock_operator(
+        op.fblock,
+        f,
+        phi1_hat_base=phi1_for_collisions,
+        shard_axis=shard_axis if use_sharding else None,
+    )
     factor = _fs_average_factor(op.theta_weights, op.zeta_weights, op.d_hat)  # (T,Z)
     ix0 = _ix_min(op.point_at_x0)
 

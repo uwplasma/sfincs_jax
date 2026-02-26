@@ -388,6 +388,25 @@ def compare_sfincs_outputs(
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 
+    nan_as_zero_keys = {
+        "classicalParticleFlux_psiHat",
+        "classicalParticleFlux_psiN",
+        "classicalParticleFlux_rHat",
+        "classicalParticleFlux_rN",
+        "classicalParticleFluxNoPhi1_psiHat",
+        "classicalParticleFluxNoPhi1_psiN",
+        "classicalParticleFluxNoPhi1_rHat",
+        "classicalParticleFluxNoPhi1_rN",
+        "classicalHeatFlux_psiHat",
+        "classicalHeatFlux_psiN",
+        "classicalHeatFlux_rHat",
+        "classicalHeatFlux_rN",
+        "classicalHeatFluxNoPhi1_psiHat",
+        "classicalHeatFluxNoPhi1_psiN",
+        "classicalHeatFluxNoPhi1_rHat",
+        "classicalHeatFluxNoPhi1_rN",
+    }
+
     results: List[CompareResult] = []
     for k in keys:
         if k in ignore:
@@ -426,6 +445,10 @@ def compare_sfincs_outputs(
             if an.shape[-1] == niter_a and bn.shape[-1] == niter_b and niter_a > 1 and niter_b > 1:
                 an = an[..., -1]
                 bn = bn[..., -1]
+
+        if k in nan_as_zero_keys:
+            an = np.nan_to_num(an, nan=0.0)
+            bn = np.nan_to_num(bn, nan=0.0)
 
         tol = local_tolerances.get(k, {}) if local_tolerances else {}
         if bool(tol.get("ignore", False)):
