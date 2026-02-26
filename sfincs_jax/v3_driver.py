@@ -83,9 +83,9 @@ def _use_solver_jit(size_hint: int | None = None) -> bool:
         size_hint = _PRECOND_SIZE_HINT or 0
     thresh_env = os.environ.get("SFINCS_JAX_SOLVER_JIT_MAX_SIZE", "").strip()
     try:
-        thresh = int(thresh_env) if thresh_env else 20000
+        thresh = int(thresh_env) if thresh_env else 100000
     except ValueError:
-        thresh = 20000
+        thresh = 100000
     return int(size_hint) <= thresh
 
 
@@ -7759,9 +7759,9 @@ def solve_v3_full_system_linear_gmres(
         emit(2, f"solve_v3_full_system_linear_gmres: rhs_norm={float(rhs_norm):.6e}")
     progress_size_env = os.environ.get("SFINCS_JAX_PROGRESS_SIZE_MIN", "").strip()
     try:
-        progress_size_min = int(progress_size_env) if progress_size_env else 80000
+        progress_size_min = int(progress_size_env) if progress_size_env else 20000
     except ValueError:
-        progress_size_min = 80000
+        progress_size_min = 20000
     progress_large_rhs1 = int(op.rhs_mode) == 1 and int(op.total_size) >= max(1, int(progress_size_min))
     progress_notes_emitted = {"precond": False, "solve": False}
 
@@ -8625,19 +8625,20 @@ def solve_v3_full_system_linear_gmres(
         rhs1_precond_kind = "pas_hybrid"
     if (
         rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
-        and _pas_tz_preconditioner_applicable(op)
-    ):
-        # Prefer the dedicated PAS 3D (theta,zeta)/L preconditioner when available.
-        rhs1_precond_kind = "pas_tz"
-    if (
-        rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
         and _pas_tokamak_theta_preconditioner_applicable(op)
     ):
         rhs1_precond_kind = "pas_tokamak_theta"
+    if (
+        rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
+        and _pas_tz_preconditioner_applicable(op)
+        and (not _pas_tokamak_theta_preconditioner_applicable(op))
+    ):
+        # Prefer the dedicated PAS 3D (theta,zeta)/L preconditioner when available.
+        rhs1_precond_kind = "pas_tz"
     tokamak_like = bool(geom_scheme == 1 or int(op.n_zeta) <= 5)
     if (
         tokamak_like
-        and rhs1_precond_kind in {"pas_lite", "pas_hybrid", "pas_tokamak_theta"}
+        and rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
         and _pas_tz_preconditioner_applicable(op)
     ):
         rhs1_precond_kind = "pas_tz"
@@ -10423,7 +10424,16 @@ def solve_v3_full_system_linear_gmres(
         if (
             not strong_ratio_env
             and op.fblock.pas is not None
-            and rhs1_precond_kind in {"xblock_tz", "xblock_tz_lmax", "pas_hybrid", "pas_lite", "pas_tz", "pas_schur", "pas_tokamak_theta"}
+            and rhs1_precond_kind
+            in {
+                "xblock_tz",
+                "xblock_tz_lmax",
+                "pas_hybrid",
+                "pas_lite",
+                "pas_tz",
+                "pas_schur",
+                "pas_tokamak_theta",
+            }
         ):
             strong_ratio = max(float(strong_ratio), 1.0e2)
         strong_precond_trigger = bool(res_ratio > strong_ratio) if strong_ratio > 0 else True

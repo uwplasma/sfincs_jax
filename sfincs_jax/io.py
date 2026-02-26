@@ -1982,7 +1982,7 @@ def write_sfincs_jax_output_h5(
     elif emit is None:
         # Default to stdout logging for end users (Fortran-like, deterministic).
         def emit(level: int, msg: str) -> None:  # type: ignore[no-redef]
-            if level <= 0:
+            if level <= 1:
                 print(msg)
     profiler = None
     if emit is not None:

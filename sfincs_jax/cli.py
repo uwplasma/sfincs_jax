@@ -300,6 +300,7 @@ def _apply_cores_setting(cores: int | None) -> None:
     if cores_val > 1:
         os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL", "process")
         os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", str(cores_val))
+        os.environ.setdefault("SFINCS_JAX_GMRES_DISTRIBUTED", "auto")
     # Ensure host device count and XLA threading reflect the requested cores.
     xla_flags = os.environ.get("XLA_FLAGS", "")
     xla_parts = [p for p in xla_flags.split() if not p.startswith("--xla_force_host_platform_device_count=")]
@@ -375,7 +376,13 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:]) if argv is None else list(argv)
     argv = _normalize_default_argv(argv)
     parser = argparse.ArgumentParser(prog="sfincs_jax")
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase verbosity (repeatable).")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=1,
+        help="Increase verbosity (repeatable).",
+    )
     parser.add_argument("-q", "--quiet", action="store_true", help="Reduce output to a minimum.")
     parser.add_argument(
         "--cores",
@@ -565,6 +572,11 @@ def main(argv: list[str] | None = None) -> int:
     p_pp.set_defaults(func=_cmd_postprocess_upstream)
 
     args = parser.parse_args(argv)
+    if args.cores is None and not os.environ.get("SFINCS_JAX_CORES"):
+        if not (os.environ.get("SFINCS_JAX_CI") or os.environ.get("CI")):
+            cores_auto = min(8, os.cpu_count() or 1)
+            if cores_auto > 1:
+                args.cores = cores_auto
     _apply_cores_setting(args.cores)
     if args.fortran_stdout is True:
         os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "1"
