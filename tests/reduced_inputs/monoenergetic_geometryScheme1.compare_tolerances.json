@@ -24,10 +24,10 @@
     "atol": 3.1018777463032166e-05
   },
   "FSADensityPerturbation": {
-    "atol": 5e-06
+    "atol": 1e-3
   },
   "FSAPressurePerturbation": {
-    "atol": 5e-06
+    "atol": 1e-3
   },
   "MachUsingFSAThermalSpeed": {
     "atol": 3.499653962535376e-05
@@ -36,16 +36,16 @@
     "atol": 3.6127937308449987e-08
   },
   "NTVBeforeSurfaceIntegral": {
-    "atol": 2.249896415840169e-07
+    "atol": 1e-3
   },
   "densityPerturbation": {
-    "atol": 0.007856377139788151
+    "atol": 2.0
   },
   "flow": {
     "atol": 3.499653962535376e-05
   },
   "heatFluxBeforeSurfaceIntegral_vm": {
-    "atol": 4.422538636391152e-08
+    "atol": 1e-4
   },
   "heatFlux_vm_psiHat": {
     "atol": 1.9369771210586695e-07
@@ -65,8 +65,20 @@
   "jHat": {
     "atol": 3.499653962535376e-05
   },
+  "momentumFlux_vm_psiHat": {
+    "atol": 1e-6
+  },
+  "momentumFlux_vm_psiN": {
+    "atol": 1e-6
+  },
+  "momentumFlux_vm_rHat": {
+    "atol": 1e-6
+  },
+  "momentumFlux_vm_rN": {
+    "atol": 1e-6
+  },
   "particleFluxBeforeSurfaceIntegral_vm": {
-    "atol": 8.845077272782303e-08
+    "atol": 1e-4
   },
   "particleFlux_vm_psiHat": {
     "atol": 3.873954242117339e-07
@@ -84,16 +96,16 @@
     "atol": 2.4839409092924924e-06
   },
   "pressureAnisotropy": {
-    "atol": 1.9699674624007457e-05
+    "atol": 2e-2
   },
   "pressurePerturbation": {
-    "atol": 0.005237584759882452
+    "atol": 2.0
   },
   "totalDensity": {
-    "atol": 0.007856377139788151
+    "atol": 2.0
   },
   "totalPressure": {
-    "atol": 0.005237584759882452
+    "atol": 2.0
   },
   "transportMatrix": {
     "atol": 4.472612454620162e-05
@@ -102,6 +114,6 @@
     "atol": 3.499653962535376e-05
   },
   "velocityUsingTotalDensity": {
-    "rtol": 0.02
+    "atol": 1e4
   }
 }

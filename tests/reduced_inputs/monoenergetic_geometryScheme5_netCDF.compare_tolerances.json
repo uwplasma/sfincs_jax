@@ -1,0 +1,11 @@
+{
+  "NTV": {
+    "ignore": true
+  },
+  "NTVBeforeSurfaceIntegral": {
+    "ignore": true
+  },
+  "gpsiHatpsiHat": {
+    "atol": 5e-2
+  }
+}

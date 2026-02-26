@@ -7716,6 +7716,22 @@ def solve_v3_full_system_linear_gmres(
         tol = min(float(tol), float(fp_tol))
         if emit is not None and float(tol) < tol_old:
             emit(1, f"solve_v3_full_system_linear_gmres: FP tol tightened {tol_old:.1e} -> {float(tol):.1e}")
+    pas_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_TOL", "").strip()
+    try:
+        pas_tol = float(pas_tol_env) if pas_tol_env else 1.0e-8
+    except ValueError:
+        pas_tol = 1.0e-8
+    if (
+        int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.pas is not None
+        and int(op.constraint_scheme) == 2
+        and pas_tol > 0.0
+    ):
+        tol_old = float(tol)
+        tol = min(float(tol), float(pas_tol))
+        if emit is not None and float(tol) < tol_old:
+            emit(1, f"solve_v3_full_system_linear_gmres: PAS tol tightened {tol_old:.1e} -> {float(tol):.1e}")
     if int(op.rhs_mode) in {2, 3}:
         # v3 sets (dnHatdpsiHats, dTHatdpsiHats, EParallelHat) internally based on whichRHS.
         # If the input file omits gradients (common for monoenergetic runs), callers must select whichRHS.
@@ -7795,7 +7811,7 @@ def solve_v3_full_system_linear_gmres(
         if isinstance(val, (float, np.floating)):
             return bool(float(val))
         if isinstance(val, str):
-            return val.strip().lower() in {"t", "true", "1", "yes", ".true."}
+            return val.strip().lower() in {"t", "true", "1", "yes", ".true.", ".t."}
         return False
     use_dkes = _nml_bool(
         _nml_get(
@@ -7804,6 +7820,18 @@ def solve_v3_full_system_linear_gmres(
             _nml_get(phys_params, "useDKESExBdrift", _nml_get(phys_params, "use_dkes_exb_drift", None)),
         )
     )
+    if (
+        int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.fp is not None
+        and op.fblock.pas is None
+        and use_dkes
+        and fp_tol > 0.0
+    ):
+        tol_old = float(tol)
+        tol = min(float(tol), float(fp_tol))
+        if emit is not None and float(tol) < tol_old:
+            emit(1, f"solve_v3_full_system_linear_gmres: FP DKES tol tightened {tol_old:.1e} -> {float(tol):.1e}")
     if op.fblock.pas is not None and use_dkes:
         # DKES trajectory runs can be stiff, but very large GMRES restart/maxiter
         # values are expensive in JAX (memory + orthogonalization cost). Prefer
@@ -7967,11 +7995,39 @@ def solve_v3_full_system_linear_gmres(
                 f"using solve_method={solve_method} (size={int(full_precond_size)})",
             )
 
+    if int(op.rhs_mode) == 1 and str(solve_method).strip().lower() in {"auto", "default"}:
+        # RHSMode=1 parity is most robust with GMRES; avoid the BiCGStab auto path.
+        solve_method = "incremental"
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
     rhs1_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECONDITIONER", "").strip().lower()
     rhs1_bicgstab_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND", "").strip().lower()
+    if (
+        rhs1_precond_env == ""
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.fp is not None
+        and use_dkes
+    ):
+        fp_dkes_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_DKES_STRONG_MAX", "").strip()
+        try:
+            fp_dkes_max = int(fp_dkes_env) if fp_dkes_env else 20000
+        except ValueError:
+            fp_dkes_max = 20000
+        if int(op.total_size) <= max(1, int(fp_dkes_max)):
+            xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+            try:
+                xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+            except ValueError:
+                xblock_tz_max = 1200
+            max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+            if (
+                int(op.n_theta) > 1
+                and xblock_tz_max > 0
+                and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+            ):
+                rhs1_precond_env = "xblock_tz"
     tokamak_pas = bool(
         op.fblock.pas is not None
         and int(op.rhs_mode) == 1
@@ -8175,7 +8231,6 @@ def solve_v3_full_system_linear_gmres(
                     sxblock_tz_max = 2000
                 sxblock_size = int(int(op.n_species) * local_per_species)
                 sxblock_tz_size = int(int(op.n_species) * int(op.n_x) * int(op.n_theta) * int(op.n_zeta))
-                active_size = int(getattr(op, "active_size", op.total_size))
                 schur_auto = False
                 if (
                     int(op.constraint_scheme) == 2
@@ -8358,11 +8413,29 @@ def solve_v3_full_system_linear_gmres(
                     else:
                         rhs1_precond_kind = "schur"
                 elif op.fblock.fp is not None and use_dkes:
-                    # DKES-trajectory FP cases often trigger the dense fallback probe.
-                    # Avoid building heavy (S,X,theta,zeta) block preconditioners that can
-                    # allocate O(GB) of scratch memory when we're likely to fall back to
-                    # a direct solve anyway.
-                    rhs1_precond_kind = "collision"
+                    # DKES-trajectory FP cases can stagnate with collision-only
+                    # preconditioners. Prefer a lightweight xmg/sxblock_tz path for
+                    # small/medium systems, and fall back to collision for larger sizes
+                    # to avoid expensive block builds.
+                    fp_dkes_strong_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_DKES_STRONG_MAX", "").strip()
+                    try:
+                        fp_dkes_strong_max = int(fp_dkes_strong_max_env) if fp_dkes_strong_max_env else 20000
+                    except ValueError:
+                        fp_dkes_strong_max = 20000
+                    if int(active_size) <= max(1, int(fp_dkes_strong_max)):
+                        max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+                        if (
+                            int(op.n_theta) > 1
+                            and xblock_tz_max > 0
+                            and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+                        ):
+                            rhs1_precond_kind = "xblock_tz"
+                            if not rhs1_precond_env:
+                                rhs1_precond_env = "xblock_tz"
+                        else:
+                            rhs1_precond_kind = "xmg"
+                    else:
+                        rhs1_precond_kind = "collision"
                 elif (
                     op.fblock.fp is not None
                     and er_abs <= schur_er_min
@@ -8569,6 +8642,19 @@ def solve_v3_full_system_linear_gmres(
                     "solve_v3_full_system_linear_gmres: large FP near-zero-Er "
                     "auto override -> xmg preconditioner",
                 )
+    if (
+        rhs1_precond_env == ""
+        and int(op.rhs_mode) == 1
+        and op.fblock.pas is not None
+        and rhs1_precond_kind in {None, "collision", "point"}
+    ):
+        pas_strong_max_env = os.environ.get("SFINCS_JAX_PAS_STRONG_MAX", "").strip()
+        try:
+            pas_strong_max = int(pas_strong_max_env) if pas_strong_max_env else 25000
+        except ValueError:
+            pas_strong_max = 25000
+        if int(active_size) <= max(1, int(pas_strong_max)):
+            rhs1_precond_kind = "pas_hybrid"
     rhs1_precond_kind_requested = rhs1_precond_kind
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
@@ -8878,6 +8964,8 @@ def solve_v3_full_system_linear_gmres(
     # while remaining bounded for interactive use and CI.
     stage2_time_cap_s = float(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAX_ELAPSED_S", "30.0"))
     if tokamak_pas and stage2_time_cap_s < 120.0:
+        stage2_time_cap_s = 120.0
+    if op.fblock.fp is not None and use_dkes and stage2_time_cap_s < 120.0:
         stage2_time_cap_s = 120.0
 
     def _solve_linear(
@@ -9300,6 +9388,12 @@ def solve_v3_full_system_linear_gmres(
                             if jnp.isfinite(r1) and (not jnp.isfinite(r0) or float(r1) < float(r0)):
                                 x0_reduced = x0_recycled
         target_reduced = max(float(atol), float(tol) * float(jnp.linalg.norm(rhs_reduced)))
+        target_stage2 = float(target_reduced)
+        if op.fblock.fp is not None and op.fblock.pas is None and (not bool(op.include_phi1)):
+            # FP RHS can have large norms; enforce a stricter absolute target for
+            # stage2/strong-preconditioner decisions to avoid premature convergence
+            # with loose relative norms.
+            target_stage2 = min(float(target_stage2), max(float(atol), float(tol)))
         dense_shortcut_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_SHORTCUT_RATIO", "").strip()
         try:
             dense_shortcut_ratio = float(dense_shortcut_ratio_env) if dense_shortcut_ratio_env else 1.0e6
@@ -9321,6 +9415,8 @@ def solve_v3_full_system_linear_gmres(
         # for the probe instead.
         fp_probe_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_PRECOND_PROBE", "").strip().lower()
         fp_probe_enabled = fp_probe_env not in {"0", "false", "no", "off"}
+        if op.fblock.fp is not None and (not use_dkes):
+            fp_probe_enabled = False
         fp_probe_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_PRECOND_PROBE_MIN", "").strip()
         try:
             fp_probe_min = int(fp_probe_min_env) if fp_probe_min_env else 2500
@@ -10107,12 +10203,24 @@ def solve_v3_full_system_linear_gmres(
             stage2_ratio = float(stage2_ratio_env) if stage2_ratio_env else 1.0e2
         except ValueError:
             stage2_ratio = 1.0e2
-        # PAS DKES cases can require *tight* convergence for parity, even when the
+        # DKES cases can require *tight* convergence for parity, even when the
         # initial solve is only slightly above the target tolerance. Trigger stage2
         # as a "polish" step whenever residual > target in this branch.
-        if op.fblock.pas is not None and use_dkes:
+        if use_dkes:
             stage2_ratio = min(float(stage2_ratio), 1.0)
         stage2_trigger = bool(res_ratio > stage2_ratio) if stage2_ratio > 0 else True
+        fp_stage2_abs_env = os.environ.get("SFINCS_JAX_FP_STAGE2_ABS", "").strip()
+        try:
+            fp_stage2_abs = float(fp_stage2_abs_env) if fp_stage2_abs_env else 1.0e-6
+        except ValueError:
+            fp_stage2_abs = 1.0e-6
+        fp_force_stage2 = bool(
+            op.fblock.fp is not None
+            and (not bool(op.include_phi1))
+            and float(res_reduced.residual_norm) > float(fp_stage2_abs)
+        )
+        if fp_force_stage2:
+            stage2_trigger = True
         if op.fblock.pas is not None and rhs1_precond_kind in {"pas_lite", "pas_hybrid", "pas_tz", "pas_schur", "pas_tokamak_theta"}:
             pas_stage2_skip_env = os.environ.get("SFINCS_JAX_PAS_STAGE2_SKIP_RATIO", "").strip()
             try:
@@ -10181,7 +10289,7 @@ def solve_v3_full_system_linear_gmres(
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = "gmres"
         if (
-            float(res_reduced.residual_norm) > target_reduced
+            (float(res_reduced.residual_norm) > target_reduced or fp_force_stage2)
             and stage2_enabled
             and stage2_trigger
             and not early_dense_shortcut
@@ -10242,6 +10350,18 @@ def solve_v3_full_system_linear_gmres(
         ):
             strong_ratio = max(float(strong_ratio), 1.0e2)
         strong_precond_trigger = bool(res_ratio > strong_ratio) if strong_ratio > 0 else True
+        fp_strong_abs_env = os.environ.get("SFINCS_JAX_FP_STRONG_ABS", "").strip()
+        try:
+            fp_strong_abs = float(fp_strong_abs_env) if fp_strong_abs_env else 1.0e-6
+        except ValueError:
+            fp_strong_abs = 1.0e-6
+        fp_force_strong = bool(
+            op.fblock.fp is not None
+            and (not bool(op.include_phi1))
+            and float(res_reduced.residual_norm) > float(fp_strong_abs)
+        )
+        if fp_force_strong:
+            strong_precond_trigger = True
         if (
             float(res_reduced.residual_norm) > target_reduced
             and int(op.rhs_mode) == 1
@@ -10578,7 +10698,7 @@ def solve_v3_full_system_linear_gmres(
 
         if (
             strong_precond_kind is not None
-            and float(res_reduced.residual_norm) > target_reduced
+            and (float(res_reduced.residual_norm) > target_reduced or fp_force_strong)
             and strong_precond_trigger
             and not early_dense_shortcut
         ):
@@ -11142,6 +11262,8 @@ def solve_v3_full_system_linear_gmres(
                         a_np = np.asarray(a_dense_jnp, dtype=np.float64)
                     # Make a contiguous copy for LAPACK.
                     a_np = np.array(a_np, dtype=np.float64, copy=True)
+                    if a_np.ndim != 2:
+                        a_np = np.squeeze(a_np)
 
                     mv_dense = mv_reduced
                     b_dense = jnp.asarray(rhs_reduced, dtype=jnp.float64)
@@ -11159,33 +11281,54 @@ def solve_v3_full_system_linear_gmres(
                         def mv_dense(x: jnp.ndarray) -> jnp.ndarray:
                             return scale_jnp * mv_reduced(x)
 
-                    lu, piv = sla.lu_factor(a_np)
+                    if a_np.ndim != 2 or a_np.shape[0] != a_np.shape[1]:
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: dense fallback "
+                                f"non-square matrix shape={a_np.shape}; using least-squares host solve",
+                            )
 
-                    out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
+                        def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
+                            rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                            return np.asarray(np.linalg.lstsq(a_np, rhs_np, rcond=None)[0], dtype=np.float64)
 
-                    def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
-                        rhs_np = np.asarray(rhs_np, dtype=np.float64)
-                        return np.asarray(sla.lu_solve((lu, piv), rhs_np), dtype=np.float64)
+                        out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
 
-                    def _solveT_cb(rhs_np: np.ndarray) -> np.ndarray:
-                        rhs_np = np.asarray(rhs_np, dtype=np.float64)
-                        return np.asarray(sla.lu_solve((lu, piv), rhs_np, trans=1), dtype=np.float64)
+                        x_dense = jax.pure_callback(_solve_cb, out_spec, b_dense)
+                        r_dense = rhs_reduced - mv_reduced(x_dense)
+                        res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
+                        lu = None
+                        piv = None
+                    else:
+                        lu, piv = sla.lu_factor(a_np)
 
-                    def _solve_host(_mv, rhs: jnp.ndarray) -> jnp.ndarray:
-                        return jax.pure_callback(_solve_cb, out_spec, rhs)
+                    if lu is not None and piv is not None:
+                        out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
 
-                    def _transpose_solve_host(_mv_t, rhs: jnp.ndarray) -> jnp.ndarray:
-                        return jax.pure_callback(_solveT_cb, out_spec, rhs)
+                        def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
+                            rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                            return np.asarray(sla.lu_solve((lu, piv), rhs_np), dtype=np.float64)
 
-                    x_dense = jax.lax.custom_linear_solve(
-                        mv_dense,
-                        b_dense,
-                        solve=_solve_host,
-                        transpose_solve=_transpose_solve_host,
-                        symmetric=False,
-                    )
-                    r_dense = rhs_reduced - mv_reduced(x_dense)
-                    res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
+                        def _solveT_cb(rhs_np: np.ndarray) -> np.ndarray:
+                            rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                            return np.asarray(sla.lu_solve((lu, piv), rhs_np, trans=1), dtype=np.float64)
+
+                        def _solve_host(_mv, rhs: jnp.ndarray) -> jnp.ndarray:
+                            return jax.pure_callback(_solve_cb, out_spec, rhs)
+
+                        def _transpose_solve_host(_mv_t, rhs: jnp.ndarray) -> jnp.ndarray:
+                            return jax.pure_callback(_solveT_cb, out_spec, rhs)
+
+                        x_dense = jax.lax.custom_linear_solve(
+                            mv_dense,
+                            b_dense,
+                            solve=_solve_host,
+                            transpose_solve=_transpose_solve_host,
+                            symmetric=False,
+                        )
+                        r_dense = rhs_reduced - mv_reduced(x_dense)
+                        res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
                 elif dense_matrix_cache is not None:
                     a_dense_jnp = jnp.asarray(dense_matrix_cache, dtype=rhs_reduced.dtype)
                     if use_row_scaled:

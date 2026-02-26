@@ -25,5 +25,41 @@
   },
   "heatFluxBeforeSurfaceIntegral_vm": {
     "atol": 2e-5
+  },
+  "heatFlux_vm_psiHat": {
+    "atol": 1e-5
+  },
+  "heatFlux_vm_psiHat_vs_x": {
+    "atol": 1e-5
+  },
+  "heatFlux_vm_psiN": {
+    "atol": 1e-5
+  },
+  "heatFlux_vm_rHat": {
+    "atol": 1e-5
+  },
+  "heatFlux_vm_rN": {
+    "atol": 1e-5
+  },
+  "particleFlux_vm_psiHat": {
+    "atol": 1e-6
+  },
+  "particleFlux_vm_psiHat_vs_x": {
+    "atol": 1e-6
+  },
+  "particleFlux_vm_psiN": {
+    "atol": 1e-6
+  },
+  "particleFlux_vm_rHat": {
+    "atol": 1e-6
+  },
+  "particleFlux_vm_rN": {
+    "atol": 1e-6
+  },
+  "momentumFluxBeforeSurfaceIntegral_vm": {
+    "atol": 1e-6
+  },
+  "pressureAnisotropy": {
+    "atol": 2e-4
   }
 }
