@@ -174,6 +174,15 @@ performance without changing the input file:
   - ``xblock_tz``: PAS per‑:math:`x` block over :math:`(L,\theta,\zeta)` (captures angular coupling).
   - ``xblock_tz_lmax``: PAS per‑:math:`x` block over :math:`(L,\theta,\zeta)` using only the lowest
     ``L`` modes (see ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_LMAX``).
+  - ``pas_tz``: PAS 3D block‑tridiagonal preconditioner in :math:`L` with dense
+    :math:`(\theta,\zeta)` blocks (cheaper than full ``xblock_tz`` for large grids).
+  - ``pas_tokamak_theta``: tokamak‑style PAS :math:`(\theta,L)` block‑tridiagonal preconditioner
+    (``N_\zeta=1`` or zeta‑invariant geometries).
+  - ``pas_lite``: lightweight PAS preconditioner (angular/L block + x‑coarse + collision).
+  - ``pas_hybrid``: stronger PAS line/x‑coarse hybrid (truncated‑:math:`L` angular block + x‑coarse).
+  - ``pas_schur``: PAS‑specific block‑Schur composition (angular/L block + x‑coarse + collision);
+    default for tokamak‑like PAS.
+  - ``pas_ilu``: PAS per‑:math:`x` sparse LU/ILU preconditioner (PETSc‑like, block‑Jacobi in :math:`x`).
   - ``point_xdiag``: point-block Jacobi with **x‑diagonal** blocks (retains xi coupling, drops x coupling).
   - ``theta_line``: theta-line block preconditioner (stronger, higher setup cost).
   - ``zeta_line``: zeta-line block preconditioner (stronger, higher setup cost).
@@ -193,6 +202,16 @@ performance without changing the input file:
 - ``SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX``: maximum per‑:math:`x` block size
   (:math:`L \times N_\theta \times N_\zeta`) before the PAS xblock_tz preconditioner
   is disabled in auto mode (default: ``1200``).
+
+- ``SFINCS_JAX_PAS_LITE_MIN`` / ``SFINCS_JAX_PAS_LITE_TZ_MAX``: auto‑select ``pas_lite`` when
+  the active system size exceeds this threshold and the angular block size
+  remains below the tz limit.
+
+- ``SFINCS_JAX_RHSMODE1_PAS_TZ_LMAX``: truncate :math:`L` coupling in ``pas_tz``/``xblock_tz_lmax``
+  preconditioning (lower values reduce setup cost).
+
+- ``SFINCS_JAX_RHSMODE1_PAS_SCHUR_SMALL_MAX``: enable ``pas_schur`` for PAS tokamak‑like systems
+  below this size (default ``20000``).
 
 - ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN``: for large PAS systems that request full
   preconditioning, switch to the lightweight x‑multigrid preconditioner when

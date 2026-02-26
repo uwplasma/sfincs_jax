@@ -563,6 +563,31 @@ so scan points can reuse the same preconditioner blocks. Controls:
 - ``SFINCS_JAX_PRECOND_DTYPE`` (default ``auto``; ``float32`` or ``float64`` to override)
 - ``SFINCS_JAX_PRECOND_FP32_MIN_SIZE`` (threshold for auto mixed precision)
 
+**PAS-lite / PAS-hybrid / PAS-Schur preconditioners.** For PAS-only RHSMode=1
+systems, ``sfincs_jax`` now defaults to lightweight PAS-specific preconditioners
+before attempting expensive global Schur or dense fallbacks:
+
+- **``pas_lite``**: for large PAS systems, combine a cheap angular/L block
+  preconditioner (``pas_tz`` in 3D or ``pas_tokamak_theta`` for tokamak-like cases)
+  with an x‑coarse correction (``xmg``) and the collision diagonal. This keeps
+  setup cost low while stabilizing Krylov iterations. Auto-triggered when
+  ``active_size`` exceeds ``SFINCS_JAX_PAS_LITE_MIN`` and the angular block size
+  stays below ``SFINCS_JAX_PAS_LITE_TZ_MAX``.
+- **``pas_hybrid``**: line/x‑coarse hybrid for PAS systems that need a stronger
+  angular block than ``pas_lite``. Uses a truncated‑:math:`L` angular block
+  (``xblock_tz_lmax`` or ``pas_tokamak_theta``) followed by ``xmg``.
+- **``pas_schur``**: PAS‑specific block‑Schur composition (angular/L block +
+  x‑coarse + collision). This is now the default for tokamak‑like PAS cases
+  (``N_\zeta \le 5`` or ``geometryScheme=1``), avoiding the expensive global
+  constraint‑Schur fallback when PAS preconditioning is already active.
+
+Key controls:
+
+- ``SFINCS_JAX_PAS_LITE_MIN`` / ``SFINCS_JAX_PAS_LITE_TZ_MAX`` (auto ``pas_lite`` thresholds)
+- ``SFINCS_JAX_RHSMODE1_PAS_TZ_LMAX`` (truncate :math:`L` in PAS angular blocks)
+- ``SFINCS_JAX_RHSMODE1_PAS_SCHUR_SMALL_MAX`` (enable ``pas_schur`` below this size)
+- ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (switch PAS preconditioning to ``xmg`` for large systems)
+
 **PAS sparse per-x LU/ILU preconditioner (PETSc-like).** For PAS-only RHSMode=1
 systems *without* :math:`x` coupling (no FP, no Er ``xDot`` term), the operator
 is block-diagonal in :math:`x`. In this setting, a robust PETSc-like block-Jacobi

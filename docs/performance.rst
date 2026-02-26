@@ -175,6 +175,11 @@ highlight where further solver work provides the best ROI. The timings were
 captured with ``SFINCS_JAX_PROFILE=1`` (wall time for the JAX run, cold start)
 and compared to the Fortran runtime from the same reduced-suite run.
 
+**Note on reduced-suite sizing.** To avoid JIT‑dominated ratios on tiny inputs,
+several PAS-heavy cases are retuned so the Fortran runtime is at least ~2 s.
+See the corresponding ``tests/reduced_inputs/*.input.namelist`` entries and
+``tests/reduced_upstream_examples/suite_report.json`` for the exact grid sizes.
+
 **PAS, tokamak, no Er (``tokamak_1species_PASCollisions_noEr``)**:
 
 - Fortran: ~0.042 s; JAX: ~3.83 s.

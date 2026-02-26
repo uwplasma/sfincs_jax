@@ -88,27 +88,27 @@
 /
 
 &resolutionParameters
-  Ntheta = 7
+  Ntheta = 9
 !ss NthetaMinFactor = 0.7
 !ss NthetaMaxFactor = 2
 !ss NthetaNumRuns = 5
 
-  Nzeta = 7
+  Nzeta = 9
 !ss NzetaMinFactor = 0.8
 !ss NzetaMaxFactor = 2
 !ss NzetaNumRuns = 0
 
-  Nxi = 10
+  Nxi = 12
 !ss NxiMinFactor = 0.8
 !ss NxiMaxFactor = 2
 !ss NxiNumRuns = 6
   
-  Nx = 7
+  Nx = 8
 !ss NxMinFactor = 0.8
 !ss NxMaxFactor = 2
 !ss NxNumRuns = 30
 
-  solverTolerance = 1d-6
+  solverTolerance = 1d-9
 !ss solverToleranceMinFactor = 0.1
 !ss solverToleranceMaxFactor = 10
 !ss solverToleranceNumRuns = 3
