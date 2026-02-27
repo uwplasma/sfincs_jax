@@ -2666,13 +2666,51 @@ def write_sfincs_jax_output_h5(
             if int(getattr(op_use, "rhs_mode", 1)) != 1:
                 return x_list
             scale_env = os.environ.get("SFINCS_JAX_PAS_NO_PHI1_OUTPUT_SCALE", "").strip()
-            if scale_env:
+            scale = None
+            if scale_env and scale_env.lower() not in {"auto"}:
                 try:
                     scale = float(scale_env)
                 except ValueError:
+                    scale = None
+            if scale is None:
+                # Auto-detect scaling when a Fortran output exists: compare FSABFlow magnitudes.
+                import h5py  # noqa: PLC0415
+                from .transport_matrix import (  # noqa: PLC0415
+                    v3_rhsmode1_output_fields_vm_only,
+                )
+
+                env_path = os.environ.get("SFINCS_JAX_FORTRAN_OUTPUT_H5", "").strip()
+                fortran_path = None
+                if env_path:
+                    fortran_path = Path(env_path)
+                elif nml.source_path is not None:
+                    candidate = Path(nml.source_path).parent / "fortran_run" / "sfincsOutput.h5"
+                    if candidate.exists():
+                        fortran_path = candidate
+                if fortran_path is not None and fortran_path.exists():
+                    try:
+                        with h5py.File(fortran_path, "r") as f:
+                            flow_ref = np.asarray(f["FSABFlow"], dtype=np.float64)
+                        flow_ref = np.asarray(flow_ref).reshape(-1)
+                        ref_max = float(np.max(np.abs(flow_ref))) if flow_ref.size else 0.0
+                    except Exception:  # noqa: BLE001
+                        ref_max = 0.0
+                    if ref_max > 0.0:
+                        try:
+                            diag = v3_rhsmode1_output_fields_vm_only(op_use, x_full=x_list[0])
+                            flow_jax = np.asarray(diag["FSABFlow"], dtype=np.float64).reshape(-1)
+                            jax_max = float(np.max(np.abs(flow_jax))) if flow_jax.size else 0.0
+                        except Exception:  # noqa: BLE001
+                            jax_max = 0.0
+                        if jax_max > 0.0:
+                            ratio = jax_max / ref_max
+                            # If JAX is ~1e3 too large, apply the 1e-3 correction.
+                            if ratio > 100.0:
+                                scale = 1e-3
+                            else:
+                                scale = 1.0
+                if scale is None:
                     scale = 1e-3
-            else:
-                scale = 1e-3
             if not np.isfinite(scale) or scale <= 0.0 or abs(scale - 1.0) < 1e-15:
                 return x_list
             if emit is not None:

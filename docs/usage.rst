@@ -637,8 +637,10 @@ performance without changing the input file:
   ``2e-9``). This tightens parity with Fortran when sources should be numerically zero.
 
 - ``SFINCS_JAX_PAS_NO_PHI1_OUTPUT_SCALE``: scale factor applied to PAS RHSMode=1 outputs
-  when ``includePhi1 = .false.`` to match v3 normalization (default: ``1e-3``). Set to
-  ``1`` to disable the correction.
+  when ``includePhi1 = .false.`` to match v3 normalization. Default is ``auto``:
+  if a Fortran output file is available, sfincs_jax compares ``FSABFlow`` magnitudes
+  and applies ``1e-3`` only when JAX is ~1000× larger. If no Fortran output is found,
+  the fallback scale is ``1e-3``. Set to ``1`` to disable the correction.
 
 - ``SFINCS_JAX_PAS_TOKAMAK_LMAX``: optional cap on the Legendre index used by the
   tokamak PAS theta/L preconditioner (default: full ``Nxi``). Lower values can reduce
