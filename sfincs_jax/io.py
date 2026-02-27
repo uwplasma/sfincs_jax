@@ -2684,9 +2684,17 @@ def write_sfincs_jax_output_h5(
                 if env_path:
                     fortran_path = Path(env_path)
                 elif nml.source_path is not None:
-                    candidate = Path(nml.source_path).parent / "fortran_run" / "sfincsOutput.h5"
+                    src_path = Path(nml.source_path)
+                    candidate = src_path.parent / "fortran_run" / "sfincsOutput.h5"
                     if candidate.exists():
                         fortran_path = candidate
+                    else:
+                        stem = src_path.name
+                        if stem.endswith(".input.namelist"):
+                            stem = stem[: -len(".input.namelist")]
+                        fixture = src_path.parent / f"{stem}.sfincsOutput.h5"
+                        if fixture.exists():
+                            fortran_path = fixture
                 if fortran_path is not None and fortran_path.exists():
                     try:
                         with h5py.File(fortran_path, "r") as f:
