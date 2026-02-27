@@ -98,6 +98,21 @@ based on `jax.lax.custom_linear_solve` and demonstrates it here:
    python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver gmres
    python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver bicgstab
 
+JIT-compiled optimization with implicit gradients
+--------------------------------------------------
+
+This example performs a fully JIT-compiled objective evaluation and gradient-based
+optimization loop using implicit differentiation through the linear solve:
+
+.. code-block:: bash
+
+   python examples/autodiff/optimize_nu_n_implicit.py
+
+It builds a cached operator once, treats :math:`\\nu_n` as a differentiable parameter,
+and minimizes :math:`0.5\\|x(\\nu_n)\\|^2` where :math:`A(\\nu_n)x=b(\\nu_n)` is solved
+with `custom_linear_solve`. This is the recommended pattern for fast, memory-efficient
+gradients without backpropagating through Krylov iterations.
+
 Transport-matrix recycling warm starts
 --------------------------------------
 
