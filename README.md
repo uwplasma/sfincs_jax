@@ -289,17 +289,17 @@ python scripts/run_reduced_upstream_suite.py \
   --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
   --reuse-fortran \
   --max-attempts 1 \
-  --rtol 1e-4 \
+  --rtol 5e-4 \
   --atol 1e-9 \
   --jax-repeats 2
 python scripts/generate_readme_reduced_suite_table.py
 ```
 
-Latest reduced-suite snapshot (`rtol=1e-4`, `atol=1e-9`):
+Latest reduced-suite snapshot (`rtol=5e-4`, `atol=1e-9`):
 
-- **Practical parity:** 38/38 cases.
-- **Strict parity:** 38/38 cases.
-- **Print parity signals:** 38/38 cases.
+- **Practical parity:** 19/38 cases.
+- **Strict parity:** 19/38 cases.
+- **Print parity signals:** 29/38 cases.
 
 Artifacts:
 
