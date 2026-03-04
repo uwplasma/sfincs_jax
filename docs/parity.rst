@@ -131,6 +131,11 @@ These built-in floors are documented in ``sfincs_jax/compare.py`` and are always
 practical parity checks; strict mode ignores per-case JSON overrides but still respects these
 near-zero safeguards.
 
+For ``includePhi1 = .true.`` runs, parity compares the converged (last) Newton iterate when
+datasets include an iteration axis, even if Fortran and sfincs_jax record different
+``NIterations`` metadata. This keeps parity focused on the final physical state instead of
+intermediate Newton-history bookkeeping.
+
 Reduced-suite parity status (source of truth)
 ---------------------------------------------
 
