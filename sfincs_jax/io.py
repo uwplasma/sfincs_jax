@@ -2017,6 +2017,7 @@ def write_sfincs_jax_output_h5(
     output_path = Path(output_path)
 
     nml = read_sfincs_input(input_namelist)
+    result = None
     _mark("read_namelist")
     geom_params_hint = nml.group("geometryParameters")
     geom_scheme_hint = _get_int(geom_params_hint, "geometryScheme", 0)
@@ -2675,7 +2676,7 @@ def write_sfincs_jax_output_h5(
                 # Keep the PAS no-Phi1 scale self-contained in sfincs_jax.
                 # A Fortran-reference-driven auto-scale can be enabled explicitly by users
                 # through SFINCS_JAX_PAS_NO_PHI1_OUTPUT_SCALE.
-                scale = 1e-3
+                scale = 1.0
             if not np.isfinite(scale) or scale <= 0.0 or abs(scale - 1.0) < 1e-15:
                 return x_list
             if emit is not None:

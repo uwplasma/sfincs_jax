@@ -8641,7 +8641,6 @@ def solve_v3_full_system_linear_gmres(
         # PAS hybrid (line + x-coarse) preconditioner by default. For large systems,
         # prefer a lighter PAS preconditioner to keep setup cost down. The PAS probe
         # can still downgrade to a collision preconditioner if it suffices.
-        tokamak_like_local = bool(geom_scheme == 1 or int(op.n_zeta) <= 5)
         xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
         xblock_small_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_SMALL_MAX", "").strip()
         try:
@@ -8654,8 +8653,7 @@ def solve_v3_full_system_linear_gmres(
             xblock_small_max_local = 4000
         max_l_local = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
         if (
-            tokamak_like_local
-            and int(active_size) <= max(1, int(xblock_small_max_local))
+            int(active_size) <= max(1, int(xblock_small_max_local))
             and xblock_tz_max_local > 0
             and int(max_l_local) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max_local
         ):
@@ -8764,7 +8762,7 @@ def solve_v3_full_system_linear_gmres(
         and op.fblock.pas is not None
         and int(op.n_species) >= 2
         and (geom_scheme == 1 or int(op.n_zeta) <= 9)
-        and rhs1_precond_kind in {"theta_line", "zeta_line", "theta_zeta", "xblock_tz", "xblock_tz_lmax"}
+        and rhs1_precond_kind in {"theta_line", "zeta_line", "theta_zeta"}
     ):
         # Multi-species PAS tokamak-like runs are prone to stagnation with pure line
         # preconditioners; prefer Schur by default for robustness/parity.
