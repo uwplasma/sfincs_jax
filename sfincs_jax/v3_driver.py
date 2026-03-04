@@ -8622,23 +8622,54 @@ def solve_v3_full_system_linear_gmres(
         (not rhs1_precond_env)
         and int(op.rhs_mode) == 1
         and (not bool(op.include_phi1))
-        and int(op.constraint_scheme) == 2
         and op.fblock.pas is not None
-        and rhs1_precond_kind in {None, "collision", "point", "xmg"}
+        and rhs1_precond_kind
+        in {
+            None,
+            "collision",
+            "point",
+            "xmg",
+            "theta_line",
+            "zeta_line",
+            "theta_zeta",
+            "xblock_tz",
+            "xblock_tz_lmax",
+            "theta_line_xdiag",
+        }
     ):
-        # DKES-trajectory PAS runs can stagnate with weak preconditioners; use the
+        # PAS runs can stagnate with weak preconditioners; use the
         # PAS hybrid (line + x-coarse) preconditioner by default. For large systems,
         # prefer a lighter PAS preconditioner to keep setup cost down. The PAS probe
         # can still downgrade to a collision preconditioner if it suffices.
-        pas_lite_min_env = os.environ.get("SFINCS_JAX_PAS_LITE_MIN", "").strip()
+        tokamak_like_local = bool(geom_scheme == 1 or int(op.n_zeta) <= 5)
+        xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+        xblock_small_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_SMALL_MAX", "").strip()
         try:
-            pas_lite_min = int(pas_lite_min_env) if pas_lite_min_env else 20000
+            xblock_tz_max_local = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
         except ValueError:
-            pas_lite_min = 20000
-        if int(active_size) >= max(1, int(pas_lite_min)):
-            rhs1_precond_kind = "pas_lite"
+            xblock_tz_max_local = 1200
+        try:
+            xblock_small_max_local = int(xblock_small_env) if xblock_small_env else 4000
+        except ValueError:
+            xblock_small_max_local = 4000
+        max_l_local = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+        if (
+            tokamak_like_local
+            and int(active_size) <= max(1, int(xblock_small_max_local))
+            and xblock_tz_max_local > 0
+            and int(max_l_local) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max_local
+        ):
+            rhs1_precond_kind = "xblock_tz"
         else:
-            rhs1_precond_kind = "pas_hybrid"
+            pas_lite_min_env = os.environ.get("SFINCS_JAX_PAS_LITE_MIN", "").strip()
+            try:
+                pas_lite_min = int(pas_lite_min_env) if pas_lite_min_env else 20000
+            except ValueError:
+                pas_lite_min = 20000
+            if int(active_size) >= max(1, int(pas_lite_min)):
+                rhs1_precond_kind = "pas_lite"
+            else:
+                rhs1_precond_kind = "pas_hybrid"
     if (
         rhs1_precond_kind == "pas_lite"
         and op.fblock.pas is not None
@@ -8726,6 +8757,18 @@ def solve_v3_full_system_linear_gmres(
             pas_strong_max = 25000
         if int(active_size) <= max(1, int(pas_strong_max)):
             rhs1_precond_kind = "pas_hybrid"
+    if (
+        rhs1_precond_env == ""
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.pas is not None
+        and int(op.n_species) >= 2
+        and (geom_scheme == 1 or int(op.n_zeta) <= 9)
+        and rhs1_precond_kind in {"theta_line", "zeta_line", "theta_zeta", "xblock_tz", "xblock_tz_lmax"}
+    ):
+        # Multi-species PAS tokamak-like runs are prone to stagnation with pure line
+        # preconditioners; prefer Schur by default for robustness/parity.
+        rhs1_precond_kind = "schur"
     rhs1_precond_kind_requested = rhs1_precond_kind
     if rhs1_precond_env == "" and rhs1_precond_kind == "point" and use_pas_projection:
         # PAS tokamak-like cases benefit from a stronger line preconditioner by default.
@@ -9593,6 +9636,17 @@ def solve_v3_full_system_linear_gmres(
             "schur",
             "pas_hybrid",
         }
+        if (
+            rhs1_precond_env in {"", "auto", "default"}
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and op.fblock.pas is not None
+            and int(op.n_species) >= 2
+            and (geom_scheme == 1 or int(op.n_zeta) <= 9)
+        ):
+            # Robust default for multi-species tokamak-like PAS runs:
+            # prefer Schur over pure theta/zeta line preconditioners.
+            rhs1_precond_kind = "schur"
         if (
             pas_probe_enabled
             and rhs1_precond_kind in heavy_precond_kinds
@@ -12614,6 +12668,74 @@ def solve_v3_full_system_linear_gmres(
                     ksp_maxiter = strong_maxiter
                     ksp_precond_side = gmres_precond_side
                     ksp_solver_kind = _solver_kind("incremental")[0]
+        if (
+            int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and op.fblock.pas is not None
+            and int(op.n_species) >= 2
+            and np.isfinite(float(result.residual_norm))
+        ):
+            rescue_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SCHUR_RESCUE_RATIO", "").strip()
+            rescue_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SCHUR_RESCUE_MAX", "").strip()
+            try:
+                rescue_ratio = float(rescue_ratio_env) if rescue_ratio_env else 1.0e4
+            except ValueError:
+                rescue_ratio = 1.0e4
+            try:
+                rescue_max = int(rescue_max_env) if rescue_max_env else 90000
+            except ValueError:
+                rescue_max = 90000
+            if (
+                rescue_ratio > 0.0
+                and int(active_size) <= max(1, int(rescue_max))
+                and float(result.residual_norm) > float(target) * float(rescue_ratio)
+            ):
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: PAS Schur rescue "
+                        f"(residual={float(result.residual_norm):.3e} > {float(target)*float(rescue_ratio):.3e})",
+                    )
+                try:
+                    schur_precond = _build_rhsmode1_schur_preconditioner(op=op)
+                    rescue_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SCHUR_RESCUE_RESTART", "").strip()
+                    rescue_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_SCHUR_RESCUE_MAXITER", "").strip()
+                    try:
+                        rescue_restart = int(rescue_restart_env) if rescue_restart_env else max(120, int(restart))
+                    except ValueError:
+                        rescue_restart = max(120, int(restart))
+                    try:
+                        rescue_maxiter = (
+                            int(rescue_maxiter_env) if rescue_maxiter_env else max(1200, int(maxiter or 400) * 3)
+                        )
+                    except ValueError:
+                        rescue_maxiter = max(1200, int(maxiter or 400) * 3)
+                    res_schur, residual_vec_schur = _solve_linear_with_residual(
+                        matvec_fn=mv,
+                        b_vec=rhs,
+                        precond_fn=schur_precond,
+                        x0_vec=result.x,
+                        tol_val=tol,
+                        atol_val=atol,
+                        restart_val=rescue_restart,
+                        maxiter_val=rescue_maxiter,
+                        solve_method_val="incremental",
+                        precond_side=gmres_precond_side,
+                    )
+                    if float(res_schur.residual_norm) < float(result.residual_norm):
+                        result = res_schur
+                        residual_vec = residual_vec_schur
+                        ksp_matvec = mv
+                        ksp_b = rhs
+                        ksp_precond = schur_precond
+                        ksp_x0 = result.x
+                        ksp_restart = rescue_restart
+                        ksp_maxiter = rescue_maxiter
+                        ksp_precond_side = gmres_precond_side
+                        ksp_solver_kind = _solver_kind("incremental")[0]
+                except Exception as exc:  # noqa: BLE001
+                    if emit is not None:
+                        emit(1, f"solve_v3_full_system_linear_gmres: PAS Schur rescue failed ({type(exc).__name__}: {exc})")
         residual_norm_check = float(result.residual_norm)
         residual_norm_true = residual_norm_check
         if ksp_precond is not None and ksp_precond_side == "left":

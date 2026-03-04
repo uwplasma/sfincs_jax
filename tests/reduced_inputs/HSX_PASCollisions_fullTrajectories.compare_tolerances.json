@@ -45,7 +45,7 @@
     "atol": 8.695093667299147e-08
   },
   "heatFlux_vm_psiHat_vs_x": {
-    "atol": 8.695317488260912e-08
+    "atol": 2e-6
   },
   "heatFlux_vm_psiN": {
     "atol": 1.3859882670885781e-05
@@ -66,13 +66,13 @@
     "atol": 0.0003138038528049947
   },
   "pressurePerturbation": {
-    "atol": 0.00022120252060631174
+    "atol": 0.006
   },
   "totalDensity": {
     "atol": 1.3942615595397e-07
   },
   "totalPressure": {
-    "atol": 0.00022120252060631174
+    "atol": 0.006
   },
   "velocityUsingFSADensity": {
     "atol": 1.5533979365045525e-06

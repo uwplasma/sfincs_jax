@@ -795,16 +795,26 @@ def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(
     momentum_flux_factor_vm = jnp.pi * op.delta * (t_hat * t_hat * t_hat) / (z * vprime_hat * m_hat)
 
     # Moments from delta-f:
-    dens = density_factor[:, None, None] * _weighted_sum_x_fortran(w_x2 * mask_l0, f_delta[:, :, 0, :, :])
-    pres = pressure_factor[:, None, None] * _weighted_sum_x_fortran(w_x4 * mask_l0, f_delta[:, :, 0, :, :])
+    # Use strict x-loop summation for RHSMode=1 diagnostics to better match
+    # Fortran accumulation order in near-cancellation regimes.
+    dens = density_factor[:, None, None] * _weighted_sum_x_fortran(
+        w_x2 * mask_l0, f_delta[:, :, 0, :, :], strict=True
+    )
+    pres = pressure_factor[:, None, None] * _weighted_sum_x_fortran(
+        w_x4 * mask_l0, f_delta[:, :, 0, :, :], strict=True
+    )
 
     if op.n_xi > 1:
-        flow = flow_factor[:, None, None] * _weighted_sum_x_fortran(w_x3 * mask_l1, f_delta[:, :, 1, :, :])
+        flow = flow_factor[:, None, None] * _weighted_sum_x_fortran(
+            w_x3 * mask_l1, f_delta[:, :, 1, :, :], strict=True
+        )
     else:
         flow = jnp.zeros_like(dens)
 
     if op.n_xi > 2:
-        pres_aniso = pressure_factor[:, None, None] * (-3.0 / 5.0) * _weighted_sum_x_fortran(w_x4 * mask_l2, f_delta[:, :, 2, :, :])
+        pres_aniso = pressure_factor[:, None, None] * (-3.0 / 5.0) * _weighted_sum_x_fortran(
+            w_x4 * mask_l2, f_delta[:, :, 2, :, :], strict=True
+        )
     else:
         pres_aniso = jnp.zeros_like(dens)
 
@@ -816,15 +826,15 @@ def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(
     # Particle / heat flux (vm): L=0 and L=2 using full-f.
     f_full_l2 = f_delta[:, :, 2, :, :] if op.n_xi > 2 else jnp.zeros_like(f_full_l0)
 
-    sum_pf_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f_full_l0)
-    sum_pf_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f_full_l2)
+    sum_pf_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f_full_l0, strict=True)
+    sum_pf_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f_full_l2, strict=True)
     pf_before_vm = particle_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_pf_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_pf_l2
     )
     pf_vm_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, pf_before_vm)
 
-    sum_hf_l0 = _weighted_sum_x_fortran(w_x6 * mask_l0, f_full_l0)
-    sum_hf_l2 = _weighted_sum_x_fortran(w_x6 * mask_l2, f_full_l2)
+    sum_hf_l0 = _weighted_sum_x_fortran(w_x6 * mask_l0, f_full_l0, strict=True)
+    sum_hf_l2 = _weighted_sum_x_fortran(w_x6 * mask_l2, f_full_l2, strict=True)
     hf_before_vm = heat_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_hf_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_hf_l2
     )
@@ -833,15 +843,15 @@ def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(
     # vm0 contributions (f0 only):
     f0_l2 = jnp.zeros_like(f0_l0) if op.n_xi > 2 else jnp.zeros_like(f0_l0)
 
-    sum_pf0_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f0_l0)
-    sum_pf0_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f0_l2)
+    sum_pf0_l0 = _weighted_sum_x_fortran(w_x4 * mask_l0, f0_l0, strict=True)
+    sum_pf0_l2 = _weighted_sum_x_fortran(w_x4 * mask_l2, f0_l2, strict=True)
     pf_before_vm0 = particle_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_pf0_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_pf0_l2
     )
     pf_vm0_psi_hat = _weighted_sum_tz_fortran(theta_w, zeta_w, pf_before_vm0)
 
-    sum_hf0_l0 = _weighted_sum_x_fortran(w_x6 * mask_l0, f0_l0)
-    sum_hf0_l2 = _weighted_sum_x_fortran(w_x6 * mask_l2, f0_l2)
+    sum_hf0_l0 = _weighted_sum_x_fortran(w_x6 * mask_l0, f0_l0, strict=True)
+    sum_hf0_l2 = _weighted_sum_x_fortran(w_x6 * mask_l2, f0_l2, strict=True)
     hf_before_vm0 = heat_flux_factor_vm[:, None, None] * (
         (8.0 / 3.0) * factor_vm[None, :, :] * sum_hf0_l0 + (4.0 / 15.0) * factor_vm[None, :, :] * sum_hf0_l2
     )
@@ -849,11 +859,11 @@ def _v3_rhsmode1_output_fields_vm_only_from_f0_l0(
 
     # Momentum flux (vm): L=1 and L=3 using full-f.
     if op.n_xi > 1:
-        sum_mf_l1 = _weighted_sum_x_fortran(w_x5 * mask_l1, f_delta[:, :, 1, :, :])
+        sum_mf_l1 = _weighted_sum_x_fortran(w_x5 * mask_l1, f_delta[:, :, 1, :, :], strict=True)
     else:
         sum_mf_l1 = jnp.zeros_like(dens)
     if op.n_xi > 3:
-        sum_mf_l3 = _weighted_sum_x_fortran(w_x5 * mask_l3, f_delta[:, :, 3, :, :])
+        sum_mf_l3 = _weighted_sum_x_fortran(w_x5 * mask_l3, f_delta[:, :, 3, :, :], strict=True)
     else:
         sum_mf_l3 = jnp.zeros_like(dens)
 

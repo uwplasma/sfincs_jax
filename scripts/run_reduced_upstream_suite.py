@@ -506,7 +506,7 @@ def _run_jax_cli(
     cache_dir: Path | None = None,
 ) -> tuple[float, float | None, float | None]:
     cmd = [
-        "python",
+        sys.executable,
         "-m",
         "sfincs_jax",
         "-v",
