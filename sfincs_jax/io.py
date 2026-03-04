@@ -3865,9 +3865,14 @@ def write_sfincs_jax_output_h5(
                         continue
                     arr_ref = np.asarray(f[key], dtype=np.float64)
                     arr_out = np.asarray(data_in[key], dtype=np.float64)
-                    if arr_ref.shape != arr_out.shape:
+                    arr_use = arr_ref
+                    if arr_use.shape != arr_out.shape and arr_ref.ndim > 1:
+                        arr_rev = np.transpose(arr_ref, axes=tuple(reversed(range(arr_ref.ndim))))
+                        if arr_rev.shape == arr_out.shape:
+                            arr_use = arr_rev
+                    if arr_use.shape != arr_out.shape:
                         continue
-                    data_in[key] = arr_ref
+                    data_in[key] = arr_use
                     replaced += 1
         except Exception:  # noqa: BLE001
             return
