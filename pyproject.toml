@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sfincs_jax"
 version = "0.0.1"
-description = "JAX port of SFINCS (Fortran v3 parity-first)"
+description = "JAX port of SFINCS (Fortran v3 reference-comparison-first)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

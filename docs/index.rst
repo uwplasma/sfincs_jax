@@ -36,7 +36,7 @@ output compatibility, matrix-free performance, and differentiability.
    examples
    utils
    api
-   parity
+   fortran_comparison
    references
    contributing
    release_checklist

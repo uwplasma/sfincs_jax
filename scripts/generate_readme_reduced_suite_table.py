@@ -83,7 +83,7 @@ def main() -> int:
         rows_strict = {}
 
     table_lines = [
-        "| Case | Fortran CPU(s) | sfincs_jax CPU(s) | sfincs_jax GPU(s) | Fortran CPU MB | sfincs_jax CPU MB | sfincs_jax GPU MB | Mismatches (practical/strict) | Print parity |",
+        "| Case | Fortran CPU(s) | sfincs_jax CPU(s) | sfincs_jax GPU(s) | Fortran CPU MB | sfincs_jax CPU MB | sfincs_jax GPU MB | Mismatches (practical/strict) | Print comparison |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
     ]
     for case in sorted(rows_cpu):

@@ -8677,11 +8677,15 @@ def solve_v3_full_system_linear_gmres(
         # (xblock/line) than pas_lite provides. Prefer the PAS hybrid in this setting.
         rhs1_precond_kind = "pas_hybrid"
     if (
+        rhs1_precond_env in {"", "auto", "default"}
+        and
         rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
         and _pas_tokamak_theta_preconditioner_applicable(op)
     ):
         rhs1_precond_kind = "pas_tokamak_theta"
     if (
+        rhs1_precond_env in {"", "auto", "default"}
+        and
         rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
         and _pas_tz_preconditioner_applicable(op)
         and (not _pas_tokamak_theta_preconditioner_applicable(op))
@@ -9101,11 +9105,13 @@ def solve_v3_full_system_linear_gmres(
         stage2_time_cap_s = 120.0
     if op.fblock.fp is not None and use_dkes and stage2_time_cap_s < 120.0:
         stage2_time_cap_s = 120.0
-    if op.fblock.fp is not None and int(op.total_size) >= 300000 and stage2_time_cap_s < 300.0:
+    if op.fblock.fp is not None and int(op.total_size) >= 300000 and stage2_time_cap_s < 1200.0:
         # Large FP systems can spend most of this budget in preconditioner setup;
-        # keep stage2 available by default so parity is independent from any
-        # external Fortran reference files.
-        stage2_time_cap_s = 300.0
+        # keep stage2 available by default so validation does not depend on external
+        # reference files and so difficult high-resolution cases can still polish.
+        stage2_time_cap_s = 1200.0
+    if op.fblock.fp is not None and int(op.total_size) >= 600000 and stage2_time_cap_s < 2400.0:
+        stage2_time_cap_s = 2400.0
 
     def _solve_linear(
         *,
@@ -10088,9 +10094,9 @@ def solve_v3_full_system_linear_gmres(
                 probe_norm = float(jnp.linalg.norm(probe_r))
                 probe_ratio = probe_norm / max(float(target_reduced), 1e-300)
                 if dense_shortcut_ratio > 0 and probe_ratio >= dense_shortcut_ratio:
-                    early_dense_shortcut = True
                     allow_probe_shortcut = dense_fallback_max > 0 and int(active_size) <= dense_fallback_max
                     if allow_probe_shortcut:
+                        early_dense_shortcut = True
                         probe_shortcut = True
                         res_reduced = GMRESSolveResult(x=probe_x0, residual_norm=jnp.asarray(probe_norm))
                         ksp_matvec = mv_reduced
@@ -10393,12 +10399,30 @@ def solve_v3_full_system_linear_gmres(
                         f"(residual ratio={res_ratio:.3e} >= {float(pas_stage2_skip_ratio):.1e})",
                     )
         if (not early_dense_shortcut) and dense_shortcut_ratio > 0 and res_ratio >= dense_shortcut_ratio:
-            early_dense_shortcut = True
-            if emit is not None:
+            dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
+            dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
+            try:
+                dense_fallback_max_huge = int(dense_fallback_max_huge_env) if dense_fallback_max_huge_env else dense_fallback_max
+            except ValueError:
+                dense_fallback_max_huge = dense_fallback_max
+            try:
+                dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e2
+            except ValueError:
+                dense_fallback_ratio = 1.0e2
+            dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
+            if dense_fallback_limit > 0 and int(active_size) <= int(dense_fallback_limit):
+                early_dense_shortcut = True
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: dense fallback shortcut (early) "
+                        f"(ratio={res_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
+                    )
+            elif emit is not None:
                 emit(
-                    0,
-                    "solve_v3_full_system_linear_gmres: dense fallback shortcut (early) "
-                    f"(ratio={res_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
+                    1,
+                    "solve_v3_full_system_linear_gmres: dense fallback shortcut skipped "
+                    f"(size={int(active_size)} > dense_max={int(dense_fallback_limit)})",
                 )
         solver_kind = _solver_kind(solve_method)[0]
         bicgstab_fallback_target = float(target_reduced)
@@ -10462,6 +10486,22 @@ def solve_v3_full_system_linear_gmres(
                 stage2_maxiter = max(int(stage2_maxiter), 2000)
             if tokamak_pas and (not stage2_restart_env):
                 stage2_restart = max(int(stage2_restart), 160)
+            if (
+                op.fblock.fp is not None
+                and op.fblock.pas is None
+                and int(active_size) >= 300000
+                and (not stage2_maxiter_env)
+            ):
+                # Large FP systems often need stage2 to close diagnostics, but
+                # maxiter=800 is unnecessarily expensive in practice.
+                stage2_maxiter = min(int(stage2_maxiter), 600)
+            if (
+                op.fblock.fp is not None
+                and op.fblock.pas is None
+                and int(active_size) >= 300000
+                and (not stage2_restart_env)
+            ):
+                stage2_restart = min(max(80, int(stage2_restart)), 100)
             stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
             if stage2_method not in {"batched", "incremental", "dense"}:
                 stage2_method = "incremental"
@@ -10871,6 +10911,37 @@ def solve_v3_full_system_linear_gmres(
                     else:
                         strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
 
+        if (
+            strong_precond_kind is not None
+            and (float(res_reduced.residual_norm) > target_reduced or fp_force_strong)
+            and strong_precond_trigger
+            and not early_dense_shortcut
+        ):
+            if op.fblock.fp is not None and op.fblock.pas is None:
+                fp_strong_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_STRONG_PRECOND_MAX", "").strip()
+                try:
+                    fp_strong_max = int(fp_strong_max_env) if fp_strong_max_env else 120000
+                except ValueError:
+                    fp_strong_max = 120000
+                fp_heavy_kinds = {
+                    "theta_line",
+                    "theta_line_xdiag",
+                    "zeta_line",
+                    "theta_zeta",
+                    "xblock_tz",
+                    "xblock_tz_lmax",
+                    "species_block",
+                    "sxblock",
+                    "sxblock_tz",
+                }
+                if int(active_size) > max(0, int(fp_strong_max)) and strong_precond_kind in fp_heavy_kinds:
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_full_system_linear_gmres: skipping strong preconditioner "
+                            f"(kind={strong_precond_kind}, size={int(active_size)} > fp_max={int(fp_strong_max)})",
+                        )
+                    strong_precond_kind = None
         if (
             strong_precond_kind is not None
             and (float(res_reduced.residual_norm) > target_reduced or fp_force_strong)
@@ -12297,8 +12368,24 @@ def solve_v3_full_system_linear_gmres(
         ):
             if preconditioner_full is None and rhs1_precond_enabled:
                 preconditioner_full = _build_rhs1_preconditioner_full()
-            stage2_maxiter = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", str(max(600, int(maxiter or 400) * 2))))
-            stage2_restart = int(os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", str(max(120, int(restart)))))
+            stage2_maxiter_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_MAXITER", "").strip()
+            stage2_restart_env = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_RESTART", "").strip()
+            stage2_maxiter = int(stage2_maxiter_env or str(max(600, int(maxiter or 400) * 2)))
+            stage2_restart = int(stage2_restart_env or str(max(120, int(restart))))
+            if (
+                op.fblock.fp is not None
+                and op.fblock.pas is None
+                and int(op.total_size) >= 300000
+                and (not stage2_maxiter_env)
+            ):
+                stage2_maxiter = min(int(stage2_maxiter), 600)
+            if (
+                op.fblock.fp is not None
+                and op.fblock.pas is None
+                and int(op.total_size) >= 300000
+                and (not stage2_restart_env)
+            ):
+                stage2_restart = min(max(80, int(stage2_restart)), 100)
             stage2_method = os.environ.get("SFINCS_JAX_LINEAR_STAGE2_METHOD", "incremental").strip().lower()
             if stage2_method not in {"batched", "incremental", "dense"}:
                 stage2_method = "incremental"

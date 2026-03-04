@@ -1,7 +1,7 @@
 """SFINCS (v3) port to JAX.
 
-This repository is parity-first: we start by matching the Fortran v3 numerics and outputs
-for selected examples, then expand coverage over time.
+This repository is Fortran-reference-first: we start by matching the Fortran v3
+numerics and outputs for selected examples, then expand coverage over time.
 """
 
 from __future__ import annotations

@@ -1,3 +1,7 @@
+.. This page is kept for backward compatibility with existing links and scripts.
+
+:orphan:
+
 Parity status
 =============
 

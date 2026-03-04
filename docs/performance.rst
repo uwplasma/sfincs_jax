@@ -153,6 +153,16 @@ Solver defaults (Phi1 + sharding)
   ``SFINCS_JAX_RHSMODE1_DENSE_ACTIVE_CUTOFF``). PAS uses Krylov by default to
   preserve parity and can be forced into dense fallback by setting
   ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` explicitly.
+- **Large FP stage-2 polish (RHSMode=1)**: for large full-FP systems, stage-2 GMRES
+  polish remains enabled by default with a larger elapsed-time budget, so difficult
+  high-resolution cases can converge without external reference overlays.
+  The defaults are capped for runtime safety (stage-2 ``maxiter`` up to ``600``,
+  ``restart`` up to ``100`` in this regime), and controlled by
+  ``SFINCS_JAX_LINEAR_STAGE2_MAXITER`` / ``SFINCS_JAX_LINEAR_STAGE2_RESTART``.
+- **Large FP strong-preconditioner guard**: when active size is very large, expensive
+  line/block strong-preconditioner fallbacks are skipped by default to prevent
+  out-of-memory allocations. The cutoff is
+  ``SFINCS_JAX_RHSMODE1_FP_STRONG_PRECOND_MAX`` (default: ``120000`` active DOFs).
 - **PAS dense fallback threshold (RHSMode=1)**: PAS/constraintScheme=2 cases now
   disable dense fallback unless explicitly enabled via
   ``SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX`` (or unless ``constraintScheme=0``), since

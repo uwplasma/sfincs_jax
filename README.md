@@ -2,7 +2,7 @@
 
 `sfincs_jax` is a JAX implementation of the SFINCS Fortran v3 workflow, with matrix-free operators,
 JIT acceleration, and end-to-end differentiable components for sensitivity and optimization studies.
-Default RHSMode=1 linear solves use GMRES (incremental, parity-first) with stage-2 fallback,
+Default RHSMode=1 linear solves use GMRES (incremental, Fortran-comparison-first) with stage-2 fallback,
 while RHSMode=2/3 transport solves default to BiCGStab with a collision-diagonal preconditioner
 and GMRES fallback. Implicit differentiation is enabled by default for linear solves, and
 preconditioner blocks use size-based mixed precision by default for memory efficiency.
@@ -161,16 +161,16 @@ For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
 - Implicit-diff linear solves via `jax.lax.custom_linear_solve` (default for RHSMode=1 + transport)
 - Transport-matrix recycling warm starts (optional, `SFINCS_JAX_TRANSPORT_RECYCLE_K`)
 - `sfincsOutput.h5` writing from Python and CLI
-- Parity tests against frozen Fortran fixtures (PETSc binaries and `sfincsOutput.h5`)
+- Fortran-comparison tests against frozen Fortran fixtures (PETSc binaries and `sfincsOutput.h5`)
 - Differentiable operator and solve-adjacent workflows (including implicit-diff helper APIs)
 
-Detailed parity inventory and dataset coverage:
+Detailed Fortran-comparison inventory and dataset coverage:
 
-- `docs/parity.rst`
+- `docs/fortran_comparison.rst`
 - `docs/outputs.rst`
 - `docs/fortran_examples.rst`
 
-## Solver defaults (parity + performance)
+## Solver defaults (comparison + performance)
 
 - RHSMode=1 dense fallback now defaults to `SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX=400`, with higher
   ceilings `SFINCS_JAX_RHSMODE1_DENSE_FP_MAX=5000` (full FP) and
@@ -184,8 +184,8 @@ Detailed parity inventory and dataset coverage:
 - PAS constraint projection auto-enables for tokamak-like `N_zeta=1` cases and DKES trajectories
   to eliminate nullspace drift (see `SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`).
 - `SFINCS_JAX_DENSE_MAX=8000` caps direct dense solves to avoid runaway memory use.
-- VMEC geometryScheme=5 full‑FP parity uses dedicated near‑zero tolerances for flow/pressure
-  diagnostics; strict tables still pass at reduced-suite tolerances (see `docs/parity.rst`).
+- VMEC geometryScheme=5 full‑FP comparisons use dedicated near‑zero tolerances for flow/pressure
+  diagnostics; strict tables still pass at reduced-suite tolerances (see `docs/fortran_comparison.rst`).
 
 Detailed performance profiling and advanced parallel modes are documented in
 `docs/performance.rst` and `docs/parallelism.rst`.
@@ -227,7 +227,7 @@ sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
 `examples/` is organized by workflow category:
 
 - `examples/getting_started/`: API/CLI fundamentals
-- `examples/parity/`: fixture parity and validation runs
+- `examples/parity/`: fixture comparison and validation runs
 - `examples/transport/`: RHSMode=2/3 + postprocessing workflows
 - `examples/autodiff/`: Jacobian-vector products, sensitivity, implicit differentiation
 - `examples/optimization/`: optimization loops using JAX ecosystem tools
@@ -273,20 +273,20 @@ The utilities honor the upstream `!ss` scan directives in `input.namelist`
 (see `docs/utils.rst`) and produce the same scan layouts as the original
 SFINCS v3 scripts.
 
-## Upstream SFINCS compatibility and parity status
+## Upstream SFINCS compatibility and comparison status
 
 The repository vendors the upstream Fortran v3 example suite under `examples/sfincs_examples/`.
 Key docs:
 
 - `docs/fortran_examples.rst`
-- `docs/parity.rst`
+- `docs/fortran_comparison.rst`
 
-Reproduce the compatibility/parity artifacts:
+Reproduce the compatibility/comparison artifacts:
 
 ```bash
 python scripts/generate_fortran_example_output_status.py
 python scripts/run_reduced_upstream_suite.py \
-  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --fortran-exe /path/to/sfincs \
   --reuse-fortran \
   --max-attempts 1 \
   --rtol 5e-4 \
@@ -297,9 +297,9 @@ python scripts/generate_readme_reduced_suite_table.py
 
 Latest reduced-suite snapshot (`rtol=5e-4`, `atol=1e-9`):
 
-- **Practical parity:** 19/38 cases.
-- **Strict parity:** 19/38 cases.
-- **Print parity signals:** 29/38 cases.
+- **Practical comparison:** 19/38 cases.
+- **Strict comparison:** 19/38 cases.
+- **Print comparison signals:** 29/38 cases.
 
 Artifacts:
 
@@ -315,7 +315,7 @@ python scripts/generate_readme_reduced_suite_table.py
 ```
 
 <!-- BEGIN REDUCED_SUITE_TABLE -->
-| Case | Fortran CPU(s) | sfincs_jax CPU(s) | sfincs_jax GPU(s) | Fortran CPU MB | sfincs_jax CPU MB | sfincs_jax GPU MB | Mismatches (practical/strict) | Print parity |
+| Case | Fortran CPU(s) | sfincs_jax CPU(s) | sfincs_jax GPU(s) | Fortran CPU MB | sfincs_jax CPU MB | sfincs_jax GPU MB | Mismatches (practical/strict) | Print comparison |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | HSX_FPCollisions_DKESTrajectories | 1.821 | 26.955 | 9.281 | 180.9 | 1957.9 | 2224.0 | 0/193 (strict 0/193) | 9/9 |
 | HSX_FPCollisions_fullTrajectories | 1.931 | 23.486 | 10.901 | 154.0 | 1385.5 | 1743.2 | 0/193 (strict 0/193) | 9/9 |
