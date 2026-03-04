@@ -88,7 +88,7 @@ def compare_sfincs_outputs(
     niter_b = _as_int(b.get("NIterations"))
     include_phi1_a = _as_int(a.get("includePhi1"))
     include_phi1_b = _as_int(b.get("includePhi1"))
-    include_phi1 = bool(include_phi1_a or include_phi1_b)
+    include_phi1 = bool((include_phi1_a is not None and include_phi1_a > 0) or (include_phi1_b is not None and include_phi1_b > 0))
     if include_phi1:
         # For Phi1 runs, Fortran and JAX can report different Newton-iteration counts
         # while still agreeing on the converged final state. Treat NIterations as

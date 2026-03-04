@@ -1769,6 +1769,20 @@ def main() -> int:
     current_run_results: list[CaseResult] = []
 
     def _handle_result(result: CaseResult) -> None:
+        prev = merged_results.get(result.case)
+        if prev is not None:
+            # Preserve previously measured runtime/RSS when a fresh attempt falls back
+            # to last_success after timeout (parity can still be checked from cached H5).
+            for attr in (
+                "fortran_runtime_s",
+                "jax_runtime_s",
+                "jax_runtime_s_cold",
+                "jax_runtime_s_warm",
+                "fortran_max_rss_mb",
+                "jax_max_rss_mb",
+            ):
+                if getattr(result, attr) is None and getattr(prev, attr) is not None:
+                    setattr(result, attr, getattr(prev, attr))
         if result.status in {"parity_ok", "parity_mismatch"} and result.n_common_keys > 0:
             reduced_fixture = REPO_ROOT / "tests" / "reduced_inputs" / f"{result.case}.input.namelist"
             reduced_fixture.parent.mkdir(parents=True, exist_ok=True)

@@ -72,17 +72,17 @@
    * - HSX_PASCollisions_fullTrajectories
      - parity_mismatch
      - none
-     - NTHETA=13,NX=7,NXI=8,NZETA=11
+     - NTHETA=12,NX=7,NXI=8,NZETA=11
      - 1
      - 0
      - 32.903
-     - -
+     - 196.472
      - 467.0
-     - -
+     - 3053.3
      - 3/192
      - S:2 P:1
      - 9/9
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=3/192
    * - filteredW7XNetCDF_2species_magneticDrifts_noEr
      - parity_ok
      - none
@@ -258,13 +258,13 @@
      - 1
      - 0
      - 0.612
-     - 4.376
+     - 4.465
      - 133.7
-     - 280.5
-     - 4/202
+     - 281.4
+     - 4/203
      - S:3 P:1
      - 7/9
-     - All common numeric datasets matched tolerance. strict=4/202 printParity=7/9 missing=residual,jacobian
+     - All common numeric datasets matched tolerance. strict=4/203 printParity=7/9 missing=residual,jacobian
    * - monoenergetic_geometryScheme11
      - parity_ok
      - none
@@ -450,17 +450,17 @@
    * - tokamak_1species_PASCollisions_noEr
      - parity_ok
      - none
-     - NTHETA=41,NX=50,NXI=64,NZETA=1
+     - NTHETA=40,NX=50,NXI=64,NZETA=1
      - 1
      - 0
      - 2.259
-     - -
+     - 150.119
      - 717.6
-     - -
+     - 1099.3
      - 0/140
      - S:0 P:0
      - 7/7
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=0/140
    * - tokamak_1species_PASCollisions_noEr_Nx1
      - parity_mismatch
      - none
