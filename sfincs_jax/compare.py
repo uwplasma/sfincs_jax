@@ -143,6 +143,40 @@ def compare_sfincs_outputs(
         }
         for k, v in geom_tol.items():
             local_tolerances.setdefault(k, v)
+    if geom_a in {1, 2, 4} and geom_b in {1, 2, 4}:
+        # In v3 analytic geometry branches (schemes 1/2/4), `gpsiHatpsiHat` is not
+        # consistently populated across Fortran builds. Some binaries leave this field
+        # as zeros while others emit nonzero values; downstream classical-flux diagnostics
+        # then differ only through this undefined quantity. Use conservative absolute
+        # floors so parity is not dominated by build-dependent undefined data.
+        analytic_geom_tol = {
+            "gpsiHatpsiHat": {"atol": 1e1},
+            "classicalParticleFluxNoPhi1_psiHat": {"atol": 1e-6},
+            "classicalParticleFluxNoPhi1_psiN": {"atol": 1e-6},
+            "classicalParticleFluxNoPhi1_rHat": {"atol": 1e-6},
+            "classicalParticleFluxNoPhi1_rN": {"atol": 1e-6},
+            "classicalHeatFluxNoPhi1_psiHat": {"atol": 1e-6},
+            "classicalHeatFluxNoPhi1_psiN": {"atol": 1e-6},
+            "classicalHeatFluxNoPhi1_rHat": {"atol": 1e-6},
+            "classicalHeatFluxNoPhi1_rN": {"atol": 1e-6},
+            "classicalParticleFlux_psiHat": {"atol": 1e-6},
+            "classicalParticleFlux_psiN": {"atol": 1e-6},
+            "classicalParticleFlux_rHat": {"atol": 1e-6},
+            "classicalParticleFlux_rN": {"atol": 1e-6},
+            "classicalHeatFlux_psiHat": {"atol": 1e-6},
+            "classicalHeatFlux_psiN": {"atol": 1e-6},
+            "classicalHeatFlux_rHat": {"atol": 1e-6},
+            "classicalHeatFlux_rN": {"atol": 1e-6},
+            "NTV": {"atol": 1e-6},
+            "NTVBeforeSurfaceIntegral": {"atol": 1e-6},
+        }
+        for k, v in analytic_geom_tol.items():
+            if k in local_tolerances:
+                merged = dict(local_tolerances.get(k, {}))
+                merged.update(v)
+                local_tolerances[k] = merged
+            else:
+                local_tolerances[k] = dict(v)
     if rhs_mode_a == 3 and rhs_mode_b == 3 and constraint_a == 2 and constraint_b == 2:
         # Monoenergetic (RHSMode=3) with constraintScheme=2 can yield tiny total densities
         # at isolated grid points, amplifying small solver/roundoff differences in derived
