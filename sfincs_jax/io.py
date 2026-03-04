@@ -2530,19 +2530,18 @@ def write_sfincs_jax_output_h5(
         ) -> list[jnp.ndarray]:
             if int(result.op.constraint_scheme) != 0:
                 return x_list
+            allow_ref_env = os.environ.get("SFINCS_JAX_ALLOW_FORTRAN_REFERENCE", "").strip().lower()
+            if allow_ref_env not in {"1", "true", "yes", "on"}:
+                return x_list
             # Optional gauge fix for constraintScheme=0: if a Fortran output file is present,
             # adjust the nullspace component so FSADensityPerturbation / FSAPressurePerturbation
             # match the Fortran reference. This keeps parity for the ill-posed scheme.
             import h5py  # noqa: PLC0415
 
             env_path = os.environ.get("SFINCS_JAX_FORTRAN_OUTPUT_H5", "").strip()
-            fortran_path = None
-            if env_path:
-                fortran_path = Path(env_path)
-            elif nml.source_path is not None:
-                candidate = Path(nml.source_path).parent / "fortran_run" / "sfincsOutput.h5"
-                if candidate.exists():
-                    fortran_path = candidate
+            if not env_path:
+                return x_list
+            fortran_path = Path(env_path)
             if fortran_path is None or not fortran_path.exists():
                 return x_list
 
@@ -2673,52 +2672,10 @@ def write_sfincs_jax_output_h5(
                 except ValueError:
                     scale = None
             if scale is None:
-                # Auto-detect scaling when a Fortran output exists: compare FSABFlow magnitudes.
-                import h5py  # noqa: PLC0415
-                from .transport_matrix import (  # noqa: PLC0415
-                    v3_rhsmode1_output_fields_vm_only,
-                )
-
-                env_path = os.environ.get("SFINCS_JAX_FORTRAN_OUTPUT_H5", "").strip()
-                fortran_path = None
-                if env_path:
-                    fortran_path = Path(env_path)
-                elif nml.source_path is not None:
-                    src_path = Path(nml.source_path)
-                    candidate = src_path.parent / "fortran_run" / "sfincsOutput.h5"
-                    if candidate.exists():
-                        fortran_path = candidate
-                    else:
-                        stem = src_path.name
-                        if stem.endswith(".input.namelist"):
-                            stem = stem[: -len(".input.namelist")]
-                        fixture = src_path.parent / f"{stem}.sfincsOutput.h5"
-                        if fixture.exists():
-                            fortran_path = fixture
-                if fortran_path is not None and fortran_path.exists():
-                    try:
-                        with h5py.File(fortran_path, "r") as f:
-                            flow_ref = np.asarray(f["FSABFlow"], dtype=np.float64)
-                        flow_ref = np.asarray(flow_ref).reshape(-1)
-                        ref_max = float(np.max(np.abs(flow_ref))) if flow_ref.size else 0.0
-                    except Exception:  # noqa: BLE001
-                        ref_max = 0.0
-                    if ref_max > 0.0:
-                        try:
-                            diag = v3_rhsmode1_output_fields_vm_only(op_use, x_full=x_list[0])
-                            flow_jax = np.asarray(diag["FSABFlow"], dtype=np.float64).reshape(-1)
-                            jax_max = float(np.max(np.abs(flow_jax))) if flow_jax.size else 0.0
-                        except Exception:  # noqa: BLE001
-                            jax_max = 0.0
-                        if jax_max > 0.0:
-                            ratio = jax_max / ref_max
-                            # If JAX is ~1e3 too large, apply the 1e-3 correction.
-                            if ratio > 100.0:
-                                scale = 1e-3
-                            else:
-                                scale = 1.0
-                if scale is None:
-                    scale = 1e-3
+                # Keep the PAS no-Phi1 scale self-contained in sfincs_jax.
+                # A Fortran-reference-driven auto-scale can be enabled explicitly by users
+                # through SFINCS_JAX_PAS_NO_PHI1_OUTPUT_SCALE.
+                scale = 1e-3
             if not np.isfinite(scale) or scale <= 0.0 or abs(scale - 1.0) < 1e-15:
                 return x_list
             if emit is not None:
@@ -2735,30 +2692,6 @@ def write_sfincs_jax_output_h5(
             return scaled
 
         xs = _maybe_apply_pas_no_phi1_output_scale(xs)
-        if include_phi1:
-            # When a Fortran reference is available, align the diagnostic iteration axis
-            # with v3's saved Newton-iteration count by padding/trimming the accepted states.
-            import h5py  # noqa: PLC0415
-
-            env_path = os.environ.get("SFINCS_JAX_FORTRAN_OUTPUT_H5", "").strip()
-            fortran_path = None
-            if env_path:
-                fortran_path = Path(env_path)
-            elif nml.source_path is not None:
-                candidate = Path(nml.source_path).parent / "fortran_run" / "sfincsOutput.h5"
-                if candidate.exists():
-                    fortran_path = candidate
-            if fortran_path is not None and fortran_path.exists():
-                try:
-                    with h5py.File(fortran_path, "r") as f:
-                        n_iter_ref = int(np.asarray(f["NIterations"]).reshape(-1)[0])
-                    if n_iter_ref > 0:
-                        if len(xs) < n_iter_ref:
-                            xs.extend([xs[-1]] * (n_iter_ref - len(xs)))
-                        elif len(xs) > n_iter_ref:
-                            xs = xs[:n_iter_ref]
-                except Exception:  # noqa: BLE001
-                    pass
 
         if emit is not None:
             emit(0, " Computing diagnostics.")
@@ -2940,6 +2873,9 @@ def write_sfincs_jax_output_h5(
             arrays: dict[str, np.ndarray],
         ) -> dict[str, np.ndarray]:
             """Align PAS no-Phi1 flow/current diagnostics when a Fortran H5 is present."""
+            allow_ref_env = os.environ.get("SFINCS_JAX_ALLOW_FORTRAN_REFERENCE", "").strip().lower()
+            if allow_ref_env not in {"1", "true", "yes", "on"}:
+                return arrays
             if include_phi1:
                 return arrays
             if int(getattr(result.op, "rhs_mode", 1)) != 1:
@@ -2966,17 +2902,7 @@ def write_sfincs_jax_output_h5(
             if env_path:
                 fortran_path = Path(env_path)
             elif nml.source_path is not None:
-                src_path = Path(nml.source_path)
-                candidate = src_path.parent / "fortran_run" / "sfincsOutput.h5"
-                if candidate.exists():
-                    fortran_path = candidate
-                else:
-                    stem = src_path.name
-                    if stem.endswith(".input.namelist"):
-                        stem = stem[: -len(".input.namelist")]
-                    fixture = src_path.parent / f"{stem}.sfincsOutput.h5"
-                    if fixture.exists():
-                        fortran_path = fixture
+                return arrays
             if fortran_path is None or (not fortran_path.exists()):
                 return arrays
 
@@ -3799,6 +3725,9 @@ def write_sfincs_jax_output_h5(
 
     def _maybe_overlay_fortran_large_pas_fp_diag_parity(data_in: dict[str, np.ndarray]) -> None:
         """Overlay a small set of diagnostics from colocated Fortran output for large PAS/FP parity runs."""
+        allow_ref_env = os.environ.get("SFINCS_JAX_ALLOW_FORTRAN_REFERENCE", "").strip().lower()
+        if allow_ref_env not in {"1", "true", "yes", "on"}:
+            return
         op_use = getattr(result, "op", None)
         if op_use is None:
             return
@@ -3826,17 +3755,7 @@ def write_sfincs_jax_output_h5(
         if env_path:
             fortran_path = Path(env_path)
         elif nml.source_path is not None:
-            src_path = Path(nml.source_path)
-            candidate = src_path.parent / "fortran_run" / "sfincsOutput.h5"
-            if candidate.exists():
-                fortran_path = candidate
-            else:
-                stem = src_path.name
-                if stem.endswith(".input.namelist"):
-                    stem = stem[: -len(".input.namelist")]
-                fixture = src_path.parent / f"{stem}.sfincsOutput.h5"
-                if fixture.exists():
-                    fortran_path = fixture
+            return
         if fortran_path is None or (not fortran_path.exists()):
             return
 

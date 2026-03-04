@@ -8873,13 +8873,11 @@ def solve_v3_full_system_linear_gmres(
         # Keep large full-trajectory FP cases inside the regression budget by
         # capping default Krylov work when xmg is selected automatically.
         #
-        # On a single host device (the default CPU execution mode), we can afford a
-        # larger Krylov budget to recover better parity on sensitive flow diagnostics.
-        # On multi-device sharded runs, keep the cap tighter to avoid long tails from
-        # communication-heavy iterations.
-        fp_auto_maxiter = 800 if int(jax.device_count()) <= 1 else 200
+        # Use the same cap on single- and multi-device runs. The tighter multi-device
+        # cap can under-converge large FP systems.
+        fp_auto_maxiter = 800
         maxiter = min(int(maxiter if maxiter is not None else 400), int(fp_auto_maxiter))
-        fp_auto_restart_max = 160 if int(jax.device_count()) <= 1 else 120
+        fp_auto_restart_max = 160
         restart = max(80, min(int(restart), int(fp_auto_restart_max)))
         if emit is not None:
             emit(
@@ -9105,6 +9103,11 @@ def solve_v3_full_system_linear_gmres(
         stage2_time_cap_s = 120.0
     if op.fblock.fp is not None and use_dkes and stage2_time_cap_s < 120.0:
         stage2_time_cap_s = 120.0
+    if op.fblock.fp is not None and int(op.total_size) >= 300000 and stage2_time_cap_s < 300.0:
+        # Large FP systems can spend most of this budget in preconditioner setup;
+        # keep stage2 available by default so parity is independent from any
+        # external Fortran reference files.
+        stage2_time_cap_s = 300.0
 
     def _solve_linear(
         *,
