@@ -3725,82 +3725,13 @@ def write_sfincs_jax_output_h5(
         data["NIterations"] = np.asarray(0, dtype=np.int32)
 
     def _maybe_overlay_fortran_large_pas_fp_diag_parity(data_in: dict[str, np.ndarray]) -> None:
-        """Overlay a small set of diagnostics from colocated Fortran output for large PAS/FP parity runs."""
-        allow_ref_env = os.environ.get("SFINCS_JAX_ALLOW_FORTRAN_REFERENCE", "").strip().lower()
-        if allow_ref_env not in {"1", "true", "yes", "on"}:
-            return
-        op_use = getattr(result, "op", None)
-        if op_use is None:
-            return
-        if include_phi1:
-            return
-        if int(getattr(op_use, "rhs_mode", 1)) != 1:
-            return
-        if int(getattr(op_use, "n_species", 1)) != 1:
-            return
-        if int(getattr(op_use, "total_size", 0)) < 200000:
-            return
-        if op_use.fblock.pas is None and op_use.fblock.fp is None:
-            return
-        phys_params = nml.group("physicsParameters")
-        er_val = phys_params.get("Er", phys_params.get("ER", 0.0)) if phys_params is not None else 0.0
-        try:
-            er_abs = abs(float(er_val))
-        except (TypeError, ValueError):
-            er_abs = 0.0
-        if er_abs > 1e-12:
-            return
+        """Legacy hook kept as a no-op.
 
-        fortran_path = None
-        env_path = os.environ.get("SFINCS_JAX_FORTRAN_OUTPUT_H5", "").strip()
-        if env_path:
-            fortran_path = Path(env_path)
-        elif nml.source_path is not None:
-            return
-        if fortran_path is None or (not fortran_path.exists()):
-            return
-
-        import h5py  # noqa: PLC0415
-
-        keys = (
-            "flow",
-            "jHat",
-            "velocityUsingFSADensity",
-            "velocityUsingTotalDensity",
-            "MachUsingFSAThermalSpeed",
-            "FSABFlow",
-            "FSABFlow_vs_x",
-            "FSABVelocityUsingFSADensity",
-            "FSABVelocityUsingFSADensityOverB0",
-            "FSABVelocityUsingFSADensityOverRootFSAB2",
-            "FSABjHat",
-            "FSABjHatOverB0",
-            "FSABjHatOverRootFSAB2",
-        )
-        replaced = 0
-        try:
-            with h5py.File(fortran_path, "r") as f:
-                for key in keys:
-                    if key not in data_in or key not in f:
-                        continue
-                    arr_ref = np.asarray(f[key], dtype=np.float64)
-                    arr_out = np.asarray(data_in[key], dtype=np.float64)
-                    arr_use = arr_ref
-                    if arr_use.shape != arr_out.shape and arr_ref.ndim > 1:
-                        arr_rev = np.transpose(arr_ref, axes=tuple(reversed(range(arr_ref.ndim))))
-                        if arr_rev.shape == arr_out.shape:
-                            arr_use = arr_rev
-                    if arr_use.shape != arr_out.shape:
-                        continue
-                    data_in[key] = arr_use
-                    replaced += 1
-        except Exception:  # noqa: BLE001
-            return
-        if replaced > 0 and emit is not None:
-            emit(
-                1,
-                f"overlayed {replaced} large-system PAS/FP diagnostics from Fortran reference",
-            )
+        sfincs_jax output generation must be standalone and must not depend on
+        colocated Fortran outputs.
+        """
+        _ = data_in
+        return
 
     _maybe_overlay_fortran_large_pas_fp_diag_parity(data)
 

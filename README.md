@@ -317,44 +317,44 @@ python scripts/generate_readme_reduced_suite_table.py
 <!-- BEGIN REDUCED_SUITE_TABLE -->
 | Case | Fortran CPU(s) | sfincs_jax CPU(s) | sfincs_jax GPU(s) | Fortran CPU MB | sfincs_jax CPU MB | sfincs_jax GPU MB | Mismatches (practical/strict) | Print parity |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| HSX_FPCollisions_DKESTrajectories | 1.821 | 27.918 | 25.547 | 180.9 | 2009.8 | 2284.9 | 0/193 (strict 0/193) | 9/9 |
-| HSX_FPCollisions_fullTrajectories | 1.931 | 23.683 | 23.686 | 154.0 | 1394.3 | 1796.6 | 0/193 (strict 0/193) | 9/9 |
-| HSX_PASCollisions_DKESTrajectories | 2.677 | 155.063 | - | 494.8 | 6461.5 | - | 0/193 (strict 0/193) | 9/9 |
+| HSX_FPCollisions_DKESTrajectories | 1.821 | 26.955 | 9.281 | 180.9 | 1957.9 | 2224.0 | 0/193 (strict 0/193) | 9/9 |
+| HSX_FPCollisions_fullTrajectories | 1.931 | 23.486 | 10.901 | 154.0 | 1385.5 | 1743.2 | 0/193 (strict 0/193) | 9/9 |
+| HSX_PASCollisions_DKESTrajectories | 2.677 | 168.290 | - | 494.8 | 6496.0 | - | 0/193 (strict 0/193) | 9/9 |
 | HSX_PASCollisions_fullTrajectories | 12.168 | - | - | 356.1 | - | - | max_attempts | - |
-| filteredW7XNetCDF_2species_magneticDrifts_noEr | 0.976 | 4.902 | 20.666 | 156.7 | 1396.1 | 1507.8 | 9/193 (strict 9/193) | 9/9 |
-| filteredW7XNetCDF_2species_magneticDrifts_withEr | 0.832 | 5.352 | 26.857 | 158.2 | 1785.4 | 1533.8 | 18/193 (strict 18/193) | 9/9 |
-| filteredW7XNetCDF_2species_noEr | 0.560 | 5.455 | 12.503 | 157.4 | 995.3 | 1480.1 | 20/193 (strict 20/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_noEr | 0.976 | 5.710 | 4.901 | 156.7 | 1391.0 | 1435.8 | 9/193 (strict 9/193) | 9/9 |
+| filteredW7XNetCDF_2species_magneticDrifts_withEr | 0.832 | 6.872 | 5.457 | 158.2 | 1783.2 | 1456.1 | 18/193 (strict 18/193) | 9/9 |
+| filteredW7XNetCDF_2species_noEr | 0.560 | 5.402 | 3.993 | 157.4 | 996.2 | 1416.1 | 20/193 (strict 20/193) | 9/9 |
 | geometryScheme4_1species_PAS_withEr_DKESTrajectories | 6.758 | - | - | 474.5 | - | - | max_attempts | - |
-| geometryScheme4_2species_PAS_noEr | 1.082 | 7.066 | 17.938 | 184.9 | 1067.3 | 1763.3 | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_noEr | 1.044 | 6.863 | 13.606 | 161.8 | 1423.2 | 2040.9 | 0/207 (strict 0/207) | 9/9 |
-| geometryScheme4_2species_noEr_withPhi1InDKE | 0.939 | 3.745 | 13.409 | 147.6 | 726.1 | 1483.2 | 1/265 (strict 1/265) | 9/9 |
-| geometryScheme4_2species_noEr_withQN | 0.668 | 3.138 | 8.571 | 145.4 | 685.8 | 1453.9 | 128/265 (strict 128/265) | 9/9 |
-| geometryScheme4_2species_withEr_fullTrajectories | 0.847 | 5.150 | 14.364 | 145.4 | 917.5 | 1480.6 | 0/193 (strict 0/193) | 9/9 |
-| geometryScheme4_2species_withEr_fullTrajectories_withQN | 0.715 | 3.841 | 13.159 | 145.7 | 736.9 | 1497.3 | 0/251 (strict 0/251) | 9/9 |
-| geometryScheme5_3species_loRes | 1.416 | 13.571 | 25.701 | 188.0 | 1601.2 | 1900.0 | 3/193 (strict 3/193) | 9/9 |
-| inductiveE_noEr | 1.345 | 5.601 | 9.832 | 154.5 | 972.7 | 1498.4 | 1/207 (strict 1/207) | 9/9 |
-| monoenergetic_geometryScheme1 | 1.032 | 48.776 | - | 172.3 | 552.9 | - | 0/203 (strict 0/203) | 7/9 |
-| monoenergetic_geometryScheme11 | 3.471 | 8.930 | - | 247.6 | 563.5 | - | 0/208 (strict 0/208) | 7/9 |
-| monoenergetic_geometryScheme5_ASCII | 1.765 | 27.164 | - | 208.7 | 557.1 | - | 0/206 (strict 0/207) | 7/9 |
-| monoenergetic_geometryScheme5_netCDF | 1.852 | 27.421 | - | 208.0 | 559.4 | - | 0/206 (strict 0/207) | 7/9 |
-| quick_2species_FPCollisions_noEr | 1.794 | 5.806 | 3.994 | 152.5 | 922.7 | 1438.8 | 17/207 (strict 17/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | 0.725 | 4.750 | 8.071 | 145.4 | 708.8 | 1464.2 | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | 1.303 | 7.467 | 9.686 | 154.2 | 861.5 | 1529.9 | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | 1.817 | 73.486 | - | 351.9 | 4752.8 | - | 0/207 (strict 0/207) | 9/9 |
-| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | 5.744 | 23.443 | 74.151 | 441.9 | 2374.3 | 2465.6 | 0/207 (strict 0/207) | 9/9 |
-| tokamak_1species_FPCollisions_noEr | 0.437 | 8.786 | 13.565 | 146.1 | 952.2 | 1453.8 | 9/188 (strict 9/188) | 9/9 |
-| tokamak_1species_FPCollisions_noEr_withPhi1InDKE | 1.173 | 6.214 | 14.420 | 146.3 | 721.0 | 1472.7 | 10/275 (strict 10/275) | 9/9 |
-| tokamak_1species_FPCollisions_noEr_withQN | 0.571 | 5.566 | 11.045 | 144.9 | 717.9 | 1479.0 | 0/275 (strict 0/275) | 9/9 |
-| tokamak_1species_FPCollisions_withEr_DKESTrajectories | 0.264 | 4.251 | 8.070 | 143.8 | 662.4 | 1466.8 | 0/214 (strict 0/214) | 9/9 |
-| tokamak_1species_FPCollisions_withEr_fullTrajectories | 2.664 | 19.610 | 20.159 | 249.2 | 2018.6 | 2096.4 | 9/214 (strict 9/214) | 9/9 |
-| tokamak_1species_PASCollisions_noEr | 2.717 | - | 42.527 | 1076.9 | - | 1758.5 | 21/212 (strict 21/212) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_Nx1 | 2.222 | 120.085 | 93.478 | 307.9 | 11313.7 | 3215.6 | 9/212 (strict 9/212) | 9/9 |
-| tokamak_1species_PASCollisions_noEr_withQN | 6.831 | - | 140.788 | 376.4 | - | 2070.4 | 0/275 (strict 0/275) | 9/9 |
+| geometryScheme4_2species_PAS_noEr | 1.082 | 6.513 | 7.063 | 184.9 | 1036.4 | 1683.3 | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_noEr | 1.044 | 7.616 | 6.010 | 161.8 | 1424.8 | 1999.0 | 0/207 (strict 0/207) | 9/9 |
+| geometryScheme4_2species_noEr_withPhi1InDKE | 0.939 | 3.844 | 4.442 | 147.6 | 725.9 | 1417.9 | 1/265 (strict 1/265) | 9/9 |
+| geometryScheme4_2species_noEr_withQN | 0.668 | 3.188 | 3.737 | 145.4 | 687.1 | 1400.2 | 128/265 (strict 128/265) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories | 0.847 | 4.949 | 4.143 | 145.4 | 917.0 | 1417.6 | 0/193 (strict 0/193) | 9/9 |
+| geometryScheme4_2species_withEr_fullTrajectories_withQN | 0.715 | 3.938 | 4.345 | 145.7 | 736.0 | 1438.4 | 0/251 (strict 0/251) | 9/9 |
+| geometryScheme5_3species_loRes | 1.416 | 12.866 | 9.824 | 188.0 | 1679.2 | 1845.9 | 3/193 (strict 3/193) | 9/9 |
+| inductiveE_noEr | 1.345 | 4.099 | 3.742 | 154.5 | 976.8 | 1439.3 | 0/207 (strict 0/207) | 9/9 |
+| monoenergetic_geometryScheme1 | 1.032 | 48.052 | - | 172.3 | 552.2 | - | 0/203 (strict 0/203) | 7/9 |
+| monoenergetic_geometryScheme11 | 3.471 | 8.982 | - | 247.6 | 564.3 | - | 0/208 (strict 0/208) | 7/9 |
+| monoenergetic_geometryScheme5_ASCII | 1.765 | 26.974 | - | 208.7 | 557.5 | - | 0/206 (strict 0/207) | 7/9 |
+| monoenergetic_geometryScheme5_netCDF | 1.852 | 26.629 | - | 208.0 | 558.2 | - | 0/206 (strict 0/207) | 7/9 |
+| quick_2species_FPCollisions_noEr | 1.794 | 4.854 | 4.095 | 152.5 | 917.9 | 1438.6 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories | 0.725 | 4.699 | 3.743 | 145.4 | 711.3 | 1410.2 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories | 1.303 | 6.358 | 4.649 | 154.2 | 880.2 | 1476.4 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories | 1.817 | 75.286 | 218.818 | 351.9 | 4760.2 | 2382.4 | 0/207 (strict 0/207) | 9/9 |
+| sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories | 5.744 | 33.114 | 59.438 | 441.9 | 2048.8 | 2374.1 | 0/207 (strict 0/207) | 9/9 |
+| tokamak_1species_FPCollisions_noEr | 0.437 | 10.496 | 3.592 | 146.1 | 952.1 | 1386.7 | 6/188 (strict 6/188) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withPhi1InDKE | 1.173 | 5.606 | 4.496 | 146.3 | 712.3 | 1410.7 | 9/275 (strict 9/275) | 9/9 |
+| tokamak_1species_FPCollisions_noEr_withQN | 0.571 | 4.899 | 3.641 | 144.9 | 716.9 | 1415.7 | 0/275 (strict 0/275) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_DKESTrajectories | 0.264 | 4.108 | 3.239 | 143.8 | 661.1 | 1409.7 | 0/214 (strict 0/214) | 9/9 |
+| tokamak_1species_FPCollisions_withEr_fullTrajectories | 2.664 | 15.433 | 8.477 | 249.2 | 1937.2 | 2046.6 | 9/214 (strict 9/214) | 9/9 |
+| tokamak_1species_PASCollisions_noEr | 2.717 | - | 30.843 | 1076.9 | - | 1684.3 | 21/212 (strict 21/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr_Nx1 | 2.222 | 120.347 | 81.066 | 307.9 | 11269.6 | 3227.2 | 7/212 (strict 7/212) | 9/9 |
+| tokamak_1species_PASCollisions_noEr_withQN | 6.831 | - | 127.487 | 376.4 | - | 1987.1 | 0/275 (strict 0/275) | 9/9 |
 | tokamak_1species_PASCollisions_withEr_fullTrajectories | 24.928 | - | - | 526.5 | - | - | max_attempts | - |
-| tokamak_2species_PASCollisions_noEr | 4.567 | 38.257 | 49.524 | 612.8 | 3207.2 | 2551.8 | 17/212 (strict 17/212) | 9/9 |
-| tokamak_2species_PASCollisions_withEr_fullTrajectories | 7.455 | - | 189.125 | 358.3 | - | 1931.0 | 17/212 (strict 17/212) | 9/9 |
-| transportMatrix_geometryScheme11 | 4.929 | 25.601 | - | 153.9 | 528.5 | - | 0/194 (strict 0/194) | 7/9 |
-| transportMatrix_geometryScheme2 | 6.627 | 14.335 | - | 153.9 | 526.7 | - | 1/194 (strict 1/194) | 7/9 |
+| tokamak_2species_PASCollisions_noEr | 4.567 | 35.653 | 35.621 | 612.8 | 3208.2 | 2465.3 | 17/212 (strict 17/212) | 9/9 |
+| tokamak_2species_PASCollisions_withEr_fullTrajectories | 7.455 | - | 166.946 | 358.3 | - | 1843.6 | 6/212 (strict 6/212) | 9/9 |
+| transportMatrix_geometryScheme11 | 4.929 | 26.134 | - | 153.9 | 528.8 | - | 0/194 (strict 0/194) | 7/9 |
+| transportMatrix_geometryScheme2 | 6.627 | 14.487 | - | 153.9 | 527.4 | - | 0/194 (strict 0/194) | 7/9 |
 <!-- END REDUCED_SUITE_TABLE -->
 
 

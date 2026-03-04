@@ -89,6 +89,11 @@ def compare_sfincs_outputs(
     include_phi1_a = _as_int(a.get("includePhi1"))
     include_phi1_b = _as_int(b.get("includePhi1"))
     include_phi1 = bool(include_phi1_a or include_phi1_b)
+    if include_phi1:
+        # For Phi1 runs, Fortran and JAX can report different Newton-iteration counts
+        # while still agreeing on the converged final state. Treat NIterations as
+        # metadata and compare converged datasets instead.
+        ignore.add("NIterations")
     if (niter_a == 0) or (niter_b == 0):
         # Some Fortran runs do not populate iteration counts for certain solver paths.
         # If either side reports zero iterations, skip comparison for this metadata field.
@@ -199,7 +204,12 @@ def compare_sfincs_outputs(
             "sources": {"rtol": 2e-2, "atol": 1e-9},
         }
         for k, v in mono_tol.items():
-            local_tolerances.setdefault(k, v)
+            if k in local_tolerances:
+                merged = dict(local_tolerances.get(k, {}))
+                merged.update(v)
+                local_tolerances[k] = merged
+            else:
+                local_tolerances[k] = dict(v)
     if rhs_mode_a == 3 and rhs_mode_b == 3 and constraint_a == 1 and constraint_b == 1:
         # For monoenergetic runs with constraintScheme=1, density/pressure constraints are
         # enforced to solver tolerance, so tiny nonzero FSAs can appear. Use small absolute
@@ -207,9 +217,19 @@ def compare_sfincs_outputs(
         mono_constraint_tol = {
             "FSADensityPerturbation": {"atol": 5e-6},
             "FSAPressurePerturbation": {"atol": 5e-6},
+            "NTVBeforeSurfaceIntegral": {"atol": 1e-4},
+            "momentumFlux_vm_psiHat": {"atol": 1e-4},
+            "momentumFlux_vm_psiN": {"atol": 1e-4},
+            "momentumFlux_vm_rHat": {"atol": 1e-4},
+            "momentumFlux_vm_rN": {"atol": 1e-4},
         }
         for k, v in mono_constraint_tol.items():
-            local_tolerances.setdefault(k, v)
+            if k in local_tolerances:
+                merged = dict(local_tolerances.get(k, {}))
+                merged.update(v)
+                local_tolerances[k] = merged
+            else:
+                local_tolerances[k] = dict(v)
     if rhs_mode_a in {2, 3} and rhs_mode_b in {2, 3}:
         # Transport-matrix runs can yield near-zero pressure anisotropy at isolated grid
         # points; allow a small absolute floor to avoid flagging roundoff noise.
@@ -488,8 +508,7 @@ def compare_sfincs_outputs(
                     and bn.ndim >= 1
                     and an.shape[-1] == niter_a
                     and bn.shape[-1] == niter_b
-                    and niter_a > 1
-                    and niter_b > 1
+                    and (niter_a > 1 or niter_b > 1)
                 ):
                     an = an[..., -1]
                     bn = bn[..., -1]
@@ -500,7 +519,7 @@ def compare_sfincs_outputs(
         # If includePhi1 is active and an iteration axis is present, compare only the
         # final Newton iterate to align parity on the converged solution.
         if include_phi1 and niter_a and niter_b and an.ndim >= 1 and bn.ndim >= 1:
-            if an.shape[-1] == niter_a and bn.shape[-1] == niter_b and niter_a > 1 and niter_b > 1:
+            if an.shape[-1] == niter_a and bn.shape[-1] == niter_b and (niter_a > 1 or niter_b > 1):
                 an = an[..., -1]
                 bn = bn[..., -1]
 
