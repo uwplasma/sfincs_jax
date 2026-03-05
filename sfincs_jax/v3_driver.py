@@ -89,6 +89,41 @@ def _use_solver_jit(size_hint: int | None = None) -> bool:
     return int(size_hint) <= thresh
 
 
+_PAS_AUTO_STRONG_BASE_KINDS = frozenset(
+    {
+        "schur",
+        "xblock_tz",
+        "xblock_tz_lmax",
+        "sxblock_tz",
+        "species_block",
+        "theta_zeta",
+        "pas_lite",
+        "pas_hybrid",
+        "pas_schur",
+        "pas_tz",
+        "pas_tokamak_theta",
+    }
+)
+
+
+def _pas_auto_skip_strong_retry(
+    *,
+    has_pas: bool,
+    strong_precond_env: str,
+    rhs1_precond_kind: str | None,
+    residual_norm: float,
+    target: float,
+    ratio: float,
+) -> bool:
+    if not has_pas or ratio <= 0.0:
+        return False
+    if strong_precond_env not in {"", "auto"}:
+        return False
+    if rhs1_precond_kind not in _PAS_AUTO_STRONG_BASE_KINDS:
+        return False
+    return float(residual_norm) <= float(target) * float(ratio)
+
+
 _PRECOND_SIZE_HINT: int | None = None
 
 
@@ -127,6 +162,59 @@ def _precond_dtype(size_hint: int | None = None) -> jnp.dtype:
     if env in {"float64", "fp64", "f64", "64"}:
         return jnp.float64
     return jnp.float64
+
+
+def _small_regularized_lstsq(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
+    """Solve a small least-squares problem with a pure-JAX regularized CG path.
+
+    This avoids GPU backends that lack the LAPACK/SVD custom calls used by
+    `jnp.linalg.lstsq`, while remaining differentiable.
+    """
+
+    a = jnp.asarray(a)
+    b = jnp.asarray(b, dtype=a.dtype)
+    gram = a.T @ a
+    rhs = a.T @ b
+    n = int(gram.shape[0])
+    if n == 0:
+        return jnp.zeros((0,), dtype=a.dtype)
+
+    reg_env = os.environ.get("SFINCS_JAX_SMALL_LSTSQ_REG", "").strip()
+    try:
+        reg_base = float(reg_env) if reg_env else 1e-12
+    except ValueError:
+        reg_base = 1e-12
+    diag = jnp.diag(gram)
+    scale = jnp.maximum(jnp.max(jnp.abs(diag)), jnp.asarray(1.0, dtype=a.dtype))
+    reg = jnp.asarray(reg_base, dtype=a.dtype) * scale
+    diag_reg = diag + reg
+    eps = jnp.asarray(1e-30, dtype=a.dtype)
+    inv_diag = 1.0 / jnp.maximum(jnp.abs(diag_reg), eps)
+
+    def matvec(x: jnp.ndarray) -> jnp.ndarray:
+        return gram @ x + reg * x
+
+    x = jnp.zeros_like(rhs)
+    r = rhs - matvec(x)
+    z = inv_diag * r
+    p = z
+    rz = jnp.vdot(r, z)
+    max_iters = max(8, 2 * n)
+
+    for _ in range(max_iters):
+        ap = matvec(p)
+        denom = jnp.vdot(p, ap)
+        denom_safe = jnp.where(jnp.abs(denom) > eps, denom, eps)
+        alpha = rz / denom_safe
+        x = x + alpha * p
+        r = r - alpha * ap
+        z = inv_diag * r
+        rz_new = jnp.vdot(r, z)
+        beta = rz_new / jnp.where(jnp.abs(rz) > eps, rz, 1.0)
+        p = z + beta * p
+        rz = rz_new
+
+    return x
 
 
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
@@ -7813,7 +7901,7 @@ def solve_v3_full_system_linear_gmres(
             return None
         u = jnp.stack(basis, axis=1)  # (N, k)
         au = jnp.stack(basis_au, axis=1)  # (N, k)
-        coeff, *_ = jnp.linalg.lstsq(au, rhs_vec, rcond=None)
+        coeff = _small_regularized_lstsq(au, rhs_vec)
         x0_guess = u @ coeff
         if not jnp.all(jnp.isfinite(x0_guess)):
             return None
@@ -8196,6 +8284,12 @@ def solve_v3_full_system_linear_gmres(
         if overlap < 0:
             overlap = int(default)
         return max(0, min(max(0, n - 1), int(overlap)))
+
+    pas_auto_strong_ratio_env = os.environ.get("SFINCS_JAX_PAS_AUTO_STRONG_RATIO", "").strip()
+    try:
+        pas_auto_strong_ratio = float(pas_auto_strong_ratio_env) if pas_auto_strong_ratio_env else 10.0
+    except ValueError:
+        pas_auto_strong_ratio = 10.0
 
     if rhs1_precond_env:
         if rhs1_precond_env in {"0", "false", "no", "off"}:
@@ -10663,6 +10757,23 @@ def solve_v3_full_system_linear_gmres(
         if pas_large_bicgstab_fastpath and strong_precond_env == "":
             strong_precond_disabled = True
             strong_precond_auto = False
+        if _pas_auto_skip_strong_retry(
+            has_pas=op.fblock.pas is not None,
+            strong_precond_env=strong_precond_env,
+            rhs1_precond_kind=rhs1_precond_kind,
+            residual_norm=float(res_reduced.residual_norm),
+            target=float(target_reduced),
+            ratio=float(pas_auto_strong_ratio),
+        ):
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: PAS auto strong preconditioner skipped "
+                    f"after base={rhs1_precond_kind} "
+                    f"(residual={float(res_reduced.residual_norm):.3e} <= {float(pas_auto_strong_ratio):.1f}x target)",
+                )
         pas_force_strong_ratio_env = os.environ.get("SFINCS_JAX_PAS_FORCE_STRONG_RATIO", "").strip()
         try:
             pas_force_strong_ratio = float(pas_force_strong_ratio_env) if pas_force_strong_ratio_env else 50.0
@@ -11531,18 +11642,26 @@ def solve_v3_full_system_linear_gmres(
                 )
             try:
                 host_dense_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_HOST_LU", "").strip().lower()
+                backend = jax.default_backend()
                 if host_dense_env in {"0", "false", "no", "off"}:
                     use_host_dense = False
                 elif host_dense_env in {"1", "true", "yes", "on"}:
                     use_host_dense = True
                 else:
-                    # Default: avoid XLA dense-solve scratch allocations for medium/large systems.
-                    use_host_dense = bool(use_implicit) and int(active_size) >= 2000
+                    # Default: avoid backend LAPACK/SVD paths on accelerators, and avoid
+                    # XLA dense-solve scratch allocations for medium/large CPU systems.
+                    use_host_dense = backend != "cpu" or (bool(use_implicit) and int(active_size) >= 2000)
                 if op.fblock.pas is not None and int(active_size) <= 2000:
                     use_host_dense = True
 
                 if use_host_dense:
                     import scipy.linalg as sla  # noqa: PLC0415
+                    if emit is not None and backend != "cpu" and host_dense_env in {"", "auto"}:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: dense fallback using host LU "
+                            f"on backend={backend}",
+                        )
 
                     if dense_matrix_cache is not None:
                         a_np = np.asarray(dense_matrix_cache, dtype=np.float64)
@@ -12524,6 +12643,23 @@ def solve_v3_full_system_linear_gmres(
                 and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
             ):
                 strong_precond_auto = True
+            if _pas_auto_skip_strong_retry(
+                has_pas=op.fblock.pas is not None,
+                strong_precond_env=strong_precond_env,
+                rhs1_precond_kind=rhs1_precond_kind,
+                residual_norm=float(result.residual_norm),
+                target=float(target),
+                ratio=float(pas_auto_strong_ratio),
+            ):
+                strong_precond_disabled = True
+                strong_precond_auto = False
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: PAS auto strong preconditioner skipped "
+                        f"after base={rhs1_precond_kind} "
+                        f"(residual={float(result.residual_norm):.3e} <= {float(pas_auto_strong_ratio):.1f}x target)",
+                    )
             strong_precond_kind: str | None = None
             if strong_precond_disabled:
                 strong_precond_kind = None
@@ -14029,7 +14165,7 @@ def _project_constraint_scheme1_nullspace_solution_with_residual(
     cols_full = [apply_v3_full_system_operator_cached(matvec_op, v) for v in basis]
     cols_extra = [col[-op.extra_size :] for col in cols_full]
     m = jnp.stack(cols_extra, axis=1)
-    c_res, *_ = jnp.linalg.lstsq(m, -r_extra, rcond=None)
+    c_res = _small_regularized_lstsq(m, -r_extra)
     x_corr = sum(v * c_res[i] for i, v in enumerate(basis))
     r_corr = sum(col * c_res[i] for i, col in enumerate(cols_full))
     # For constraintScheme=1, enforce the source rows directly and keep the corrected
@@ -15638,7 +15774,7 @@ def solve_v3_transport_matrix_linear_gmres(
             return None
         u = jnp.stack(basis, axis=1)  # (N, k)
         au = jnp.stack(basis_au, axis=1)  # (N, k)
-        coeff, *_ = jnp.linalg.lstsq(au, rhs_vec, rcond=None)
+        coeff = _small_regularized_lstsq(au, rhs_vec)
         x0 = u @ coeff
         if not jnp.all(jnp.isfinite(x0)):
             return None
