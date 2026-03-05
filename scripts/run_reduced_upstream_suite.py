@@ -493,6 +493,57 @@ def _parse_jax_max_rss_from_log(path: Path) -> float | None:
     return max(rss_vals) if rss_vals else None
 
 
+_ELAPSED_S_PATTERN = re.compile(r"elapsed_s\s*=\s*([-+0-9.eEdD]+)")
+_REAL_TIME_PATTERN = re.compile(r"^\s*([-+0-9.]+)\s+real\b")
+
+
+def _parse_elapsed_s_from_log(path: Path) -> float | None:
+    if not path.exists():
+        return None
+    elapsed: float | None = None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = _ELAPSED_S_PATTERN.search(line)
+        if match is not None:
+            try:
+                elapsed = float(match.group(1).replace("D", "E").replace("d", "e"))
+                continue
+            except ValueError:
+                pass
+        match = _REAL_TIME_PATTERN.search(line)
+        if match is not None:
+            try:
+                elapsed = float(match.group(1))
+            except ValueError:
+                pass
+    return elapsed
+
+
+def _path_from_obj(obj: object | None) -> Path | None:
+    if obj is None:
+        return None
+    if isinstance(obj, Path):
+        return obj
+    if isinstance(obj, str) and obj.strip():
+        return Path(obj)
+    return None
+
+
+def _hydrate_last_success_metrics(success: dict[str, object] | None) -> dict[str, object] | None:
+    if not success:
+        return success
+    jax_log = _path_from_obj(success.get("jax_log"))
+    fortran_log = _path_from_obj(success.get("fortran_log"))
+    if success.get("jax_runtime") is None and jax_log is not None:
+        success["jax_runtime"] = _parse_elapsed_s_from_log(jax_log)
+    if success.get("jax_max_rss_mb") is None and jax_log is not None:
+        success["jax_max_rss_mb"] = _parse_jax_max_rss_from_log(jax_log)
+    if success.get("fortran_runtime") is None and fortran_log is not None:
+        success["fortran_runtime"] = _parse_fortran_runtime_from_log(fortran_log)
+    if success.get("fortran_max_rss_mb") is None and fortran_log is not None:
+        success["fortran_max_rss_mb"] = _parse_max_rss_mb_from_time_log(fortran_log)
+    return success
+
+
 def _run_jax_cli(
     *,
     input_path: Path,
@@ -1149,6 +1200,7 @@ def _run_case(
                 "fortran_log": last_dir / "sfincs_fortran.log",
                 "jax_log": last_dir / "sfincs_jax.log",
             }
+            _hydrate_last_success_metrics(disk_last_success)
 
     if target_runtime_max_s is not None and target_runtime_max_iters > 0:
         size_cap_env = os.environ.get("SFINCS_JAX_SUITE_SIZE_CAP", "").strip()
@@ -1218,6 +1270,7 @@ def _run_case(
             note = "Fortran timeout; reduced largest axis."
             saw_timeout = True
             fallback = last_success or disk_last_success
+            _hydrate_last_success_metrics(fallback)
             use_fallback = fallback is not None and target_runtime_s is None
             if use_fallback:
                 status = str(fallback.get("status", "parity_ok"))
@@ -1226,6 +1279,15 @@ def _run_case(
                 jax_h5_path = fallback.get("jax_h5")
                 fortran_log_path = fallback.get("fortran_log")
                 jax_log_path = fallback.get("jax_log")
+                if fortran_runtime is None:
+                    fortran_runtime = fallback.get("fortran_runtime")
+                if fortran_max_rss_mb is None:
+                    fortran_max_rss_mb = fallback.get("fortran_max_rss_mb")
+                if jax_runtime is None:
+                    jax_runtime = fallback.get("jax_runtime")
+                    jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
+                if jax_max_rss_mb is None:
+                    jax_max_rss_mb = fallback.get("jax_max_rss_mb")
                 final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
                 if fortran_h5_path is not None and jax_h5_path is not None:
                     try:
@@ -1337,6 +1399,7 @@ def _run_case(
             note = "JAX timeout; reduced largest axis."
             saw_timeout = True
             fallback = last_success or disk_last_success
+            _hydrate_last_success_metrics(fallback)
             use_fallback = fallback is not None and target_runtime_s is None
             if use_fallback:
                 status = str(fallback.get("status", "parity_ok"))
@@ -1345,6 +1408,15 @@ def _run_case(
                 jax_h5_path = fallback.get("jax_h5")
                 fortran_log_path = fallback.get("fortran_log")
                 jax_log_path = fallback.get("jax_log")
+                if fortran_runtime is None:
+                    fortran_runtime = fallback.get("fortran_runtime")
+                if fortran_max_rss_mb is None:
+                    fortran_max_rss_mb = fallback.get("fortran_max_rss_mb")
+                if jax_runtime is None:
+                    jax_runtime = fallback.get("jax_runtime")
+                    jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
+                if jax_max_rss_mb is None:
+                    jax_max_rss_mb = fallback.get("jax_max_rss_mb")
                 final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
                 if fortran_h5_path is not None and jax_h5_path is not None:
                     try:
@@ -1485,6 +1557,10 @@ def _run_case(
                     "print_signals": print_signals,
                     "print_total": print_total,
                     "print_missing": list(print_missing),
+                    "fortran_runtime": fortran_runtime,
+                    "fortran_max_rss_mb": fortran_max_rss_mb,
+                    "jax_runtime": jax_runtime,
+                    "jax_max_rss_mb": jax_max_rss_mb,
                 }
             except Exception:  # noqa: BLE001
                 last_success = None
@@ -1531,12 +1607,22 @@ def _run_case(
 
     else:
         if last_success is not None and target_runtime_s is None:
+            _hydrate_last_success_metrics(last_success)
             status = str(last_success["status"])
             note = f"{last_success['note']} (using last successful run after timeout)"
             fortran_h5_path = last_success.get("fortran_h5")
             jax_h5_path = last_success.get("jax_h5")
             fortran_log_path = last_success.get("fortran_log")
             jax_log_path = last_success.get("jax_log")
+            if fortran_runtime is None:
+                fortran_runtime = last_success.get("fortran_runtime")
+            if fortran_max_rss_mb is None:
+                fortran_max_rss_mb = last_success.get("fortran_max_rss_mb")
+            if jax_runtime is None:
+                jax_runtime = last_success.get("jax_runtime")
+                jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
+            if jax_max_rss_mb is None:
+                jax_max_rss_mb = last_success.get("jax_max_rss_mb")
             n_common = int(last_success.get("n_common", 0))
             n_bad = int(last_success.get("n_bad", 0))
             max_abs = last_success.get("max_abs")
@@ -1553,12 +1639,22 @@ def _run_case(
             print_total = int(last_success.get("print_total", 0))
             print_missing = list(last_success.get("print_missing", []))
         elif disk_last_success is not None and target_runtime_s is None:
+            _hydrate_last_success_metrics(disk_last_success)
             status = "parity_ok"
             note = "Using last successful run after repeated failures."
             fortran_h5_path = disk_last_success.get("fortran_h5")
             jax_h5_path = disk_last_success.get("jax_h5")
             fortran_log_path = disk_last_success.get("fortran_log")
             jax_log_path = disk_last_success.get("jax_log")
+            if fortran_runtime is None:
+                fortran_runtime = disk_last_success.get("fortran_runtime")
+            if fortran_max_rss_mb is None:
+                fortran_max_rss_mb = disk_last_success.get("fortran_max_rss_mb")
+            if jax_runtime is None:
+                jax_runtime = disk_last_success.get("jax_runtime")
+                jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
+            if jax_max_rss_mb is None:
+                jax_max_rss_mb = disk_last_success.get("jax_max_rss_mb")
             final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
             if fortran_h5_path is not None and jax_h5_path is not None:
                 try:

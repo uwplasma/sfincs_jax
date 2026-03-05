@@ -132,10 +132,10 @@
      - 1
      - 0
      - 8.257
-     - -
+     - 2.674
      - 484.6
-     - -
-     - 0/206
+     - 994.9
+     - 0/207
      - S:0 P:0
      - 9/9
      - Using last successful run after timeout.
@@ -146,13 +146,13 @@
      - 1
      - 0
      - 0.355
-     - 4.315
+     - 3.498
      - 139.0
-     - 919.1
-     - 0/206
+     - 878.9
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - geometryScheme4_2species_noEr
      - parity_ok
      - none
@@ -468,23 +468,23 @@
      - 1
      - 0
      - 2.124
-     - 49.535
+     - 39.621
      - 250.9
-     - 5505.4
-     - 0/211
+     - 5260.5
+     - 0/212
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=33/211
+     - All common numeric datasets matched tolerance. strict=33/212
    * - tokamak_1species_PASCollisions_noEr_withQN
      - parity_ok
      - none
      - NTHETA=15,NX=8,NXI=16,NZETA=15
      - 1
      - 0
-     - 5.465
-     - -
-     - 380.5
-     - -
+     - 4.851
+     - 764.595
+     - 389.6
+     - 653.4
      - 0/274
      - S:0 P:0
      - 9/9
@@ -496,13 +496,13 @@
      - 1
      - 0
      - 49.530
-     - 38.473
+     - 11.348
      - 574.4
-     - 1328.2
-     - 0/211
+     - 1302.0
+     - 0/212
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/211
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_noEr
      - parity_ok
      - none
@@ -510,13 +510,13 @@
      - 1
      - 0
      - 5.667
-     - 12.246
+     - 3.922
      - 478.3
-     - 3410.9
-     - 0/211
+     - 3372.4
+     - 0/212
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/211
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none
@@ -524,13 +524,13 @@
      - 1
      - 0
      - 15.875
-     - 208.077
+     - 180.320
      - 442.1
-     - 1712.5
-     - 0/211
+     - 1732.1
+     - 0/212
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=1/211
+     - All common numeric datasets matched tolerance. strict=1/212
    * - transportMatrix_geometryScheme11
      - parity_ok
      - none
