@@ -2440,6 +2440,23 @@ def write_sfincs_jax_output_h5(
                 emit(1, f"write_sfincs_jax_output_h5: includePhi1 linearized solve_method={nk_solve_method}")
                 if use_frozen_linearization:
                     emit(1, "write_sfincs_jax_output_h5: includePhi1 parity mode -> frozen Jacobian + relative nonlinear stop")
+            # For qn-only includePhi1 runs, an absolute Newton tolerance of 1e-8
+            # is sufficient for v3-comparison tolerances on large systems and
+            # avoids an extra expensive Newton linear solve.
+            newton_tol = 1.0e-12
+            env_newton_tol = os.environ.get("SFINCS_JAX_PHI1_NEWTON_TOL", "").strip()
+            if env_newton_tol:
+                try:
+                    newton_tol = float(env_newton_tol)
+                except ValueError:
+                    newton_tol = 1.0e-12
+            elif (not include_phi1_in_kinetic) and (quasineutrality_option == 1):
+                if int(active_total_size) >= 12000:
+                    newton_tol = 1.0e-8
+                elif int(active_total_size) >= 5000:
+                    newton_tol = 5.0e-9
+            if emit is not None:
+                emit(1, f"write_sfincs_jax_output_h5: includePhi1 Newton tol={newton_tol:.3e}")
             gmres_maxiter = 2000
             env_gmres_maxiter = os.environ.get("SFINCS_JAX_PHI1_GMRES_MAXITER", "").strip()
             if env_gmres_maxiter:
@@ -2451,7 +2468,7 @@ def write_sfincs_jax_output_h5(
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
                 x0=x0_state,
-                tol=1e-12,
+                tol=float(newton_tol),
                 max_newton=12,
                 gmres_tol=1e-12,
                 gmres_restart=2000,

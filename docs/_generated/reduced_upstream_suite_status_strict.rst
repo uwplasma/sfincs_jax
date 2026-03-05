@@ -328,13 +328,13 @@
      - 1
      - 0
      - 0.065
-     - 2.611
+     - 1.926
      - 113.9
-     - 609.4
-     - 0/206
+     - 598.8
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories
      - parity_ok
      - none
@@ -453,10 +453,10 @@
      - NTHETA=40,NX=50,NXI=64,NZETA=1
      - 1
      - 0
-     - 2.259
-     - 150.119
-     - 717.6
-     - 1099.3
+     - 2.301
+     - 135.518
+     - 718.5
+     - 1174.9
      - 0/140
      - S:0 P:0
      - 7/7
@@ -478,17 +478,17 @@
    * - tokamak_1species_PASCollisions_noEr_withQN
      - parity_ok
      - none
-     - NTHETA=15,NX=8,NXI=16,NZETA=15
+     - NTHETA=14,NX=8,NXI=16,NZETA=14
      - 1
      - 0
      - 4.851
-     - 764.595
+     - 175.865
      - 389.6
-     - 653.4
+     - 563.1
      - 0/274
      - S:0 P:0
      - 9/9
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=0/274
    * - tokamak_1species_PASCollisions_withEr_fullTrajectories
      - parity_ok
      - none

@@ -178,7 +178,11 @@ Detailed Fortran-comparison inventory and dataset coverage:
   when Krylov stagnates.
 - includePhi1 runs use full Newton updates by default (matching v3). Frozen linearization is
   opt‑in via `SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION`, and small Phi1‑collision systems use a dense
-  Newton step when `SFINCS_JAX_PHI1_NK_DENSE_CUTOFF` is met.
+  Newton step when `SFINCS_JAX_PHI1_NK_DENSE_CUTOFF` is met. Large qn-only includePhi1 systems
+  auto-relax Newton absolute tolerance to avoid an extra nonlinear step
+  (`SFINCS_JAX_PHI1_NEWTON_TOL` overrides).
+- CLI auto-core selection now prefers 1 core for RHSMode=1 solves and up to 3 cores for
+  RHSMode=2/3 transport runs when `--cores` / `SFINCS_JAX_CORES` are unset.
 - Transport-matrix dense retries are capped by `SFINCS_JAX_TRANSPORT_DENSE_MAX_MB=128` to avoid
   excessive memory usage.
 - PAS constraint projection auto-enables for tokamak-like `N_zeta=1` cases and DKES trajectories

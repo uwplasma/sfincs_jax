@@ -314,6 +314,31 @@ def _apply_cores_setting(cores: int | None) -> None:
         os.environ.setdefault("SFINCS_JAX_AUTO_SHARD", "1")
 
 
+def _auto_cores_for_args(args: argparse.Namespace) -> int:
+    """Choose a conservative default core count by workload type.
+
+    On CPU, single-RHS RHSMode=1 solves (especially nonlinear includePhi1)
+    can regress with multi-device host sharding due synchronization/launch
+    overhead. Prefer one core by default there; keep a few cores for
+    transport-matrix/multi-RHS throughput workloads.
+    """
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    cmd = getattr(getattr(args, "func", None), "__name__", "")
+    if cmd in {"_cmd_transport_matrix_v3", "_cmd_scan_er"}:
+        return min(3, cpu_count)
+    input_path = getattr(args, "input", None)
+    if input_path is None:
+        return min(3, cpu_count)
+    try:
+        nml = read_sfincs_input(Path(input_path))
+        rhs_mode = int(nml.group("general").get("RHSMODE", 1))
+    except Exception:  # noqa: BLE001
+        return min(3, cpu_count)
+    if rhs_mode in (2, 3):
+        return min(3, cpu_count)
+    return 1
+
+
 def _normalize_default_argv(argv: list[str]) -> list[str]:
     if not argv:
         return argv
@@ -574,9 +599,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.cores is None and not os.environ.get("SFINCS_JAX_CORES"):
         if not (os.environ.get("SFINCS_JAX_CI") or os.environ.get("CI")):
-            cores_auto = min(3, os.cpu_count() or 1)
-            if cores_auto > 1:
-                args.cores = cores_auto
+            args.cores = _auto_cores_for_args(args)
     _apply_cores_setting(args.cores)
     if args.fortran_stdout is True:
         os.environ["SFINCS_JAX_FORTRAN_STDOUT"] = "1"

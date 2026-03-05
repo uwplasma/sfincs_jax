@@ -344,7 +344,9 @@ performance without changing the input file:
   ``sfincs_jax`` enables process‑parallel ``whichRHS`` solves **and** exposes ``N``
   host devices for optional sharded matvecs. This gives a single user‑facing knob
   for "use N cores". Set ``SFINCS_JAX_SHARD=0`` to disable sharded matvecs while
-  keeping process parallelism.
+  keeping process parallelism. If neither ``--cores`` nor ``SFINCS_JAX_CORES`` is set,
+  CLI auto mode uses ``1`` core for RHSMode=1 solves and up to ``3`` cores for
+  RHSMode=2/3 transport runs.
 - ``SFINCS_JAX_XLA_THREADS``: opt‑in to setting the XLA CPU thread count based on
   ``SFINCS_JAX_CORES``. Some JAX builds do not recognize the
   ``--xla_cpu_parallelism_threads`` flag, so this is disabled by default.
@@ -365,6 +367,12 @@ performance without changing the input file:
   step instead of GMRES inside the Newton–Krylov solve for systems with ``total_size``
   below this cutoff (default: ``5000``). This improves parity and runtime for small
   Phi1 fixtures.
+
+- ``SFINCS_JAX_PHI1_NEWTON_TOL``: absolute nonlinear tolerance for includePhi1
+  Newton–Krylov solves. Default is ``1e-12``; for large qn-only systems (``includePhi1``
+  true, ``includePhi1InKineticEquation`` false) sfincs_jax auto-relaxes to
+  ``5e-9``/``1e-8`` to avoid an extra expensive Newton step while preserving
+  reduced-suite comparison tolerances.
 
 - ``SFINCS_JAX_LINEAR_STAGE2``: enable a second GMRES stage with a larger iteration budget when
   the first stage stagnates (default: auto-enabled for RHSMode=1 without Phi1 when GMRES is selected).
@@ -666,8 +674,8 @@ Writing `sfincsOutput.h5` with `sfincs_jax`
    # Default CLI mode (matches Fortran v3 behavior)
    sfincs_jax /path/to/input.namelist
 
-   # If --cores is omitted and SFINCS_JAX_CORES is unset, sfincs_jax defaults to 3 cores
-   # on non-CI machines.
+   # If --cores is omitted and SFINCS_JAX_CORES is unset, sfincs_jax auto-selects
+   # 1 core for RHSMode=1 and up to 3 cores for RHSMode=2/3 on non-CI machines.
 
 .. code-block:: bash
 
