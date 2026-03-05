@@ -217,6 +217,15 @@ def _small_regularized_lstsq(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
     return x
 
 
+def _rhsmode1_dense_backend_allowed() -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_ALLOW_ACCELERATOR", "").strip().lower()
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return jax.default_backend() == "cpu"
+
+
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
     if distributed_axis is not None:
         with sharding_constraints(True):
@@ -9689,6 +9698,16 @@ def solve_v3_full_system_linear_gmres(
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
         if disable_dense_pas:
             dense_fallback_max = 0
+        dense_backend_allowed = _rhsmode1_dense_backend_allowed()
+        if not dense_backend_allowed:
+            dense_shortcut_ratio = 0.0
+            dense_fallback_max = 0
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: disabling RHSMode=1 dense shortcut/fallback "
+                    f"on backend={jax.default_backend()}",
+                )
         # FP dense-fallback probe shortcut: for medium FP systems where the probe is
         # likely to trigger a direct solve, avoid building heavy block preconditioners
         # that can allocate O(GB) of scratch. Use the cheap collision preconditioner
@@ -11580,6 +11599,8 @@ def solve_v3_full_system_linear_gmres(
             except Exception:
                 pass
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
+        if not dense_backend_allowed:
+            dense_fallback_max = 0
         dense_fallback_max_huge = 0
         dense_fallback_ratio = 1.0e2
         if dense_fallback_max > 0:
@@ -12516,10 +12537,23 @@ def solve_v3_full_system_linear_gmres(
                 ksp_x0 = x0
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = "gmres"
+        prefer_sparse_accel = bool(
+            (not _rhsmode1_dense_backend_allowed())
+            and op.fblock.fp is not None
+            and sparse_precond_mode != "off"
+            and int(op.total_size) <= int(sparse_max_size)
+        )
+        if prefer_sparse_accel and float(result.residual_norm) > target and stage2_trigger and emit is not None:
+            emit(
+                0,
+                "solve_v3_full_system_linear_gmres: skipping stage2 GMRES on accelerator "
+                "backend; prefer sparse fallback",
+            )
         if (
             float(result.residual_norm) > target
             and stage2_enabled
             and stage2_trigger
+            and (not prefer_sparse_accel)
             and t.elapsed_s() < stage2_time_cap_s
         ):
             if preconditioner_full is None and rhs1_precond_enabled:
@@ -12575,6 +12609,18 @@ def solve_v3_full_system_linear_gmres(
                 ksp_maxiter = stage2_maxiter
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
+        # Krylov solvers with left preconditioning report the preconditioned residual
+        # norm. Recompute the true residual before deciding whether to escalate to a
+        # stronger preconditioner or dense fallback so those decisions track the
+        # printed residual and H5 parity behavior.
+        try:
+            residual_vec_true = residual_vec if residual_vec is not None else rhs - mv(result.x)
+            residual_norm_true = float(jnp.linalg.norm(residual_vec_true))
+            if np.isfinite(residual_norm_true):
+                result = GMRESSolveResult(x=result.x, residual_norm=jnp.asarray(residual_norm_true, dtype=jnp.float64))
+                residual_vec = residual_vec_true
+        except Exception:
+            pass
         res_ratio = float(result.residual_norm) / max(float(target), 1e-300)
         strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
         try:
@@ -12622,93 +12668,81 @@ def solve_v3_full_system_linear_gmres(
                     ksp_maxiter = maxiter
                     ksp_precond_side = gmres_precond_side
                     ksp_solver_kind = _solver_kind("incremental")[0]
-            strong_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN", "").strip()
-            try:
-                strong_precond_min = int(strong_precond_min_env) if strong_precond_min_env else 800
-            except ValueError:
-                strong_precond_min = 800
-            strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
-            strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
-            strong_precond_auto = strong_precond_env == "auto"
-            if (
-                strong_precond_env == ""
-                and int(op.constraint_scheme) == 2
-                and int(op.extra_size) > 0
-            ):
-                strong_precond_auto = True
-            if (
-                strong_precond_env == ""
-                and op.fblock.fp is not None
-                and int(op.total_size) >= strong_precond_min
-                and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
-            ):
-                strong_precond_auto = True
-            if _pas_auto_skip_strong_retry(
-                has_pas=op.fblock.pas is not None,
-                strong_precond_env=strong_precond_env,
-                rhs1_precond_kind=rhs1_precond_kind,
-                residual_norm=float(result.residual_norm),
-                target=float(target),
-                ratio=float(pas_auto_strong_ratio),
-            ):
-                strong_precond_disabled = True
-                strong_precond_auto = False
-                if emit is not None:
-                    emit(
-                        1,
-                        "solve_v3_full_system_linear_gmres: PAS auto strong preconditioner skipped "
-                        f"after base={rhs1_precond_kind} "
-                        f"(residual={float(result.residual_norm):.3e} <= {float(pas_auto_strong_ratio):.1f}x target)",
-                    )
-            strong_precond_kind: str | None = None
-            if strong_precond_disabled:
-                strong_precond_kind = None
-            elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
-                strong_precond_kind = "theta_line"
-            elif strong_precond_env in {"theta_schwarz", "schwarz_theta", "ras_theta", "theta_ras"}:
-                strong_precond_kind = "theta_schwarz"
-            elif strong_precond_env in {"theta_line_xdiag", "theta_xdiag", "theta_line_diagx"}:
-                strong_precond_kind = "theta_line_xdiag"
-            elif strong_precond_env in {"species", "species_block", "speciesblock"}:
-                strong_precond_kind = "species_block"
-            elif strong_precond_env in {"sxblock_tz", "sxblock_theta_zeta", "species_xblock_tz", "sx_tz"}:
-                strong_precond_kind = "sxblock_tz"
-            elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
-                strong_precond_kind = "zeta_line"
-            elif strong_precond_env in {"zeta_schwarz", "schwarz_zeta", "ras_zeta", "zeta_ras"}:
-                strong_precond_kind = "zeta_schwarz"
-            elif strong_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
-                strong_precond_kind = "xblock_tz"
-            elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
-                strong_precond_kind = "xmg"
-            elif strong_precond_env in {"pas_lite", "pas_light", "pas_xmg", "pas_xmg_lite"}:
-                strong_precond_kind = "pas_lite"
-            elif strong_precond_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
-                strong_precond_kind = "pas_hybrid"
-            elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
-                strong_precond_kind = "adi"
-            elif strong_precond_env in {"schur", "schur_complement", "constraint_schur"}:
-                strong_precond_kind = "schur"
-            elif strong_precond_env == "auto":
-                strong_precond_kind = None
-            else:
-                strong_precond_kind = None
+        strong_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN", "").strip()
+        try:
+            strong_precond_min = int(strong_precond_min_env) if strong_precond_min_env else 800
+        except ValueError:
+            strong_precond_min = 800
+        strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
+        strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
+        strong_precond_auto = strong_precond_env == "auto"
+        if (
+            strong_precond_env == ""
+            and int(op.constraint_scheme) == 2
+            and int(op.extra_size) > 0
+        ):
+            strong_precond_auto = True
+        if (
+            strong_precond_env == ""
+            and op.fblock.fp is not None
+            and int(op.total_size) >= strong_precond_min
+            and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+        ):
+            strong_precond_auto = True
+        if _pas_auto_skip_strong_retry(
+            has_pas=op.fblock.pas is not None,
+            strong_precond_env=strong_precond_env,
+            rhs1_precond_kind=rhs1_precond_kind,
+            residual_norm=float(result.residual_norm),
+            target=float(target),
+            ratio=float(pas_auto_strong_ratio),
+        ):
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: PAS auto strong preconditioner skipped "
+                    f"after base={rhs1_precond_kind} "
+                    f"(residual={float(result.residual_norm):.3e} <= {float(pas_auto_strong_ratio):.1f}x target)",
+                )
+        strong_precond_kind: str | None = None
+        if strong_precond_disabled:
+            strong_precond_kind = None
+        elif strong_precond_env in {"theta", "theta_line", "line_theta"}:
+            strong_precond_kind = "theta_line"
+        elif strong_precond_env in {"theta_schwarz", "schwarz_theta", "ras_theta", "theta_ras"}:
+            strong_precond_kind = "theta_schwarz"
+        elif strong_precond_env in {"theta_line_xdiag", "theta_xdiag", "theta_line_diagx"}:
+            strong_precond_kind = "theta_line_xdiag"
+        elif strong_precond_env in {"species", "species_block", "speciesblock"}:
+            strong_precond_kind = "species_block"
+        elif strong_precond_env in {"sxblock_tz", "sxblock_theta_zeta", "species_xblock_tz", "sx_tz"}:
+            strong_precond_kind = "sxblock_tz"
+        elif strong_precond_env in {"zeta", "zeta_line", "line_zeta"}:
+            strong_precond_kind = "zeta_line"
+        elif strong_precond_env in {"zeta_schwarz", "schwarz_zeta", "ras_zeta", "zeta_ras"}:
+            strong_precond_kind = "zeta_schwarz"
+        elif strong_precond_env in {"xblock_tz", "xblock", "x_tz", "xtz", "xblock_theta_zeta"}:
+            strong_precond_kind = "xblock_tz"
+        elif strong_precond_env in {"xmg", "multigrid", "x_coarse", "coarse_x"}:
+            strong_precond_kind = "xmg"
+        elif strong_precond_env in {"pas_lite", "pas_light", "pas_xmg", "pas_xmg_lite"}:
+            strong_precond_kind = "pas_lite"
+        elif strong_precond_env in {"pas_hybrid", "pas_xline_xcoarse", "pas_line_xcoarse", "pas_xcoarse_line"}:
+            strong_precond_kind = "pas_hybrid"
+        elif strong_precond_env in {"adi", "adi_line", "line_adi", "theta_zeta", "zeta_theta"}:
+            strong_precond_kind = "adi"
+        elif strong_precond_env in {"schur", "schur_complement", "constraint_schur"}:
+            strong_precond_kind = "schur"
+        elif strong_precond_env == "auto":
+            strong_precond_kind = None
+        else:
+            strong_precond_kind = None
 
-            if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
-                if int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
-                    if op.fblock.pas is not None:
-                        pas_lite_min_env = os.environ.get("SFINCS_JAX_PAS_LITE_MIN", "").strip()
-                        try:
-                            pas_lite_min = int(pas_lite_min_env) if pas_lite_min_env else 20000
-                        except ValueError:
-                            pas_lite_min = 20000
-                        if int(op.total_size) >= max(1, int(pas_lite_min)):
-                            strong_precond_kind = "pas_lite"
-                        else:
-                            strong_precond_kind = "pas_hybrid"
-                    else:
-                        strong_precond_kind = "schur"
-                elif op.fblock.pas is not None:
+        if strong_precond_kind is None and (not strong_precond_disabled) and strong_precond_auto:
+            if int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
+                if op.fblock.pas is not None:
                     pas_lite_min_env = os.environ.get("SFINCS_JAX_PAS_LITE_MIN", "").strip()
                     try:
                         pas_lite_min = int(pas_lite_min_env) if pas_lite_min_env else 20000
@@ -12718,217 +12752,229 @@ def solve_v3_full_system_linear_gmres(
                         strong_precond_kind = "pas_lite"
                     else:
                         strong_precond_kind = "pas_hybrid"
-            elif (
-                rhs1_precond_env == ""
-                and rhs1_precond_kind == "point"
-                and int(op.rhs_mode) == 1
-                and (not bool(op.include_phi1))
-                and op.fblock.pas is not None
-                and int(op.total_size) >= strong_precond_min
-                and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
-            ):
-                pas_xmg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XMG_MIN", "").strip()
-                try:
-                    pas_xmg_min = int(pas_xmg_env) if pas_xmg_env else 50000
-                except ValueError:
-                    pas_xmg_min = 50000
-                xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
-                try:
-                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
-                except ValueError:
-                    xblock_tz_max = 1200
-                max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
-                if int(op.total_size) >= pas_xmg_min:
-                    strong_precond_kind = "xmg"
-                elif (
-                    int(op.n_theta) > 1
-                    and xblock_tz_max > 0
-                    and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
-                ):
-                    strong_precond_kind = "xblock_tz"
                 else:
-                    shard_axis = _matvec_shard_axis(op)
-                    schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
-                    try:
-                        schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
-                    except ValueError:
-                        schwarz_auto_min = 4000
-                    if (
-                        shard_axis in {"theta", "zeta"}
-                        and jax.device_count() > 1
-                        and int(op.total_size) >= max(1, int(schwarz_auto_min))
-                    ):
-                        strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
-                    else:
-                        strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                    strong_precond_kind = "schur"
+            elif op.fblock.pas is not None:
+                pas_lite_min_env = os.environ.get("SFINCS_JAX_PAS_LITE_MIN", "").strip()
+                try:
+                    pas_lite_min = int(pas_lite_min_env) if pas_lite_min_env else 20000
+                except ValueError:
+                    pas_lite_min = 20000
+                if int(op.total_size) >= max(1, int(pas_lite_min)):
+                    strong_precond_kind = "pas_lite"
+                else:
+                    strong_precond_kind = "pas_hybrid"
+        elif (
+            rhs1_precond_env == ""
+            and rhs1_precond_kind == "point"
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and op.fblock.pas is not None
+            and int(op.total_size) >= strong_precond_min
+            and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+        ):
+            pas_xmg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PAS_XMG_MIN", "").strip()
+            try:
+                pas_xmg_min = int(pas_xmg_env) if pas_xmg_env else 50000
+            except ValueError:
+                pas_xmg_min = 50000
+            xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+            try:
+                xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+            except ValueError:
+                xblock_tz_max = 1200
+            max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+            if int(op.total_size) >= pas_xmg_min:
+                strong_precond_kind = "xmg"
             elif (
-                rhs1_precond_env == ""
-                and int(op.rhs_mode) == 1
-                and (not bool(op.include_phi1))
-                and op.fblock.fp is not None
-                and int(op.total_size) >= strong_precond_min
-                and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+                int(op.n_theta) > 1
+                and xblock_tz_max > 0
+                and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
             ):
-                tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+                strong_precond_kind = "xblock_tz"
+            else:
+                shard_axis = _matvec_shard_axis(op)
+                schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
                 try:
-                    tz_max = int(tz_max_env) if tz_max_env else 128
+                    schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
                 except ValueError:
-                    tz_max = 128
-                xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
-                try:
-                    xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
-                except ValueError:
-                    xblock_tz_max = 1200
-                max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
+                    schwarz_auto_min = 4000
                 if (
-                    int(op.n_theta) > 1
-                    and int(op.n_zeta) > 1
-                    and xblock_tz_max > 0
-                    and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+                    shard_axis in {"theta", "zeta"}
+                    and jax.device_count() > 1
+                    and int(op.total_size) >= max(1, int(schwarz_auto_min))
                 ):
-                    strong_precond_kind = "xblock_tz"
-                elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
-                    strong_precond_kind = "theta_zeta"
+                    strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
                 else:
-                    shard_axis = _matvec_shard_axis(op)
-                    schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
-                    try:
-                        schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
-                    except ValueError:
-                        schwarz_auto_min = 4000
-                    if (
-                        shard_axis in {"theta", "zeta"}
-                        and jax.device_count() > 1
-                        and int(op.total_size) >= max(1, int(schwarz_auto_min))
-                    ):
-                        strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
-                    else:
-                        strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+        elif (
+            rhs1_precond_env == ""
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and op.fblock.fp is not None
+            and int(op.total_size) >= strong_precond_min
+            and (int(op.n_theta) > 1 or int(op.n_zeta) > 1)
+        ):
+            tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_TZ_PRECOND_MAX", "").strip()
+            try:
+                tz_max = int(tz_max_env) if tz_max_env else 128
+            except ValueError:
+                tz_max = 128
+            xblock_tz_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_TZ_MAX", "").strip()
+            try:
+                xblock_tz_max = int(xblock_tz_max_env) if xblock_tz_max_env else 1200
+            except ValueError:
+                xblock_tz_max = 1200
+            max_l = int(np.max(nxi_for_x)) if nxi_for_x.size else 0
             if (
-                strong_precond_kind == "pas_lite"
+                int(op.n_theta) > 1
+                and int(op.n_zeta) > 1
+                and xblock_tz_max > 0
+                and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
+            ):
+                strong_precond_kind = "xblock_tz"
+            elif int(op.n_theta) > 1 and int(op.n_zeta) > 1 and int(op.n_theta) * int(op.n_zeta) <= tz_max:
+                strong_precond_kind = "theta_zeta"
+            else:
+                shard_axis = _matvec_shard_axis(op)
+                schwarz_auto_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCHWARZ_AUTO_MIN", "").strip()
+                try:
+                    schwarz_auto_min = int(schwarz_auto_min_env) if schwarz_auto_min_env else 4000
+                except ValueError:
+                    schwarz_auto_min = 4000
+                if (
+                    shard_axis in {"theta", "zeta"}
+                    and jax.device_count() > 1
+                    and int(op.total_size) >= max(1, int(schwarz_auto_min))
+                ):
+                    strong_precond_kind = "theta_schwarz" if shard_axis == "theta" else "zeta_schwarz"
+                else:
+                    strong_precond_kind = "theta_line" if int(op.n_theta) >= int(op.n_zeta) else "zeta_line"
+        if (
+            strong_precond_kind == "pas_lite"
+            and op.fblock.pas is not None
+            and (int(op.n_zeta) == 1 or geom_scheme == 1)
+        ):
+            strong_precond_kind = "pas_hybrid"
+
+        if strong_precond_kind == "theta_line":
+            nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+            line_size = int(np.sum(nxi_for_x)) * int(op.n_theta)
+            theta_line_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_THETA_LINE_MAX", "").strip()
+            try:
+                theta_line_max = int(theta_line_max_env) if theta_line_max_env else 0
+            except ValueError:
+                theta_line_max = 0
+            if theta_line_max > 0 and line_size > theta_line_max:
+                strong_precond_kind = "theta_line_xdiag"
+
+        if strong_precond_kind is not None and float(result.residual_norm) > target:
+            if (
+                strong_precond_kind == "schur"
                 and op.fblock.pas is not None
-                and (int(op.n_zeta) == 1 or geom_scheme == 1)
+                and rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
+                and np.isfinite(float(result.residual_norm))
             ):
                 strong_precond_kind = "pas_hybrid"
+            _mark("rhs1_strong_precond_build_start")
+            if emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: strong preconditioner fallback "
+                    f"kind={strong_precond_kind} (residual={float(result.residual_norm):.3e} > target={target:.3e})",
+                )
 
             if strong_precond_kind == "theta_line":
-                nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
-                line_size = int(np.sum(nxi_for_x)) * int(op.n_theta)
-                theta_line_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_THETA_LINE_MAX", "").strip()
-                try:
-                    theta_line_max = int(theta_line_max_env) if theta_line_max_env else 0
-                except ValueError:
-                    theta_line_max = 0
-                if theta_line_max > 0 and line_size > theta_line_max:
-                    strong_precond_kind = "theta_line_xdiag"
-
-            if strong_precond_kind is not None and float(result.residual_norm) > target:
-                if (
-                    strong_precond_kind == "schur"
-                    and op.fblock.pas is not None
-                    and rhs1_precond_kind in {"pas_lite", "pas_hybrid"}
-                    and np.isfinite(float(result.residual_norm))
-                ):
-                    strong_precond_kind = "pas_hybrid"
-                _mark("rhs1_strong_precond_build_start")
-                if emit is not None:
-                    emit(
-                        0,
-                        "solve_v3_full_system_linear_gmres: strong preconditioner fallback "
-                        f"kind={strong_precond_kind} (residual={float(result.residual_norm):.3e} > target={target:.3e})",
-                    )
-
-                if strong_precond_kind == "theta_line":
-                    strong_preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
-                elif strong_precond_kind == "theta_schwarz":
-                    dd_block = _parse_rhs1_dd_block("theta")
-                    dd_overlap = _parse_rhs1_dd_overlap("theta", default=1)
-                    strong_preconditioner_full = _build_rhsmode1_theta_schwarz_preconditioner(
-                        op=op, block=dd_block, overlap=dd_overlap
-                    )
-                elif strong_precond_kind == "theta_line_xdiag":
-                    strong_preconditioner_full = _build_rhsmode1_theta_line_xdiag_preconditioner(op=op)
-                    if op.fblock.fp is not None or op.fblock.pas is not None:
-                        collision_precond = _build_rhsmode1_collision_preconditioner(op=op)
-                        strong_preconditioner_full = _compose_preconditioners(
-                            collision_precond, strong_preconditioner_full
-                        )
-                elif strong_precond_kind == "species_block":
-                    strong_preconditioner_full = _build_rhsmode1_species_block_preconditioner(op=op)
-                elif strong_precond_kind == "sxblock":
-                    strong_preconditioner_full = _build_rhsmode1_species_xblock_preconditioner(op=op)
-                elif strong_precond_kind == "sxblock_tz":
-                    strong_preconditioner_full = _build_rhsmode1_sxblock_tz_preconditioner(op=op)
-                elif strong_precond_kind == "xblock_tz":
-                    strong_preconditioner_full = _build_rhsmode1_xblock_tz_preconditioner(op=op)
-                elif strong_precond_kind == "xmg":
-                    strong_preconditioner_full = _build_rhsmode1_xmg_preconditioner(op=op)
-                elif strong_precond_kind == "pas_lite":
-                    strong_preconditioner_full = _build_rhsmode1_pas_lite_preconditioner(op=op)
-                elif strong_precond_kind == "pas_hybrid":
-                    strong_preconditioner_full = _build_rhsmode1_pas_hybrid_preconditioner(op=op)
-                elif strong_precond_kind == "theta_zeta":
-                    strong_preconditioner_full = _build_rhsmode1_theta_zeta_preconditioner(op=op)
-                elif strong_precond_kind == "zeta_line":
-                    strong_preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
-                elif strong_precond_kind == "zeta_schwarz":
-                    dd_block = _parse_rhs1_dd_block("zeta")
-                    dd_overlap = _parse_rhs1_dd_overlap("zeta", default=1)
-                    strong_preconditioner_full = _build_rhsmode1_zeta_schwarz_preconditioner(
-                        op=op, block=dd_block, overlap=dd_overlap
-                    )
-                elif strong_precond_kind == "schur":
-                    strong_preconditioner_full = _build_rhsmode1_schur_preconditioner(op=op)
-                else:
-                    pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
-                    pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
-                    sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
-                    try:
-                        sweeps = int(sweeps_env) if sweeps_env else 2
-                    except ValueError:
-                        sweeps = 2
-                    sweeps = max(1, sweeps)
-
-                    def strong_preconditioner_full(v: jnp.ndarray) -> jnp.ndarray:
-                        out = v
-                        for _ in range(sweeps):
-                            out = pre_zeta(pre_theta(out))
-                        return out
-                _mark("rhs1_strong_precond_build_done")
-
-                strong_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RESTART", "").strip()
-                strong_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MAXITER", "").strip()
-                try:
-                    strong_restart = int(strong_restart_env) if strong_restart_env else max(120, int(restart))
-                except ValueError:
-                    strong_restart = max(120, int(restart))
-                try:
-                    strong_maxiter = int(strong_maxiter_env) if strong_maxiter_env else max(800, int(maxiter or 400) * 2)
-                except ValueError:
-                    strong_maxiter = max(800, int(maxiter or 400) * 2)
-                res_strong, residual_vec_strong = _solve_linear_with_residual(
-                    matvec_fn=mv,
-                    b_vec=rhs,
-                    precond_fn=strong_preconditioner_full,
-                    x0_vec=result.x,
-                    tol_val=tol,
-                    atol_val=atol,
-                    restart_val=strong_restart,
-                    maxiter_val=strong_maxiter,
-                    solve_method_val="incremental",
-                    precond_side=gmres_precond_side,
+                strong_preconditioner_full = _build_rhsmode1_theta_line_preconditioner(op=op)
+            elif strong_precond_kind == "theta_schwarz":
+                dd_block = _parse_rhs1_dd_block("theta")
+                dd_overlap = _parse_rhs1_dd_overlap("theta", default=1)
+                strong_preconditioner_full = _build_rhsmode1_theta_schwarz_preconditioner(
+                    op=op, block=dd_block, overlap=dd_overlap
                 )
-                if float(res_strong.residual_norm) < float(result.residual_norm):
-                    result = res_strong
-                    residual_vec = residual_vec_strong
-                    ksp_matvec = mv
-                    ksp_b = rhs
-                    ksp_precond = strong_preconditioner_full
-                    ksp_x0 = result.x
-                    ksp_restart = strong_restart
-                    ksp_maxiter = strong_maxiter
-                    ksp_precond_side = gmres_precond_side
-                    ksp_solver_kind = _solver_kind("incremental")[0]
+            elif strong_precond_kind == "theta_line_xdiag":
+                strong_preconditioner_full = _build_rhsmode1_theta_line_xdiag_preconditioner(op=op)
+                if op.fblock.fp is not None or op.fblock.pas is not None:
+                    collision_precond = _build_rhsmode1_collision_preconditioner(op=op)
+                    strong_preconditioner_full = _compose_preconditioners(
+                        collision_precond, strong_preconditioner_full
+                    )
+            elif strong_precond_kind == "species_block":
+                strong_preconditioner_full = _build_rhsmode1_species_block_preconditioner(op=op)
+            elif strong_precond_kind == "sxblock":
+                strong_preconditioner_full = _build_rhsmode1_species_xblock_preconditioner(op=op)
+            elif strong_precond_kind == "sxblock_tz":
+                strong_preconditioner_full = _build_rhsmode1_sxblock_tz_preconditioner(op=op)
+            elif strong_precond_kind == "xblock_tz":
+                strong_preconditioner_full = _build_rhsmode1_xblock_tz_preconditioner(op=op)
+            elif strong_precond_kind == "xmg":
+                strong_preconditioner_full = _build_rhsmode1_xmg_preconditioner(op=op)
+            elif strong_precond_kind == "pas_lite":
+                strong_preconditioner_full = _build_rhsmode1_pas_lite_preconditioner(op=op)
+            elif strong_precond_kind == "pas_hybrid":
+                strong_preconditioner_full = _build_rhsmode1_pas_hybrid_preconditioner(op=op)
+            elif strong_precond_kind == "theta_zeta":
+                strong_preconditioner_full = _build_rhsmode1_theta_zeta_preconditioner(op=op)
+            elif strong_precond_kind == "zeta_line":
+                strong_preconditioner_full = _build_rhsmode1_zeta_line_preconditioner(op=op)
+            elif strong_precond_kind == "zeta_schwarz":
+                dd_block = _parse_rhs1_dd_block("zeta")
+                dd_overlap = _parse_rhs1_dd_overlap("zeta", default=1)
+                strong_preconditioner_full = _build_rhsmode1_zeta_schwarz_preconditioner(
+                    op=op, block=dd_block, overlap=dd_overlap
+                )
+            elif strong_precond_kind == "schur":
+                strong_preconditioner_full = _build_rhsmode1_schur_preconditioner(op=op)
+            else:
+                pre_theta = _build_rhsmode1_theta_line_preconditioner(op=op)
+                pre_zeta = _build_rhsmode1_zeta_line_preconditioner(op=op)
+                sweeps_env = os.environ.get("SFINCS_JAX_RHSMODE1_ADI_SWEEPS", "").strip()
+                try:
+                    sweeps = int(sweeps_env) if sweeps_env else 2
+                except ValueError:
+                    sweeps = 2
+                sweeps = max(1, sweeps)
+
+                def strong_preconditioner_full(v: jnp.ndarray) -> jnp.ndarray:
+                    out = v
+                    for _ in range(sweeps):
+                        out = pre_zeta(pre_theta(out))
+                    return out
+            _mark("rhs1_strong_precond_build_done")
+
+            strong_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RESTART", "").strip()
+            strong_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MAXITER", "").strip()
+            try:
+                strong_restart = int(strong_restart_env) if strong_restart_env else max(120, int(restart))
+            except ValueError:
+                strong_restart = max(120, int(restart))
+            try:
+                strong_maxiter = int(strong_maxiter_env) if strong_maxiter_env else max(800, int(maxiter or 400) * 2)
+            except ValueError:
+                strong_maxiter = max(800, int(maxiter or 400) * 2)
+            res_strong, residual_vec_strong = _solve_linear_with_residual(
+                matvec_fn=mv,
+                b_vec=rhs,
+                precond_fn=strong_preconditioner_full,
+                x0_vec=result.x,
+                tol_val=tol,
+                atol_val=atol,
+                restart_val=strong_restart,
+                maxiter_val=strong_maxiter,
+                solve_method_val="incremental",
+                precond_side=gmres_precond_side,
+            )
+            if float(res_strong.residual_norm) < float(result.residual_norm):
+                result = res_strong
+                residual_vec = residual_vec_strong
+                ksp_matvec = mv
+                ksp_b = rhs
+                ksp_precond = strong_preconditioner_full
+                ksp_x0 = result.x
+                ksp_restart = strong_restart
+                ksp_maxiter = strong_maxiter
+                ksp_precond_side = gmres_precond_side
+                ksp_solver_kind = _solver_kind("incremental")[0]
         if (
             int(op.rhs_mode) == 1
             and (not bool(op.include_phi1))
@@ -13013,6 +13059,8 @@ def solve_v3_full_system_linear_gmres(
             except Exception:
                 pass
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
+        if not _rhsmode1_dense_backend_allowed():
+            dense_fallback_max = 0
         dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
         try:
             dense_fallback_ratio = float(dense_fallback_ratio_env) if dense_fallback_ratio_env else 1.0e2
