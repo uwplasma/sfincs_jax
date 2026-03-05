@@ -2464,13 +2464,30 @@ def write_sfincs_jax_output_h5(
                     gmres_maxiter = int(env_gmres_maxiter)
                 except ValueError:
                     gmres_maxiter = 2000
+            gmres_tol = 1.0e-12
+            env_phi1_gmres_tol = os.environ.get("SFINCS_JAX_PHI1_GMRES_TOL", "").strip()
+            if env_phi1_gmres_tol:
+                try:
+                    gmres_tol = float(env_phi1_gmres_tol)
+                except ValueError:
+                    gmres_tol = 1.0e-12
+            elif (not include_phi1_in_kinetic) and (quasineutrality_option == 1):
+                # For qn-only includePhi1 Newton runs, very large active systems are
+                # typically over-solved by 1e-12 linear tolerances. Relaxing to 1e-8
+                # materially reduces runtime while preserving reduced-suite agreement.
+                if int(active_total_size) >= 15000:
+                    gmres_tol = 1.0e-8
+                elif int(active_total_size) >= 8000:
+                    gmres_tol = 5.0e-9
+            if emit is not None:
+                emit(1, f"write_sfincs_jax_output_h5: includePhi1 GMRES tol={gmres_tol:.3e}")
             _mark("rhs1_solve_start")
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
                 x0=x0_state,
                 tol=float(newton_tol),
                 max_newton=12,
-                gmres_tol=1e-12,
+                gmres_tol=float(gmres_tol),
                 gmres_restart=2000,
                 gmres_maxiter=gmres_maxiter,
                 solve_method=nk_solve_method,

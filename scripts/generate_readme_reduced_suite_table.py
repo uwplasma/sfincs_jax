@@ -45,18 +45,29 @@ def _format_row(case: str, row_cpu: dict, row_gpu: dict | None, row_strict: dict
     else:
         pp = "-"
 
+    def _fmt_float(v: object, ndigits: int) -> str:
+        if v is None:
+            return ""
+        return f"{float(v):.{ndigits}f}"
+
+    def _status_or_default(row: dict | None, default: str) -> str:
+        if row is None:
+            return default
+        status = str(row.get("status", "")).strip()
+        return status or default
+
     ft = row_cpu.get("fortran_runtime_s")
     jt_cpu = row_cpu.get("jax_runtime_s")
     jt_gpu = row_gpu.get("jax_runtime_s") if row_gpu is not None else None
-    ft_s = "-" if ft is None else f"{float(ft):.3f}"
-    jt_cpu_s = "-" if jt_cpu is None else f"{float(jt_cpu):.3f}"
-    jt_gpu_s = "-" if jt_gpu is None else f"{float(jt_gpu):.3f}"
+    ft_s = _fmt_float(ft, 3) or _status_or_default(row_cpu, "not-run")
+    jt_cpu_s = _fmt_float(jt_cpu, 3) or _status_or_default(row_cpu, "not-run")
+    jt_gpu_s = _fmt_float(jt_gpu, 3) or _status_or_default(row_gpu, "not-run")
     fm = row_cpu.get("fortran_max_rss_mb")
     jm_cpu = row_cpu.get("jax_max_rss_mb")
     jm_gpu = row_gpu.get("jax_max_rss_mb") if row_gpu is not None else None
-    fm_s = "-" if fm is None else f"{float(fm):.1f}"
-    jm_cpu_s = "-" if jm_cpu is None else f"{float(jm_cpu):.1f}"
-    jm_gpu_s = "-" if jm_gpu is None else f"{float(jm_gpu):.1f}"
+    fm_s = _fmt_float(fm, 1) or _status_or_default(row_cpu, "not-run")
+    jm_cpu_s = _fmt_float(jm_cpu, 1) or _status_or_default(row_cpu, "not-run")
+    jm_gpu_s = _fmt_float(jm_gpu, 1) or _status_or_default(row_gpu, "not-run")
 
     case_cell = html.escape(case)
     return (
