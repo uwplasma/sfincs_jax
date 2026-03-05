@@ -18,7 +18,7 @@
   rN_wish = 0.12247
 
   VMECRadialOption = 0
-  equilibriumFile = "../../../../equilibria/wout_QI_nfp2_stable_Er_006_000043_hires_scaled.nc"
+  equilibriumFile = "wout_QI_nfp2_stable_Er_006_000043_hires_scaled.nc"
   min_Bmn_to_load = 0
 
 /
@@ -55,23 +55,23 @@
 
 
 &resolutionParameters
-  Ntheta = 25
+  Ntheta = 19
 !ss NthetaMinFactor = 1.1
 !ss NthetaMaxFactor = 1.5
 !ss NthetaNumRuns = 3
 
-  Nzeta =51
+  Nzeta = 31
 !ss NzetaMinFactor = 1.1
 !ss NzetaMaxFactor = 1.5
 !ss NzetaNumRuns = 4
 
-Nxi= 100
+Nxi= 51
 !ss NxiMinFactor = 1.1
 !ss NxiMaxFactor = 1.5
 !ss NxiNumRuns = 4
 
 
-  Nx = 8
+  Nx = 7
 !ss NxMinFactor = 0.8
 !ss NxMaxFactor = 2
 !ss NxNumRuns = 0
