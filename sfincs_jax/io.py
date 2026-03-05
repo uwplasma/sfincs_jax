@@ -1974,8 +1974,17 @@ def write_sfincs_jax_output_h5(
     compute_solution: bool = False,
     emit: "Callable[[int, str], None] | None" = None,
     verbose: bool = True,
-) -> Path:
-    """Create a SFINCS-style `sfincsOutput.h5` file from `sfincs_jax` for supported modes."""
+    return_results: bool = False,
+) -> Path | tuple[Path, dict[str, np.ndarray]]:
+    """Create a SFINCS-style ``sfincsOutput.h5`` file from ``sfincs_jax``.
+
+    Parameters
+    ----------
+    return_results
+        When ``True``, also return the in-memory output dataset dictionary that is
+        written to H5, so callers can inspect results immediately without loading
+        the file again.
+    """
 
     if not verbose:
         emit = None
@@ -3778,4 +3787,7 @@ def write_sfincs_jax_output_h5(
     if emit is not None:
         emit(1, f" wrote sfincsOutput.h5 -> {output_path.resolve()}")
         emit(0, " Goodbye!")
-    return output_path.resolve()
+    out_path = output_path.resolve()
+    if return_results:
+        return out_path, data
+    return out_path

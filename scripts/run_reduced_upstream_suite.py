@@ -1459,6 +1459,14 @@ def _run_case(
             continue
         except Exception as exc:  # noqa: BLE001
             note = f"JAX error: {type(exc).__name__}: {exc}"
+            # Treat transient/runtime JAX failures similarly to timeout handling:
+            # reduce the active resolution and retry before final failure.
+            new_res = _scale_resolution_in_place(dst_input, factor=0.6)
+            if new_res == final_res:
+                new_res = _reduce_max_axis_in_place(dst_input)
+            if new_res != final_res and attempts < max_attempts:
+                reductions += 1
+                continue
             status = "jax_error"
             break
 

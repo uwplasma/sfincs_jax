@@ -700,6 +700,18 @@ Writing `sfincsOutput.h5` with `sfincs_jax`
        output_path=Path("sfincsOutput.h5"),
    )
 
+Inspect results immediately (without reading H5 back from disk):
+
+.. code-block:: python
+
+   out_path, results = write_sfincs_jax_output_h5(
+       input_namelist=Path("input.namelist"),
+       output_path=Path("sfincsOutput.h5"),
+       return_results=True,
+   )
+   print(out_path)
+   print(results["Ntheta"])
+
 Silence stdout (useful for batch runs):
 
 .. code-block:: python

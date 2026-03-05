@@ -41,6 +41,16 @@ Python
        output_path=Path("sfincsOutput.h5"),
    )
 
+.. code-block:: python
+
+   out_path, results = write_sfincs_jax_output_h5(
+       input_namelist=Path("input.namelist"),
+       output_path=Path("sfincsOutput.h5"),
+       return_results=True,
+   )
+   print(out_path)
+   print(results["Ntheta"])
+
 Current coverage
 ----------------
 

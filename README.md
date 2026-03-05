@@ -1,59 +1,12 @@
 # sfincs_jax
 
-`sfincs_jax` is a JAX implementation of the SFINCS Fortran v3 workflow, with matrix-free operators,
-JIT acceleration, and end-to-end differentiable components for sensitivity and optimization studies.
-Default RHSMode=1 linear solves use GMRES (incremental, Fortran-comparison-first) with stage-2 fallback,
-while RHSMode=2/3 transport solves default to BiCGStab with a collision-diagonal preconditioner
-and GMRES fallback. Implicit differentiation is enabled by default for linear solves, and
-preconditioner blocks use size-based mixed precision by default for memory efficiency.
+`sfincs_jax` is a JAX implementation of SFINCS v3 that solves the same neoclassical drift-kinetic problem with matching normalizations, geometry conventions, and output format (`sfincsOutput.h5`).
 
-![SFINCS vs sfincs_jax L11 relative difference and runtime](docs/_static/figures/sfincs_vs_sfincs_jax_l11_runtime_2x2.png)
+It is designed for:
 
-Top figure: four monoenergetic test cases (`geometryScheme=1`, `11`, `12`, and filtered `5`) comparing
-relative `ΔL11 = (JAX − Fortran) / Fortran` and per-run runtime.
-For the JAX path, runtime excludes compilation (warm-up run excluded).
-
-Reproduce the figure and JSON summary:
-
-```bash
-python examples/performance/benchmark_transport_l11_vs_fortran.py --repeats 4
-```
-
-Run against a live local Fortran executable:
-
-```bash
-python examples/performance/benchmark_transport_l11_vs_fortran.py \
-  --fortran-exe /path/to/sfincs \
-  --repeats 4
-```
-
-Current benchmark snapshot (Fortran source: live executable, 4 repeats; JAX runtime excludes compilation):
-
-| Case | Fortran mean (s/run) | sfincs_jax mean (s/run) | Max \|ΔL11\| |
-| --- | ---: | ---: | ---: |
-| scheme1 | 0.2866 | 0.1774 | 2.16e-13 |
-| scheme11 | 0.2382 | 0.2103 | 1.31e-15 |
-| scheme12 | 0.0761 | 0.1896 | 8.82e-08 |
-| scheme5_filtered | 0.0912 | 0.2015 | 5.30e-16 |
-
-Snapshot note: when running with a local Fortran binary, PETSc MPIUNI (serial, no MUMPS) avoids MPI init issues in sandboxed runs.
-
-Outputs are written to:
-
-- `examples/performance/output/transport_l11_vs_fortran/sfincs_vs_sfincs_jax_l11_runtime_2x2.png`
-- `examples/performance/output/transport_l11_vs_fortran/sfincs_vs_sfincs_jax_l11_runtime_2x2.json`
-
-Persistent-cache compile/runtime split (same four cases):
-
-```bash
-python examples/performance/profile_transport_compile_runtime_cache.py --repeats 3
-```
-
-- Figure: `examples/performance/output/compile_runtime_cache/transport_compile_runtime_cache_2x2.png`
-- JSON: `examples/performance/output/compile_runtime_cache/transport_compile_runtime_cache_2x2.json`
-
-Small dense fallback assemblies now skip JIT for modest matrix sizes (`n<=800`) to
-reduce overhead in tiny PAS/transport cases while keeping large systems compiled.
+- high-performance runs on CPU/GPU,
+- memory-efficient large solves,
+- end-to-end differentiable workflows.
 
 ## Installation
 
@@ -79,216 +32,56 @@ cd sfincs_jax
 pip install -e ".[dev]"
 ```
 
-Optional extras:
+## Quick Start (Python)
 
-```bash
-pip install -e ".[docs]"   # documentation build
-pip install -e ".[viz]"    # plotting / figure scripts
-pip install -e ".[opt]"    # optax / jaxopt workflows
-```
-
-## Quick start (Python)
+Read a namelist, run `sfincs_jax`, write `sfincsOutput.h5`, and inspect results directly in memory:
 
 ```python
-from sfincs_jax.namelist import read_sfincs_input
-from sfincs_jax.v3 import grids_from_namelist, geometry_from_namelist
+from pathlib import Path
 
-nml = read_sfincs_input("input.namelist")
-grids = grids_from_namelist(nml)
-geometry = geometry_from_namelist(nml=nml, grids=grids)
-print(geometry.b_hat.shape)
+from sfincs_jax.io import write_sfincs_jax_output_h5
+
+input_namelist = Path("input.namelist")
+out_path, results = write_sfincs_jax_output_h5(
+    input_namelist=input_namelist,
+    output_path=Path("sfincsOutput.h5"),
+    return_results=True,
+)
+
+print("Wrote:", out_path)
+print("Available datasets:", len(results))
+print("Example key:", "particleFlux_vm_psiHat" in results)
 ```
 
-## Parallel Scaling (Macbook M3 Max)
+## Executable (CLI)
 
-Parallel `whichRHS` scaling for a >2-minute RHSMode=2 transport-matrix case
-(`examples/performance/transport_parallel_2min.input.namelist`, geometryScheme=2,
-`Ntheta=21`, `Nzeta=21`, `Nxi=6`, `NL=6`, `Nx=6`), measured on 1–4 workers.
+You can run `sfincs_jax` from anywhere in your terminal. You do not need to be inside the repository folder.
 
-![Parallel whichRHS scaling](docs/_static/figures/parallel/transport_parallel_scaling.png)
-
-Latest cache-warm run (1–4 workers): 1 worker 147.4s, 2 workers 122.3s,
-3 workers 115.8s, 4 workers 114.8s.
-
-Enable parallel execution in normal runs (no environment variables required):
-
-```bash
-sfincs_jax --cores 4 /path/to/input.namelist
-```
-
-`whichRHS` process pools are persistent by default (`SFINCS_JAX_TRANSPORT_POOL_PERSIST=1`)
-to reduce warm-run overhead across repeated transport solves.
-
-Reproduce the 1-5 worker scaling figure and JSON summary:
-
-```bash
-python examples/performance/benchmark_transport_parallel_scaling.py \
-  --input examples/performance/transport_parallel_2min.input.namelist \
-  --workers 1 2 3 4 \
-  --repeats 1 \
-  --warmup 0 \
-  --global-warmup 1
-```
-
-The transport scaling benchmark uses the solve-only path
-(`collect_transport_output_fields=False`) so runtime reflects linear-solve
-scaling rather than H5-output diagnostics assembly.
-
-Experimental transport domain-decomposition preconditioners are available via
-`SFINCS_JAX_TRANSPORT_PRECOND=theta_dd` or `zeta_dd` (block sizes:
-`SFINCS_JAX_TRANSPORT_DD_BLOCK_T`, `SFINCS_JAX_TRANSPORT_DD_BLOCK_Z`), with
-overlap-RAS variants `theta_schwarz` / `zeta_schwarz`
-(`SFINCS_JAX_TRANSPORT_DD_OVERLAP`).
-
-Single-RHS sharded solves now default to a communication-reduced distributed
-Krylov preference (`SFINCS_JAX_DISTRIBUTED_KRYLOV=auto`, BiCGStab-first with
-GMRES available via `SFINCS_JAX_DISTRIBUTED_KRYLOV=gmres`), but still need
-additional communication-avoiding Krylov work to show strong scaling on
-5+ CPU devices. On the current long benchmark
-(`examples/performance/rhsmode1_sharded_scaling.input.namelist`, `nsolve=240`,
-baseline 136.25 s at 1 core), measured sharded solve times are 98.70 s (2 cores),
-105.33 s (3 cores), and 110.78 s (4 cores).
-
-For multi-node arrays and advanced parallel modes, see `docs/parallelism.rst`.
-
-## What the code supports
-
-- v3 grid construction (`theta`, `zeta`, Stieltjes/polynomial `x`, monoenergetic `x=1` path)
-- Geometry pipelines for `geometryScheme in {1,2,4,5,11,12}`
-- Matrix-free v3 full-system operator, RHS, and residual assembly in JAX
-- Linear solves via GMRES (default for RHSMode=1) with BiCGStab optional; transport-matrix
-  (`RHSMode=2/3`) loops default to BiCGStab with collision-diagonal preconditioning
-- Implicit-diff linear solves via `jax.lax.custom_linear_solve` (default for RHSMode=1 + transport)
-- Transport-matrix recycling warm starts (optional, `SFINCS_JAX_TRANSPORT_RECYCLE_K`)
-- `sfincsOutput.h5` writing from Python and CLI
-- Fortran-comparison tests against frozen Fortran fixtures (PETSc binaries and `sfincsOutput.h5`)
-- Differentiable operator and solve-adjacent workflows (including implicit-diff helper APIs)
-
-Detailed Fortran-comparison inventory and dataset coverage:
-
-- `docs/fortran_comparison.rst`
-- `docs/outputs.rst`
-- `docs/fortran_examples.rst`
-
-## Solver defaults (comparison + performance)
-
-- RHSMode=1 dense fallback now defaults to `SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX=400`, with higher
-  ceilings `SFINCS_JAX_RHSMODE1_DENSE_FP_MAX=5000` (full FP) and
-  `SFINCS_JAX_RHSMODE1_DENSE_PAS_MAX=5000` (PAS/constraintScheme=2) to recover Fortran convergence
-  when Krylov stagnates.
-- includePhi1 runs use full Newton updates by default (matching v3). Frozen linearization is
-  opt‑in via `SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION`, and small Phi1‑collision systems use a dense
-  Newton step when `SFINCS_JAX_PHI1_NK_DENSE_CUTOFF` is met. Large qn-only includePhi1 systems
-  auto-relax Newton absolute tolerance to avoid an extra nonlinear step
-  (`SFINCS_JAX_PHI1_NEWTON_TOL` overrides).
-- CLI auto-core selection now prefers 1 core for RHSMode=1 solves and up to 3 cores for
-  RHSMode=2/3 transport runs when `--cores` / `SFINCS_JAX_CORES` are unset.
-- Transport-matrix dense retries are capped by `SFINCS_JAX_TRANSPORT_DENSE_MAX_MB=128` to avoid
-  excessive memory usage.
-- PAS constraint projection auto-enables for tokamak-like `N_zeta=1` cases and DKES trajectories
-  to eliminate nullspace drift (see `SFINCS_JAX_PAS_PROJECT_CONSTRAINTS`).
-- `SFINCS_JAX_DENSE_MAX=8000` caps direct dense solves to avoid runaway memory use.
-- VMEC geometryScheme=5 full‑FP comparisons use dedicated near‑zero tolerances for flow/pressure
-  diagnostics; strict tables still pass at reduced-suite tolerances (see `docs/fortran_comparison.rst`).
-
-Detailed performance profiling and advanced parallel modes are documented in
-`docs/performance.rst` and `docs/parallelism.rst`.
-
-## CLI
-
-Run a SFINCS input file (default mode, matches Fortran v3 behavior):
+Run an input file (default behavior, same invocation style as Fortran SFINCS):
 
 ```bash
 sfincs_jax /path/to/input.namelist
 ```
 
-Write SFINCS-style output explicitly:
+Write output explicitly:
 
 ```bash
-sfincs_jax write-output --input /path/to/input.namelist --out sfincsOutput.h5
+sfincs_jax write-output --input /path/to/input.namelist --out /path/to/sfincsOutput.h5
 ```
 
-Solve a supported v3 linear case (`RHSMode=1`) and save the state:
-
-```bash
-sfincs_jax solve-v3 --input /path/to/input.namelist --out-state stateVector.npy
-```
-
-Compute transport matrix (`RHSMode=2/3`):
-
-```bash
-sfincs_jax transport-matrix-v3 --input /path/to/input.namelist --out-matrix transportMatrix.npy
-```
-
-Compare two `sfincsOutput.h5` files key-by-key:
+Compare two outputs:
 
 ```bash
 sfincs_jax compare-h5 --a sfincsOutput_jax.h5 --b sfincsOutput_fortran.h5
 ```
 
-## Examples
+Advanced CLI/solver options are documented in `docs/usage.rst` and `docs/performance_techniques.rst`.
 
-`examples/` is organized by workflow category:
+## Reduced-Suite Comparison (Fortran v3 vs sfincs_jax)
 
-- `examples/getting_started/`: API/CLI fundamentals
-- `examples/parity/`: fixture comparison and validation runs
-- `examples/transport/`: RHSMode=2/3 + postprocessing workflows
-- `examples/autodiff/`: Jacobian-vector products, sensitivity, implicit differentiation
-- `examples/optimization/`: optimization loops using JAX ecosystem tools
-- `examples/performance/`: timing and JIT benchmarks
-- `examples/publication_figures/`: polished figure generation
-- `examples/sfincs_examples/`: vendored upstream Fortran v3 examples + helper runner
-
-Try these first:
+Reproduce the table:
 
 ```bash
-python examples/getting_started/build_grids_and_geometry.py
-python examples/getting_started/write_sfincs_output_python.py
-python examples/parity/output_parity_vs_fortran_fixture.py
-python examples/autodiff/autodiff_er_xidot_term.py
-python examples/transport/transport_matrix_rhsmode2_and_rhsmode3.py
-python examples/transport/transport_matrix_recycle_demo.py
-python examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver bicgstab
-```
-
-## Utils (ported upstream scripts)
-
-The repository root `utils/` folder ports the full SFINCS v3 `utils` suite to
-`sfincs_jax`. Every script runs via a Python driver (`utils/sfincs_jax_driver.py`)
-and never calls the Fortran executable. Plotting and scan workflows produce the
-same figure layouts as upstream.
-
-Generate a small gallery:
-
-```bash
-python examples/utils/generate_utils_gallery.py
-```
-
-Add `--fast` for a quick pass or `--timeout-s <seconds>` to cap each step.
-
-Reproduced SFINCS paper-style figures are documented in `docs/paper_figures.rst` and can be
-generated with:
-
-```bash
-python examples/publication_figures/generate_sfincs_paper_figs.py --fast
-```
-
-The utilities honor the upstream `!ss` scan directives in `input.namelist`
-(see `docs/utils.rst`) and produce the same scan layouts as the original
-SFINCS v3 scripts.
-
-## Upstream SFINCS compatibility and comparison status
-
-The repository vendors the upstream Fortran v3 example suite under `examples/sfincs_examples/`.
-Key docs:
-
-- `docs/fortran_examples.rst`
-- `docs/fortran_comparison.rst`
-
-Reproduce the compatibility/comparison artifacts:
-
-```bash
-python scripts/generate_fortran_example_output_status.py
 python scripts/run_reduced_upstream_suite.py \
   --fortran-exe /path/to/sfincs \
   --reuse-fortran \
@@ -299,24 +92,12 @@ python scripts/run_reduced_upstream_suite.py \
 python scripts/generate_readme_reduced_suite_table.py
 ```
 
-Latest reduced-suite snapshot (`rtol=5e-4`, `atol=1e-9`):
-
-- **Practical comparison:** 19/38 cases.
-- **Strict comparison:** 19/38 cases.
-- **Print comparison signals:** 29/38 cases.
-
 Artifacts:
 
 - `tests/reduced_upstream_examples/suite_report.json`
 - `tests/reduced_upstream_examples/suite_report_strict.json`
 - `docs/_generated/reduced_upstream_suite_status.rst`
 - `docs/_generated/reduced_upstream_suite_status_strict.rst`
-
-Reduced-suite comparison table (Fortran vs `sfincs_jax` runtimes, memory, and mismatches):
-
-```bash
-python scripts/generate_readme_reduced_suite_table.py
-```
 
 <!-- BEGIN REDUCED_SUITE_TABLE -->
 | Case | Fortran CPU(s) | sfincs_jax CPU(s) | sfincs_jax GPU(s) | Fortran CPU MB | sfincs_jax CPU MB | sfincs_jax GPU MB | Mismatches (practical/strict) | Print comparison |
@@ -361,28 +142,29 @@ python scripts/generate_readme_reduced_suite_table.py
 | transportMatrix_geometryScheme2 | 0.236 | 3.579 | jax_error | 118.8 | 251.6 | jax_error | 0/193 (strict 0/193) | 7/9 |
 <!-- END REDUCED_SUITE_TABLE -->
 
+Status labels in table cells:
+
+- `max_attempts`: the suite runner retried/rescaled this case up to `--max-attempts` and still did not complete a successful comparison run.
+- `jax_error`: the JAX run exited with an exception for that benchmark lane/case.
 
 ## Documentation
 
-Build locally:
+Build docs locally:
 
 ```bash
 sphinx-build -b html -W docs docs/_build/html
 ```
 
-Core pages:
+Entry points:
 
-- `docs/normalizations.rst`
+- `docs/index.rst`
 - `docs/system_equations.rst`
 - `docs/method.rst`
-- `docs/inputs.rst`
-- `docs/outputs.rst`
+- `docs/normalizations.rst`
 - `docs/performance.rst`
-- `docs/examples.rst`
+- `docs/parallelism.rst`
 
 ## Testing
-
-Run the full test suite:
 
 ```bash
 pytest -q
