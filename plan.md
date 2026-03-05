@@ -122,6 +122,8 @@ Core requirement right now:
 ### 5.1 Recent validated status
 - Reduced suite practical status currently reports all cases as `parity_ok` at suite tolerances.
 - README reduced-suite table now included as the primary comparison section.
+- README reduced-suite table was regenerated from the lane-specific suite reports so the
+  checked-in table now matches the stored report artifacts.
 - `write_sfincs_jax_output_h5(..., return_results=True)` now returns in-memory result dictionary for immediate inspection.
 
 ### 5.2 Known pain points that still matter
@@ -339,7 +341,7 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 - [ ] Ensure all reduced-suite rows are complete for CPU and GPU lanes (no missing runtime/memory cells).
 - [ ] Re-run additional high-resolution example on CPU+GPU and integrate into comparison reporting.
 - [ ] Close remaining worst runtime/memory offenders (especially PAS-heavy cases) while preserving tolerances.
-- [ ] Strengthen default PAS preconditioner path to avoid expensive fallback branches where possible.
+- [~] Strengthen default PAS preconditioner path to avoid expensive fallback branches where possible.
 - [ ] Keep docs and README synchronized with measured reality (no stale claims).
 - [ ] Keep CI wall-time under control without reducing scientific coverage.
 
@@ -362,6 +364,8 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 ## 15) Execution Checklist (live)
 
 ### 15.1 Always-on loop
+- [ ] Use the original Fortran v3 example inputs as the resolution reference for example-suite benchmarking; do not use blind `2x` enlargement as the default benchmark mode.
+- [ ] Benchmark CPU/GPU JAX lanes against a fixed CPU-generated Fortran reference root when machine-local Fortran outputs are not proven deterministic.
 - [ ] Pick top 1-2 offenders from latest report (runtime and memory separately).
 - [ ] Profile (`SFINCS_JAX_PROFILE=1`) and isolate dominant phase.
 - [ ] Implement smallest high-ROI change.
@@ -396,6 +400,30 @@ Current latest notable changes before this handoff:
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
+### 2026-03-05
+- Scope: Remove the known GPU `lstsq` blocker with a backend-safe differentiable small least-squares path, add explicit reuse of fixed Fortran reference roots in the scaled example suite, and run a narrow local-CPU plus office-GPU gate against the same CPU-generated Fortran reference set.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/run_scaled_example_suite.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_small_regularized_lstsq.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_scaled_example_suite_reference.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/examples/README.md`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `pytest -q tests/test_small_regularized_lstsq.py tests/test_scaled_example_suite_reference.py tests/test_schur_precond_heuristic.py tests/test_pas_projection_heuristic.py tests/test_xblock_tz_precond_heuristic.py`; local gate reference generation with `tests/gating_reference_cpu`; local CPU re-run against `--reference-results-root tests/gating_reference_cpu` into `tests/gating_cpu_from_ref`; office GPU re-run against the synced `tests/gating_reference_cpu` root into `tests/gating_gpu_from_ref`.
+- Runtime/memory delta: the GPU gate now completes `inductiveE_noEr` instead of failing in CUDA dense/`lstsq` fallback paths, but it still takes `155.581s / 1033.2 MB` versus the local CPU reference lane `20.669s / 1098.0 MB` and Fortran `0.175s / 125.4 MB`. Local CPU against the fixed reference root stays aligned with the direct reference lane: `tokamak_1species_PASCollisions_noEr_Nx1` remains `0/212` practical and strict with `0.194s / 617.7 MB` JAX CPU versus `0.032s / 103.8 MB` Fortran, while `tokamak_1species_FPCollisions_noEr` remains the primary CPU mismatch at `1/188` practical and `8/188` strict.
+- Remaining risks: office GPU still reports parity mismatches on three FP-heavy gate cases relative to the stable CPU Fortran reference (`inductiveE_noEr` `2/207`, `tokamak_1species_FPCollisions_noEr` `11/188`, `tokamak_1species_FPCollisions_withEr_DKESTrajectories` `38/214`); office still warns that `jax_cuda12_plugin 0.5.1` is incompatible with `jaxlib 0.6.2`; the clean `sfincs_original` reference branch could not be rebuilt locally because PETSc points at a missing Homebrew OpenMPI wrapper path.
+- Next actions: inspect the GPU FP mismatch fields (`delta_f`, `sources`, `FSABFlow`, `particleFlux_vm_*`, `heatFlux_vm_*`, `pressureAnisotropy`) against the stable CPU reference lane, profile why GPU runtime regressed badly on `inductiveE_noEr` despite eliminating the crash, and either fix or explicitly gate the stale PETSc/OpenMPI path so the clean deterministic Fortran branch can be rebuilt reproducibly.
+
+### 2026-03-05
+- Scope: Replace the blind doubled-resolution example benchmark path with an upstream-reference resolution policy, preserve the partial `2x` profiling data as evidence, validate the corrected runner on local CPU and office GPU smoke cases, and start narrowing GPU-specific solver/backend blockers.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/run_scaled_example_suite.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/examples/README.md`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/io.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: confirmed all 38 vendored `examples/sfincs_examples/*/input.namelist` files are resolution-identical to `/Users/rogeriojorge/local/tests/sfincs_original/fortran/version3/examples/*/input.namelist`; local smoke with `tokamak_1species_FPCollisions_noEr` at `--scale-factor 1.0` against the original-example reference root; local and office smoke with `tokamak_1species_PASCollisions_noEr_Nx1` at `--scale-factor 1.0`; partial local CPU full-suite restart at the corrected original resolutions; office GPU smoke/restart on `inductiveE_noEr` after disabling dense auto-mode on non-CPU backends; `python -m py_compile sfincs_jax/io.py scripts/run_scaled_example_suite.py`.
+- Runtime/memory delta: the aborted blind-`2x` partial run already showed why that default was wrong: `tokamak_1species_FPCollisions_noEr` at `42x1x16x62` took 183.747s / 2300.1 MB and still had `1/188` practical (`8/188` strict) mismatches, while the corrected upstream-reference run at the original `21x1x8x31` took 2.956s / 998.8 MB with the same mismatch signature. `tokamak_1species_PASCollisions_noEr_Nx1` at the corrected original resolution ran parity-clean on CPU (0.132s Fortran / 2.086s JAX / 630.2 MB) and in the initial office GPU smoke (1.576s Fortran / 5.001s JAX / 1293.3 MB). The partial corrected CPU full-suite already completed 13 tokamak/quick/inductive cases with full print parity and only one strict mismatch case so far (`tokamak_1species_FPCollisions_noEr`, `8/188`).
+- Remaining risks: office GPU still reports a `jax_cuda12_plugin` / `jaxlib` version mismatch warning; office Fortran outputs appear nondeterministic on some classical-heat-flux fields (`classicalHeatFlux*`, `gpsiHatpsiHat`) for the same input, so office-generated Fortran H5s are not yet trustworthy as the GPU parity reference; the dense auto-mode patch for non-CPU backends moved `inductiveE_noEr` forward but the run still dies later in GPU-only dense-fallback / `jnp.linalg.lstsq` cuSOLVER calls.
+- Next actions: finish parsing the partial corrected CPU suite into a report artifact, compare GPU JAX outputs against a stable CPU-generated Fortran reference instead of the unstable office Fortran H5s, and remove or host-fallback the remaining GPU dense-fallback / least-squares calls so `inductiveE_noEr` and related small FP cases can complete on CUDA.
+
+### 2026-03-05
+- Scope: Trim unnecessary PAS auto strong-preconditioner retries after already-strong base preconditioners, and resync README/docs with the stored suite artifacts.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/docs/usage.rst`, `/Users/rogeriojorge/local/tests/sfincs_jax/docs/performance_techniques.rst`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_schur_precond_heuristic.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: direct CLI profiles on `tokamak_2species_PASCollisions_withEr_fullTrajectories` and `HSX_PASCollisions_fullTrajectories`, practical/strict H5 compares against stored Fortran outputs, an HSX gate-check confirming the larger-gap branch still enters the strong fallback path, `pytest -q tests/test_schur_precond_heuristic.py tests/test_pas_projection_heuristic.py tests/test_xblock_tz_precond_heuristic.py`, and `sphinx-build -W -b html docs docs/_build/html`.
+- Runtime/memory delta: `tokamak_2species_PASCollisions_withEr_fullTrajectories` improved from 180.320s / 1732.1 MB (stored suite baseline) to 10.741s / 955.3 MB in the patched direct CLI run, with practical parity unchanged at `0/212` and strict parity unchanged at `1/212`. For `HSX_PASCollisions_fullTrajectories`, disabling the strong retry entirely still produced one practical mismatch (`densityPerturbation`), so the default keeps the fallback for larger residual gaps.
+- Remaining risks: `HSX_PASCollisions_fullTrajectories` still needs a cheaper correction path than the full PAS strong retry; the full reduced suite has not yet been rerun after this solver change.
+- Next actions: profile the HSX PAS full-trajectories branch again, isolate which part of the strong retry fixes `densityPerturbation`, and replace the expensive second Krylov cycle with a bounded PAS polish or equivalent constraint-aware correction.
+
 ---
 
 ## 17) Important Command Snippets
@@ -425,6 +453,20 @@ out_path, results = write_sfincs_jax_output_h5(
     output_path=Path("sfincsOutput.h5"),
     return_results=True,
 )
+```
+
+### 17.4 Upstream-reference example-suite benchmark
+
+```bash
+cd /Users/rogeriojorge/local/tests/sfincs_jax
+python scripts/run_scaled_example_suite.py \
+  --examples-root examples/sfincs_examples \
+  --resolution-reference-root /Users/rogeriojorge/local/tests/sfincs_original/fortran/version3/examples \
+  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --out-root tests/scaled_example_suite_ref_cpu_local \
+  --timeout-s 240 \
+  --max-attempts 2 \
+  --scale-factor 1.0
 ```
 
 ---
@@ -464,4 +506,3 @@ Release-ready means:
 4. CI/docs/tests are green.
 5. Runtime/memory and solver defaults are documented with reproducible commands.
 6. This `plan.md` reflects current truth and next executable steps.
-

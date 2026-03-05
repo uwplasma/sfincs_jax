@@ -131,7 +131,9 @@ Solving a supported v3 linear run (matrix-free)
    preconditioner by default, while RHSMode=1 preconditioning follows the v3 namelist defaults
    (point-block Jacobi unless line preconditioners are requested). For ``constraintScheme=2``,
    ``sfincs_jax`` will auto-try a Schur-complement strong preconditioner if the initial solve
-   stalls, preserving the source constraints. For PAS tokamak-like ``N_zeta=1`` cases with
+   stalls, preserving the source constraints; PAS cases that already used a strong base
+   preconditioner now skip that extra retry when the residual is already within a small
+   multiple of the target. For PAS tokamak-like ``N_zeta=1`` cases with
    constraint projection enabled, ``sfincs_jax`` upgrades to the ``xblock_tz`` preconditioner by
    default to reduce Krylov iterations. For strict PETSc-style iteration histories, use
    ``--solve-method incremental``.
@@ -616,6 +618,9 @@ performance without changing the input file:
   unless explicitly set.
 - ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO``: only run strong-preconditioner fallbacks
   when ``||r|| / target`` exceeds the given ratio (default: ``1e2``; set ``<= 0`` to always allow).
+- ``SFINCS_JAX_PAS_AUTO_STRONG_RATIO``: for PAS runs that already used a strong base
+  preconditioner family (``schur``, ``xblock_tz``, ``pas_*``), skip the extra auto
+  strong-preconditioner retry when ``||r|| / target`` is below this ratio (default: ``10``).
 
 - ``SFINCS_JAX_RHSMODE1_SCHUR_BASE``: choose the base preconditioner used inside the
   constraint-aware Schur preconditioner (``theta_line``, ``zeta_line``, ``adi``, or

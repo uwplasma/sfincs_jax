@@ -471,6 +471,14 @@ The fallback now uses a residual-ratio gate; tune
 ``SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO`` (default: ``1e2``) to avoid expensive
 fallbacks when the residual is only slightly above target.
 
+For PAS runs that already used a strong base preconditioner (``schur``,
+``xblock_tz``, ``xblock_tz_lmax``, ``sxblock_tz``, ``species_block``,
+``theta_zeta``, or the ``pas_*`` family), auto mode now skips the extra
+strong-preconditioner retry when ``||r|| / target`` is already below
+``SFINCS_JAX_PAS_AUTO_STRONG_RATIO`` (default: ``10``). This avoids paying for a
+second expensive PAS Krylov cycle in near-converged cases where the base solve
+already satisfies the practical parity tolerances.
+
 For **small FP systems**, ``sfincs_jax`` now defaults to a direct dense solve
 instead of running GMRES first. This avoids JIT/Krylov overhead in cases where a
 direct solve is both faster and more robust for parity. The FP threshold is
