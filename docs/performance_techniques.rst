@@ -588,6 +588,16 @@ Key controls:
 - ``SFINCS_JAX_RHSMODE1_PAS_SCHUR_SMALL_MAX`` (enable ``pas_schur`` below this size)
 - ``SFINCS_JAX_RHSMODE1_PAS_XMG_MIN`` (switch PAS preconditioning to ``xmg`` for large systems)
 
+**Large tokamak PAS BiCGStab fastpath.** For very large 1-species tokamak PAS
+RHSMode=1 systems (:math:`N_\zeta=1`, no :math:`\Phi_1`, ``active_size`` above
+``SFINCS_JAX_PAS_LARGE_BICGSTAB_FASTPATH_MIN``), ``auto`` now switches from
+GMRES to BiCGStab and skips default stage-2/strong fallback passes. This trims
+runtime substantially on the largest PAS no-Er benchmarks while maintaining
+output agreement at suite tolerances. Controls:
+
+- ``SFINCS_JAX_PAS_LARGE_BICGSTAB_FASTPATH`` (``auto``/``on``/``off``; default ``auto``)
+- ``SFINCS_JAX_PAS_LARGE_BICGSTAB_FASTPATH_MIN`` (default ``80000`` active DOFs)
+
 **PAS sparse per-x LU/ILU preconditioner (PETSc-like).** For PAS-only RHSMode=1
 systems *without* :math:`x` coupling (no FP, no Er ``xDot`` term), the operator
 is block-diagonal in :math:`x`. In this setting, a robust PETSc-like block-Jacobi

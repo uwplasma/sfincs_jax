@@ -8048,9 +8048,43 @@ def solve_v3_full_system_linear_gmres(
                 f"using solve_method={solve_method} (size={int(full_precond_size)})",
             )
 
+    tokamak_pas = bool(
+        op.fblock.pas is not None
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and (geom_scheme == 1 or int(op.n_zeta) <= 5)
+    )
+    pas_large_fastpath_env = os.environ.get("SFINCS_JAX_PAS_LARGE_BICGSTAB_FASTPATH", "").strip().lower()
+    try:
+        pas_large_fastpath_min = int(
+            os.environ.get("SFINCS_JAX_PAS_LARGE_BICGSTAB_FASTPATH_MIN", "").strip() or 80000
+        )
+    except ValueError:
+        pas_large_fastpath_min = 80000
+    pas_large_fastpath_auto = pas_large_fastpath_env in {"", "auto"}
+    pas_large_fastpath_on = pas_large_fastpath_env in {"1", "true", "yes", "on"}
+    pas_large_fastpath_off = pas_large_fastpath_env in {"0", "false", "no", "off"}
+    pas_large_bicgstab_fastpath = bool(
+        (pas_large_fastpath_on or pas_large_fastpath_auto)
+        and (not pas_large_fastpath_off)
+        and tokamak_pas
+        and geom_scheme == 1
+        and int(op.n_species) == 1
+        and int(op.n_zeta) == 1
+        and int(active_size) >= max(1, int(pas_large_fastpath_min))
+    )
+
     if int(op.rhs_mode) == 1 and str(solve_method).strip().lower() in {"auto", "default"}:
-        # RHSMode=1 parity is most robust with GMRES; avoid the BiCGStab auto path.
-        solve_method = "incremental"
+        # Default RHSMode=1 to parity-robust GMRES, except for very large
+        # 1-species tokamak PAS systems where short-recurrence BiCGStab avoids
+        # expensive fallback stages while still matching outputs.
+        solve_method = "bicgstab" if pas_large_bicgstab_fastpath else "incremental"
+        if pas_large_bicgstab_fastpath and emit is not None:
+            emit(
+                1,
+                "solve_v3_full_system_linear_gmres: enabling PAS-large BiCGStab fastpath "
+                f"(active_size={int(active_size)} >= {int(pas_large_fastpath_min)})",
+            )
     if emit is not None:
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
@@ -8081,12 +8115,6 @@ def solve_v3_full_system_linear_gmres(
                 and int(max_l) * int(op.n_theta) * int(op.n_zeta) <= xblock_tz_max
             ):
                 rhs1_precond_env = "xblock_tz"
-    tokamak_pas = bool(
-        op.fblock.pas is not None
-        and int(op.rhs_mode) == 1
-        and (not bool(op.include_phi1))
-        and (geom_scheme == 1 or int(op.n_zeta) <= 5)
-    )
     try:
         pre_theta = int(precond_opts.get("PRECONDITIONER_THETA", 0) or 0)
     except (TypeError, ValueError):
@@ -8939,6 +8967,10 @@ def solve_v3_full_system_linear_gmres(
     else:
         # Default to strict fallback to preserve parity when BiCGStab stagnates.
         bicgstab_fallback_strict = True
+    if pas_large_bicgstab_fastpath and bicgstab_fallback_env == "":
+        # PAS-large fastpath intentionally accepts the short-recurrence solution
+        # when it is already parity-accurate at our regression tolerances.
+        bicgstab_fallback_strict = False
     implicit_env = os.environ.get("SFINCS_JAX_IMPLICIT_SOLVE", "").strip().lower()
     use_implicit = implicit_env not in {"0", "false", "no", "off"}
     distributed_axis = _resolve_distributed_gmres_axis(op=op, emit=emit)
@@ -9097,6 +9129,8 @@ def solve_v3_full_system_linear_gmres(
             and (not bool(op.include_phi1))
             and solver_kind_default in {"gmres", "bicgstab"}
         )
+    if pas_large_bicgstab_fastpath and stage2_env == "":
+        stage2_enabled = False
     # Stage-2 is a "stronger" fallback solve for difficult cases. The default time cap
     # must be large enough to still trigger after any one-time preconditioner setup,
     # while remaining bounded for interactive use and CI.
@@ -10626,6 +10660,9 @@ def solve_v3_full_system_linear_gmres(
         strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
         strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
         strong_precond_auto = strong_precond_env == "auto"
+        if pas_large_bicgstab_fastpath and strong_precond_env == "":
+            strong_precond_disabled = True
+            strong_precond_auto = False
         pas_force_strong_ratio_env = os.environ.get("SFINCS_JAX_PAS_FORCE_STRONG_RATIO", "").strip()
         try:
             pas_force_strong_ratio = float(pas_force_strong_ratio_env) if pas_force_strong_ratio_env else 50.0
