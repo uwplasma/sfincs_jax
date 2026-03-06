@@ -43,7 +43,7 @@ _ensure_jax_compilation_cache()
 
 from sfincs_jax.compare import compare_sfincs_outputs
 from sfincs_jax.io import localize_equilibrium_file_in_place
-from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax.namelist import _strip_fortran_comments, read_sfincs_input
 
 RES_KEYS: tuple[str, ...] = ("NTHETA", "NZETA", "NX", "NXI")
 MIN_RES: dict[str, int] = {"NTHETA": 5, "NZETA": 1, "NX": 1, "NXI": 4}
@@ -651,6 +651,300 @@ def _run_jax_cli(
     return cold, warm, rss_mb
 
 
+_FORTRAN_V3_GENERAL_KEYS = {
+    "SAVEMATLABOUTPUT",
+    "MATLABOUTPUTFILENAME",
+    "OUTPUTFILENAME",
+    "SOLVESYSTEM",
+    "RHSMODE",
+    "SAVEMATRICESANDVECTORSINBINARY",
+    "BINARYOUTPUTFILENAME",
+    "AMBIPOLARSOLVE",
+    "NER_AMBIPOLARSOLVE",
+    "ER_SEARCH_TOLERANCE_DX",
+    "ER_SEARCH_TOLERANCE_F",
+    "AMBIPOLARSOLVEOPTION",
+    "ER_MIN",
+    "ER_MAX",
+}
+
+_FORTRAN_V3_GEOMETRY_KEYS = {
+    "GHAT",
+    "IHAT",
+    "IOTA",
+    "EPSILON_T",
+    "EPSILON_H",
+    "HELICITY_L",
+    "HELICITY_N",
+    "B0OVERBBAR",
+    "GEOMETRYSCHEME",
+    "EPSILON_ANTISYMM",
+    "HELICITY_ANTISYMM_L",
+    "HELICITY_ANTISYMM_N",
+    "EQUILIBRIUMFILE",
+    "MIN_BMN_TO_LOAD",
+    "PSIAHAT",
+    "INPUTRADIALCOORDINATE",
+    "INPUTRADIALCOORDINATEFORGRADIENTS",
+    "AHAT",
+    "PSIHAT_WISH",
+    "PSIN_WISH",
+    "RHAT_WISH",
+    "RN_WISH",
+    "VMECRADIALOPTION",
+    "VMEC_NYQUIST_OPTION",
+    "RIPPLESCALE",
+    "EPARALLELHATSPEC_BCDATFILE",
+    "NPERIODS",
+    "BOOZER_BMNC",
+    "BOOZER_BMNS",
+}
+
+_FORTRAN_V3_PHYSICS_KEYS = {
+    "DELTA",
+    "ALPHA",
+    "NU_N",
+    "EPARALLELHAT",
+    "EPARALLELHATSPEC",
+    "COLLISIONOPERATOR",
+    "CONSTRAINTSCHEME",
+    "INCLUDEXDOTTERM",
+    "INCLUDEELECTRICFIELDTERMINXIDOT",
+    "USEDKESEXBDRIFT",
+    "INCLUDE_FDIVVE_TERM",
+    "DPHIHATDPSIHAT",
+    "DPHIHATDPSIN",
+    "DPHIHATDRHAT",
+    "DPHIHATDRN",
+    "ER",
+    "INCLUDETEMPERATUREEQUILIBRATIONTERM",
+    "INCLUDEPHI1",
+    "INCLUDEPHI1INCOLLISIONOPERATOR",
+    "NUPRIME",
+    "ESTAR",
+    "MAGNETICDRIFTSCHEME",
+    "INCLUDEPHI1INKINETICEQUATION",
+    "QUASINEUTRALITYOPTION",
+    "KROOK",
+    "EXTERNALPHI1FILENAME",
+    "READEXTERNALPHI1",
+}
+
+_FORTRAN_V3_RESOLUTION_KEYS = {
+    "FORCEODDNTHETAANDNZETA",
+    "NTHETA",
+    "NZETA",
+    "NXI",
+    "NL",
+    "NX",
+    "XMAX",
+    "SOLVERTOLERANCE",
+    "NXPOTENTIALSPERVTH",
+}
+
+_FORTRAN_V3_OTHER_NUMERICAL_KEYS = {
+    "USEITERATIVELINEARSOLVER",
+    "THETADERIVATIVESCHEME",
+    "ZETADERIVATIVESCHEME",
+    "EXBDERIVATIVESCHEMETHETA",
+    "EXBDERIVATIVESCHEMEZETA",
+    "XDOTDERIVATIVESCHEME",
+    "XGRIDSCHEME",
+    "WHICHPARALLELSOLVERTOFACTORPRECONDITIONER",
+    "PETSCPREALLOCATIONSTRATEGY",
+    "XPOTENTIALSGRIDSCHEME",
+    "XGRID_K",
+    "MAGNETICDRIFTDERIVATIVESCHEME",
+    "NXI_FOR_X_OPTION",
+}
+
+
+def _canonicalize_fortran_v3_input_text(text: str) -> str:
+    """Normalize legacy upstream input groups to the names expected by Fortran v3."""
+    lines = text.splitlines()
+    legacy_geometry_scheme: int | None = None
+    legacy_equilibrium_file_10: str | None = None
+    legacy_equilibrium_file_11: str | None = None
+    legacy_equilibrium_file_12: str | None = None
+    legacy_normradius_wish: str | None = None
+    legacy_psiahat: str | None = None
+    legacy_gradient_coordinate: int | None = None
+    has_export_f = False
+
+    current_group: str | None = None
+    for line in lines:
+        stripped = line.strip()
+        m = re.match(r"^\s*&\s*([A-Za-z_]\w*)\b", line)
+        if m:
+            current_group = m.group(1).lower()
+            if current_group == "export_f":
+                has_export_f = True
+            continue
+        if stripped == "/":
+            current_group = None
+            continue
+        bare = _strip_fortran_comments(line).strip()
+        if "=" not in bare:
+            continue
+        key, value = bare.split("=", 1)
+        key_up = key.strip().upper()
+        value = value.strip()
+        if current_group == "geometryparameters":
+            if key_up == "GEOMETRYSCHEME":
+                try:
+                    legacy_geometry_scheme = int(float(value.replace("d", "e").replace("D", "E")))
+                except ValueError:
+                    legacy_geometry_scheme = None
+            elif key_up == "FORT996BOOZER_FILE":
+                legacy_equilibrium_file_10 = value
+            elif key_up == "JGBOOZER_FILE":
+                legacy_equilibrium_file_11 = value
+            elif key_up == "JGBOOZER_FILE_NONSTELSYM":
+                legacy_equilibrium_file_12 = value
+            elif key_up == "NORMRADIUS_WISH":
+                legacy_normradius_wish = value
+        elif current_group == "physicsparameters" and key_up == "PSIAHAT":
+            legacy_psiahat = value
+        elif current_group == "physicsparameters":
+            if legacy_gradient_coordinate is None:
+                if key_up in {"DPHIHATDPSIHAT"}:
+                    legacy_gradient_coordinate = 0
+                elif key_up in {"DPHIHATDPSIN"}:
+                    legacy_gradient_coordinate = 1
+                elif key_up in {"DPHIHATDRHAT", "ER"}:
+                    legacy_gradient_coordinate = 4
+                elif key_up in {"DPHIHATDRN"}:
+                    legacy_gradient_coordinate = 3
+        elif current_group == "speciesparameters" and legacy_gradient_coordinate is None:
+            if key_up in {"DNHATDPSIHATS", "DTHATDPSIHATS"}:
+                legacy_gradient_coordinate = 0
+            elif key_up in {"DNHATDPSINS", "DTHATDPSINS"}:
+                legacy_gradient_coordinate = 1
+            elif key_up in {"DNHATDRHATS", "DTHATDRHATS"}:
+                legacy_gradient_coordinate = 2
+            elif key_up in {"DNHATDRNS", "DTHATDRNS"}:
+                legacy_gradient_coordinate = 3
+
+    out: list[str] = []
+    in_flow = False
+    in_geometry = False
+    in_physics = False
+    in_resolution = False
+    in_other = False
+    seen_geometry_keys: set[str] = set()
+    seen_other_keys: set[str] = set()
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^\s*&\s*flowcontrol\b", line, flags=re.IGNORECASE):
+            in_flow = True
+            out.append(re.sub(r"(^\s*&\s*)flowcontrol\b", r"\1general", line, flags=re.IGNORECASE))
+            continue
+        if re.match(r"^\s*&\s*geometryparameters\b", line, flags=re.IGNORECASE):
+            in_geometry = True
+            seen_geometry_keys = set()
+            out.append(line)
+            continue
+        if re.match(r"^\s*&\s*physicsparameters\b", line, flags=re.IGNORECASE):
+            in_physics = True
+            out.append(line)
+            continue
+        if re.match(r"^\s*&\s*resolutionparameters\b", line, flags=re.IGNORECASE):
+            in_resolution = True
+            out.append(line)
+            continue
+        if re.match(r"^\s*&\s*othernumericalparameters\b", line, flags=re.IGNORECASE):
+            in_other = True
+            seen_other_keys = set()
+            out.append(line)
+            continue
+        if not in_flow:
+            if not in_geometry and not in_physics and not in_resolution and not in_other:
+                out.append(line)
+                continue
+        if stripped == "/":
+            if in_geometry:
+                if "EQUILIBRIUMFILE" not in seen_geometry_keys:
+                    eq_value = None
+                    if legacy_geometry_scheme == 10:
+                        eq_value = legacy_equilibrium_file_10
+                    elif legacy_geometry_scheme == 11:
+                        eq_value = legacy_equilibrium_file_11
+                    elif legacy_geometry_scheme == 12:
+                        eq_value = legacy_equilibrium_file_12
+                    if eq_value is not None:
+                        out.append(f"  equilibriumFile = {eq_value}")
+                if legacy_normradius_wish is not None and "RN_WISH" not in seen_geometry_keys:
+                    if "INPUTRADIALCOORDINATE" not in seen_geometry_keys:
+                        out.append("  inputRadialCoordinate = 3")
+                    out.append(f"  rN_wish = {legacy_normradius_wish}")
+                if (
+                    legacy_gradient_coordinate is not None
+                    and "INPUTRADIALCOORDINATEFORGRADIENTS" not in seen_geometry_keys
+                ):
+                    out.append(f"  inputRadialCoordinateForGradients = {legacy_gradient_coordinate}")
+                if legacy_psiahat is not None and "PSIAHAT" not in seen_geometry_keys:
+                    out.append(f"  psiAHat = {legacy_psiahat}")
+            in_flow = False
+            in_geometry = False
+            in_physics = False
+            in_resolution = False
+            in_other = False
+            out.append(line)
+            continue
+        bare = _strip_fortran_comments(line).strip()
+        if "=" not in bare:
+            out.append(line)
+            continue
+        key = bare.split("=", 1)[0].strip().upper()
+        if in_flow:
+            if key in _FORTRAN_V3_GENERAL_KEYS:
+                out.append(line)
+            continue
+        if in_geometry:
+            if key in _FORTRAN_V3_GEOMETRY_KEYS:
+                seen_geometry_keys.add(key)
+                out.append(line)
+            continue
+        if in_physics:
+            if key in _FORTRAN_V3_PHYSICS_KEYS:
+                out.append(line)
+            continue
+        if in_resolution:
+            if key in _FORTRAN_V3_RESOLUTION_KEYS:
+                out.append(line)
+            continue
+        if in_other:
+            if key == "USEITERATIVESOLVER":
+                mapped_key = "USEITERATIVELINEARSOLVER"
+                if mapped_key not in seen_other_keys:
+                    out.append(re.sub(r"(^\s*)useIterativeSolver\b", r"\1useIterativeLinearSolver", line, flags=re.IGNORECASE))
+                    seen_other_keys.add(mapped_key)
+                continue
+            if key in _FORTRAN_V3_OTHER_NUMERICAL_KEYS:
+                seen_other_keys.add(key)
+                out.append(line)
+            continue
+        if key in _FORTRAN_V3_GENERAL_KEYS:
+            out.append(line)
+    updated = "\n".join(out)
+    if not has_export_f:
+        if updated and not updated.endswith("\n"):
+            updated += "\n"
+        updated += "&export_f\n/\n"
+    if text.endswith("\n"):
+        return updated
+    return updated
+
+
+def _canonicalize_fortran_v3_input_in_place(input_path: Path) -> bool:
+    text = input_path.read_text(encoding="utf-8")
+    updated = _canonicalize_fortran_v3_input_text(text)
+    if updated == text:
+        return False
+    input_path.write_text(updated, encoding="utf-8")
+    return True
+
+
 def _run_fortran_direct(
     *, input_path: Path, exe: Path, timeout_s: float, log_path: Path
 ) -> tuple[float, Path, int, float | None]:
@@ -662,6 +956,7 @@ def _run_fortran_direct(
         else:
             time_prefix = ["/usr/bin/time", "-v"]
     cmd = [*time_prefix, *cmd]
+    _canonicalize_fortran_v3_input_in_place(input_path)
     t0 = time.perf_counter()
     env = dict(os.environ)
     constraint_scheme = _constraint_scheme_from_namelist(input_path)

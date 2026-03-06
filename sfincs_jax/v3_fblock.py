@@ -36,6 +36,7 @@ from .diagnostics import b0_over_bbar as b0_over_bbar_jax
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .diagnostics import g_hat_i_hat as g_hat_i_hat_jax
 from .geometry import BoozerGeometry
+from .input_compat import effective_equilibrium_file, effective_psi_a_hat, effective_r_n_wish
 from .magnetic_drifts import (
     MagneticDriftThetaV3Operator,
     MagneticDriftXiDotV3Operator,
@@ -201,9 +202,9 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
 
     if geometry_scheme == 1:
         # v3 defaults are in `globalVariables.F90`; allow the namelist to override them.
-        psi_a_hat = float(geom_params.get("PSIAHAT", 0.15596))
+        psi_a_hat = effective_psi_a_hat(geom_params=geom_params, phys_params=phys_params, default=0.15596)
         a_hat = float(geom_params.get("AHAT", 0.5585))
-        r_n = float(geom_params.get("RN_WISH", 0.5))
+        r_n = effective_r_n_wish(geom_params=geom_params, default=0.5)
     elif geometry_scheme == 2:
         # v3 ignores *_wish and uses rN=0.5 for this simplified LHD model.
         a_hat = 0.5585
@@ -214,7 +215,7 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
         a_hat = 0.5109
         r_n = 0.5  # v3 forces rN=0.5 for geometryScheme=4.
     elif geometry_scheme in {11, 12}:
-        eq = geom_params.get("EQUILIBRIUMFILE", None)
+        eq = effective_equilibrium_file(geom_params=geom_params)
         if eq is None:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -225,7 +226,7 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
         header = read_boozer_bc_header(path=str(p), geometry_scheme=int(geometry_scheme))
         psi_a_hat = float(header.psi_a_hat)
         a_hat = float(header.a_hat)
-        r_n_wish = float(geom_params.get("RN_WISH", 0.5))
+        r_n_wish = effective_r_n_wish(geom_params=geom_params, default=0.5)
         vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         r_n = selected_r_n_from_bc(
             path=str(p),
@@ -234,7 +235,7 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
             vmecradial_option=int(vmecradial_option),
         )
     elif geometry_scheme == 5:
-        eq = geom_params.get("EQUILIBRIUMFILE", None)
+        eq = effective_equilibrium_file(geom_params=geom_params)
         if eq is None:
             raise ValueError("geometryScheme=5 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -246,7 +247,7 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
         psi_a_hat = float(psi_a_hat_from_wout(w))
         a_hat = float(w.aminor_p)
 
-        r_n_wish = float(geom_params.get("RN_WISH", 0.5))
+        r_n_wish = effective_r_n_wish(geom_params=geom_params, default=0.5)
         psi_n_wish = float(r_n_wish) * float(r_n_wish)
         vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         interp = vmec_interpolation(w=w, psi_n_wish=psi_n_wish, vmec_radial_option=vmecradial_option)

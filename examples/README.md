@@ -84,6 +84,10 @@ The script keeps the runnable input text from `--examples-root`, rewrites only
 `examples/additional_examples/input.namelist`, and writes per-case outputs plus
 `suite_report.json`, `suite_report_strict.json`, `suite_status*.rst`,
 `run_manifest.json`, and `summary.md` into the chosen `--out-root`.
+For the legacy `examples/upstream/fortran_multispecies` tree, the Fortran lane
+also canonicalizes the old pre-v3 namelist groups and aliases into the v3
+input shape expected by the reference executable, while the `sfincs_jax` lane
+honors those same legacy aliases directly.
 
 To separate reference generation from JAX benchmarking, first create a stable
 CPU reference root, then benchmark CPU or GPU JAX runs against that fixed

@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from .geometry import BoozerGeometry, boozer_geometry_from_bc_file, boozer_geometry_scheme4
+from .input_compat import effective_equilibrium_file, effective_r_n_wish
 from .grids import uniform_diff_matrices
 from .namelist import Namelist
 from .paths import resolve_existing_path
@@ -85,7 +86,7 @@ def _group_key(group: dict, keys: list[str]) -> tuple[tuple[str, object], ...]:
 
 
 def _equilibrium_file_key(*, nml: Namelist, geometry_scheme: int, geom_group: dict) -> tuple[str, float] | None:
-    equilibrium_file = geom_group.get("EQUILIBRIUMFILE", None)
+    equilibrium_file = effective_equilibrium_file(geom_params=geom_group)
     if equilibrium_file is None:
         return None
     base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -342,13 +343,13 @@ def grids_from_namelist(nml: Namelist) -> V3Grids:
         # v3: fixed LHD inward-shifted model
         n_periods = 10
     elif geometry_scheme in {11, 12}:
-        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        equilibrium_file = effective_equilibrium_file(geom_params=geom)
         if equilibrium_file is None:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
         n_periods = _n_periods_from_bc_file(str(equilibrium_file), base_dir=base_dir)
     elif geometry_scheme == 5:
-        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        equilibrium_file = effective_equilibrium_file(geom_params=geom)
         if equilibrium_file is None:
             raise ValueError("geometryScheme=5 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -593,7 +594,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
             _save_geometry_cache(cache_key, geom_out)
         return geom_out
     if geometry_scheme in {11, 12}:
-        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        equilibrium_file = effective_equilibrium_file(geom_params=geom)
         if equilibrium_file is None:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -601,7 +602,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
         p = resolve_existing_path(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra).path
 
-        r_n_wish = float(geom.get("RN_WISH", 0.5))
+        r_n_wish = effective_r_n_wish(geom_params=geom, default=0.5)
         vmecradial_option = int(_get_int(geom, "VMECRadialOption", 1))
         geom_out = boozer_geometry_from_bc_file(
             path=str(p),
@@ -616,7 +617,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
             _save_geometry_cache(cache_key, geom_out)
         return geom_out
     if geometry_scheme == 5:
-        equilibrium_file = geom.get("EQUILIBRIUMFILE", None)
+        equilibrium_file = effective_equilibrium_file(geom_params=geom)
         if equilibrium_file is None:
             raise ValueError("geometryScheme=5 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -624,7 +625,7 @@ def geometry_from_namelist(*, nml: Namelist, grids: V3Grids) -> BoozerGeometry:
         extra = (repo_root / "tests" / "ref", repo_root / "sfincs_jax" / "data" / "equilibria")
         p = _resolve_vmec_equilibrium_file(str(equilibrium_file), base_dir=base_dir, extra_search_dirs=extra)
 
-        r_n_wish = float(geom.get("RN_WISH", 0.5))
+        r_n_wish = effective_r_n_wish(geom_params=geom, default=0.5)
         psi_n_wish = float(r_n_wish) * float(r_n_wish)
         vmecradial_option = int(_get_int(geom, "VMECRadialOption", 1))
         vmec_nyq_opt = int(geom.get("VMEC_NYQUIST_OPTION", 1))

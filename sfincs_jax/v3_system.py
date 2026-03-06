@@ -25,6 +25,7 @@ from .boozer_bc import read_boozer_bc_header, selected_r_n_from_bc
 from .diagnostics import b0_over_bbar as b0_over_bbar_jax
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .diagnostics import g_hat_i_hat as g_hat_i_hat_jax
+from .input_compat import effective_equilibrium_file, effective_psi_a_hat, effective_r_n_wish, infer_input_radial_coordinate_for_gradients
 from .namelist import Namelist
 from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
@@ -1857,19 +1858,24 @@ def full_system_operator_from_namelist(
 
     # Radial normalization factors (radialCoordinates.F90).
     input_radial = _get_int(geom_params, "inputRadialCoordinate", 3)
-    input_radial_grad = _get_int(geom_params, "inputRadialCoordinateForGradients", 4)
-    if input_radial != 3 or input_radial_grad not in {0, 4}:
+    input_radial_grad = infer_input_radial_coordinate_for_gradients(
+        geom_params=geom_params,
+        species_params=species,
+        phys_params=phys,
+        default=4,
+    )
+    if input_radial != 3 or input_radial_grad not in {0, 1, 2, 3, 4}:
         raise NotImplementedError(
             "sfincs_jax currently supports inputRadialCoordinate=3 (rN) with "
-            "inputRadialCoordinateForGradients in {0 (psiHat), 4 (rHat)}."
+            "inputRadialCoordinateForGradients in {0 (psiHat), 1 (psiN), 2 (rHat), 3 (rN), 4 (Er/rHat)}."
         )
 
     geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
     if geometry_scheme == 1:
         # v3 defaults are in `globalVariables.F90`; allow the namelist to override them.
-        psi_a_hat = float(geom_params.get("PSIAHAT", 0.15596))
+        psi_a_hat = effective_psi_a_hat(geom_params=geom_params, phys_params=phys, default=0.15596)
         a_hat = float(geom_params.get("AHAT", 0.5585))
-        r_n = float(geom_params.get("RN_WISH", 0.5))
+        r_n = effective_r_n_wish(geom_params=geom_params, default=0.5)
     elif geometry_scheme == 2:
         # v3 ignores *_wish and uses rN=0.5 for this simplified LHD model.
         a_hat = 0.5585
@@ -1880,7 +1886,7 @@ def full_system_operator_from_namelist(
         a_hat = 0.5109
         r_n = 0.5  # v3 forces rN=0.5 for geometryScheme=4.
     elif geometry_scheme in {11, 12}:
-        eq = geom_params.get("EQUILIBRIUMFILE", None)
+        eq = effective_equilibrium_file(geom_params=geom_params)
         if eq is None:
             raise ValueError("geometryScheme=11/12 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -1890,7 +1896,7 @@ def full_system_operator_from_namelist(
         header = read_boozer_bc_header(path=str(p), geometry_scheme=int(geometry_scheme))
         psi_a_hat = float(header.psi_a_hat)
         a_hat = float(header.a_hat)
-        r_n_wish = float(geom_params.get("RN_WISH", 0.5))
+        r_n_wish = effective_r_n_wish(geom_params=geom_params, default=0.5)
         vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         r_n = selected_r_n_from_bc(
             path=str(p),
@@ -1899,7 +1905,7 @@ def full_system_operator_from_namelist(
             vmecradial_option=int(vmecradial_option),
         )
     elif geometry_scheme == 5:
-        eq = geom_params.get("EQUILIBRIUMFILE", None)
+        eq = effective_equilibrium_file(geom_params=geom_params)
         if eq is None:
             raise ValueError("geometryScheme=5 requires equilibriumFile in geometryParameters.")
         base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -1916,7 +1922,7 @@ def full_system_operator_from_namelist(
         psi_a_hat = float(psi_a_hat_from_wout(w))
         a_hat = float(w.aminor_p)
 
-        r_n_wish = float(geom_params.get("RN_WISH", 0.5))
+        r_n_wish = effective_r_n_wish(geom_params=geom_params, default=0.5)
         psi_n_wish = float(r_n_wish) * float(r_n_wish)
         vmecradial_option = _get_int(geom_params, "VMECRadialOption", _get_int(geom_params, "VMECRADIALOPTION", 1))
         interp = vmec_interpolation(w=w, psi_n_wish=psi_n_wish, vmec_radial_option=vmecradial_option)
@@ -1925,25 +1931,52 @@ def full_system_operator_from_namelist(
         raise NotImplementedError(f"Radial conversions are not implemented for geometryScheme={geometry_scheme}.")
 
     # With rHat = aHat * rN and psiHat = psiAHat * (rN^2):
-    # dpsiHat/drHat = 2*psiAHat*rN/aHat -> drHat/dpsiHat = aHat/(2*psiAHat*rN).
+    # dpsiHat/drHat = 2*psiAHat*rN/aHat, dpsiHat/drN = 2*psiAHat*rN.
+    ddpsi_n2ddpsi_hat = 1.0 / float(psi_a_hat)
     ddrhat2ddpsihat = float(a_hat) / (2.0 * float(psi_a_hat) * float(r_n))
+    ddr_n2ddpsi_hat = 1.0 / (2.0 * float(psi_a_hat) * float(r_n))
 
-    def _grad_in_psihat(key_drhat: str, key_psihat: str) -> jnp.ndarray:
-        if key_drhat.upper() in species:
+    def _species_grad_in_psihat(
+        key_psihat: str,
+        key_psin: str,
+        key_drhat: str,
+        key_drn: str,
+    ) -> jnp.ndarray:
+        if int(input_radial_grad) == 0:
+            return _as_1d_float_array(species.get(key_psihat.upper(), 0.0))
+        if int(input_radial_grad) == 1:
+            return ddpsi_n2ddpsi_hat * _as_1d_float_array(species.get(key_psin.upper(), 0.0))
+        if int(input_radial_grad) in {2, 4}:
             return ddrhat2ddpsihat * _as_1d_float_array(species.get(key_drhat.upper(), 0.0))
-        return _as_1d_float_array(species.get(key_psihat.upper(), 0.0))
+        if int(input_radial_grad) == 3:
+            return ddr_n2ddpsi_hat * _as_1d_float_array(species.get(key_drn.upper(), 0.0))
+        raise NotImplementedError(f"Unsupported inputRadialCoordinateForGradients={input_radial_grad}")
 
-    dn_hat_dpsi_hat = _grad_in_psihat("dNHatdrHats", "dNHatdpsiHats")
-    dt_hat_dpsi_hat = _grad_in_psihat("dTHatdrHats", "dTHatdpsiHats")
+    dn_hat_dpsi_hat = _species_grad_in_psihat("dNHatdpsiHats", "dNHatdpsiNs", "dNHatdrHats", "dNHatdrNs")
+    dt_hat_dpsi_hat = _species_grad_in_psihat("dTHatdpsiHats", "dTHatdpsiNs", "dTHatdrHats", "dTHatdrNs")
 
-    # dPhiHat/dpsiHat:
-    # - if inputRadialCoordinateForGradients=4, v3 uses Er with dPhiHat/drHat = -Er.
-    # - if inputRadialCoordinateForGradients=0, v3 expects dPhiHat/dpsiHat directly.
-    if int(input_radial_grad) == 4:
+    if int(input_radial_grad) == 0:
+        dphi_hat_dpsi_hat = jnp.asarray(float(phys.get("DPHIHATDPSIHAT", 0.0)), dtype=jnp.float64)
+    elif int(input_radial_grad) == 1:
+        dphi_hat_dpsi_hat = jnp.asarray(
+            ddpsi_n2ddpsi_hat * float(phys.get("DPHIHATDPSIN", 0.0)),
+            dtype=jnp.float64,
+        )
+    elif int(input_radial_grad) == 2:
+        dphi_hat_dpsi_hat = jnp.asarray(
+            ddrhat2ddpsihat * float(phys.get("DPHIHATDRHAT", 0.0)),
+            dtype=jnp.float64,
+        )
+    elif int(input_radial_grad) == 3:
+        dphi_hat_dpsi_hat = jnp.asarray(
+            ddr_n2ddpsi_hat * float(phys.get("DPHIHATDRN", 0.0)),
+            dtype=jnp.float64,
+        )
+    elif int(input_radial_grad) == 4:
         er = float(phys.get("ER", 0.0))
         dphi_hat_dpsi_hat = jnp.asarray(ddrhat2ddpsihat * (-er), dtype=jnp.float64)
     else:
-        dphi_hat_dpsi_hat = jnp.asarray(float(phys.get("DPHIHATDPSIHAT", 0.0)), dtype=jnp.float64)
+        raise NotImplementedError(f"Unsupported inputRadialCoordinateForGradients={input_radial_grad}")
 
     if int(rhs_mode) == 3:
         e_star = float(phys.get("ESTAR", phys.get("EStar", 0.0)))

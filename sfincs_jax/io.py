@@ -17,6 +17,13 @@ from .boozer_bc import read_boozer_bc_bracketing_surfaces, read_boozer_bc_header
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .diagnostics import u_hat_np
 from .diagnostics import vprime_hat as vprime_hat_jax
+from .input_compat import (
+    effective_equilibrium_file,
+    effective_psi_a_hat,
+    effective_r_n_wish,
+    effective_use_iterative_linear_solver,
+    infer_input_radial_coordinate_for_gradients,
+)
 from .namelist import Namelist, read_sfincs_input
 from .paths import resolve_existing_path
 from .vmec_wout import _set_scale_factor, psi_a_hat_from_wout, read_vmec_wout, vmec_interpolation
@@ -887,7 +894,7 @@ def _fortran_logical(x: bool) -> np.int32:
 
 def _resolve_equilibrium_file_from_namelist(*, nml: Namelist) -> Path:
     geom_params = nml.group("geometryParameters")
-    equilibrium_file = geom_params.get("EQUILIBRIUMFILE", None)
+    equilibrium_file = effective_equilibrium_file(geom_params=geom_params)
     if equilibrium_file is None:
         raise ValueError("Missing geometryParameters.equilibriumFile")
     base_dir = nml.source_path.parent if nml.source_path is not None else None
@@ -931,7 +938,7 @@ def localize_equilibrium_file_in_place(*, input_namelist: Path, overwrite: bool 
     input_namelist = Path(input_namelist).resolve()
     nml = read_sfincs_input(input_namelist)
     geom_params = nml.group("geometryParameters")
-    equilibrium_file = geom_params.get("EQUILIBRIUMFILE", None)
+    equilibrium_file = effective_equilibrium_file(geom_params=geom_params)
     if equilibrium_file is None:
         return None
 
@@ -942,22 +949,31 @@ def localize_equilibrium_file_in_place(*, input_namelist: Path, overwrite: bool 
 
     # Patch the namelist to use the local basename (keeps paths short and run-directory relative).
     txt = input_namelist.read_text()
-
-    # Match both single- and double-quoted cases, and tolerate spacing.
-    pat = re.compile(r"(?im)^\s*equilibriumFile\s*=\s*(['\"])(.*?)\1\s*$")
-    m = pat.search(txt)
-    if m is None:
-        # Fallback: unquoted token.
-        pat2 = re.compile(r"(?im)^\s*equilibriumFile\s*=\s*([^!\n\r]+)\s*$")
-        m2 = pat2.search(txt)
-        if m2 is None:
-            return dst
-        new_line = f'  equilibriumFile = \"{dst.name}\"'
-        txt2 = txt.replace(m2.group(0), new_line)
+    geometry_scheme = int(_get_int(geom_params, "geometryScheme", -1))
+    if geometry_scheme == 10:
+        key_candidates = ("fort996boozer_file", "equilibriumFile")
+    elif geometry_scheme == 11:
+        key_candidates = ("JGboozer_file", "equilibriumFile")
+    elif geometry_scheme == 12:
+        key_candidates = ("JGboozer_file_NonStelSym", "equilibriumFile")
     else:
-        quote = m.group(1)
-        new_line = f"  equilibriumFile = {quote}{dst.name}{quote}"
-        txt2 = txt.replace(m.group(0), new_line)
+        key_candidates = ("equilibriumFile",)
+
+    txt2 = txt
+    for key_name in key_candidates:
+        pat = re.compile(rf"(?im)^\s*{re.escape(key_name)}\s*=\s*(['\"])(.*?)\1\s*$")
+        m = pat.search(txt)
+        if m is not None:
+            quote = m.group(1)
+            new_line = f"  {key_name} = {quote}{dst.name}{quote}"
+            txt2 = txt.replace(m.group(0), new_line)
+            break
+        pat2 = re.compile(rf"(?im)^\s*{re.escape(key_name)}\s*=\s*([^!\n\r]+)\s*$")
+        m2 = pat2.search(txt)
+        if m2 is not None:
+            new_line = f'  {key_name} = "{dst.name}"'
+            txt2 = txt.replace(m2.group(0), new_line)
+            break
 
     if txt2 != txt:
         input_namelist.write_text(txt2)
@@ -1449,7 +1465,7 @@ def sfincs_jax_output_dict(
     elif geometry_scheme == 1:
         # v3 defaults are in `globalVariables.F90`; allow the namelist to override them.
         a_hat = _get_float(geom_params, "aHat", 0.5585)
-        psi_a_hat = _get_float(geom_params, "psiAHat", 0.15596)
+        psi_a_hat = effective_psi_a_hat(geom_params=geom_params, phys_params=phys, default=0.15596)
     elif geometry_scheme == 2:
         # v3 ignores *_wish and uses the fixed LHD model with aHat=0.5585 and psiAHat=aHat^2/2.
         a_hat = 0.5585
@@ -1469,7 +1485,7 @@ def sfincs_jax_output_dict(
     psi_hat_wish_in = _get_float(geom_params, "psiHat_wish", -1.0)
     psi_n_wish_in = _get_float(geom_params, "psiN_wish", 0.25)
     r_hat_wish_in = _get_float(geom_params, "rHat_wish", -1.0)
-    r_n_wish_in = _get_float(geom_params, "rN_wish", 0.5)
+    r_n_wish_in = effective_r_n_wish(geom_params=geom_params, default=0.5)
     psi_hat_wish, psi_n_wish, r_hat_wish, r_n_wish = _set_input_radial_coordinate_wish(
         input_radial_coordinate=input_radial_coordinate,
         psi_a_hat=psi_a_hat,
@@ -1568,7 +1584,12 @@ def sfincs_jax_output_dict(
     out["rHat"] = np.asarray(float(r_hat), dtype=np.float64)
     out["inputRadialCoordinate"] = np.asarray(int(input_radial_coordinate), dtype=np.int32)
 
-    input_radial_grad = _get_int(geom_params, "inputRadialCoordinateForGradients", 4)
+    input_radial_grad = infer_input_radial_coordinate_for_gradients(
+        geom_params=geom_params,
+        species_params=species,
+        phys_params=phys,
+        default=4,
+    )
     out["inputRadialCoordinateForGradients"] = np.asarray(int(input_radial_grad), dtype=np.int32)
 
     conv = _conversion_factors_to_from_dpsi_hat(psi_a_hat=psi_a_hat, a_hat=a_hat, r_n=r_n)
@@ -1643,7 +1664,7 @@ def sfincs_jax_output_dict(
     out["integerToRepresentFalse"] = np.asarray(-1, dtype=np.int32)
     out["integerToRepresentTrue"] = np.asarray(1, dtype=np.int32)
 
-    use_iterative_linear = bool(_get_int(other, "useIterativeLinearSolver", 1))
+    use_iterative_linear = bool(effective_use_iterative_linear_solver(other_params=other, default=1))
     out["useIterativeLinearSolver"] = _fortran_logical(use_iterative_linear)
     out["RHSMode"] = np.asarray(int(rhs_mode), dtype=np.int32)
     # In v3, `NIterations` is initialized to 0 and overwritten later when diagnostics
@@ -2156,7 +2177,7 @@ def write_sfincs_jax_output_h5(
         psi_hat_wish_in = _get_float(geom_params, "psiHat_wish", -1.0)
         psi_n_wish_in = _get_float(geom_params, "psiN_wish", 0.25)
         r_hat_wish_in = _get_float(geom_params, "rHat_wish", -1.0)
-        r_n_wish_in = _get_float(geom_params, "rN_wish", 0.5)
+        r_n_wish_in = effective_r_n_wish(geom_params=geom_params, default=0.5)
         psi_hat_wish, psi_n_wish, r_hat_wish, r_n_wish = _set_input_radial_coordinate_wish(
             input_radial_coordinate=input_radial_coordinate,
             psi_a_hat=float(data.get("psiAHat", 1.0)),
@@ -2167,7 +2188,7 @@ def write_sfincs_jax_output_h5(
             r_n_wish_in=r_n_wish_in,
         )
         emit(0, f" Selecting the flux surface to use based on rN_wish = {_fmt_fortran_e(r_n_wish)}")
-        eq_file = geom_params.get("EQUILIBRIUMFILE", None)
+        eq_file = effective_equilibrium_file(geom_params=geom_params)
         geom_scheme = int(np.asarray(data.get("geometryScheme", 0)).reshape(-1)[0])
         if eq_file is not None and geom_scheme in {11, 12}:
             try:
