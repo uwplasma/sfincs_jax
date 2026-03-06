@@ -243,6 +243,63 @@ def _rhsmode1_dense_krylov_allowed() -> bool:
     return True
 
 
+def _rhsmode1_constraint0_sparse_first(
+    *,
+    op: V3FullSystemOperator,
+    solve_method_kind: str,
+    sparse_precond_mode: str,
+    active_size: int,
+    sparse_max_size: int,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_SPARSE_FIRST", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if env not in {"1", "true", "yes", "on"} and jax.default_backend() == "cpu":
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if int(op.constraint_scheme) != 0 or op.fblock.fp is None:
+        return False
+    if solve_method_kind in {"dense", "dense_ksp"}:
+        return False
+    if sparse_precond_mode == "off":
+        return False
+    return int(active_size) <= int(sparse_max_size)
+
+
+def _rhsmode1_sparse_exact_lu_requested(
+    *,
+    op: V3FullSystemOperator,
+    solve_method_kind: str,
+    active_size: int,
+    sparse_max_size: int,
+    preconditioner_x: int,
+    use_dkes: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None:
+        return False
+    if solve_method_kind in {"dense", "dense_ksp"}:
+        return False
+    exact_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU_MAX", "").strip()
+    try:
+        exact_max = int(exact_max_env) if exact_max_env else (6000 if jax.default_backend() == "cpu" else 12000)
+    except ValueError:
+        exact_max = 6000 if jax.default_backend() == "cpu" else 12000
+    exact_max = max(0, min(int(exact_max), int(sparse_max_size)))
+    if int(active_size) > int(exact_max):
+        return False
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    # Honor full x-coupling requests from the original input, and strengthen
+    # accelerator DKES FP solves where dense fallback is unavailable.
+    return int(preconditioner_x) == 0 or (jax.default_backend() != "cpu" and bool(use_dkes))
+
+
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
     if distributed_axis is not None:
         with sharding_constraints(True):
@@ -451,6 +508,7 @@ def _build_sparse_ilu_from_matvec(
     build_jax_factors: bool,
     build_ilu: bool,
     store_dense: bool,
+    factorization: str = "ilu",
     emit: Callable[[int, str], None] | None = None,
 ) -> tuple[object, object, object | None, np.ndarray | None, np.ndarray | None, np.ndarray | None, bool]:
     cached = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
@@ -613,12 +671,15 @@ def _build_sparse_ilu_from_matvec(
             cached.l_unit_diag,
         )
 
+    factorization_use = str(factorization).strip().lower()
+    exact_lu = factorization_use == "lu"
+    log_tag = "sparse_lu" if exact_lu else "sparse_ilu"
     if emit is not None:
-        emit(1, f"sparse_ilu: assembling dense operator (n={n})")
+        emit(1, f"{log_tag}: assembling dense operator (n={n})")
     a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
     a_np_full = np.array(a_dense, dtype=np.float64, copy=True)
     max_abs = float(np.max(np.abs(a_np_full))) if a_np_full.size else 0.0
-    thresh0 = max(float(drop_tol), float(drop_rel) * max_abs)
+    thresh0 = 0.0 if exact_lu else max(float(drop_tol), float(drop_rel) * max_abs)
     reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_REG", "").strip()
     try:
         reg = float(reg_env) if reg_env else (1.0e-12 * max_abs)
@@ -633,7 +694,7 @@ def _build_sparse_ilu_from_matvec(
     attempts = max(1, int(attempts))
 
     import scipy.sparse as sp  # noqa: PLC0415
-    from scipy.sparse.linalg import spilu  # noqa: PLC0415
+    from scipy.sparse.linalg import spilu, splu  # noqa: PLC0415
 
     a_csr_full = sp.csr_matrix(a_np_full)
     a_csr_full.eliminate_zeros()
@@ -664,16 +725,19 @@ def _build_sparse_ilu_from_matvec(
         a_csr_drop.eliminate_zeros()
         if emit is not None:
             nnz = int(a_csr_drop.nnz)
-            emit(1, f"sparse_ilu: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
+            emit(1, f"{log_tag}: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
         if not build_ilu:
             break
         try:
-            ilu = spilu(
-                a_csr_drop.tocsc(),
-                drop_tol=float(ilu_drop_tol_eff),
-                fill_factor=float(fill_factor_eff),
-                permc_spec="COLAMD",
-            )
+            if exact_lu:
+                ilu = splu(a_csr_drop.tocsc(), permc_spec="COLAMD")
+            else:
+                ilu = spilu(
+                    a_csr_drop.tocsc(),
+                    drop_tol=float(ilu_drop_tol_eff),
+                    fill_factor=float(fill_factor_eff),
+                    permc_spec="COLAMD",
+                )
             last_exc = None
             break
         except Exception as exc:  # noqa: BLE001
@@ -682,11 +746,16 @@ def _build_sparse_ilu_from_matvec(
             if emit is not None:
                 emit(
                     1,
-                    "sparse_ilu: spilu failed "
+                    f"{log_tag}: factorization failed "
                     f"(attempt={attempt + 1}/{int(attempts)} "
                     f"thresh={thresh:.3e} drop_tol={ilu_drop_tol_eff:.1e} fill={fill_factor_eff:.1f}) "
                     f"({type(exc).__name__}: {exc})",
                 )
+            if exact_lu:
+                if ("singular" in msg) or ("pivot" in msg) or ("dpivot" in msg) or ("zero" in msg):
+                    reg = max(float(reg), max(1.0e-12, 1.0e-10 * max_abs))
+                    continue
+                raise
             if ("singular" in msg) or ("pivot" in msg) or ("dpivot" in msg) or ("zero" in msg):
                 # Retry with a denser sparsification and stronger (less dropping) ILU.
                 ilu_drop_tol_eff = max(0.0, float(ilu_drop_tol_eff) * 0.1)
@@ -697,7 +766,9 @@ def _build_sparse_ilu_from_matvec(
         a_csr_drop = sp.csr_matrix(a_np_full)
         a_csr_drop.eliminate_zeros()
     if build_ilu and ilu is None and last_exc is not None:
-        raise RuntimeError(f"sparse_ilu: spilu failed after {int(attempts)} attempts ({type(last_exc).__name__}: {last_exc})")
+        raise RuntimeError(
+            f"{log_tag}: factorization failed after {int(attempts)} attempts ({type(last_exc).__name__}: {last_exc})"
+        )
     a_dense = a_np_full if store_dense else None
     l_dense = None
     u_dense = None
@@ -9232,6 +9303,14 @@ def solve_v3_full_system_linear_gmres(
         sparse_jax_reg = float(sparse_jax_reg_env) if sparse_jax_reg_env else 1e-10
     except ValueError:
         sparse_jax_reg = 1e-10
+    sparse_exact_lu = _rhsmode1_sparse_exact_lu_requested(
+        op=op,
+        solve_method_kind=solve_method_kind,
+        active_size=int(active_size),
+        sparse_max_size=int(sparse_max_size),
+        preconditioner_x=int(preconditioner_x),
+        use_dkes=bool(use_dkes),
+    )
     gpu_dkes_sparse_shortcut = bool(
         rhs1_precond_env_user in {"", "auto"}
         and rhs1_bicgstab_env_user in {"", "auto"}
@@ -9244,6 +9323,13 @@ def solve_v3_full_system_linear_gmres(
         and use_dkes
         and sparse_precond_mode != "off"
         and int(active_size) <= int(sparse_max_size)
+    )
+    cs0_sparse_first = _rhsmode1_constraint0_sparse_first(
+        op=op,
+        solve_method_kind=solve_method_kind,
+        sparse_precond_mode=sparse_precond_mode,
+        active_size=int(active_size),
+        sparse_max_size=int(sparse_max_size),
     )
     if gpu_dkes_sparse_shortcut:
         rhs1_precond_kind = None
@@ -10300,6 +10386,7 @@ def solve_v3_full_system_linear_gmres(
         if (
             probe_enabled
             and (not probe_shortcut)
+            and (not cs0_sparse_first)
             and preconditioner_reduced is not None
             and solve_method_kind not in {"dense", "dense_ksp"}
         ):
@@ -10619,7 +10706,12 @@ def solve_v3_full_system_linear_gmres(
                         "solve_v3_full_system_linear_gmres: PAS stage2 skipped "
                         f"(residual ratio={res_ratio:.3e} >= {float(pas_stage2_skip_ratio):.1e})",
                     )
-        if (not early_dense_shortcut) and dense_shortcut_ratio > 0 and res_ratio >= dense_shortcut_ratio:
+        if (
+            (not early_dense_shortcut)
+            and (not cs0_sparse_first)
+            and dense_shortcut_ratio > 0
+            and res_ratio >= dense_shortcut_ratio
+        ):
             dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
             dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
             try:
@@ -10851,6 +10943,15 @@ def solve_v3_full_system_linear_gmres(
         if pas_large_bicgstab_fastpath and strong_precond_env == "":
             strong_precond_disabled = True
             strong_precond_auto = False
+        if cs0_sparse_first and strong_precond_env in {"", "auto"}:
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: constraintScheme=0 sparse-first "
+                    "auto mode -> defer strong preconditioner until after sparse ILU",
+                )
         if _pas_auto_skip_strong_retry(
             has_pas=op.fblock.pas is not None,
             strong_precond_env=strong_precond_env,
@@ -11385,7 +11486,7 @@ def solve_v3_full_system_linear_gmres(
                     residual_norm_true = float("inf")
                 res_ratio = float(residual_norm_true) / max(float(target_reduced), 1e-300)
                 dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
-                force_dense_cs0 = int(op.constraint_scheme) == 0
+                force_dense_cs0 = bool(int(op.constraint_scheme) == 0 and (not cs0_sparse_first))
                 if force_dense_cs0:
                     dense_fallback_limit = max(dense_fallback_limit, dense_fallback_max)
                 dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
@@ -11505,7 +11606,7 @@ def solve_v3_full_system_linear_gmres(
                     _mark("rhs1_sparse_precond_build_start")
                     cache_key = _rhsmode1_sparse_cache_key(
                         op,
-                        kind="sparse_ilu",
+                        kind="sparse_lu" if sparse_exact_lu else "sparse_ilu",
                         active_size=int(active_size),
                         use_active_dof_mode=True,
                         use_pas_projection=use_pas_projection,
@@ -11529,6 +11630,7 @@ def solve_v3_full_system_linear_gmres(
                         build_jax_factors=bool(use_implicit),
                         build_ilu=True,
                         store_dense=store_dense,
+                        factorization="lu" if sparse_exact_lu else "ilu",
                         emit=emit,
                     )
                     dense_matrix_cache = a_dense_cache
@@ -11595,11 +11697,19 @@ def solve_v3_full_system_linear_gmres(
 
                         if precond_sparse is None:
                             if emit is not None:
-                                emit(1, "sparse_ilu: implicit preconditioner factors unavailable; skipping")
+                                emit(
+                                    1,
+                                    f"{'sparse_lu' if sparse_exact_lu else 'sparse_ilu'}: "
+                                    "implicit preconditioner factors unavailable; skipping",
+                                )
                             res_sparse = None
                         else:
                             if emit is not None:
-                                emit(0, "solve_v3_full_system_linear_gmres: sparse ILU (implicit) fallback")
+                                emit(
+                                    0,
+                                    "solve_v3_full_system_linear_gmres: "
+                                    f"{'sparse LU' if sparse_exact_lu else 'sparse ILU'} (implicit) fallback",
+                                )
                             res_sparse = _solve_linear(
                                 matvec_fn=mv_reduced,
                                 b_vec=rhs_reduced,
@@ -11630,7 +11740,11 @@ def solve_v3_full_system_linear_gmres(
                             _mv_sparse = mv_reduced
 
                         if emit is not None:
-                            emit(0, "solve_v3_full_system_linear_gmres: sparse ILU GMRES fallback")
+                            emit(
+                                0,
+                                "solve_v3_full_system_linear_gmres: "
+                                f"{'sparse LU' if sparse_exact_lu else 'sparse ILU'} GMRES fallback",
+                            )
                         x_np, rn_sparse, _history = gmres_solve_with_history_scipy(
                             matvec=_mv_sparse,
                             b=rhs_reduced,
@@ -11658,7 +11772,11 @@ def solve_v3_full_system_linear_gmres(
                         ksp_solver_kind = _solver_kind("incremental")[0]
                 except Exception as exc:  # noqa: BLE001
                     if emit is not None:
-                        emit(1, f"sparse_ilu: failed ({type(exc).__name__}: {exc})")
+                        emit(
+                            1,
+                            f"{'sparse_lu' if sparse_exact_lu else 'sparse_ilu'}: "
+                            f"failed ({type(exc).__name__}: {exc})",
+                        )
         residual_norm_check = float(res_reduced.residual_norm)
         residual_norm_true = residual_norm_check
         if ksp_precond is not None and ksp_precond_side == "left":
@@ -11711,7 +11829,7 @@ def solve_v3_full_system_linear_gmres(
         if fp_force_dense:
             dense_fallback_trigger = True
             dense_fallback_limit = max(dense_fallback_limit, dense_fallback_max)
-        force_dense_cs0 = int(op.constraint_scheme) == 0
+        force_dense_cs0 = bool(int(op.constraint_scheme) == 0 and (not cs0_sparse_first))
         if force_dense_cs0:
             # constraintScheme=0 systems are singular; keep the dense fallback
             # available even when the residual ratio is huge.
@@ -12759,6 +12877,22 @@ def solve_v3_full_system_linear_gmres(
         strong_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND", "").strip().lower()
         strong_precond_disabled = strong_precond_env in {"0", "false", "no", "off"}
         strong_precond_auto = strong_precond_env == "auto"
+        cs0_sparse_first = _rhsmode1_constraint0_sparse_first(
+            op=op,
+            solve_method_kind=solve_method_kind,
+            sparse_precond_mode=sparse_precond_mode,
+            active_size=int(active_size),
+            sparse_max_size=int(sparse_max_size),
+        )
+        if cs0_sparse_first and strong_precond_env in {"", "auto"}:
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: constraintScheme=0 sparse-first "
+                    "auto mode -> defer strong preconditioner until after sparse ILU",
+                )
         if (
             strong_precond_env == ""
             and int(op.constraint_scheme) == 2
@@ -13162,7 +13296,7 @@ def solve_v3_full_system_linear_gmres(
         )
         if fp_force_dense:
             dense_fallback_trigger = True
-        force_dense_cs0 = int(op.constraint_scheme) == 0
+        force_dense_cs0 = bool(int(op.constraint_scheme) == 0 and (not cs0_sparse_first))
         if force_dense_cs0:
             dense_fallback_trigger = True
         if (

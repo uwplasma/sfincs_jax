@@ -381,7 +381,12 @@ def dense_solve_from_matrix(*, a: jnp.ndarray, b: jnp.ndarray) -> tuple[jnp.ndar
     force_lstsq = singular_mode == "lstsq"
 
     def _solve_lstsq(_):
-        return jnp.linalg.lstsq(a, b2, rcond=None)[0]
+        gram = a.T @ a
+        rhs = a.T @ b2
+        diag = jnp.diag(gram)
+        scale = jnp.maximum(jnp.max(jnp.abs(diag)), jnp.asarray(1.0, dtype=a.dtype))
+        reg_lstsq = jnp.asarray(1.0e-12, dtype=a.dtype) * scale
+        return jnp.linalg.solve(gram + reg_lstsq * eye, rhs)
 
     if force_reg:
         x2 = jnp.linalg.solve(a + reg * eye, b2)

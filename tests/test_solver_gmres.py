@@ -51,6 +51,25 @@ def test_dense_solve_from_matrix_supports_multiple_rhs() -> None:
     assert float(np.max(np.asarray(rn))) < 1e-9
 
 
+def test_dense_solve_from_matrix_regularizes_singular_system() -> None:
+    a = np.array(
+        [
+            [2.0, -1.0, 0.0],
+            [4.0, -2.0, 0.0],
+            [0.0, 0.0, 3.0],
+        ],
+        dtype=np.float64,
+    )
+    b = np.array([1.0, 2.0, -3.0], dtype=np.float64)
+
+    x, rn = dense_solve_from_matrix(a=jnp.asarray(a), b=jnp.asarray(b))
+    x_np = np.asarray(x)
+
+    assert np.all(np.isfinite(x_np))
+    np.testing.assert_allclose(a @ x_np, b, rtol=1e-8, atol=1e-8)
+    assert float(rn) < 1e-8
+
+
 def test_dense_krylov_solve_from_matrix_matches_numpy() -> None:
     rng = np.random.default_rng(5)
     n = 20
