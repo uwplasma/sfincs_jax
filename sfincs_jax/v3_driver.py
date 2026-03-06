@@ -410,6 +410,46 @@ def _rhsmode1_large_cpu_sparse_rescue_first(*, large_cpu_sparse_rescue: bool, st
     return bool(large_cpu_sparse_rescue) and str(strong_precond_env).strip().lower() in {"", "auto"}
 
 
+def _transport_sparse_direct_rescue_allowed(
+    *,
+    op: V3FullSystemOperator,
+    size: int,
+    residual_norm: float,
+    target: float,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if int(op.rhs_mode) not in {2, 3} or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None:
+        return False
+    rescue_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_MAX", "").strip()
+    rescue_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_RATIO", "").strip()
+    try:
+        rescue_max = int(rescue_max_env) if rescue_max_env else 30000
+    except ValueError:
+        rescue_max = 30000
+    try:
+        rescue_ratio = float(rescue_ratio_env) if rescue_ratio_env else 1.0e2
+    except ValueError:
+        rescue_ratio = 1.0e2
+    if int(size) > max(1, int(rescue_max)):
+        return False
+    if float(target) <= 0.0:
+        return True
+    return float(residual_norm) > float(target) * float(rescue_ratio)
+
+
+def _transport_sparse_direct_rescue_first(*, sparse_direct_rescue: bool) -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return bool(sparse_direct_rescue)
+
+
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
     if distributed_axis is not None:
         with sharding_constraints(True):
@@ -16450,6 +16490,40 @@ def solve_v3_transport_matrix_linear_gmres(
         cache[key] = solve
         return solve
 
+    def _transport_sparse_direct_solve(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        n: int,
+        dtype: jnp.dtype,
+        cache_key: tuple[object, ...],
+    ) -> GMRESSolveResult:
+        a_csr_full, _a_csr_drop, ilu, _a_dense, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
+            matvec=matvec_fn,
+            n=int(n),
+            dtype=dtype,
+            cache_key=cache_key,
+            drop_tol=transport_sparse_drop_tol,
+            drop_rel=transport_sparse_drop_rel,
+            ilu_drop_tol=0.0,
+            fill_factor=1.0,
+            build_dense_factors=False,
+            build_jax_factors=False,
+            build_ilu=True,
+            store_dense=False,
+            factorization="lu",
+            emit=emit,
+        )
+        if ilu is None:
+            raise RuntimeError("transport sparse_lu: factors unavailable")
+        rhs_np = np.asarray(b_vec, dtype=np.float64).reshape((-1,))
+        x_np = np.asarray(ilu.solve(rhs_np), dtype=np.float64)
+        residual_norm = np.linalg.norm(rhs_np - a_csr_full @ x_np)
+        return GMRESSolveResult(
+            x=jnp.asarray(x_np, dtype=jnp.float64),
+            residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
+        )
+
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
@@ -17165,7 +17239,22 @@ def solve_v3_transport_matrix_linear_gmres(
                     solver_kind_used = "gmres"
                     solve_method_used = "incremental"
                     restart_used = gmres_restart
-                if _needs_retry(res_reduced, target_rhs) and preconditioner_use is not None:
+                sparse_direct_rescue = _transport_sparse_direct_rescue_allowed(
+                    op=op0,
+                    size=int(active_size),
+                    residual_norm=float(res_reduced.residual_norm),
+                    target=float(target_rhs),
+                )
+                sparse_direct_rescue_first = _transport_sparse_direct_rescue_first(
+                    sparse_direct_rescue=sparse_direct_rescue,
+                )
+                if sparse_direct_rescue_first and emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_transport_matrix_linear_gmres: sparse LU rescue-first "
+                        "auto mode -> defer transport retry branches",
+                    )
+                if _needs_retry(res_reduced, target_rhs) and preconditioner_use is not None and (not sparse_direct_rescue_first):
                     if emit is not None:
                         emit(
                             0,
@@ -17188,7 +17277,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         res_reduced = res_retry
                         preconditioner_use = None
                         preconditioner_used = None
-                if _needs_retry(res_reduced, target_rhs):
+                if _needs_retry(res_reduced, target_rhs) and (not sparse_direct_rescue_first):
                     strong_precond = _get_strong_preconditioner(True)
                     if strong_precond is not None and strong_precond is not preconditioner_use:
                         if emit is not None:
@@ -17216,6 +17305,35 @@ def solve_v3_transport_matrix_linear_gmres(
                             solver_kind_used = "gmres"
                             solve_method_used = "incremental"
                             restart_used = gmres_restart
+                if _needs_retry(res_reduced, target_rhs) and sparse_direct_rescue:
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: sparse LU direct rescue "
+                            f"(size={int(active_size)} residual={float(res_reduced.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    try:
+                        sig = _operator_signature_cached(op_matvec)
+                        res_sparse = _transport_sparse_direct_solve(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            n=int(active_size),
+                            dtype=rhs_reduced.dtype,
+                            cache_key=("transport_sparse_lu", sig, int(active_size), "active"),
+                        )
+                        if _residual_value(res_sparse) < _residual_value(res_reduced):
+                            res_reduced = res_sparse
+                            preconditioner_use = None
+                            preconditioner_used = None
+                            solver_kind_used = "sparse_lu"
+                            solve_method_used = "sparse_lu"
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: sparse LU direct rescue failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
                 if _needs_retry(res_reduced, target_rhs) and dense_retry_max > 0 and int(active_size) <= int(dense_retry_max):
                     if emit is not None:
                         emit(
@@ -17461,7 +17579,22 @@ def solve_v3_transport_matrix_linear_gmres(
                     solver_kind_used = "gmres"
                     solve_method_used = "incremental"
                     restart_used = gmres_restart
-                if _needs_retry(res, target_rhs) and preconditioner_use is not None:
+                sparse_direct_rescue = _transport_sparse_direct_rescue_allowed(
+                    op=op0,
+                    size=int(op0.total_size),
+                    residual_norm=float(res.residual_norm),
+                    target=float(target_rhs),
+                )
+                sparse_direct_rescue_first = _transport_sparse_direct_rescue_first(
+                    sparse_direct_rescue=sparse_direct_rescue,
+                )
+                if sparse_direct_rescue_first and emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_transport_matrix_linear_gmres: sparse LU rescue-first "
+                        "auto mode -> defer transport retry branches",
+                    )
+                if _needs_retry(res, target_rhs) and preconditioner_use is not None and (not sparse_direct_rescue_first):
                     if emit is not None:
                         emit(
                             0,
@@ -17485,7 +17618,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         residual_vec = residual_retry
                         preconditioner_use = None
                         preconditioner_used = None
-                if _needs_retry(res, target_rhs):
+                if _needs_retry(res, target_rhs) and (not sparse_direct_rescue_first):
                     strong_precond = _get_strong_preconditioner(False)
                     if strong_precond is not None and strong_precond is not preconditioner_use:
                         if emit is not None:
@@ -17514,6 +17647,36 @@ def solve_v3_transport_matrix_linear_gmres(
                             solver_kind_used = "gmres"
                             solve_method_used = "incremental"
                             restart_used = gmres_restart
+                if _needs_retry(res, target_rhs) and sparse_direct_rescue:
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_transport_matrix_linear_gmres: sparse LU direct rescue "
+                            f"(size={int(op0.total_size)} residual={float(res.residual_norm):.3e} > target={target_rhs:.3e})",
+                        )
+                    try:
+                        sig = _operator_signature_cached(op_matvec)
+                        res_sparse = _transport_sparse_direct_solve(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            n=int(op0.total_size),
+                            dtype=rhs.dtype,
+                            cache_key=("transport_sparse_lu", sig, int(op0.total_size), "full"),
+                        )
+                        if _residual_value(res_sparse) < _residual_value(res):
+                            res = res_sparse
+                            residual_vec = None
+                            preconditioner_use = None
+                            preconditioner_used = None
+                            solver_kind_used = "sparse_lu"
+                            solve_method_used = "sparse_lu"
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: sparse LU direct rescue failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
                 if _needs_retry(res, target_rhs) and dense_retry_max > 0 and int(op0.total_size) <= int(dense_retry_max):
                     if emit is not None:
                         emit(
