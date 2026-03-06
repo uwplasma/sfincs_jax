@@ -2337,6 +2337,15 @@ def write_sfincs_jax_output_h5(
         solve_method_env = os.environ.get("SFINCS_JAX_RHSMODE1_SOLVE_METHOD", "").strip().lower()
         force_krylov_env = os.environ.get("SFINCS_JAX_RHSMODE1_FORCE_KRYLOV", "").strip().lower()
         force_krylov = force_krylov_env in {"1", "true", "yes", "on"}
+        dense_auto_ok = True
+        dense_auto_backend = "unknown"
+        try:
+            import jax
+
+            dense_auto_backend = jax.default_backend()
+            dense_auto_ok = dense_auto_backend == "cpu"
+        except Exception:  # noqa: BLE001
+            dense_auto_ok = True
         if solve_method_env in {"auto", "bicgstab", "dense", "dense_row_scaled", "dense_ksp", "incremental", "batched"}:
             solve_method = solve_method_env
             if emit is not None:
@@ -2346,6 +2355,7 @@ def write_sfincs_jax_output_h5(
             and (not include_phi1)
             and active_total_size <= dense_fp_cutoff
             and (not force_krylov)
+            and dense_auto_ok
         ):
             solve_method = "dense"
             if emit is not None:
@@ -2353,6 +2363,19 @@ def write_sfincs_jax_output_h5(
                     1,
                     "write_sfincs_jax_output_h5: FP RHSMode=1 small system -> using dense solve",
                 )
+        elif (
+            op0.fblock.fp is not None
+            and (not include_phi1)
+            and active_total_size <= dense_fp_cutoff
+            and (not force_krylov)
+            and (not dense_auto_ok)
+            and emit is not None
+        ):
+            emit(
+                1,
+                "write_sfincs_jax_output_h5: FP RHSMode=1 small system -> skipping dense auto mode on "
+                f"backend={dense_auto_backend}; falling through to Krylov policy",
+            )
         elif op0.fblock.fp is not None and (not include_phi1):
             epar_val = phys_params.get("EPARALLELHAT", phys_params.get("EParallelHat", None))
             try:
@@ -2381,14 +2404,21 @@ def write_sfincs_jax_output_h5(
         elif include_phi1 and (not include_phi1_in_kinetic) and (quasineutrality_option != 1):
             # For includePhi1 + linear kinetic equation runs, use a dense solve for
             # small systems to preserve fixture parity, otherwise fall back to GMRES.
-            if active_total_size <= dense_active_cutoff:
+            if active_total_size <= dense_active_cutoff and dense_auto_ok:
                 solve_method = "dense"
                 if emit is not None:
                     emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using dense solve")
             else:
                 solve_method = "incremental"
                 if emit is not None:
-                    emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
+                    if active_total_size <= dense_active_cutoff and not dense_auto_ok:
+                        emit(
+                            1,
+                            "write_sfincs_jax_output_h5: includePhi1 linear mode -> skipping dense auto mode on "
+                            f"backend={dense_auto_backend}; using incremental GMRES",
+                        )
+                    else:
+                        emit(1, "write_sfincs_jax_output_h5: includePhi1 linear mode -> using incremental GMRES")
         elif force_krylov:
             solve_method = "incremental"
             if emit is not None:

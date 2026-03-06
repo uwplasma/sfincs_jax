@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 from sfincs_jax.io import write_sfincs_jax_output_h5
+import sfincs_jax.v3_driver as v3_driver
 
 
 def _patch_block_value(block: str, key: str, value: str) -> str:
@@ -148,3 +149,39 @@ def test_schur_auto_min_for_pas(tmp_path: Path, monkeypatch) -> None:
 
     joined = "\n".join(logs)
     assert "building RHSMode=1 preconditioner=schur" in joined
+
+
+def test_pas_auto_strong_retry_skips_after_strong_base(tmp_path: Path, monkeypatch) -> None:
+    """PAS auto strong retry should skip after already-strong base preconditioners."""
+    assert v3_driver._pas_auto_skip_strong_retry(
+        has_pas=True,
+        strong_precond_env="auto",
+        rhs1_precond_kind="schur",
+        residual_norm=5.0,
+        target=1.0,
+        ratio=10.0,
+    )
+    assert not v3_driver._pas_auto_skip_strong_retry(
+        has_pas=True,
+        strong_precond_env="auto",
+        rhs1_precond_kind="schur",
+        residual_norm=15.0,
+        target=1.0,
+        ratio=10.0,
+    )
+    assert not v3_driver._pas_auto_skip_strong_retry(
+        has_pas=True,
+        strong_precond_env="auto",
+        rhs1_precond_kind="theta_line",
+        residual_norm=5.0,
+        target=1.0,
+        ratio=10.0,
+    )
+    assert not v3_driver._pas_auto_skip_strong_retry(
+        has_pas=False,
+        strong_precond_env="auto",
+        rhs1_precond_kind="schur",
+        residual_norm=5.0,
+        target=1.0,
+        ratio=10.0,
+    )

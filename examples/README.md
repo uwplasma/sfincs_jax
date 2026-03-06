@@ -53,3 +53,62 @@ Common entry points:
 - Transport matrices with Krylov recycling: `examples/transport/transport_matrix_recycle_demo.py`
 - Differentiate a residual norm w.r.t. `nu_n`: `examples/autodiff/autodiff_gradient_nu_n_residual.py`
 - Implicit differentiation through BiCGStab: `examples/autodiff/implicit_diff_through_gmres_solve_scheme5.py --solver bicgstab`
+
+### Scaled upstream example sweep
+
+The vendored `examples/sfincs_examples/` inputs currently match the original
+Fortran v3 example inputs exactly. For reproducible benchmarking, use the
+original upstream tree as the resolution reference and set `--scale-factor`
+relative to that baseline. `1.0` means the original v3 example resolution, and
+values below `1.0` reduce `NTHETA/NZETA/NX/NXI` consistently from that upstream
+reference.
+
+To compare Fortran vs `sfincs_jax` runtime, memory, output parity, and print
+parity at the original upstream resolution, use:
+
+```bash
+cd /Users/rogeriojorge/local/tests/sfincs_jax
+python scripts/run_scaled_example_suite.py \
+  --examples-root examples/sfincs_examples \
+  --resolution-reference-root /Users/rogeriojorge/local/tests/sfincs_original/fortran/version3/examples \
+  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --out-root tests/scaled_example_suite_ref_cpu_local \
+  --timeout-s 240 \
+  --max-attempts 2 \
+  --scale-factor 1.0
+```
+
+The script keeps the runnable input text from `--examples-root`, rewrites only
+`NTHETA/NZETA/NX/NXI` from the matching case in
+`--resolution-reference-root`, includes
+`examples/additional_examples/input.namelist`, and writes per-case outputs plus
+`suite_report.json`, `suite_report_strict.json`, `suite_status*.rst`,
+`run_manifest.json`, and `summary.md` into the chosen `--out-root`.
+
+To separate reference generation from JAX benchmarking, first create a stable
+CPU reference root, then benchmark CPU or GPU JAX runs against that fixed
+reference without re-running Fortran:
+
+```bash
+cd /Users/rogeriojorge/local/tests/sfincs_jax
+python scripts/run_scaled_example_suite.py \
+  --examples-root examples/sfincs_examples \
+  --resolution-reference-root /Users/rogeriojorge/local/tests/sfincs_original/fortran/version3/examples \
+  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --out-root tests/gating_reference_cpu \
+  --pattern '^(tokamak_1species_FPCollisions_noEr|inductiveE_noEr)$' \
+  --scale-factor 1.0 \
+  --max-attempts 1
+
+python scripts/run_scaled_example_suite.py \
+  --examples-root examples/sfincs_examples \
+  --resolution-reference-root /Users/rogeriojorge/local/tests/sfincs_original/fortran/version3/examples \
+  --reference-results-root tests/gating_reference_cpu \
+  --out-root tests/gating_cpu_from_ref \
+  --pattern '^(tokamak_1species_FPCollisions_noEr|inductiveE_noEr)$' \
+  --scale-factor 1.0 \
+  --max-attempts 1
+```
+
+This keeps the Fortran reference H5/log files fixed across lanes, which is
+useful when comparing local CPU and remote GPU runs against the same baseline.
