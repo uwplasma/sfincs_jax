@@ -122,6 +122,13 @@ def test_canonicalize_fortran_v3_input_text_rewrites_legacy_flowcontrol() -> Non
     assert "&export_f" in rewritten
 
 
+def test_canonicalize_fortran_v3_input_text_preserves_trailing_newline_for_v3_input() -> None:
+    text = "&general\n  RHSMode = 1\n/\n&export_f\n/\n"
+    rewritten = _canonicalize_fortran_v3_input_text(text)
+    assert rewritten == text
+    assert rewritten.endswith("\n")
+
+
 def test_run_fortran_direct_canonicalizes_legacy_flowcontrol_for_fortran_v3(
     tmp_path: Path, monkeypatch
 ) -> None:

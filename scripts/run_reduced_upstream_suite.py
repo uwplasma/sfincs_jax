@@ -932,7 +932,7 @@ def _canonicalize_fortran_v3_input_text(text: str) -> str:
             updated += "\n"
         updated += "&export_f\n/\n"
     if text.endswith("\n"):
-        return updated
+        return updated + "\n"
     return updated
 
 
