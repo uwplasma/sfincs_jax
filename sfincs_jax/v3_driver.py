@@ -9230,6 +9230,28 @@ def solve_v3_full_system_linear_gmres(
         sparse_jax_reg = float(sparse_jax_reg_env) if sparse_jax_reg_env else 1e-10
     except ValueError:
         sparse_jax_reg = 1e-10
+    gpu_dkes_sparse_shortcut = bool(
+        rhs1_precond_env in {"", "auto"}
+        and solve_method_kind not in {"dense", "dense_ksp"}
+        and jax.default_backend() != "cpu"
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and op.fblock.fp is not None
+        and op.fblock.pas is None
+        and use_dkes
+        and sparse_precond_mode != "off"
+        and int(active_size) <= int(sparse_max_size)
+    )
+    if gpu_dkes_sparse_shortcut:
+        rhs1_precond_kind = None
+        rhs1_precond_enabled = False
+        rhs1_bicgstab_kind = None
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_full_system_linear_gmres: GPU DKES auto mode -> sparse ILU shortcut "
+                f"(size={int(active_size)})",
+            )
 
     def _solver_kind(method: str) -> tuple[str, str]:
         method_l = str(method).strip().lower()
@@ -10406,19 +10428,25 @@ def solve_v3_full_system_linear_gmres(
             # many matvecs on a weak/expensive preconditioner. Instead, jump directly
             # to the sparse ILU branch.
             skip_primary_krylov = (
-                (op.fblock.fp is not None)
-                and bool(early_dense_shortcut)
-                and (not bool(probe_shortcut))
-                and sparse_precond_mode != "off"
-                and int(active_size) <= int(sparse_max_size)
-                and solve_method_kind not in {"dense", "dense_ksp"}
+                (
+                    (op.fblock.fp is not None)
+                    and bool(early_dense_shortcut)
+                    and (not bool(probe_shortcut))
+                    and sparse_precond_mode != "off"
+                    and int(active_size) <= int(sparse_max_size)
+                    and solve_method_kind not in {"dense", "dense_ksp"}
+                )
+                or gpu_dkes_sparse_shortcut
             )
             if skip_primary_krylov:
                 if emit is not None:
+                    reason = "probe ratio huge, dense disabled"
+                    if gpu_dkes_sparse_shortcut:
+                        reason = "GPU DKES auto sparse shortcut"
                     emit(
                         0,
                         "solve_v3_full_system_linear_gmres: skipping initial Krylov "
-                        "(probe ratio huge, dense disabled) -> sparse ILU",
+                        f"({reason}) -> sparse ILU",
                     )
                 if x0_reduced is None:
                     x0_reduced = jnp.zeros_like(rhs_reduced)
@@ -10664,6 +10692,7 @@ def solve_v3_full_system_linear_gmres(
             and stage2_enabled
             and stage2_trigger
             and not early_dense_shortcut
+            and not gpu_dkes_sparse_shortcut
             and t.elapsed_s() < stage2_time_cap_s
         ):
             if preconditioner_reduced is None and rhs1_precond_enabled:
