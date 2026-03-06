@@ -366,6 +366,7 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 ### 15.1 Always-on loop
 - [ ] Use the original Fortran v3 example inputs as the resolution reference for example-suite benchmarking; do not use blind `2x` enlargement as the default benchmark mode.
 - [ ] Benchmark CPU/GPU JAX lanes against a fixed CPU-generated Fortran reference root when machine-local Fortran outputs are not proven deterministic.
+- [ ] For `constraintScheme=0` reference generation, force a stable Fortran Krylov solve (`PETSC_OPTIONS='-ksp_type gmres -pc_type none'`) unless an explicit PETSc override is requested.
 - [ ] Pick top 1-2 offenders from latest report (runtime and memory separately).
 - [ ] Profile (`SFINCS_JAX_PROFILE=1`) and isolate dominant phase.
 - [ ] Implement smallest high-ROI change.
@@ -399,6 +400,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-06
+- Scope: Stabilize `constraintScheme=0` reference generation by forcing a reproducible Fortran Krylov policy in the suite runner, add an explicit left-preconditioned SciPy GMRES helper for solver debugging, and disable default RHSMode=1 dense shortcut/fallback paths for `constraintScheme=0` so the JAX lane stays on the physically correct sparse branch.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/run_reduced_upstream_suite.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/solver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_rhs1_sparse_first_heuristic.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_solver_gmres.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_fortran_reference_solver_options.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile scripts/run_reduced_upstream_suite.py sfincs_jax/solver.py sfincs_jax/v3_driver.py`; `pytest -q tests/test_solver_gmres.py tests/test_rhs1_sparse_first_heuristic.py tests/test_fortran_reference_solver_options.py tests/test_scaled_example_suite_reference.py`; single-case stable reference compare in `/Users/rogeriojorge/local/tests/sfincs_jax/tests/gating_example_cpu_cs0_stable_ref_v3`.
+- Runtime/memory delta: `tokamak_1species_FPCollisions_noEr` now follows the stable sparse branch against the forced-Fortran reference instead of the incorrect dense gauge-drift branch; the remaining delta is down to a single `pressureAnisotropy` mismatch (`1/188` practical and strict) rather than the earlier large density/pressure gauge errors from the dense shortcut.
+- Remaining risks: `constraintScheme=0` still has a small residual branch difference in `pressureAnisotropy`; the full corrected CPU/GPU example suites have not yet been rerun from this new stable reference policy.
+- Next actions: commit this solver/reference change on `main`, rerun the corrected CPU gate and full original-resolution reference lane, then rerun the office GPU lane against that frozen CPU reference root before widening back to the full examples plus additional examples.
 
 ### 2026-03-06
 - Scope: Fix the GPU DKES sparse-shortcut trigger so it keys off the user-requested preconditioner setting rather than the later auto-mutated internal `rhs1_precond_env`, and confirm the office GPU log now skips the old `xblock_tz` plus stage-2 prefix.

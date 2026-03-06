@@ -64,6 +64,33 @@ def _rhs_mode_from_namelist(input_path: Path) -> int | None:
     return 1
 
 
+def _constraint_scheme_from_namelist(input_path: Path) -> int | None:
+    try:
+        nml = read_sfincs_input(input_path)
+    except Exception:  # noqa: BLE001
+        nml = None
+    if nml is not None:
+        for group_name in ("physicsParameters", "otherNumericalParameters", "resolutionParameters"):
+            group = nml.group(group_name)
+            for key in ("constraintScheme", "constraintscheme", "constraint_scheme"):
+                if key in group:
+                    try:
+                        return int(group[key])
+                    except (TypeError, ValueError):
+                        return None
+    try:
+        text = input_path.read_text(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.search(r"constraint\s*_?\s*scheme\s*=\s*([+-]?\d+)", text, flags=re.IGNORECASE)
+    if m is None:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
 def _sanitize_resolution(
     res: dict[str, int], *, current: dict[str, int] | None = None, rhs_mode: int | None = None
 ) -> dict[str, int]:
@@ -637,6 +664,18 @@ def _run_fortran_direct(
     cmd = [*time_prefix, *cmd]
     t0 = time.perf_counter()
     env = dict(os.environ)
+    constraint_scheme = _constraint_scheme_from_namelist(input_path)
+    stable_cs0_env = env.get("SFINCS_JAX_FORTRAN_CS0_STABLE_SOLVE", "").strip().lower()
+    stable_cs0_default = stable_cs0_env not in {"0", "false", "no", "off"}
+    if (
+        constraint_scheme == 0
+        and stable_cs0_default
+        and not env.get("PETSC_OPTIONS", "").strip()
+    ):
+        env["PETSC_OPTIONS"] = env.get(
+            "SFINCS_JAX_FORTRAN_CS0_PETSC_OPTIONS",
+            "-ksp_type gmres -pc_type none",
+        ).strip()
     returncode = _run_logged_subprocess(
         cmd=cmd,
         cwd=input_path.parent,

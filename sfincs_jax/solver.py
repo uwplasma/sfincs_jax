@@ -142,6 +142,69 @@ def gmres_solve_with_history_scipy(
     return x_np, rn, history
 
 
+def explicit_left_preconditioned_gmres_scipy(
+    *,
+    matvec,
+    b: jnp.ndarray,
+    preconditioner,
+    x0: jnp.ndarray | None = None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int = 50,
+    maxiter: int | None = None,
+) -> tuple[np.ndarray, float, float, list[float]]:
+    """Run SciPy GMRES on the explicit left-preconditioned system M^{-1} A x = M^{-1} b."""
+    b_np = np.array(b, dtype=np.float64, copy=True).reshape((-1,))
+    n = int(b_np.size)
+    x0_np = np.array(x0, dtype=np.float64, copy=True).reshape((-1,)) if x0 is not None else None
+    restart_use = _maybe_limit_restart(n, int(restart), np.dtype(np.float64))
+
+    def _mv(x_np: np.ndarray) -> np.ndarray:
+        return np.array(matvec(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64, copy=True)
+
+    def _prec(x_np: np.ndarray) -> np.ndarray:
+        return np.array(preconditioner(jnp.asarray(x_np, dtype=jnp.float64)), dtype=np.float64, copy=True)
+
+    rhs_pc = _prec(b_np)
+    rhs_pc_norm = float(np.linalg.norm(rhs_pc))
+    if np.isfinite(rhs_pc_norm) and rhs_pc_norm == 0.0:
+        x_zero = np.zeros_like(b_np)
+        rn_true = float(np.linalg.norm(b_np))
+        return x_zero, rn_true, 0.0, [0.0]
+
+    def _mv_pc(x_np: np.ndarray) -> np.ndarray:
+        return _prec(_mv(x_np))
+
+    a_pc = _LinearOperator((n, n), matvec=_mv_pc, dtype=np.float64)
+    history: list[float] = []
+
+    def _cb(arg):
+        if np.isscalar(arg):
+            history.append(float(arg))
+        else:
+            history.append(float(np.linalg.norm(arg)))
+
+    x_np, info = _scipy_gmres(
+        a_pc,
+        rhs_pc,
+        x0=x0_np,
+        rtol=float(tol),
+        atol=float(atol),
+        restart=int(restart_use),
+        maxiter=int(maxiter) if maxiter is not None else None,
+        M=None,
+        callback=_cb,
+        callback_type="pr_norm",
+    )
+    del info
+
+    res_true = b_np - _mv(x_np)
+    rn_true = float(np.linalg.norm(res_true))
+    res_pc = rhs_pc - _mv_pc(x_np)
+    rn_pc = float(np.linalg.norm(res_pc))
+    return x_np, rn_true, rn_pc, history
+
+
 def bicgstab_solve_with_history_scipy(
     *,
     matvec,

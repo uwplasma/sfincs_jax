@@ -38,6 +38,7 @@ from .solver import (
     gmres_solve_distributed,
     gmres_solve_with_residual_distributed,
     distributed_gmres_enabled,
+    explicit_left_preconditioned_gmres_scipy,
     gmres_solve_with_history_scipy,
 )
 from .implicit_solve import linear_custom_solve, linear_custom_solve_with_residual
@@ -265,6 +266,37 @@ def _rhsmode1_constraint0_sparse_first(
     if sparse_precond_mode == "off":
         return False
     return int(active_size) <= int(sparse_max_size)
+
+
+def _rhsmode1_constraint0_petsc_compat(
+    *,
+    op: V3FullSystemOperator,
+    solve_method_kind: str,
+    sparse_precond_mode: str,
+    active_size: int,
+    sparse_max_size: int,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT", "").strip().lower()
+    if env in {"", "0", "false", "no", "off"}:
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if int(op.constraint_scheme) != 0 or op.fblock.fp is None:
+        return False
+    if solve_method_kind in {"dense", "dense_ksp"}:
+        return False
+    if sparse_precond_mode == "off":
+        return False
+    if int(active_size) > int(sparse_max_size):
+        return False
+    return env in {"1", "true", "yes", "on"}
+
+
+def _rhsmode1_constraint0_dense_fallback_allowed(op: V3FullSystemOperator) -> bool:
+    if int(op.constraint_scheme) != 0:
+        return True
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_DENSE_FALLBACK", "").strip().lower()
+    return env in {"1", "true", "yes", "on"}
 
 
 def _rhsmode1_sparse_exact_lu_requested(
@@ -9331,6 +9363,24 @@ def solve_v3_full_system_linear_gmres(
         active_size=int(active_size),
         sparse_max_size=int(sparse_max_size),
     )
+    cs0_petsc_compat = _rhsmode1_constraint0_petsc_compat(
+        op=op,
+        solve_method_kind=solve_method_kind,
+        sparse_precond_mode=sparse_precond_mode,
+        active_size=int(active_size),
+        sparse_max_size=int(sparse_max_size),
+    )
+    cs0_dense_fallback_allowed = _rhsmode1_constraint0_dense_fallback_allowed(op)
+    if cs0_petsc_compat:
+        rhs1_precond_kind = None
+        rhs1_precond_enabled = False
+        rhs1_bicgstab_kind = None
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_full_system_linear_gmres: constraintScheme=0 PETSc-compat auto mode "
+                "-> dedicated sparse ILU path",
+            )
     if gpu_dkes_sparse_shortcut:
         rhs1_precond_kind = None
         rhs1_precond_enabled = False
@@ -10381,12 +10431,160 @@ def solve_v3_full_system_linear_gmres(
             except Exception as exc:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"sparse_operator: failed ({type(exc).__name__}: {exc})")
+        if cs0_petsc_compat and solve_method_kind not in {"dense", "dense_ksp"}:
+            try:
+                import scipy.sparse as sp  # noqa: PLC0415
+                from scipy.sparse.csgraph import reverse_cuthill_mckee  # noqa: PLC0415
+                from scipy.sparse.linalg import spilu  # noqa: PLC0415
+
+                compat_drop_env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT_DROP_TOL", "").strip()
+                compat_fill_env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT_FILL", "").strip()
+                compat_pivot_env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT_DIAG_PIVOT", "").strip()
+                compat_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT_RESTART", "").strip()
+                compat_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT_MAXITER", "").strip()
+                try:
+                    compat_drop_tol = float(compat_drop_env) if compat_drop_env else 1.0e-4
+                except ValueError:
+                    compat_drop_tol = 1.0e-4
+                try:
+                    compat_fill = float(compat_fill_env) if compat_fill_env else 10.0
+                except ValueError:
+                    compat_fill = 10.0
+                try:
+                    compat_diag_pivot = float(compat_pivot_env) if compat_pivot_env else 0.0
+                except ValueError:
+                    compat_diag_pivot = 0.0
+                try:
+                    compat_restart = int(compat_restart_env) if compat_restart_env else max(int(restart), 2000)
+                except ValueError:
+                    compat_restart = max(int(restart), 2000)
+                try:
+                    compat_maxiter = int(compat_maxiter_env) if compat_maxiter_env else max(int(maxiter or 1), 1)
+                except ValueError:
+                    compat_maxiter = max(int(maxiter or 1), 1)
+
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: constraintScheme=0 PETSc-compat sparse ILU solve "
+                        f"(size={int(active_size)} drop_tol={compat_drop_tol:.1e} fill={compat_fill:.1f})",
+                    )
+
+                a_dense_cs0 = assemble_dense_matrix_from_matvec(
+                    matvec=mv_reduced,
+                    n=int(active_size),
+                    dtype=rhs_reduced.dtype,
+                )
+                a_np_cs0 = np.asarray(a_dense_cs0, dtype=np.float64)
+                max_abs_cs0 = float(np.max(np.abs(a_np_cs0))) if a_np_cs0.size else 0.0
+                compat_drop_thresh = max(float(sparse_drop_tol), float(sparse_drop_rel) * max_abs_cs0)
+                if compat_drop_thresh > 0.0:
+                    a_np_cs0 = a_np_cs0.copy()
+                    a_np_cs0[np.abs(a_np_cs0) < compat_drop_thresh] = 0.0
+                a_csr_cs0 = sp.csr_matrix(a_np_cs0)
+                a_csr_cs0.eliminate_zeros()
+                compat_reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT_REG", "").strip()
+                max_abs_cs0 = float(np.max(np.abs(a_csr_cs0.data))) if int(a_csr_cs0.nnz) > 0 else 0.0
+                try:
+                    compat_reg = float(compat_reg_env) if compat_reg_env else (1.0e-12 * max_abs_cs0)
+                except ValueError:
+                    compat_reg = 1.0e-12 * max_abs_cs0
+                compat_reg = max(0.0, float(compat_reg))
+                perm = np.asarray(
+                    reverse_cuthill_mckee(a_csr_cs0, symmetric_mode=False),
+                    dtype=np.int32,
+                )
+                inv_perm = np.argsort(perm).astype(np.int32, copy=False)
+                a_perm = a_csr_cs0[perm][:, perm].tocsc()
+                if compat_reg != 0.0:
+                    diag_idx = np.arange(int(active_size), dtype=np.int32)
+                    a_perm = a_perm.copy()
+                    a_perm[diag_idx, diag_idx] = a_perm[diag_idx, diag_idx] + compat_reg
+                ilu_cs0 = spilu(
+                    a_perm,
+                    drop_tol=float(compat_drop_tol),
+                    fill_factor=float(compat_fill),
+                    permc_spec="NATURAL",
+                    diag_pivot_thresh=float(compat_diag_pivot),
+                )
+                rhs_perm = jnp.asarray(np.asarray(rhs_reduced, dtype=np.float64)[perm], dtype=jnp.float64)
+                x0_perm = None
+
+                def _mv_perm(v: jnp.ndarray) -> jnp.ndarray:
+                    x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                    return jnp.asarray(a_perm @ x_np, dtype=jnp.float64)
+
+                def _precond_perm(v: jnp.ndarray) -> jnp.ndarray:
+                    x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                    return jnp.asarray(ilu_cs0.solve(x_np), dtype=jnp.float64)
+
+                rhs_pc_perm_np = np.asarray(_precond_perm(rhs_perm), dtype=np.float64)
+                rhs_pc_norm = float(np.linalg.norm(rhs_pc_perm_np))
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: constraintScheme=0 PETSc-compat rhs_pc "
+                        f"norm={rhs_pc_norm:.3e} finite={bool(np.all(np.isfinite(rhs_pc_perm_np)))} "
+                        f"drop={compat_drop_thresh:.3e} reg={compat_reg:.3e} nnz={int(a_csr_cs0.nnz)}",
+                    )
+                rhs_perm_norm = float(np.linalg.norm(np.asarray(rhs_perm, dtype=np.float64)))
+                rhs_pc_zero_tol = max(float(atol), max(1.0, rhs_perm_norm) * float(tol))
+                if np.isfinite(rhs_pc_norm) and rhs_pc_norm <= rhs_pc_zero_tol:
+                    x_perm_np = np.zeros((int(active_size),), dtype=np.float64)
+                    rn_true_cs0 = rhs_perm_norm
+                    rn_pc_cs0 = rhs_pc_norm
+                else:
+                    x_perm_np, rn_true_cs0, rn_pc_cs0, _history = explicit_left_preconditioned_gmres_scipy(
+                        matvec=_mv_perm,
+                        b=rhs_perm,
+                        preconditioner=_precond_perm,
+                        x0=x0_perm,
+                        tol=tol,
+                        atol=atol,
+                        restart=min(int(active_size), max(1, int(compat_restart))),
+                        maxiter=max(1, int(compat_maxiter)),
+                    )
+                x_cs0_np = np.asarray(x_perm_np, dtype=np.float64)[inv_perm]
+                rhs_pc_np = rhs_pc_perm_np[inv_perm]
+
+                def _mv_cs0_pc_full(v: jnp.ndarray) -> jnp.ndarray:
+                    x_np = np.asarray(v, dtype=np.float64).reshape((-1,))
+                    y_perm = np.asarray(a_perm @ x_np[perm], dtype=np.float64)
+                    z_perm = ilu_cs0.solve(y_perm)
+                    return jnp.asarray(z_perm[inv_perm], dtype=jnp.float64)
+
+                res_reduced = GMRESSolveResult(
+                    x=jnp.asarray(x_cs0_np, dtype=jnp.float64),
+                    residual_norm=jnp.asarray(rn_pc_cs0, dtype=jnp.float64),
+                )
+                ksp_matvec = _mv_cs0_pc_full
+                ksp_b = jnp.asarray(rhs_pc_np, dtype=jnp.float64)
+                ksp_precond = None
+                ksp_x0 = None if x0_reduced is None else jnp.asarray(x0_reduced, dtype=jnp.float64)
+                ksp_precond_side = "none"
+                ksp_solver_kind = _solver_kind("incremental")[0]
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: constraintScheme=0 PETSc-compat residuals "
+                        f"preconditioned={rn_pc_cs0:.3e} true={rn_true_cs0:.3e}",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                cs0_petsc_compat = False
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: constraintScheme=0 PETSc-compat solve failed "
+                        f"({type(exc).__name__}: {exc})",
+                    )
         probe_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_PROBE", "").strip().lower()
         probe_enabled = probe_env not in {"0", "false", "no", "off"}
         if (
             probe_enabled
             and (not probe_shortcut)
+            and (not cs0_petsc_compat)
             and (not cs0_sparse_first)
+            and (cs0_dense_fallback_allowed or int(op.constraint_scheme) != 0)
             and preconditioner_reduced is not None
             and solve_method_kind not in {"dense", "dense_ksp"}
         ):
@@ -10427,7 +10625,9 @@ def solve_v3_full_system_linear_gmres(
             except Exception as exc:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: probe failed ({type(exc).__name__}: {exc})")
-        if probe_shortcut:
+        if cs0_petsc_compat:
+            pass
+        elif probe_shortcut:
             pass
         elif solve_method_kind == "dense_ksp":
             if int(op.phi1_size) != 0:
@@ -10709,6 +10909,7 @@ def solve_v3_full_system_linear_gmres(
         if (
             (not early_dense_shortcut)
             and (not cs0_sparse_first)
+            and (cs0_dense_fallback_allowed or int(op.constraint_scheme) != 0)
             and dense_shortcut_ratio > 0
             and res_ratio >= dense_shortcut_ratio
         ):
@@ -11829,12 +12030,20 @@ def solve_v3_full_system_linear_gmres(
         if fp_force_dense:
             dense_fallback_trigger = True
             dense_fallback_limit = max(dense_fallback_limit, dense_fallback_max)
-        force_dense_cs0 = bool(int(op.constraint_scheme) == 0 and (not cs0_sparse_first))
+        force_dense_cs0 = bool(
+            int(op.constraint_scheme) == 0
+            and cs0_dense_fallback_allowed
+            and (not cs0_sparse_first)
+            and (not cs0_petsc_compat)
+        )
         if force_dense_cs0:
             # constraintScheme=0 systems are singular; keep the dense fallback
             # available even when the residual ratio is huge.
             dense_fallback_limit = max(dense_fallback_limit, dense_fallback_max)
             dense_fallback_trigger = True
+        if int(op.constraint_scheme) == 0 and not cs0_dense_fallback_allowed:
+            dense_fallback_limit = 0
+            dense_fallback_trigger = False
         if (
             dense_fallback_limit > 0
             and int(op.rhs_mode) == 1

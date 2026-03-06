@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from sfincs_jax.v3_driver import _rhsmode1_constraint0_sparse_first
+from sfincs_jax.v3_driver import (
+    _rhsmode1_constraint0_dense_fallback_allowed,
+    _rhsmode1_constraint0_petsc_compat,
+    _rhsmode1_constraint0_sparse_first,
+)
 
 
 def _op(*, constraint_scheme: int, has_fp: bool = True, has_phi1: bool = False, rhs_mode: int = 1):
@@ -87,3 +91,100 @@ def test_constraint0_sparse_first_can_be_disabled(monkeypatch) -> None:
         active_size=3276,
         sparse_max_size=6000,
     )
+
+
+def test_constraint0_petsc_compat_disabled_by_default_on_cpu(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0),
+        solve_method_kind="incremental",
+        sparse_precond_mode="auto",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+
+
+def test_constraint0_petsc_compat_disabled_by_default_on_gpu(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0),
+        solve_method_kind="incremental",
+        sparse_precond_mode="auto",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+
+
+def test_constraint0_petsc_compat_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        sparse_precond_mode="auto",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0, has_fp=False),
+        solve_method_kind="incremental",
+        sparse_precond_mode="auto",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0),
+        solve_method_kind="dense",
+        sparse_precond_mode="auto",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0),
+        solve_method_kind="incremental",
+        sparse_precond_mode="off",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0),
+        solve_method_kind="incremental",
+        sparse_precond_mode="auto",
+        active_size=8000,
+        sparse_max_size=6000,
+    )
+
+
+def test_constraint0_petsc_compat_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT", "0")
+    assert not _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0),
+        solve_method_kind="incremental",
+        sparse_precond_mode="auto",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+
+
+def test_constraint0_petsc_compat_can_be_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_CS0_PETSC_COMPAT", "1")
+    assert _rhsmode1_constraint0_petsc_compat(
+        op=_op(constraint_scheme=0),
+        solve_method_kind="incremental",
+        sparse_precond_mode="auto",
+        active_size=3276,
+        sparse_max_size=6000,
+    )
+
+
+def test_constraint0_dense_fallback_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_CS0_DENSE_FALLBACK", raising=False)
+    assert not _rhsmode1_constraint0_dense_fallback_allowed(_op(constraint_scheme=0))
+    assert _rhsmode1_constraint0_dense_fallback_allowed(_op(constraint_scheme=1))
+
+
+def test_constraint0_dense_fallback_can_be_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_CS0_DENSE_FALLBACK", "1")
+    assert _rhsmode1_constraint0_dense_fallback_allowed(_op(constraint_scheme=0))

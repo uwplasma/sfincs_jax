@@ -10,6 +10,7 @@ from sfincs_jax.solver import (
     bicgstab_solve_with_residual,
     dense_krylov_solve_from_matrix,
     dense_solve_from_matrix,
+    explicit_left_preconditioned_gmres_scipy,
     gmres_solve,
     gmres_solve_with_residual,
 )
@@ -174,6 +175,68 @@ def test_bicgstab_solve_with_residual_matches_matvec() -> None:
         rtol=1e-12,
         atol=1e-12,
     )
+
+
+def test_explicit_left_preconditioned_gmres_scipy_matches_numpy() -> None:
+    a = np.array(
+        [
+            [4.0, 1.0, 0.0],
+            [1.0, 3.0, -1.0],
+            [0.0, -1.0, 2.0],
+        ],
+        dtype=np.float64,
+    )
+    b = np.array([1.0, -2.0, 3.0], dtype=np.float64)
+    x_ref = np.linalg.solve(a, b)
+    a_j = jnp.asarray(a)
+
+    def mv(x):
+        return a_j @ x
+
+    inv_diag = 1.0 / np.diag(a)
+
+    def precond(x):
+        return jnp.asarray(inv_diag, dtype=jnp.float64) * x
+
+    x, rn_true, rn_pc, history = explicit_left_preconditioned_gmres_scipy(
+        matvec=mv,
+        b=jnp.asarray(b),
+        preconditioner=precond,
+        tol=1e-12,
+        restart=6,
+        maxiter=20,
+    )
+
+    np.testing.assert_allclose(x, x_ref, rtol=1e-10, atol=1e-10)
+    assert rn_true < 1e-10
+    assert rn_pc < 1e-10
+    assert history
+
+
+def test_explicit_left_preconditioned_gmres_scipy_zero_preconditioned_rhs_is_finite() -> None:
+    a = np.eye(3, dtype=np.float64)
+    b = np.array([1.0, -2.0, 3.0], dtype=np.float64)
+    a_j = jnp.asarray(a)
+
+    def mv(x):
+        return a_j @ x
+
+    def zero_precond(x):
+        return jnp.zeros_like(x)
+
+    x, rn_true, rn_pc, history = explicit_left_preconditioned_gmres_scipy(
+        matvec=mv,
+        b=jnp.asarray(b),
+        preconditioner=zero_precond,
+        tol=1e-12,
+        restart=4,
+        maxiter=4,
+    )
+
+    np.testing.assert_allclose(x, np.zeros_like(b), rtol=0.0, atol=0.0)
+    assert rn_true == pytest.approx(np.linalg.norm(b))
+    assert rn_pc == 0.0
+    assert history == [0.0]
 
 
 def test_distributed_solver_kind_auto_defaults_to_bicgstab(monkeypatch: pytest.MonkeyPatch) -> None:
