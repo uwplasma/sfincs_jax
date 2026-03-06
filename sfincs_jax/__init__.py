@@ -39,7 +39,7 @@ if _distributed_env in {"1", "true", "yes", "on"}:
         pass
 
 # High-level cores knob: set this before importing JAX to request N CPU devices
-# and enable parallel whichRHS + auto-sharding by default.
+# and enable auto-sharding by default.
 _cores_env = os.environ.get("SFINCS_JAX_CORES", "").strip()
 if _cores_env:
     try:
@@ -47,9 +47,6 @@ if _cores_env:
     except ValueError:
         _cores_val = 0
     if _cores_val > 0:
-        if _cores_val > 1:
-            os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL", "process")
-            os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", str(_cores_val))
         _threads_env = os.environ.get("SFINCS_JAX_XLA_THREADS", "").strip().lower()
         if _threads_env in {"1", "true", "yes", "on"}:
             _xla_flags = os.environ.get("XLA_FLAGS", "")

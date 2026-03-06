@@ -298,8 +298,6 @@ def _apply_cores_setting(cores: int | None) -> None:
         return
     os.environ["SFINCS_JAX_CORES"] = str(cores_val)
     if cores_val > 1:
-        os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL", "process")
-        os.environ.setdefault("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", str(cores_val))
         os.environ.setdefault("SFINCS_JAX_GMRES_DISTRIBUTED", "auto")
     # Ensure host device count and XLA threading reflect the requested cores.
     xla_flags = os.environ.get("XLA_FLAGS", "")

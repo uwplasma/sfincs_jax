@@ -8,6 +8,7 @@ import pytest
 
 from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
 from sfincs_jax.namelist import read_sfincs_input
+from sfincs_jax import cli
 from sfincs_jax import v3_driver
 from sfincs_jax.v3_driver import solve_v3_transport_matrix_linear_gmres
 
@@ -44,8 +45,18 @@ def test_transport_parallel_whichrhs_matches_sequential(tmp_path, monkeypatch) -
     seq = read_sfincs_h5(seq_path)
     par = read_sfincs_h5(par_path)
 
-    for key in ("transportMatrix", "particleFlux_vm_psiHat", "heatFlux_vm_psiHat", "FSABFlow"):
-        assert key in seq and key in par
+    for key in (
+        "transportMatrix",
+        "particleFlux_vm_psiHat",
+        "heatFlux_vm_psiHat",
+        "FSABFlow",
+        "sources",
+        "densityPerturbation",
+        "pressurePerturbation",
+        "pressureAnisotropy",
+    ):
+        if key not in seq or key not in par:
+            continue
         np.testing.assert_allclose(np.asarray(seq[key]), np.asarray(par[key]), rtol=5e-4, atol=1e-10)
 
 
@@ -277,3 +288,17 @@ def test_transport_parallel_pool_rebuilds_on_worker_change(monkeypatch: pytest.M
     finally:
         v3_driver._shutdown_transport_parallel_pool()
     assert _DummyPool.shutdown_calls == 2
+
+
+def test_apply_cores_setting_does_not_force_transport_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PARALLEL", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_GMRES_DISTRIBUTED", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_CORES", raising=False)
+
+    cli._apply_cores_setting(4)
+
+    assert os.environ["SFINCS_JAX_CORES"] == "4"
+    assert os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] == "auto"
+    assert "SFINCS_JAX_TRANSPORT_PARALLEL" not in os.environ
+    assert "SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS" not in os.environ

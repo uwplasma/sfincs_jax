@@ -7,6 +7,8 @@ from sfincs_jax.v3_driver import (
     _rhsmode1_constraint0_petsc_compat,
     _rhsmode1_host_sparse_direct_allowed,
     _rhsmode1_constraint0_sparse_first,
+    _rhsmode1_large_cpu_sparse_rescue_allowed,
+    _rhsmode1_large_cpu_sparse_rescue_first,
     _rhsmode1_sparse_exact_lu_requested,
 )
 
@@ -250,3 +252,99 @@ def test_host_sparse_direct_can_be_forced_on_cpu(monkeypatch) -> None:
     monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", "1")
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
     assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True)
+
+
+def test_large_cpu_sparse_rescue_enabled_for_large_fullx_fp_failures(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_MAX", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_RATIO", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=18366,
+        sparse_max_size=6000,
+        preconditioner_x=0,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+
+
+def test_large_cpu_sparse_rescue_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=5000,
+        sparse_max_size=6000,
+        preconditioner_x=0,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+    assert not _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=18366,
+        sparse_max_size=6000,
+        preconditioner_x=1,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+    assert not _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=_op(constraint_scheme=1, has_phi1=True),
+        solve_method_kind="incremental",
+        active_size=18366,
+        sparse_max_size=6000,
+        preconditioner_x=0,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=18366,
+        sparse_max_size=6000,
+        preconditioner_x=0,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+
+
+def test_large_cpu_sparse_rescue_can_depend_on_active_dof_size(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_MAX", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    op = _op(constraint_scheme=1)
+    assert _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=op,
+        solve_method_kind="incremental",
+        active_size=18366,
+        sparse_max_size=6000,
+        preconditioner_x=0,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+    assert not _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=op,
+        solve_method_kind="incremental",
+        active_size=33054,
+        sparse_max_size=6000,
+        preconditioner_x=0,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+
+
+def test_large_cpu_sparse_rescue_first_defaults_on_for_auto_strong_precond(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_FIRST", raising=False)
+    assert _rhsmode1_large_cpu_sparse_rescue_first(large_cpu_sparse_rescue=True, strong_precond_env="")
+    assert _rhsmode1_large_cpu_sparse_rescue_first(large_cpu_sparse_rescue=True, strong_precond_env="auto")
+    assert not _rhsmode1_large_cpu_sparse_rescue_first(large_cpu_sparse_rescue=False, strong_precond_env="")
+    assert not _rhsmode1_large_cpu_sparse_rescue_first(large_cpu_sparse_rescue=True, strong_precond_env="theta_line")
+
+
+def test_large_cpu_sparse_rescue_first_can_be_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_FIRST", "0")
+    assert not _rhsmode1_large_cpu_sparse_rescue_first(large_cpu_sparse_rescue=True, strong_precond_env="")

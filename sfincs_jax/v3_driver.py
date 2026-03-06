@@ -54,6 +54,7 @@ from .transport_matrix import (
     v3_transport_diagnostics_vm_only_batch_op0_remat_jit,
     v3_transport_diagnostics_vm_only_batch_op0_precomputed_jit,
     v3_transport_diagnostics_vm_only_batch_op0_precomputed_remat_jit,
+    v3_transport_output_fields_vm_only,
     v3_transport_matrix_from_flux_arrays,
 )
 from .v3_system import _fs_average_factor, _ix_min, _source_basis_constraint_scheme_1, _matvec_shard_axis, sharding_constraints
@@ -358,6 +359,55 @@ def _rhsmode1_sparse_exact_lu_requested(
         and int(active_size) <= max(0, int(accel_small_max))
     )
     return int(preconditioner_x) == 0 or (jax.default_backend() != "cpu" and (bool(use_dkes) or accel_small_case))
+
+
+def _rhsmode1_large_cpu_sparse_rescue_allowed(
+    *,
+    op: V3FullSystemOperator,
+    solve_method_kind: str,
+    active_size: int,
+    sparse_max_size: int,
+    preconditioner_x: int,
+    residual_norm: float,
+    target: float,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None:
+        return False
+    if solve_method_kind in {"dense", "dense_ksp"}:
+        return False
+    if int(preconditioner_x) != 0:
+        return False
+    if int(active_size) <= int(sparse_max_size):
+        return False
+    rescue_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_MAX", "").strip()
+    rescue_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_RATIO", "").strip()
+    try:
+        rescue_max = int(rescue_max_env) if rescue_max_env else 25000
+    except ValueError:
+        rescue_max = 25000
+    try:
+        rescue_ratio = float(rescue_ratio_env) if rescue_ratio_env else 1.0e3
+    except ValueError:
+        rescue_ratio = 1.0e3
+    if int(active_size) > max(1, int(rescue_max)):
+        return False
+    if float(target) <= 0.0:
+        return True
+    return float(residual_norm) > float(target) * float(rescue_ratio)
+
+
+def _rhsmode1_large_cpu_sparse_rescue_first(*, large_cpu_sparse_rescue: bool, strong_precond_env: str) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_FIRST", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return bool(large_cpu_sparse_rescue) and str(strong_precond_env).strip().lower() in {"", "auto"}
 
 
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
@@ -734,11 +784,76 @@ def _build_sparse_ilu_from_matvec(
     factorization_use = str(factorization).strip().lower()
     exact_lu = factorization_use == "lu"
     log_tag = "sparse_lu" if exact_lu else "sparse_ilu"
-    if emit is not None:
-        emit(1, f"{log_tag}: assembling dense operator (n={n})")
-    a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
-    a_np_full = np.array(a_dense, dtype=np.float64, copy=True)
-    max_abs = float(np.max(np.abs(a_np_full))) if a_np_full.size else 0.0
+
+    sparse_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ASSEMBLE_BLOCK", "").strip()
+    sparse_block_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ASSEMBLE_BLOCK_MIN", "").strip()
+    try:
+        sparse_block = int(sparse_block_env) if sparse_block_env else 0
+    except ValueError:
+        sparse_block = 0
+    try:
+        sparse_block_min = int(sparse_block_min_env) if sparse_block_min_env else 8000
+    except ValueError:
+        sparse_block_min = 8000
+    if sparse_block == 0 and int(n) >= max(1, int(sparse_block_min)) and (not store_dense):
+        sparse_block = 128
+
+    a_dense = None
+    a_np_full = None
+
+    import scipy.sparse as sp  # noqa: PLC0415
+    from scipy.sparse.linalg import spilu, splu  # noqa: PLC0415
+
+    if sparse_block > 0:
+        if emit is not None:
+            emit(1, f"{log_tag}: assembling sparse operator in column blocks (n={n} block={int(sparse_block)})")
+
+        jit_env = os.environ.get("SFINCS_JAX_DENSE_ASSEMBLE_JIT", "").strip().lower()
+        if jit_env:
+            use_jit = jit_env not in {"0", "false", "no", "off"}
+        else:
+            use_jit = int(n) > 800
+
+        def _assemble(block_cols: jnp.ndarray) -> jnp.ndarray:
+            return jax.vmap(matvec, in_axes=1, out_axes=1)(block_cols)
+
+        assemble_fn = jax.jit(_assemble) if use_jit else _assemble
+        rows_parts: list[np.ndarray] = []
+        cols_parts: list[np.ndarray] = []
+        data_parts: list[np.ndarray] = []
+        max_abs = 0.0
+        work_dtype = np.dtype(np.float64)
+        for start in range(0, int(n), int(sparse_block)):
+            width = min(int(sparse_block), int(n) - int(start))
+            block_cols_np = np.zeros((int(n), int(width)), dtype=work_dtype)
+            block_cols_np[np.arange(int(start), int(start) + int(width)), np.arange(int(width))] = 1.0
+            chunk = np.asarray(assemble_fn(jnp.asarray(block_cols_np, dtype=dtype)), dtype=np.float64)
+            if chunk.size:
+                max_abs = max(max_abs, float(np.max(np.abs(chunk))))
+                row_idx, col_local = np.nonzero(chunk)
+                if row_idx.size:
+                    rows_parts.append(row_idx.astype(np.int32, copy=False))
+                    cols_parts.append((col_local + int(start)).astype(np.int32, copy=False))
+                    data_parts.append(chunk[row_idx, col_local].astype(np.float64, copy=False))
+        if rows_parts:
+            rows = np.concatenate(rows_parts, axis=0)
+            cols = np.concatenate(cols_parts, axis=0)
+            data = np.concatenate(data_parts, axis=0)
+        else:
+            rows = np.zeros((0,), dtype=np.int32)
+            cols = np.zeros((0,), dtype=np.int32)
+            data = np.zeros((0,), dtype=np.float64)
+        a_csr_full = sp.csr_matrix((data, (rows, cols)), shape=(int(n), int(n)))
+        a_csr_full.eliminate_zeros()
+    else:
+        if emit is not None:
+            emit(1, f"{log_tag}: assembling dense operator (n={n})")
+        a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
+        a_np_full = np.array(a_dense, dtype=np.float64, copy=True)
+        max_abs = float(np.max(np.abs(a_np_full))) if a_np_full.size else 0.0
+        a_csr_full = sp.csr_matrix(a_np_full)
+        a_csr_full.eliminate_zeros()
+
     thresh0 = 0.0 if exact_lu else max(float(drop_tol), float(drop_rel) * max_abs)
     reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_REG", "").strip()
     try:
@@ -753,11 +868,6 @@ def _build_sparse_ilu_from_matvec(
         attempts = 3
     attempts = max(1, int(attempts))
 
-    import scipy.sparse as sp  # noqa: PLC0415
-    from scipy.sparse.linalg import spilu, splu  # noqa: PLC0415
-
-    a_csr_full = sp.csr_matrix(a_np_full)
-    a_csr_full.eliminate_zeros()
     a_csr_drop = None
     ilu = None
     ilu_drop_tol_eff = float(ilu_drop_tol)
@@ -765,23 +875,37 @@ def _build_sparse_ilu_from_matvec(
     last_exc: Exception | None = None
     for attempt in range(int(attempts if build_ilu else 1)):
         thresh = float(thresh0) * (0.1 ** int(attempt))
-        if thresh > 0.0:
-            if emit is not None:
-                emit(1, f"sparse_ilu: dropping entries |a| < {thresh:.3e}")
-            a_np_drop = a_np_full.copy()
-            a_np_drop[np.abs(a_np_drop) < thresh] = 0.0
-        elif reg != 0.0:
-            a_np_drop = a_np_full.copy()
+        if sparse_block > 0:
+            a_csr_drop = a_csr_full.copy()
+            if thresh > 0.0:
+                if emit is not None:
+                    emit(1, f"sparse_ilu: dropping entries |a| < {thresh:.3e}")
+                data = a_csr_drop.data
+                data[np.abs(data) < thresh] = 0.0
+            if int(n) > 0 and reg != 0.0:
+                diag_idx = np.arange(int(n), dtype=np.int32)
+                a_csr_drop = a_csr_drop.tolil(copy=False)
+                diag_vals = np.asarray(a_csr_drop[diag_idx, diag_idx].toarray(), dtype=np.float64).reshape((-1,)) + reg
+                a_csr_drop[diag_idx, diag_idx] = diag_vals
+                a_csr_drop = a_csr_drop.tocsr()
         else:
-            a_np_drop = a_np_full
+            if thresh > 0.0:
+                if emit is not None:
+                    emit(1, f"sparse_ilu: dropping entries |a| < {thresh:.3e}")
+                a_np_drop = a_np_full.copy()
+                a_np_drop[np.abs(a_np_drop) < thresh] = 0.0
+            elif reg != 0.0:
+                a_np_drop = a_np_full.copy()
+            else:
+                a_np_drop = a_np_full
 
-        # Preserve the diagonal and add a small regularization to avoid exact
-        # zero pivots in the incomplete factorization.
-        if int(n) > 0 and reg != 0.0:
-            diag_idx = np.arange(int(n), dtype=np.int32)
-            a_np_drop[diag_idx, diag_idx] = a_np_full[diag_idx, diag_idx] + reg
+            # Preserve the diagonal and add a small regularization to avoid exact
+            # zero pivots in the incomplete factorization.
+            if int(n) > 0 and reg != 0.0:
+                diag_idx = np.arange(int(n), dtype=np.int32)
+                a_np_drop[diag_idx, diag_idx] = a_np_full[diag_idx, diag_idx] + reg
 
-        a_csr_drop = sp.csr_matrix(a_np_drop)
+            a_csr_drop = sp.csr_matrix(a_np_drop)
         a_csr_drop.eliminate_zeros()
         if emit is not None:
             nnz = int(a_csr_drop.nnz)
@@ -823,13 +947,19 @@ def _build_sparse_ilu_from_matvec(
                 continue
             raise
     if a_csr_drop is None:
-        a_csr_drop = sp.csr_matrix(a_np_full)
+        a_csr_drop = a_csr_full.copy()
         a_csr_drop.eliminate_zeros()
     if build_ilu and ilu is None and last_exc is not None:
         raise RuntimeError(
             f"{log_tag}: factorization failed after {int(attempts)} attempts ({type(last_exc).__name__}: {last_exc})"
         )
-    a_dense = a_np_full if store_dense else None
+    if store_dense:
+        if a_np_full is not None:
+            a_dense = a_np_full
+        elif int(n) <= 4000:
+            a_dense = np.asarray(a_csr_full.toarray(), dtype=np.float64)
+        else:
+            a_dense = None
     l_dense = None
     u_dense = None
     l_unit_diag = True
@@ -11162,6 +11292,15 @@ def solve_v3_full_system_linear_gmres(
                     ksp_maxiter = maxiter
                     ksp_precond_side = gmres_precond_side
                     ksp_solver_kind = _solver_kind("incremental")[0]
+        large_cpu_sparse_rescue_active = _rhsmode1_large_cpu_sparse_rescue_allowed(
+            op=op,
+            solve_method_kind=solve_method_kind,
+            active_size=int(active_size),
+            sparse_max_size=int(sparse_max_size),
+            preconditioner_x=int(preconditioner_x),
+            residual_norm=float(res_reduced.residual_norm),
+            target=float(target_reduced),
+        )
         strong_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN", "").strip()
         try:
             strong_precond_min = int(strong_precond_min_env) if strong_precond_min_env else 800
@@ -11181,6 +11320,18 @@ def solve_v3_full_system_linear_gmres(
                     1,
                     "solve_v3_full_system_linear_gmres: constraintScheme=0 sparse-first "
                     "auto mode -> defer strong preconditioner until after sparse ILU",
+                )
+        if _rhsmode1_large_cpu_sparse_rescue_first(
+            large_cpu_sparse_rescue=large_cpu_sparse_rescue_active,
+            strong_precond_env=strong_precond_env,
+        ):
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: large CPU sparse rescue-first "
+                    "auto mode -> defer strong preconditioner until after sparse LU",
                 )
         if _pas_auto_skip_strong_retry(
             has_pas=op.fblock.pas is not None,
@@ -11754,9 +11905,18 @@ def solve_v3_full_system_linear_gmres(
                 # JAX (including for implicit/differentiable solves) via triangular solves.
                 sparse_kind_use = "scipy"
             if int(active_size) > sparse_max_size:
-                sparse_enabled = False
-                if emit is not None:
-                    emit(1, f"sparse_ilu: disabled (size={int(active_size)} > max={int(sparse_max_size)})")
+                if large_cpu_sparse_rescue_active:
+                    sparse_exact_lu = True
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: large CPU sparse LU rescue "
+                            f"(size={int(active_size)} > max={int(sparse_max_size)})",
+                        )
+                else:
+                    sparse_enabled = False
+                    if emit is not None:
+                        emit(1, f"sparse_ilu: disabled (size={int(active_size)} > max={int(sparse_max_size)})")
             elif sparse_kind_use == "jax":
                 precond_dtype = _precond_dtype(int(active_size))
                 bytes_per = 4.0 if precond_dtype == jnp.float32 else 8.0
@@ -11846,7 +12006,14 @@ def solve_v3_full_system_linear_gmres(
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                     )
-                    build_dense_factors = bool(use_implicit) and int(active_size) <= int(sparse_ilu_dense_max)
+                    host_sparse_direct_wanted = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
+                    if large_cpu_sparse_rescue_active and sparse_exact_lu:
+                        host_sparse_direct_wanted = True
+                    build_dense_factors = (
+                        bool(use_implicit)
+                        and (not host_sparse_direct_wanted)
+                        and int(active_size) <= int(sparse_ilu_dense_max)
+                    )
                     store_dense = int(active_size) <= int(sparse_dense_cache_max)
                     a_csr_full, _a_csr_drop, ilu, a_dense_cache, l_dense, u_dense, l_unit_diag = _build_sparse_ilu_from_matvec(
                         matvec=mv_reduced,
@@ -11858,7 +12025,7 @@ def solve_v3_full_system_linear_gmres(
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                         build_dense_factors=build_dense_factors,
-                        build_jax_factors=bool(use_implicit),
+                        build_jax_factors=bool(use_implicit) and (not host_sparse_direct_wanted),
                         build_ilu=True,
                         store_dense=store_dense,
                         factorization="lu" if sparse_exact_lu else "ilu",
@@ -11866,7 +12033,7 @@ def solve_v3_full_system_linear_gmres(
                     )
                     dense_matrix_cache = a_dense_cache
                     _mark("rhs1_sparse_precond_build_done")
-                    host_sparse_direct = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
+                    host_sparse_direct = host_sparse_direct_wanted
 
                     if host_sparse_direct and ilu is not None:
                         host_sparse_direct_used = True
@@ -13529,6 +13696,16 @@ def solve_v3_full_system_linear_gmres(
                 except Exception as exc:  # noqa: BLE001
                     if emit is not None:
                         emit(1, f"solve_v3_full_system_linear_gmres: PAS Schur rescue failed ({type(exc).__name__}: {exc})")
+        large_cpu_sparse_rescue_full = _rhsmode1_large_cpu_sparse_rescue_allowed(
+            op=op,
+            solve_method_kind=solve_method_kind,
+            active_size=int(op.total_size),
+            sparse_max_size=int(sparse_max_size),
+            preconditioner_x=int(preconditioner_x),
+            residual_norm=float(result.residual_norm),
+            target=float(target),
+        )
+
         sparse_kind_use = sparse_precond_kind
         sparse_enabled = False
         if sparse_precond_mode == "on":
@@ -13542,9 +13719,18 @@ def solve_v3_full_system_linear_gmres(
             if sparse_kind_use == "auto":
                 sparse_kind_use = "scipy"
             if int(op.total_size) > int(sparse_max_size):
-                sparse_enabled = False
-                if emit is not None:
-                    emit(1, f"sparse_ilu: disabled (size={int(op.total_size)} > max={int(sparse_max_size)})")
+                if large_cpu_sparse_rescue_full:
+                    sparse_exact_lu = True
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: large CPU sparse LU rescue "
+                            f"(size={int(op.total_size)} > max={int(sparse_max_size)})",
+                        )
+                else:
+                    sparse_enabled = False
+                    if emit is not None:
+                        emit(1, f"sparse_ilu: disabled (size={int(op.total_size)} > max={int(sparse_max_size)})")
             elif sparse_kind_use == "jax":
                 precond_dtype = _precond_dtype(int(op.total_size))
                 bytes_per = 4.0 if precond_dtype == jnp.float32 else 8.0
@@ -13635,7 +13821,14 @@ def solve_v3_full_system_linear_gmres(
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                     )
-                    build_dense_factors = bool(use_implicit) and int(op.total_size) <= int(sparse_ilu_dense_max)
+                    host_sparse_direct_wanted = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
+                    if large_cpu_sparse_rescue_full and sparse_exact_lu:
+                        host_sparse_direct_wanted = True
+                    build_dense_factors = (
+                        bool(use_implicit)
+                        and (not host_sparse_direct_wanted)
+                        and int(op.total_size) <= int(sparse_ilu_dense_max)
+                    )
                     store_dense = int(op.total_size) <= int(sparse_dense_cache_max)
                     a_csr_full, _a_csr_drop, ilu, a_dense_cache, l_dense, u_dense, l_unit_diag = _build_sparse_ilu_from_matvec(
                         matvec=mv,
@@ -13647,7 +13840,7 @@ def solve_v3_full_system_linear_gmres(
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                         build_dense_factors=build_dense_factors,
-                        build_jax_factors=bool(use_implicit),
+                        build_jax_factors=bool(use_implicit) and (not host_sparse_direct_wanted),
                         build_ilu=True,
                         store_dense=store_dense,
                         factorization="lu" if sparse_exact_lu else "ilu",
@@ -13655,7 +13848,7 @@ def solve_v3_full_system_linear_gmres(
                     )
                     dense_matrix_cache = a_dense_cache
                     _mark("rhs1_sparse_precond_build_done")
-                    host_sparse_direct = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
+                    host_sparse_direct = host_sparse_direct_wanted
 
                     if host_sparse_direct and ilu is not None:
                         host_sparse_direct_used = True
@@ -14812,17 +15005,13 @@ def _transport_parallel_worker(payload: dict[str, object]) -> dict[str, object]:
         input_namelist=input_path,
         which_rhs_values=which_rhs_values,
         force_stream_diagnostics=True,
-        force_store_state=False,
-        collect_transport_output_fields=collect_transport_output_fields,
+        force_store_state=True,
+        collect_transport_output_fields=False,
         parallel_workers=1,
     )
-    transport_fields = result.transport_output_fields or {}
     return {
         "which_rhs_values": which_rhs_values,
-        "particle_flux_vm_psi_hat": np.asarray(result.particle_flux_vm_psi_hat),
-        "heat_flux_vm_psi_hat": np.asarray(result.heat_flux_vm_psi_hat),
-        "fsab_flow": np.asarray(result.fsab_flow),
-        "transport_output_fields": {k: np.asarray(v) for k, v in transport_fields.items()},
+        "state_vectors_by_rhs": {int(k): np.asarray(v) for k, v in result.state_vectors_by_rhs.items()},
         "residual_norms_by_rhs": {int(k): float(np.asarray(v)) for k, v in result.residual_norms_by_rhs.items()},
         "elapsed_time_s": np.asarray(result.elapsed_time_s, dtype=np.float64),
     }
@@ -15237,53 +15426,59 @@ def solve_v3_transport_matrix_linear_gmres(
                         )
                     results = [_transport_parallel_worker(payload) for payload in payloads]
 
-        s = int(op0.n_species)
-        diag_pf = np.zeros((s, n), dtype=np.float64)
-        diag_hf = np.zeros((s, n), dtype=np.float64)
-        diag_flow = np.zeros((s, n), dtype=np.float64)
-        transport_output_fields: dict[str, np.ndarray] | None = {} if collect_transport_output_fields else None
+        state_vectors: dict[int, jnp.ndarray] = {}
         residual_norms: dict[int, jnp.ndarray] = {}
         elapsed_s = np.zeros((n,), dtype=np.float64)
         for res in results:
             rhs_vals = [int(v) for v in res.get("which_rhs_values", [])]
             idxs = [v - 1 for v in rhs_vals]
-            pf = np.asarray(res["particle_flux_vm_psi_hat"], dtype=np.float64)
-            hf = np.asarray(res["heat_flux_vm_psi_hat"], dtype=np.float64)
-            fl = np.asarray(res["fsab_flow"], dtype=np.float64)
-            diag_pf[:, idxs] = pf[:, idxs]
-            diag_hf[:, idxs] = hf[:, idxs]
-            diag_flow[:, idxs] = fl[:, idxs]
             elapsed_chunk = np.asarray(res.get("elapsed_time_s", np.zeros((n,))), dtype=np.float64)
             elapsed_s[idxs] = elapsed_chunk[idxs]
             residual_norms.update({int(k): jnp.asarray(v, dtype=jnp.float64) for k, v in res.get("residual_norms_by_rhs", {}).items()})
+            for which_rhs, x_state in res.get("state_vectors_by_rhs", {}).items():
+                state_vectors[int(which_rhs)] = jnp.asarray(x_state, dtype=jnp.float64)
 
-            if transport_output_fields is not None:
-                fields = res.get("transport_output_fields", {})
-                if isinstance(fields, dict):
-                    for key, arr in fields.items():
-                        arr_np = np.asarray(arr)
-                        if key not in transport_output_fields:
-                            transport_output_fields[key] = np.zeros_like(arr_np)
-                        if arr_np.ndim > 0 and arr_np.shape[-1] == n:
-                            transport_output_fields[key][..., idxs] = arr_np[..., idxs]
-                        else:
-                            transport_output_fields[key] = arr_np
+        missing_rhs = [which_rhs for which_rhs in range(1, n + 1) if which_rhs not in state_vectors]
+        if missing_rhs:
+            raise RuntimeError(f"parallel transport solve missing state vectors for whichRHS={missing_rhs}")
 
+        if emit is not None:
+            for which_rhs in range(1, n + 1):
+                rn = float(np.asarray(residual_norms.get(which_rhs, np.nan), dtype=np.float64))
+                emit(
+                    0,
+                    f"whichRHS={which_rhs}: residual_norm={rn:.6e} "
+                    f"elapsed_s={float(elapsed_s[which_rhs - 1]):.3f}",
+                )
+            emit(0, "solve_v3_transport_matrix_linear_gmres: computing whichRHS diagnostics (batched)")
+
+        transport_fields_full = v3_transport_output_fields_vm_only(
+            op0=op0,
+            state_vectors_by_rhs=state_vectors,
+        )
+        diag_pf = jnp.asarray(transport_fields_full["particleFlux_vm_psiHat"], dtype=jnp.float64)
+        diag_hf = jnp.asarray(transport_fields_full["heatFlux_vm_psiHat"], dtype=jnp.float64)
+        diag_flow = jnp.asarray(transport_fields_full["FSABFlow"], dtype=jnp.float64)
+        geom = geometry_from_namelist(nml=nml, grids=grids_from_namelist(nml))
         tm = v3_transport_matrix_from_flux_arrays(
             op=op0,
-            geom=geometry_from_namelist(nml=nml, grids=grids_from_namelist(nml)),
-            particle_flux_vm_psi_hat=jnp.asarray(diag_pf, dtype=jnp.float64),
-            heat_flux_vm_psi_hat=jnp.asarray(diag_hf, dtype=jnp.float64),
-            fsab_flow=jnp.asarray(diag_flow, dtype=jnp.float64),
+            geom=geom,
+            particle_flux_vm_psi_hat=diag_pf,
+            heat_flux_vm_psi_hat=diag_hf,
+            fsab_flow=diag_flow,
         )
+        transport_output_fields = transport_fields_full if collect_transport_output_fields else None
+        if emit is not None:
+            emit(0, "solve_v3_transport_matrix_linear_gmres: done")
+            emit(1, f"solve_v3_transport_matrix_linear_gmres: elapsed_s={t_all.elapsed_s():.3f}")
         return V3TransportMatrixSolveResult(
             op0=op0,
             transport_matrix=tm,
-            state_vectors_by_rhs={},
+            state_vectors_by_rhs=state_vectors,
             residual_norms_by_rhs=residual_norms,
-            fsab_flow=jnp.asarray(diag_flow, dtype=jnp.float64),
-            particle_flux_vm_psi_hat=jnp.asarray(diag_pf, dtype=jnp.float64),
-            heat_flux_vm_psi_hat=jnp.asarray(diag_hf, dtype=jnp.float64),
+            fsab_flow=diag_flow,
+            particle_flux_vm_psi_hat=diag_pf,
+            heat_flux_vm_psi_hat=diag_hf,
             elapsed_time_s=jnp.asarray(elapsed_s, dtype=jnp.float64),
             transport_output_fields=transport_output_fields,
         )
