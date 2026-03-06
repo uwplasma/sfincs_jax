@@ -49,7 +49,7 @@ def test_transport_sparse_direct_rescue_respects_guards(monkeypatch) -> None:
     )
     assert not _transport_sparse_direct_rescue_allowed(
         op=_op(rhs_mode=2),
-        size=40000,
+        size=50000,
         residual_norm=1.0e-3,
         target=1.0e-9,
     )
@@ -68,6 +68,18 @@ def test_transport_sparse_direct_rescue_can_be_disabled(monkeypatch) -> None:
     assert not _transport_sparse_direct_rescue_allowed(
         op=_op(rhs_mode=2),
         size=16382,
+        residual_norm=1.0e-3,
+        target=1.0e-9,
+    )
+
+
+def test_transport_sparse_direct_rescue_respects_env_max(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_MAX", "12000")
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _transport_sparse_direct_rescue_allowed(
+        op=_op(rhs_mode=2),
+        size=12001,
         residual_norm=1.0e-3,
         target=1.0e-9,
     )

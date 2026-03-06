@@ -429,9 +429,9 @@ def _transport_sparse_direct_rescue_allowed(
     rescue_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_MAX", "").strip()
     rescue_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_RATIO", "").strip()
     try:
-        rescue_max = int(rescue_max_env) if rescue_max_env else 30000
+        rescue_max = int(rescue_max_env) if rescue_max_env else 40000
     except ValueError:
-        rescue_max = 30000
+        rescue_max = 40000
     try:
         rescue_ratio = float(rescue_ratio_env) if rescue_ratio_env else 1.0e2
     except ValueError:
@@ -16518,7 +16518,26 @@ def solve_v3_transport_matrix_linear_gmres(
             raise RuntimeError("transport sparse_lu: factors unavailable")
         rhs_np = np.asarray(b_vec, dtype=np.float64).reshape((-1,))
         x_np = np.asarray(ilu.solve(rhs_np), dtype=np.float64)
-        residual_norm = np.linalg.norm(rhs_np - a_csr_full @ x_np)
+        residual_np = rhs_np - a_csr_full @ x_np
+        residual_norm = float(np.linalg.norm(residual_np))
+        refine_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_REFINE", "").strip()
+        try:
+            refine_steps = int(refine_env) if refine_env else 2
+        except ValueError:
+            refine_steps = 2
+        refine_steps = max(0, int(refine_steps))
+        for _ in range(refine_steps):
+            if not np.isfinite(residual_norm) or residual_norm == 0.0:
+                break
+            dx_np = np.asarray(ilu.solve(residual_np), dtype=np.float64)
+            x_trial = x_np + dx_np
+            residual_trial = rhs_np - a_csr_full @ x_trial
+            residual_norm_trial = float(np.linalg.norm(residual_trial))
+            if not np.isfinite(residual_norm_trial) or residual_norm_trial >= residual_norm:
+                break
+            x_np = x_trial
+            residual_np = residual_trial
+            residual_norm = residual_norm_trial
         return GMRESSolveResult(
             x=jnp.asarray(x_np, dtype=jnp.float64),
             residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
