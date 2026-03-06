@@ -11771,6 +11771,7 @@ def solve_v3_full_system_linear_gmres(
                         )
 
         dense_matrix_cache: np.ndarray | None = None
+        host_sparse_direct_used = False
         if sparse_enabled and float(res_reduced.residual_norm) > target_reduced:
             if sparse_kind_use == "jax":
                 try:
@@ -11865,8 +11866,26 @@ def solve_v3_full_system_linear_gmres(
                     )
                     dense_matrix_cache = a_dense_cache
                     _mark("rhs1_sparse_precond_build_done")
+                    host_sparse_direct = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
 
-                    if use_implicit:
+                    if host_sparse_direct and ilu is not None:
+                        host_sparse_direct_used = True
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_full_system_linear_gmres: host sparse LU direct fallback "
+                                f"on backend={jax.default_backend()}",
+                            )
+                        rhs_np = np.asarray(rhs_reduced, dtype=np.float64).reshape((-1,))
+                        x_np = np.asarray(ilu.solve(rhs_np), dtype=np.float64)
+                        res_sparse = GMRESSolveResult(
+                            x=jnp.asarray(x_np, dtype=jnp.float64),
+                            residual_norm=jnp.asarray(np.linalg.norm(rhs_np - a_csr_full @ x_np), dtype=jnp.float64),
+                        )
+                        residual_vec_sparse = rhs_reduced - mv_reduced(res_sparse.x)
+                        _mv_sparse = mv_reduced
+                        _precond_sparse = None
+                    elif use_implicit:
                         ilu_cache = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
                         perm_r = None if ilu_cache is None else ilu_cache.perm_r
                         inv_perm_c = None if ilu_cache is None else ilu_cache.inv_perm_c
@@ -12038,8 +12057,20 @@ def solve_v3_full_system_linear_gmres(
             except ValueError:
                 dense_fallback_ratio = 1.0e2
         res_ratio = float(residual_norm_true) / max(float(target_reduced), 1e-300)
-        dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
         dense_fallback_limit = dense_fallback_max_huge if res_ratio > dense_fallback_ratio else dense_fallback_max
+        dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
+        if host_sparse_direct_used and jax.default_backend() != "cpu":
+            host_sparse_skip_ratio = _rhsmode1_host_sparse_skip_dense_ratio()
+            if host_sparse_skip_ratio > 0.0 and res_ratio <= float(host_sparse_skip_ratio):
+                dense_fallback_trigger = False
+                dense_fallback_max = 0
+                dense_fallback_limit = 0
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: skipping dense fallback after host sparse LU "
+                        f"(ratio={res_ratio:.3e} <= {float(host_sparse_skip_ratio):.1e})",
+                    )
         pas_force_dense = (
             (not disable_dense_pas)
             and op.fblock.fp is None
