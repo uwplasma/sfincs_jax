@@ -401,6 +401,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-06
+- Scope: Fix the GPU DKES sparse-shortcut trigger so it keys off the user-requested preconditioner setting rather than the later auto-mutated internal `rhs1_precond_env`, and confirm the office GPU log now skips the old `xblock_tz` plus stage-2 prefix.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py`; office direct GPU DKES repro on clean checkout `0299b9c` with `CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 ~/venvs/sfincs_jax_gpu/bin/python -u -m sfincs_jax ...`.
+- Runtime/memory delta: the live office GPU DKES log now enters `GPU DKES auto mode -> sparse ILU shortcut`, skips the initial Krylov solve entirely, and avoids the prior `xblock_tz` plus stage-2 prefix. At the same wall-clock point the process RSS dropped from about `1.58 GB` on the old path to about `1.37 GB` on the shortcut path while holding similar GPU memory (~`12.2 GB`).
+- Remaining risks: the sparse-ILU solve itself still did not finish quickly enough to produce an H5/output comparison in the direct office rerun, so the new blocker is the sparse-ILU solve quality/runtime rather than the accelerator dense-fallback path.
+- Next actions: instrument the sparse-ILU solve itself (residual/iteration/elapsed checkpoints), compare it against a direct dense-Krylov GPU rescue on this moderate-size DKES case, and only then rerun the GPU gate plus full examples suite.
+
+### 2026-03-06
 - Scope: Short-circuit the GPU FP DKES auto path directly to sparse ILU when that is already the intended rescue path, instead of first paying for `xblock_tz` plus stage-2 GMRES on accelerator backends.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: `python -m py_compile sfincs_jax/v3_driver.py`; `pytest -q tests/test_solver_gmres.py tests/test_small_regularized_lstsq.py tests/test_schur_precond_heuristic.py tests/test_pas_projection_heuristic.py tests/test_xblock_tz_precond_heuristic.py`; office direct GPU DKES repro on commit `5671004` confirmed the previous auto path was spending time in `xblock_tz`, then stage-2 GMRES, and only afterwards entering sparse ILU.
