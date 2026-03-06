@@ -8221,7 +8221,9 @@ def solve_v3_full_system_linear_gmres(
         emit(1, f"solve_v3_full_system_linear_gmres: GMRES tol={tol} atol={atol} restart={restart} maxiter={maxiter} solve_method={solve_method}")
         emit(1, "solve_v3_full_system_linear_gmres: evaluateJacobian called (matrix-free)")
     rhs1_precond_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECONDITIONER", "").strip().lower()
+    rhs1_precond_env_user = rhs1_precond_env
     rhs1_bicgstab_env = os.environ.get("SFINCS_JAX_RHSMODE1_BICGSTAB_PRECOND", "").strip().lower()
+    rhs1_bicgstab_env_user = rhs1_bicgstab_env
     if (
         rhs1_precond_env == ""
         and int(op.rhs_mode) == 1
@@ -9231,7 +9233,8 @@ def solve_v3_full_system_linear_gmres(
     except ValueError:
         sparse_jax_reg = 1e-10
     gpu_dkes_sparse_shortcut = bool(
-        rhs1_precond_env in {"", "auto"}
+        rhs1_precond_env_user in {"", "auto"}
+        and rhs1_bicgstab_env_user in {"", "auto"}
         and solve_method_kind not in {"dense", "dense_ksp"}
         and jax.default_backend() != "cpu"
         and int(op.rhs_mode) == 1
