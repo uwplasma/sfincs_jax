@@ -255,6 +255,14 @@ def _rhsmode1_host_sparse_direct_allowed(*, sparse_exact_lu: bool) -> bool:
     return jax.default_backend() != "cpu"
 
 
+def _rhsmode1_host_sparse_skip_dense_ratio() -> float:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_SKIP_DENSE_RATIO", "").strip()
+    try:
+        return float(env) if env else 1.0e4
+    except ValueError:
+        return 1.0e4
+
+
 def _rhsmode1_constraint0_sparse_first(
     *,
     op: V3FullSystemOperator,
@@ -13520,6 +13528,7 @@ def solve_v3_full_system_linear_gmres(
                         )
 
         dense_matrix_cache: np.ndarray | None = None
+        host_sparse_direct_used = False
         if sparse_enabled and float(result.residual_norm) > target:
             if sparse_kind_use == "jax":
                 try:
@@ -13618,6 +13627,7 @@ def solve_v3_full_system_linear_gmres(
                     host_sparse_direct = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
 
                     if host_sparse_direct and ilu is not None:
+                        host_sparse_direct_used = True
                         if emit is not None:
                             emit(
                                 0,
@@ -13803,6 +13813,17 @@ def solve_v3_full_system_linear_gmres(
             dense_fallback_ratio = 1.0e2
         res_ratio = float(residual_norm_true) / max(float(target), 1e-300)
         dense_fallback_trigger = bool(res_ratio > dense_fallback_ratio) if dense_fallback_ratio > 0 else True
+        if host_sparse_direct_used and jax.default_backend() != "cpu":
+            host_sparse_skip_ratio = _rhsmode1_host_sparse_skip_dense_ratio()
+            if host_sparse_skip_ratio > 0.0 and res_ratio <= float(host_sparse_skip_ratio):
+                dense_fallback_trigger = False
+                dense_fallback_max = 0
+                if emit is not None:
+                    emit(
+                        0,
+                        "solve_v3_full_system_linear_gmres: skipping dense fallback after host sparse LU "
+                        f"(ratio={res_ratio:.3e} <= {float(host_sparse_skip_ratio):.1e})",
+                    )
         fp_force_dense = (
             op.fblock.fp is not None
             and dense_fallback_max > 0

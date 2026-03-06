@@ -402,6 +402,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-06
+- Scope: Skip the expensive accelerator dense-polish branch after a successful host sparse-LU direct rescue when the remaining residual is already within a bounded ratio of the solve target, so small full-size GPU FP cases keep parity without paying for unnecessary dense Krylov cleanup.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py`; `pytest -q tests/test_rhs1_sparse_first_heuristic.py tests/test_solver_gmres.py tests/test_fortran_reference_solver_options.py tests/test_scaled_example_suite_reference.py`; office GPU reruns of `inductiveE_noEr` into `tests/gating_gpu_inductive_v2` and `tests/gating_gpu_inductive_v2_nodense` against the frozen CPU reference root.
+- Runtime/memory delta: on office GPU, `inductiveE_noEr` stays `0/207` practical and strict with full `9/9` print parity when the post-sparse dense fallback is skipped, while JAX runtime drops from `65.995s` to `34.366s`; RSS stays roughly flat at `1745.7 MB -> 1739.1 MB`.
+- Remaining risks: this optimization is validated on the main full-size E_parallel FP blocker but still needs the wider GPU gate to confirm it does not hide useful dense-polish on other small accelerator FP cases.
+- Next actions: commit/push this runtime optimization, rerun the full narrow GPU gate against the frozen CPU reference root, and then move to the remaining GPU/CPU runtime and memory offenders from the updated summaries.
+
+### 2026-03-06
 - Scope: Add a full-size RHSMode=1 sparse LU/ILU rescue path before dense fallback, widen exact sparse-LU auto selection for small accelerator FP cases, and add a host sparse-LU direct fallback for accelerator exact-LU rescues so full-size GPU FP solves no longer depend on the inaccurate explicit dense Krylov branch.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_rhs1_sparse_first_heuristic.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: `python -m py_compile sfincs_jax/v3_driver.py`; `pytest -q tests/test_rhs1_sparse_first_heuristic.py tests/test_solver_gmres.py tests/test_fortran_reference_solver_options.py tests/test_scaled_example_suite_reference.py`; targeted local `inductiveE_noEr` direct probes with forced sparse exact LU and forced host sparse direct rescue.
