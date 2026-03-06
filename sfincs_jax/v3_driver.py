@@ -8126,6 +8126,7 @@ def solve_v3_full_system_linear_gmres(
         and int(op.constraint_scheme) != 0
         and full_precond_dense_max > 0
         and int(full_precond_size) <= int(full_precond_dense_max)
+        and _rhsmode1_dense_backend_allowed()
         and str(solve_method).strip().lower() in {"auto", "default"}
     )
     if (
@@ -8143,6 +8144,23 @@ def solve_v3_full_system_linear_gmres(
                 0,
                 "solve_v3_full_system_linear_gmres: full preconditioner requested; "
                 f"using solve_method={solve_method} (size={int(full_precond_size)})",
+            )
+    elif (
+        full_precond_requested
+        and full_precond_mode == "auto"
+        and int(op.rhs_mode) == 1
+        and (not bool(op.include_phi1))
+        and int(op.constraint_scheme) != 0
+        and full_precond_dense_max > 0
+        and int(full_precond_size) <= int(full_precond_dense_max)
+        and (not _rhsmode1_dense_backend_allowed())
+        and str(solve_method).strip().lower() in {"auto", "default"}
+    ):
+        if emit is not None:
+            emit(
+                0,
+                "solve_v3_full_system_linear_gmres: full preconditioner requested; "
+                f"skipping dense auto mode on backend={jax.default_backend()}",
             )
 
     tokamak_pas = bool(
@@ -12537,12 +12555,10 @@ def solve_v3_full_system_linear_gmres(
                 ksp_x0 = x0
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = "gmres"
-        prefer_sparse_accel = bool(
-            (not _rhsmode1_dense_backend_allowed())
-            and op.fblock.fp is not None
-            and sparse_precond_mode != "off"
-            and int(op.total_size) <= int(sparse_max_size)
-        )
+        # The full-size RHSMode=1 branch does not have the later active-DOF sparse
+        # ILU rescue. On accelerators, skipping stage2 GMRES here can therefore
+        # return a high-residual solution with no real recovery path.
+        prefer_sparse_accel = False
         if prefer_sparse_accel and float(result.residual_norm) > target and stage2_trigger and emit is not None:
             emit(
                 0,

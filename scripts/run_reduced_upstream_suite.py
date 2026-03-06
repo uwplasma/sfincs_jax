@@ -593,15 +593,25 @@ def _run_jax_cli(
         with log_path.open(mode, encoding="utf-8") as log:
             if idx > 0:
                 log.write(f"\n--- sfincs_jax repeat {idx + 1}/{repeat_count} ---\n")
-            subprocess.run(
-                cmd,
-                cwd=str(REPO_ROOT),
-                check=True,
-                timeout=timeout_s,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                env=env,
-            )
+            try:
+                subprocess.run(
+                    cmd,
+                    cwd=str(REPO_ROOT),
+                    check=True,
+                    timeout=timeout_s,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                )
+            except subprocess.TimeoutExpired:
+                log.write(f"\n[sfincs_jax subprocess timed out after {float(timeout_s):.1f}s]\n")
+                raise
+            except subprocess.CalledProcessError as exc:
+                log.write(f"\n[sfincs_jax subprocess failed rc={int(exc.returncode)}]\n")
+                raise
+            except Exception as exc:  # noqa: BLE001
+                log.write(f"\n[sfincs_jax subprocess raised {type(exc).__name__}: {exc}]\n")
+                raise
         if not output_path.exists():
             tail = _tail(log_path, n=40)
             raise RuntimeError(f"JAX run returned success but did not create output: {output_path}\n{tail}")
@@ -1701,7 +1711,10 @@ def _run_case(
                     status = "compare_error"
         else:
             status = "max_attempts"
-            note = "Reached max attempts while reducing resolution."
+            if note:
+                note = f"Reached max attempts while reducing resolution. Last failure: {note}"
+            else:
+                note = "Reached max attempts while reducing resolution."
 
     blocker_type = _classify_blocker(status=status, note=note, mismatch_keys=mismatch_keys, jax_log=jax_log_path)
 
