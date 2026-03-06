@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from sfincs_jax.v3_driver import (
     _rhsmode1_constraint0_dense_fallback_allowed,
     _rhsmode1_constraint0_petsc_compat,
+    _rhsmode1_host_sparse_direct_allowed,
     _rhsmode1_constraint0_sparse_first,
+    _rhsmode1_sparse_exact_lu_requested,
 )
 
 
@@ -188,3 +190,63 @@ def test_constraint0_dense_fallback_disabled_by_default(monkeypatch) -> None:
 def test_constraint0_dense_fallback_can_be_enabled(monkeypatch) -> None:
     monkeypatch.setenv("SFINCS_JAX_RHSMODE1_CS0_DENSE_FALLBACK", "1")
     assert _rhsmode1_constraint0_dense_fallback_allowed(_op(constraint_scheme=0))
+
+
+def test_sparse_exact_lu_auto_enables_on_small_gpu_fp_case(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU_MAX", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU_ACCEL_SMALL_MAX", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert _rhsmode1_sparse_exact_lu_requested(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=2804,
+        sparse_max_size=6000,
+        preconditioner_x=1,
+        use_dkes=False,
+    )
+
+
+def test_sparse_exact_lu_auto_respects_accel_small_cap(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU", raising=False)
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU_ACCEL_SMALL_MAX", "2000")
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_sparse_exact_lu_requested(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=2804,
+        sparse_max_size=6000,
+        preconditioner_x=1,
+        use_dkes=False,
+    )
+
+
+def test_sparse_exact_lu_auto_stays_off_on_cpu_without_full_x(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_sparse_exact_lu_requested(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=2804,
+        sparse_max_size=6000,
+        preconditioner_x=1,
+        use_dkes=False,
+    )
+
+
+def test_host_sparse_direct_default_on_gpu_for_exact_lu(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True)
+
+
+def test_host_sparse_direct_off_without_exact_lu(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=False)
+
+
+def test_host_sparse_direct_can_be_forced_on_cpu(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", "1")
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True)
