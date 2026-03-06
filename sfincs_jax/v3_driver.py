@@ -226,6 +226,13 @@ def _rhsmode1_dense_backend_allowed() -> bool:
     return jax.default_backend() == "cpu"
 
 
+def _rhsmode1_host_dense_fallback_allowed() -> bool:
+    if jax.default_backend() == "cpu":
+        return True
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_HOST_LU", "").strip().lower()
+    return env in {"1", "true", "yes", "on"}
+
+
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
     if distributed_axis is not None:
         with sharding_constraints(True):
@@ -9717,13 +9724,18 @@ def solve_v3_full_system_linear_gmres(
         if disable_dense_pas:
             dense_fallback_max = 0
         dense_backend_allowed = _rhsmode1_dense_backend_allowed()
+        host_dense_fallback_allowed = _rhsmode1_host_dense_fallback_allowed()
         if not dense_backend_allowed:
             dense_shortcut_ratio = 0.0
-            dense_fallback_max = 0
+            if not host_dense_fallback_allowed:
+                dense_fallback_max = 0
             if emit is not None:
+                dense_note = "dense shortcut/fallback"
+                if host_dense_fallback_allowed:
+                    dense_note = "dense shortcut (host dense fallback kept)"
                 emit(
                     1,
-                    "solve_v3_full_system_linear_gmres: disabling RHSMode=1 dense shortcut/fallback "
+                    f"solve_v3_full_system_linear_gmres: disabling RHSMode=1 {dense_note} "
                     f"on backend={jax.default_backend()}",
                 )
         # FP dense-fallback probe shortcut: for medium FP systems where the probe is
@@ -11617,7 +11629,7 @@ def solve_v3_full_system_linear_gmres(
             except Exception:
                 pass
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
-        if not dense_backend_allowed:
+        if not dense_backend_allowed and not host_dense_fallback_allowed:
             dense_fallback_max = 0
         dense_fallback_max_huge = 0
         dense_fallback_ratio = 1.0e2
@@ -13075,7 +13087,7 @@ def solve_v3_full_system_linear_gmres(
             except Exception:
                 pass
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
-        if not _rhsmode1_dense_backend_allowed():
+        if (not _rhsmode1_dense_backend_allowed()) and (not _rhsmode1_host_dense_fallback_allowed()):
             dense_fallback_max = 0
         dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
         try:
