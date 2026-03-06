@@ -8,6 +8,7 @@ from sfincs_jax.solver import (
     _distributed_solver_kind,
     assemble_dense_matrix_from_matvec,
     bicgstab_solve_with_residual,
+    dense_krylov_solve_from_matrix,
     dense_solve_from_matrix,
     gmres_solve,
     gmres_solve_with_residual,
@@ -48,6 +49,49 @@ def test_dense_solve_from_matrix_supports_multiple_rhs() -> None:
     np.testing.assert_allclose(np.asarray(x), x_ref, rtol=1e-10, atol=1e-10)
     assert np.asarray(rn).shape == (k,)
     assert float(np.max(np.asarray(rn))) < 1e-9
+
+
+def test_dense_krylov_solve_from_matrix_matches_numpy() -> None:
+    rng = np.random.default_rng(5)
+    n = 20
+    m = rng.normal(size=(n, n)).astype(np.float64)
+    a = m.T @ m + 0.25 * np.eye(n)
+    b = rng.normal(size=(n,)).astype(np.float64)
+    x_ref = np.linalg.solve(a, b)
+
+    x, rn = dense_krylov_solve_from_matrix(
+        a=jnp.asarray(a),
+        b=jnp.asarray(b),
+        tol=1e-12,
+        restart=n,
+        maxiter=8,
+        solve_method="incremental",
+    )
+
+    np.testing.assert_allclose(np.asarray(x), x_ref, rtol=1e-8, atol=1e-8)
+    assert float(rn) < 1e-8
+
+
+def test_dense_krylov_row_scaled_handles_diagonal_imbalance() -> None:
+    diag = np.array([1.0e-8, 2.0, 5.0e4, 7.0], dtype=np.float64)
+    a = np.diag(diag)
+    a[0, 1] = -3.0e-7
+    a[1, 0] = 2.0e-7
+    b = np.array([2.0e-8, -4.0, 1.5e5, 3.5], dtype=np.float64)
+    x_ref = np.linalg.solve(a, b)
+
+    x, rn = dense_krylov_solve_from_matrix(
+        a=jnp.asarray(a),
+        b=jnp.asarray(b),
+        tol=1e-12,
+        restart=a.shape[0],
+        maxiter=4,
+        solve_method="incremental",
+        row_scaled=True,
+    )
+
+    np.testing.assert_allclose(np.asarray(x), x_ref, rtol=1e-7, atol=1e-9)
+    assert float(rn) < 1e-7
 
 
 def test_assemble_dense_matrix_from_matvec_recovers_operator() -> None:

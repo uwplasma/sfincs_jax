@@ -28,6 +28,7 @@ from .solver import (
     bicgstab_solve_with_residual,
     bicgstab_solve_with_residual_jit,
     bicgstab_solve_with_history_scipy,
+    dense_krylov_solve_from_matrix_with_residual,
     dense_solve_from_matrix,
     dense_solve_from_matrix_row_scaled,
     gmres_solve,
@@ -231,6 +232,15 @@ def _rhsmode1_host_dense_fallback_allowed() -> bool:
         return True
     env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_HOST_LU", "").strip().lower()
     return env in {"1", "true", "yes", "on"}
+
+
+def _rhsmode1_dense_krylov_allowed() -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_KRYLOV", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    return True
 
 
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
@@ -9725,14 +9735,17 @@ def solve_v3_full_system_linear_gmres(
             dense_fallback_max = 0
         dense_backend_allowed = _rhsmode1_dense_backend_allowed()
         host_dense_fallback_allowed = _rhsmode1_host_dense_fallback_allowed()
+        dense_krylov_allowed = _rhsmode1_dense_krylov_allowed()
         if not dense_backend_allowed:
             dense_shortcut_ratio = 0.0
-            if not host_dense_fallback_allowed:
+            if not host_dense_fallback_allowed and not dense_krylov_allowed:
                 dense_fallback_max = 0
             if emit is not None:
                 dense_note = "dense shortcut/fallback"
                 if host_dense_fallback_allowed:
                     dense_note = "dense shortcut (host dense fallback kept)"
+                elif dense_krylov_allowed:
+                    dense_note = "dense shortcut disabled (dense Krylov fallback kept)"
                 emit(
                     1,
                     f"solve_v3_full_system_linear_gmres: disabling RHSMode=1 {dense_note} "
@@ -11629,7 +11642,7 @@ def solve_v3_full_system_linear_gmres(
             except Exception:
                 pass
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
-        if not dense_backend_allowed and not host_dense_fallback_allowed:
+        if not dense_backend_allowed and not host_dense_fallback_allowed and not dense_krylov_allowed:
             dense_fallback_max = 0
         dense_fallback_max_huge = 0
         dense_fallback_ratio = 1.0e2
@@ -11803,7 +11816,7 @@ def solve_v3_full_system_linear_gmres(
                         )
                         r_dense = rhs_reduced - mv_reduced(x_dense)
                         res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
-                elif dense_matrix_cache is not None:
+                elif dense_backend_allowed and dense_matrix_cache is not None:
                     a_dense_jnp = jnp.asarray(dense_matrix_cache, dtype=rhs_reduced.dtype)
                     if use_row_scaled:
                         x_dense, _rn = dense_solve_from_matrix_row_scaled(a=a_dense_jnp, b=rhs_reduced)
@@ -11812,20 +11825,30 @@ def solve_v3_full_system_linear_gmres(
                     r_dense = rhs_reduced - mv_reduced(x_dense)
                     res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
                 else:
-                    dense_method = "dense"
-                    if use_row_scaled:
-                        dense_method = "dense_row_scaled"
-                    res_dense = _solve_linear(
-                        matvec_fn=mv_reduced,
-                        b_vec=rhs_reduced,
-                        precond_fn=None,
-                        x0_vec=None,
-                        tol_val=tol,
-                        atol_val=atol,
-                        restart_val=restart,
-                        maxiter_val=maxiter,
-                        solve_method_val=dense_method,
-                        precond_side="none",
+                    if dense_matrix_cache is not None:
+                        a_dense_jnp = jnp.asarray(dense_matrix_cache, dtype=rhs_reduced.dtype)
+                    else:
+                        a_dense_jnp = assemble_dense_matrix_from_matvec(
+                            matvec=mv_reduced, n=int(active_size), dtype=rhs_reduced.dtype
+                        )
+                    if emit is not None and jax.default_backend() != "cpu":
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: dense fallback using explicit dense Krylov "
+                            f"on backend={jax.default_backend()}",
+                        )
+                    res_dense, _residual_dense = dense_krylov_solve_from_matrix_with_residual(
+                        a=a_dense_jnp,
+                        b=rhs_reduced,
+                        x0=res_reduced.x,
+                        preconditioner=None,
+                        tol=tol,
+                        atol=atol,
+                        restart=restart,
+                        maxiter=maxiter,
+                        solve_method="incremental",
+                        precondition_side="none" if use_row_scaled else gmres_precond_side,
+                        row_scaled=use_row_scaled,
                     )
                 if float(res_dense.residual_norm) < float(res_reduced.residual_norm):
                     res_reduced = res_dense
@@ -13087,7 +13110,10 @@ def solve_v3_full_system_linear_gmres(
             except Exception:
                 pass
         dense_fallback_max = _rhsmode1_dense_fallback_max(op)
-        if (not _rhsmode1_dense_backend_allowed()) and (not _rhsmode1_host_dense_fallback_allowed()):
+        dense_backend_allowed = _rhsmode1_dense_backend_allowed()
+        host_dense_fallback_allowed = _rhsmode1_host_dense_fallback_allowed()
+        dense_krylov_allowed = _rhsmode1_dense_krylov_allowed()
+        if (not dense_backend_allowed) and (not host_dense_fallback_allowed) and (not dense_krylov_allowed):
             dense_fallback_max = 0
         dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
         try:
@@ -13123,21 +13149,44 @@ def solve_v3_full_system_linear_gmres(
                     f"(size={int(op.total_size)} residual={float(residual_norm_check):.3e} > target={target:.3e})",
                 )
             try:
-                dense_method = "dense"
-                if int(op.constraint_scheme) == 0:
-                    dense_method = "dense_row_scaled"
-                res_dense, residual_vec_dense = _solve_linear_with_residual(
-                    matvec_fn=mv,
-                    b_vec=rhs,
-                    precond_fn=None,
-                    x0_vec=None,
-                    tol_val=tol,
-                    atol_val=atol,
-                    restart_val=restart,
-                    maxiter_val=maxiter,
-                    solve_method_val=dense_method,
-                    precond_side="none",
-                )
+                use_row_scaled = int(op.constraint_scheme) == 0
+                if dense_backend_allowed:
+                    dense_method = "dense_row_scaled" if use_row_scaled else "dense"
+                    res_dense, residual_vec_dense = _solve_linear_with_residual(
+                        matvec_fn=mv,
+                        b_vec=rhs,
+                        precond_fn=None,
+                        x0_vec=None,
+                        tol_val=tol,
+                        atol_val=atol,
+                        restart_val=restart,
+                        maxiter_val=maxiter,
+                        solve_method_val=dense_method,
+                        precond_side="none",
+                    )
+                else:
+                    if emit is not None and jax.default_backend() != "cpu":
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: dense fallback using explicit dense Krylov "
+                            f"on backend={jax.default_backend()}",
+                        )
+                    a_dense = assemble_dense_matrix_from_matvec(
+                        matvec=mv, n=int(op.total_size), dtype=rhs.dtype
+                    )
+                    res_dense, residual_vec_dense = dense_krylov_solve_from_matrix_with_residual(
+                        a=a_dense,
+                        b=rhs,
+                        x0=result.x,
+                        preconditioner=None,
+                        tol=tol,
+                        atol=atol,
+                        restart=restart,
+                        maxiter=maxiter,
+                        solve_method="incremental",
+                        precondition_side="none",
+                        row_scaled=use_row_scaled,
+                    )
                 if float(res_dense.residual_norm) < float(result.residual_norm):
                     result = res_dense
                     residual_vec = residual_vec_dense

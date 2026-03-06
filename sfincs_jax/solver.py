@@ -431,6 +431,97 @@ def dense_solve_from_matrix_row_scaled(*, a: jnp.ndarray, b: jnp.ndarray, diag_f
     return x, rn
 
 
+def dense_krylov_solve_from_matrix_with_residual(
+    *,
+    a: jnp.ndarray,
+    b: jnp.ndarray,
+    x0: jnp.ndarray | None = None,
+    preconditioner=None,
+    tol: float = 1e-10,
+    atol: float = 0.0,
+    restart: int | None = None,
+    maxiter: int | None = None,
+    solve_method: str = "incremental",
+    precondition_side: str = "left",
+    row_scaled: bool = False,
+    diag_floor: float = 1e-12,
+) -> tuple[GMRESSolveResult, jnp.ndarray]:
+    """Solve a dense system with Krylov iterations on an explicit matrix.
+
+    This path is intended for accelerator-safe fallback solves where dense direct
+    factorizations are unavailable or undesirable, while keeping the solve in JAX.
+    """
+
+    a = jnp.asarray(a)
+    b = jnp.asarray(b)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError(f"dense_krylov_solve_from_matrix expects a square matrix, got shape {a.shape}")
+    if b.ndim != 1 or b.shape[0] != a.shape[0]:
+        raise ValueError(f"dense_krylov_solve_from_matrix expects b.shape {(a.shape[0],)}, got {b.shape}")
+
+    n = int(a.shape[0])
+    restart_env = os.environ.get("SFINCS_JAX_DENSE_KRYLOV_RESTART", "").strip()
+    if restart_env:
+        try:
+            restart_use = int(restart_env)
+        except ValueError:
+            restart_use = 0
+    elif restart is None:
+        restart_use = min(n, 2000 if row_scaled else 1024)
+    else:
+        restart_use = int(restart)
+    restart_use = max(1, min(int(restart_use), n))
+
+    maxiter_env = os.environ.get("SFINCS_JAX_DENSE_KRYLOV_MAXITER", "").strip()
+    if maxiter_env:
+        try:
+            maxiter_use = int(maxiter_env)
+        except ValueError:
+            maxiter_use = None
+    else:
+        maxiter_use = maxiter
+    if maxiter_use is None:
+        maxiter_use = max(1, int(np.ceil(n / max(1, restart_use))))
+
+    a_use = a
+    b_use = b
+    x0_use = None if x0 is None else jnp.asarray(x0, dtype=a.dtype)
+    preconditioner_use = preconditioner
+    if row_scaled:
+        diag = jnp.diag(a_use)
+        floor = jnp.asarray(diag_floor, dtype=a.dtype)
+        denom = jnp.where(jnp.abs(diag) < floor, jnp.asarray(1.0, dtype=a.dtype), diag)
+        a_use = a_use / denom[:, None]
+        b_use = b_use / denom
+        # The supplied preconditioner targets the unscaled system, so disable it here.
+        preconditioner_use = None
+        x0_use = None if x0_use is None else jnp.asarray(x0_use, dtype=a.dtype)
+
+    def matvec(x: jnp.ndarray) -> jnp.ndarray:
+        return a_use @ x
+
+    result, _scaled_residual = gmres_solve_with_residual(
+        matvec=matvec,
+        b=b_use,
+        preconditioner=preconditioner_use,
+        x0=x0_use,
+        tol=tol,
+        atol=atol,
+        restart=restart_use,
+        maxiter=maxiter_use,
+        solve_method=solve_method,
+        precondition_side=precondition_side,
+    )
+    residual = b - a @ result.x
+    return GMRESSolveResult(x=result.x, residual_norm=jnp.linalg.norm(residual)), residual
+
+
+def dense_krylov_solve_from_matrix(**kwargs) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Solve a dense system with Krylov iterations on an explicit matrix."""
+    result, residual = dense_krylov_solve_from_matrix_with_residual(**kwargs)
+    return result.x, result.residual_norm
+
+
 def _gmres_solve_core(
     *,
     matvec,

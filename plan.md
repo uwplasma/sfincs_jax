@@ -1,6 +1,6 @@
 # SFINCS_JAX Master Handoff + Execution Plan
 
-Last updated: 2026-03-05 (America/Chicago)
+Last updated: 2026-03-06 (America/Chicago)
 Owner: incoming agent
 
 ## 1) Prompt For A New Agent (copy/paste)
@@ -399,6 +399,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-06
+- Scope: Add an accelerator-safe explicit dense-Krylov RHSMode=1 fallback path, keep dense fallback enabled on non-CPU backends without re-enabling CUDA direct solves, and validate that the CPU FP DKES lane stays parity-clean while the remaining `constraintScheme=0` FP mismatch remains isolated.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/solver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_solver_gmres.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/solver.py sfincs_jax/v3_driver.py`; `pytest -q tests/test_solver_gmres.py tests/test_small_regularized_lstsq.py tests/test_scaled_example_suite_reference.py tests/test_schur_precond_heuristic.py tests/test_pas_projection_heuristic.py tests/test_xblock_tz_precond_heuristic.py`; targeted CPU gate into `/Users/rogeriojorge/local/tests/sfincs_jax/tests/gating_cpu_solverfix` for `tokamak_1species_FPCollisions_noEr` and `tokamak_1species_FPCollisions_withEr_DKESTrajectories` against `/Users/rogeriojorge/local/tests/sfincs_jax/tests/gating_reference_cpu`.
+- Runtime/memory delta: on local CPU the FP DKES gate stayed parity-clean (`0/214`) while the `constraintScheme=0` FP case stayed at the same mismatch signature (`1/188` practical, `8/188` strict), confirming the new fallback path did not perturb the already-good CPU DKES lane and did not hide the remaining nullspace-selection problem.
+- Remaining risks: the new dense-Krylov fallback still needs office GPU validation on `inductiveE_noEr` and `tokamak_1species_FPCollisions_withEr_DKESTrajectories`; `tokamak_1species_FPCollisions_noEr` still requires a principled `constraintScheme=0` solver/gauge selection change rather than more tolerance or fallback tuning.
+- Next actions: sync `main` to a clean office GPU working copy and rerun the narrow GPU gate against the fixed CPU reference root, then use the resulting behavior to decide whether the remaining FP DKES issue is solved by dense-Krylov rescue alone or still needs stronger reduced-system preconditioning before returning to the `constraintScheme=0` branch.
 
 ### 2026-03-05
 - Scope: Separate unsafe accelerator dense solves from the optional host-LU dense fallback so the GPU DKES path can be probed without re-enabling backend cuSOLVER calls, and verify whether the existing host-callback dense fallback is actually usable on office CUDA.
