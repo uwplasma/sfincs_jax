@@ -95,6 +95,7 @@ def _cmd_solve_v3(args: argparse.Namespace) -> int:
         restart=int(args.restart),
         maxiter=int(args.maxiter) if args.maxiter is not None else None,
         solve_method=str(args.solve_method),
+        differentiable=False,
         emit=lambda level, msg: _emit(msg, level=level, args=args),
     )
     out_state = Path(args.out_state)
@@ -142,6 +143,7 @@ def _cmd_write_output(args: argparse.Namespace) -> int:
         overwrite=bool(args.overwrite),
         compute_transport_matrix=bool(compute_transport_matrix),
         compute_solution=bool(compute_solution),
+        differentiable=False,
         emit=lambda level, msg: _emit(msg, level=level, args=args),
         verbose=not bool(getattr(args, "quiet", False)),
     )
@@ -167,6 +169,7 @@ def _cmd_transport_matrix_v3(args: argparse.Namespace) -> int:
         restart=int(args.restart),
         maxiter=int(args.maxiter) if args.maxiter is not None else None,
         solve_method=str(args.solve_method),
+        differentiable=False,
         emit=lambda level, msg: _emit(msg, level=level, args=args),
     )
 

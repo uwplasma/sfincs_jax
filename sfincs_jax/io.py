@@ -2002,6 +2002,7 @@ def write_sfincs_jax_output_h5(
     emit: "Callable[[int, str], None] | None" = None,
     verbose: bool = True,
     return_results: bool = False,
+    differentiable: bool | None = None,
 ) -> Path | tuple[Path, dict[str, np.ndarray]]:
     """Create a SFINCS-style ``sfincsOutput.h5`` file from ``sfincs_jax``.
 
@@ -2011,6 +2012,10 @@ def write_sfincs_jax_output_h5(
         When ``True``, also return the in-memory output dataset dictionary that is
         written to H5, so callers can inspect results immediately without loading
         the file again.
+    differentiable
+        When set, explicitly choose the differentiable implicit solve path
+        (``True``) or the faster explicit path (``False``) instead of deferring
+        to ``SFINCS_JAX_IMPLICIT_SOLVE``.
     """
 
     if not verbose:
@@ -2598,6 +2603,7 @@ def write_sfincs_jax_output_h5(
                 solve_method=solve_method,
                 x0=x0_state,
                 recycle_basis=recycle_basis_state,
+                differentiable=differentiable,
                 emit=emit,
             )
             _mark("rhs1_solve_done")
@@ -3539,6 +3545,7 @@ def write_sfincs_jax_output_h5(
                 result = solve_v3_transport_matrix_linear_gmres(
                     nml=nml,
                     tol=float(solver_tol),
+                    differentiable=differentiable,
                     emit=emit,
                     input_namelist=input_namelist,
                 )

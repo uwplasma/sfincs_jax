@@ -705,6 +705,18 @@ Writing `sfincsOutput.h5` with `sfincs_jax`
        output_path=Path("sfincsOutput.h5"),
    )
 
+The CLI ``write-output`` command uses the fast explicit linear-solve path by default.
+For Python workflows, keep the same explicit behavior or request the implicit/
+differentiable path explicitly:
+
+.. code-block:: python
+
+   write_sfincs_jax_output_h5(
+       input_namelist=Path("input.namelist"),
+       output_path=Path("sfincsOutput.h5"),
+       differentiable=True,
+   )
+
 Inspect results immediately (without reading H5 back from disk):
 
 .. code-block:: python

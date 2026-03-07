@@ -1,6 +1,6 @@
 # SFINCS_JAX Master Handoff + Execution Plan
 
-Last updated: 2026-03-06 (America/Chicago)
+Last updated: 2026-03-07 (America/Chicago)
 Owner: incoming agent
 
 ## 1) Prompt For A New Agent (copy/paste)
@@ -400,6 +400,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-07
+- Scope: Split explicit and differentiable solve modes so CLI/output generation can take a fast non-implicit path by default, while keeping the implicit-diff path available explicitly; add a host sparse x-block rescue implementation for explicit RHSMode=1 FP solves and use it only on the non-differentiable path.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/cli.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/io.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_cli_solve_mode.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_rhs1_sparse_first_heuristic.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py sfincs_jax/io.py sfincs_jax/cli.py tests/test_rhs1_sparse_first_heuristic.py tests/test_cli_solve_mode.py`; `pytest -q tests/test_rhs1_sparse_first_heuristic.py tests/test_cli_solve_mode.py`
+- Runtime/memory delta: on the original-resolution geometry-4 CPU blocker (`examples/sfincs_examples/geometryScheme4_2species_withEr_fullTrajectories`), the explicit host x-block preconditioner reduced peak RSS at x-block build completion from about `5648.7 MB` on the capped JAX-factor path to about `5050.4 MB` at comparable build time (`~117-118s`), but the explicit GMRES rescue still did not finish in a practical wall-clock window; a follow-up experiment that also switched the Krylov matvec to a host sparse operator drove CPU utilization to about `850%` but increased RSS to about `8.3 GB`, so that variant was not kept.
+- Remaining risks: the CLI/default explicit lane is now correctly separated from the differentiable path, but the geometry-4 large-FP explicit rescue is still too slow and memory-heavy; the next fix should target a cheaper strong explicit rescue rather than growing the host sparse operator cache.
+- Next actions: commit/push the explicit/differentiable split and test coverage on `main`, then continue the geometry-4 work by replacing the current explicit x-block GMRES rescue with a more memory-disciplined strong explicit solve path before rerunning the original-resolution CPU suite.
 
 ### 2026-03-06
 - Scope: Fix legacy mixed-gradient handling by separating species-gradient and Phi-gradient coordinate inference in the JAX solve/output paths, so cases that specify `dNHatdrHats`/`dTHatdrHats` together with `Er` reproduce Fortran v3 instead of silently zeroing the electric field branch.

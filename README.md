@@ -53,6 +53,18 @@ print("Available datasets:", len(results))
 print("Example key:", "particleFlux_vm_psiHat" in results)
 ```
 
+`sfincs_jax write-output` and `write_sfincs_jax_output_h5(...)` use the fast explicit
+solve path by default. Request the implicit/differentiable linear-solve path only when
+you need it:
+
+```python
+write_sfincs_jax_output_h5(
+    input_namelist=input_namelist,
+    output_path=Path("sfincsOutput.h5"),
+    differentiable=True,
+)
+```
+
 ## Executable (CLI)
 
 You can run `sfincs_jax` from anywhere in your terminal. You do not need to be inside the repository folder.
