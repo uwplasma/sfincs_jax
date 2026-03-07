@@ -42,6 +42,50 @@ def effective_psi_a_hat(
     return float(value) if value is not None else float(default)
 
 
+def infer_species_input_radial_coordinate_for_gradients(
+    *,
+    geom_params: Mapping[str, Any],
+    species_params: Mapping[str, Any],
+    default: int = 4,
+) -> int:
+    explicit = _group_get(geom_params, "inputRadialCoordinateForGradients")
+    if explicit is not None:
+        return int(explicit)
+
+    if _group_get(species_params, "dNHatdpsiHats", "dTHatdpsiHats") is not None:
+        return 0
+    if _group_get(species_params, "dNHatdpsiNs", "dTHatdpsiNs") is not None:
+        return 1
+    if _group_get(species_params, "dNHatdrHats", "dTHatdrHats") is not None:
+        return 2
+    if _group_get(species_params, "dNHatdrNs", "dTHatdrNs") is not None:
+        return 3
+    return int(default)
+
+
+def infer_phi_input_radial_coordinate_for_gradients(
+    *,
+    geom_params: Mapping[str, Any],
+    phys_params: Mapping[str, Any],
+    default: int = 4,
+) -> int:
+    explicit = _group_get(geom_params, "inputRadialCoordinateForGradients")
+    if explicit is not None:
+        return int(explicit)
+
+    if _group_get(phys_params, "dPhiHatdpsiHat") is not None:
+        return 0
+    if _group_get(phys_params, "dPhiHatdpsiN") is not None:
+        return 1
+    if _group_get(phys_params, "dPhiHatdrHat") is not None:
+        return 2
+    if _group_get(phys_params, "dPhiHatdrN") is not None:
+        return 3
+    if _group_get(phys_params, "Er") is not None:
+        return 4
+    return int(default)
+
+
 def infer_input_radial_coordinate_for_gradients(
     *,
     geom_params: Mapping[str, Any],
@@ -53,25 +97,19 @@ def infer_input_radial_coordinate_for_gradients(
     if explicit is not None:
         return int(explicit)
 
-    if _group_get(species_params, "dNHatdpsiHats", "dTHatdpsiHats") is not None or _group_get(
-        phys_params, "dPhiHatdpsiHat"
-    ) is not None:
-        return 0
-    if _group_get(species_params, "dNHatdpsiNs", "dTHatdpsiNs") is not None or _group_get(
-        phys_params, "dPhiHatdpsiN"
-    ) is not None:
-        return 1
-    if _group_get(species_params, "dNHatdrHats", "dTHatdrHats") is not None or _group_get(
-        phys_params, "dPhiHatdrHat"
-    ) is not None:
-        return 2
-    if _group_get(species_params, "dNHatdrNs", "dTHatdrNs") is not None or _group_get(
-        phys_params, "dPhiHatdrN"
-    ) is not None:
-        return 3
-    if _group_get(phys_params, "Er") is not None:
-        return 4
-    return int(default)
+    phi_coord = infer_phi_input_radial_coordinate_for_gradients(
+        geom_params=geom_params,
+        phys_params=phys_params,
+        default=default,
+    )
+    if _group_get(phys_params, "dPhiHatdpsiHat", "dPhiHatdpsiN", "dPhiHatdrHat", "dPhiHatdrN", "Er") is not None:
+        return int(phi_coord)
+
+    return infer_species_input_radial_coordinate_for_gradients(
+        geom_params=geom_params,
+        species_params=species_params,
+        default=default,
+    )
 
 
 def effective_use_iterative_linear_solver(*, other_params: Mapping[str, Any], default: int = 1) -> int:

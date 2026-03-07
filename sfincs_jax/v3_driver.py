@@ -62,6 +62,7 @@ from .verbose import Timer
 from .v3 import geometry_from_namelist, grids_from_namelist
 from .v3_system import (
     V3FullSystemOperator,
+    _THRESHOLD_FOR_INCLUSION,
     _operator_signature_cached,
     apply_v3_full_system_jacobian,
     apply_v3_full_system_jacobian_jit,
@@ -136,6 +137,15 @@ def _set_precond_size_hint(n: int | None) -> None:
         _PRECOND_SIZE_HINT = None
     else:
         _PRECOND_SIZE_HINT = int(n)
+
+
+def _sparse_structural_tol() -> float:
+    env = os.environ.get("SFINCS_JAX_SPARSE_STRUCTURAL_TOL", "").strip()
+    try:
+        tol = float(env) if env else float(_THRESHOLD_FOR_INCLUSION)
+    except ValueError:
+        tol = float(_THRESHOLD_FOR_INCLUSION)
+    return max(0.0, float(tol))
 
 
 def _precond_dtype(size_hint: int | None = None) -> jnp.dtype:
@@ -838,6 +848,7 @@ def _build_sparse_ilu_from_matvec(
     if sparse_block == 0 and int(n) >= max(1, int(sparse_block_min)) and (not store_dense):
         sparse_block = 128
 
+    struct_tol = _sparse_structural_tol()
     a_dense = None
     a_np_full = None
 
@@ -867,7 +878,9 @@ def _build_sparse_ilu_from_matvec(
             width = min(int(sparse_block), int(n) - int(start))
             block_cols_np = np.zeros((int(n), int(width)), dtype=work_dtype)
             block_cols_np[np.arange(int(start), int(start) + int(width)), np.arange(int(width))] = 1.0
-            chunk = np.asarray(assemble_fn(jnp.asarray(block_cols_np, dtype=dtype)), dtype=np.float64)
+            chunk = np.array(assemble_fn(jnp.asarray(block_cols_np, dtype=dtype)), dtype=np.float64, copy=True)
+            if struct_tol > 0.0 and chunk.size:
+                chunk[np.abs(chunk) <= struct_tol] = 0.0
             if chunk.size:
                 max_abs = max(max_abs, float(np.max(np.abs(chunk))))
                 row_idx, col_local = np.nonzero(chunk)
@@ -890,6 +903,8 @@ def _build_sparse_ilu_from_matvec(
             emit(1, f"{log_tag}: assembling dense operator (n={n})")
         a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
         a_np_full = np.array(a_dense, dtype=np.float64, copy=True)
+        if struct_tol > 0.0 and a_np_full.size:
+            a_np_full[np.abs(a_np_full) <= struct_tol] = 0.0
         max_abs = float(np.max(np.abs(a_np_full))) if a_np_full.size else 0.0
         a_csr_full = sp.csr_matrix(a_np_full)
         a_csr_full.eliminate_zeros()

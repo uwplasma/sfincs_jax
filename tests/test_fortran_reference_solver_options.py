@@ -129,6 +129,25 @@ def test_canonicalize_fortran_v3_input_text_preserves_trailing_newline_for_v3_in
     assert rewritten.endswith("\n")
 
 
+def test_canonicalize_fortran_v3_input_text_does_not_inject_mixed_gradient_coordinate() -> None:
+    text = (
+        "&geometryParameters\n"
+        "  geometryScheme = 5\n"
+        "/\n"
+        "&speciesParameters\n"
+        "  dNHatdrHats = -1.0d0\n"
+        "  dTHatdrHats = -2.0d0\n"
+        "/\n"
+        "&physicsParameters\n"
+        "  Er = -3.0d0\n"
+        "/\n"
+        "&export_f\n"
+        "/\n"
+    )
+    rewritten = _canonicalize_fortran_v3_input_text(text)
+    assert "inputRadialCoordinateForGradients" not in rewritten
+
+
 def test_run_fortran_direct_canonicalizes_legacy_flowcontrol_for_fortran_v3(
     tmp_path: Path, monkeypatch
 ) -> None:

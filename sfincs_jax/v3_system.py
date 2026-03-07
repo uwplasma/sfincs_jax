@@ -25,7 +25,13 @@ from .boozer_bc import read_boozer_bc_header, selected_r_n_from_bc
 from .diagnostics import b0_over_bbar as b0_over_bbar_jax
 from .diagnostics import fsab_hat2 as fsab_hat2_jax
 from .diagnostics import g_hat_i_hat as g_hat_i_hat_jax
-from .input_compat import effective_equilibrium_file, effective_psi_a_hat, effective_r_n_wish, infer_input_radial_coordinate_for_gradients
+from .input_compat import (
+    effective_equilibrium_file,
+    effective_psi_a_hat,
+    effective_r_n_wish,
+    infer_phi_input_radial_coordinate_for_gradients,
+    infer_species_input_radial_coordinate_for_gradients,
+)
 from .namelist import Namelist
 from .paths import resolve_existing_path
 from .v3 import V3Grids, geometry_from_namelist, grids_from_namelist
@@ -1858,13 +1864,21 @@ def full_system_operator_from_namelist(
 
     # Radial normalization factors (radialCoordinates.F90).
     input_radial = _get_int(geom_params, "inputRadialCoordinate", 3)
-    input_radial_grad = infer_input_radial_coordinate_for_gradients(
+    species_input_radial_grad = infer_species_input_radial_coordinate_for_gradients(
         geom_params=geom_params,
         species_params=species,
+        default=4,
+    )
+    phi_input_radial_grad = infer_phi_input_radial_coordinate_for_gradients(
+        geom_params=geom_params,
         phys_params=phys,
         default=4,
     )
-    if input_radial != 3 or input_radial_grad not in {0, 1, 2, 3, 4}:
+    if (
+        input_radial != 3
+        or species_input_radial_grad not in {0, 1, 2, 3, 4}
+        or phi_input_radial_grad not in {0, 1, 2, 3, 4}
+    ):
         raise NotImplementedError(
             "sfincs_jax currently supports inputRadialCoordinate=3 (rN) with "
             "inputRadialCoordinateForGradients in {0 (psiHat), 1 (psiN), 2 (rHat), 3 (rN), 4 (Er/rHat)}."
@@ -1942,41 +1956,41 @@ def full_system_operator_from_namelist(
         key_drhat: str,
         key_drn: str,
     ) -> jnp.ndarray:
-        if int(input_radial_grad) == 0:
+        if int(species_input_radial_grad) == 0:
             return _as_1d_float_array(species.get(key_psihat.upper(), 0.0))
-        if int(input_radial_grad) == 1:
+        if int(species_input_radial_grad) == 1:
             return ddpsi_n2ddpsi_hat * _as_1d_float_array(species.get(key_psin.upper(), 0.0))
-        if int(input_radial_grad) in {2, 4}:
+        if int(species_input_radial_grad) in {2, 4}:
             return ddrhat2ddpsihat * _as_1d_float_array(species.get(key_drhat.upper(), 0.0))
-        if int(input_radial_grad) == 3:
+        if int(species_input_radial_grad) == 3:
             return ddr_n2ddpsi_hat * _as_1d_float_array(species.get(key_drn.upper(), 0.0))
-        raise NotImplementedError(f"Unsupported inputRadialCoordinateForGradients={input_radial_grad}")
+        raise NotImplementedError(f"Unsupported species inputRadialCoordinateForGradients={species_input_radial_grad}")
 
     dn_hat_dpsi_hat = _species_grad_in_psihat("dNHatdpsiHats", "dNHatdpsiNs", "dNHatdrHats", "dNHatdrNs")
     dt_hat_dpsi_hat = _species_grad_in_psihat("dTHatdpsiHats", "dTHatdpsiNs", "dTHatdrHats", "dTHatdrNs")
 
-    if int(input_radial_grad) == 0:
+    if int(phi_input_radial_grad) == 0:
         dphi_hat_dpsi_hat = jnp.asarray(float(phys.get("DPHIHATDPSIHAT", 0.0)), dtype=jnp.float64)
-    elif int(input_radial_grad) == 1:
+    elif int(phi_input_radial_grad) == 1:
         dphi_hat_dpsi_hat = jnp.asarray(
             ddpsi_n2ddpsi_hat * float(phys.get("DPHIHATDPSIN", 0.0)),
             dtype=jnp.float64,
         )
-    elif int(input_radial_grad) == 2:
+    elif int(phi_input_radial_grad) == 2:
         dphi_hat_dpsi_hat = jnp.asarray(
             ddrhat2ddpsihat * float(phys.get("DPHIHATDRHAT", 0.0)),
             dtype=jnp.float64,
         )
-    elif int(input_radial_grad) == 3:
+    elif int(phi_input_radial_grad) == 3:
         dphi_hat_dpsi_hat = jnp.asarray(
             ddr_n2ddpsi_hat * float(phys.get("DPHIHATDRN", 0.0)),
             dtype=jnp.float64,
         )
-    elif int(input_radial_grad) == 4:
+    elif int(phi_input_radial_grad) == 4:
         er = float(phys.get("ER", 0.0))
         dphi_hat_dpsi_hat = jnp.asarray(ddrhat2ddpsihat * (-er), dtype=jnp.float64)
     else:
-        raise NotImplementedError(f"Unsupported inputRadialCoordinateForGradients={input_radial_grad}")
+        raise NotImplementedError(f"Unsupported phi inputRadialCoordinateForGradients={phi_input_radial_grad}")
 
     if int(rhs_mode) == 3:
         e_star = float(phys.get("ESTAR", phys.get("EStar", 0.0)))

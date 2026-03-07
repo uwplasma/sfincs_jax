@@ -768,7 +768,8 @@ def _canonicalize_fortran_v3_input_text(text: str) -> str:
     legacy_equilibrium_file_12: str | None = None
     legacy_normradius_wish: str | None = None
     legacy_psiahat: str | None = None
-    legacy_gradient_coordinate: int | None = None
+    legacy_species_gradient_coordinate: int | None = None
+    legacy_phi_gradient_coordinate: int | None = None
     has_export_f = False
 
     current_group: str | None = None
@@ -806,24 +807,26 @@ def _canonicalize_fortran_v3_input_text(text: str) -> str:
         elif current_group == "physicsparameters" and key_up == "PSIAHAT":
             legacy_psiahat = value
         elif current_group == "physicsparameters":
-            if legacy_gradient_coordinate is None:
+            if legacy_phi_gradient_coordinate is None:
                 if key_up in {"DPHIHATDPSIHAT"}:
-                    legacy_gradient_coordinate = 0
+                    legacy_phi_gradient_coordinate = 0
                 elif key_up in {"DPHIHATDPSIN"}:
-                    legacy_gradient_coordinate = 1
-                elif key_up in {"DPHIHATDRHAT", "ER"}:
-                    legacy_gradient_coordinate = 4
+                    legacy_phi_gradient_coordinate = 1
+                elif key_up in {"DPHIHATDRHAT"}:
+                    legacy_phi_gradient_coordinate = 2
                 elif key_up in {"DPHIHATDRN"}:
-                    legacy_gradient_coordinate = 3
-        elif current_group == "speciesparameters" and legacy_gradient_coordinate is None:
+                    legacy_phi_gradient_coordinate = 3
+                elif key_up in {"ER"}:
+                    legacy_phi_gradient_coordinate = 4
+        elif current_group == "speciesparameters" and legacy_species_gradient_coordinate is None:
             if key_up in {"DNHATDPSIHATS", "DTHATDPSIHATS"}:
-                legacy_gradient_coordinate = 0
+                legacy_species_gradient_coordinate = 0
             elif key_up in {"DNHATDPSINS", "DTHATDPSINS"}:
-                legacy_gradient_coordinate = 1
+                legacy_species_gradient_coordinate = 1
             elif key_up in {"DNHATDRHATS", "DTHATDRHATS"}:
-                legacy_gradient_coordinate = 2
+                legacy_species_gradient_coordinate = 2
             elif key_up in {"DNHATDRNS", "DTHATDRNS"}:
-                legacy_gradient_coordinate = 3
+                legacy_species_gradient_coordinate = 3
 
     out: list[str] = []
     in_flow = False
@@ -878,10 +881,14 @@ def _canonicalize_fortran_v3_input_text(text: str) -> str:
                         out.append("  inputRadialCoordinate = 3")
                     out.append(f"  rN_wish = {legacy_normradius_wish}")
                 if (
-                    legacy_gradient_coordinate is not None
+                    legacy_phi_gradient_coordinate is not None
                     and "INPUTRADIALCOORDINATEFORGRADIENTS" not in seen_geometry_keys
+                    and (
+                        legacy_species_gradient_coordinate is None
+                        or legacy_species_gradient_coordinate == legacy_phi_gradient_coordinate
+                    )
                 ):
-                    out.append(f"  inputRadialCoordinateForGradients = {legacy_gradient_coordinate}")
+                    out.append(f"  inputRadialCoordinateForGradients = {legacy_phi_gradient_coordinate}")
                 if legacy_psiahat is not None and "PSIAHAT" not in seen_geometry_keys:
                     out.append(f"  psiAHat = {legacy_psiahat}")
             in_flow = False

@@ -402,6 +402,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-06
+- Scope: Fix legacy mixed-gradient handling by separating species-gradient and Phi-gradient coordinate inference in the JAX solve/output paths, so cases that specify `dNHatdrHats`/`dTHatdrHats` together with `Er` reproduce Fortran v3 instead of silently zeroing the electric field branch.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/input_compat.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/io.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_system.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_input_compat.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/input_compat.py sfincs_jax/v3_system.py sfincs_jax/io.py tests/test_input_compat.py`; `pytest -q tests/test_input_compat.py tests/test_fortran_reference_solver_options.py tests/test_sparse_assembly.py`; targeted suite rerun in `/Users/rogeriojorge/local/tests/sfincs_jax/tests/debug_geometry5_3species_split_grad_v1`.
+- Runtime/memory delta: `examples__sfincs_examples__geometryScheme5_3species_loRes` moved from `parity_mismatch` (`42/193` practical and strict, JAX `277.618s`, `4795.1 MB`) to `parity_ok` (`0/193` practical and strict, `9/9` print parity) at JAX `134.684s` and `4775.1 MB`; the Fortran reference lane on the corrected input is `21.506s`, `582.7 MB`.
+- Remaining risks: the stale full CPU suite roots created before this mixed-gradient fix are invalid for any mixed legacy-gradient cases and should not be used as frozen references; runtime/memory on geometry5 remain materially above Fortran even though parity is restored.
+- Next actions: commit/push this fix on `main`, rerun the full original-resolution CPU suite plus the additional example from a clean root, then use that frozen CPU reference root for the full office GPU suite before regenerating README tables.
+
+### 2026-03-06
 - Scope: Fix the Fortran v3 canonicalization path so modern v3 inputs keep their trailing newline, preventing false `&export_f` read failures in the scaled-suite reference lane after the legacy-input compatibility work.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/run_reduced_upstream_suite.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_fortran_reference_solver_options.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: `python -m py_compile scripts/run_reduced_upstream_suite.py`; `pytest -q tests/test_fortran_reference_solver_options.py tests/test_input_compat.py tests/test_scaled_example_suite_reference.py`; single-case suite rerun in `/Users/rogeriojorge/local/tests/sfincs_jax/tests/debug_case_runner_tokamak_pas_nx1_v2`.

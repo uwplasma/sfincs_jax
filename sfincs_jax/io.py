@@ -23,6 +23,7 @@ from .input_compat import (
     effective_r_n_wish,
     effective_use_iterative_linear_solver,
     infer_input_radial_coordinate_for_gradients,
+    infer_phi_input_radial_coordinate_for_gradients,
 )
 from .namelist import Namelist, read_sfincs_input
 from .paths import resolve_existing_path
@@ -1591,6 +1592,11 @@ def sfincs_jax_output_dict(
         default=4,
     )
     out["inputRadialCoordinateForGradients"] = np.asarray(int(input_radial_grad), dtype=np.int32)
+    phi_input_radial_grad = infer_phi_input_radial_coordinate_for_gradients(
+        geom_params=geom_params,
+        phys_params=phys,
+        default=4,
+    )
 
     conv = _conversion_factors_to_from_dpsi_hat(psi_a_hat=psi_a_hat, a_hat=a_hat, r_n=r_n)
     dphi_dpsihat_in = _get_float(phys, "dPhiHatdpsiHat", 0.0)
@@ -1637,18 +1643,18 @@ def sfincs_jax_output_dict(
             / float(g_hat)
         )
     else:
-        if int(input_radial_grad) == 0:
+        if int(phi_input_radial_grad) == 0:
             dphi_dpsihat = float(dphi_dpsihat_in)
-        elif int(input_radial_grad) == 1:
+        elif int(phi_input_radial_grad) == 1:
             dphi_dpsihat = float(conv["ddpsiN2ddpsiHat"]) * float(dphi_dpsin_in)
-        elif int(input_radial_grad) == 2:
+        elif int(phi_input_radial_grad) == 2:
             dphi_dpsihat = float(conv["ddrHat2ddpsiHat"]) * float(dphi_drhat_in)
-        elif int(input_radial_grad) == 3:
+        elif int(phi_input_radial_grad) == 3:
             dphi_dpsihat = float(conv["ddrN2ddpsiHat"]) * float(dphi_drn_in)
-        elif int(input_radial_grad) == 4:
+        elif int(phi_input_radial_grad) == 4:
             dphi_dpsihat = float(conv["ddrHat2ddpsiHat"]) * (-float(er_in))
         else:
-            raise NotImplementedError(f"Unsupported inputRadialCoordinateForGradients={input_radial_grad}")
+            raise NotImplementedError(f"Unsupported phi inputRadialCoordinateForGradients={phi_input_radial_grad}")
 
     # Convert from d/dpsiHat to all other coordinates (matches v3).
     out["dPhiHatdpsiHat"] = np.asarray(dphi_dpsihat, dtype=np.float64)
