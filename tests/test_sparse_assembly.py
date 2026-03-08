@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-import numpy as np
 import jax.numpy as jnp
+import numpy as np
 
-from sfincs_jax.v3_driver import _build_sparse_ilu_from_matvec
+from sfincs_jax.v3_driver import (
+    _assemble_selected_theta_tz_operator,
+    _assemble_selected_zeta_tz_operator,
+    _build_sparse_ilu_from_matvec,
+)
 
 
 def test_chunked_sparse_assembly_matches_dense_operator(monkeypatch) -> None:
@@ -97,3 +101,43 @@ def test_chunked_sparse_assembly_applies_fortran_structural_threshold(monkeypatc
     assert l_dense is None
     assert u_dense is None
     assert l_unit_diag is True
+
+
+def test_selected_theta_tz_operator_matches_expected_rows() -> None:
+    dd_plus = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float64)
+    dd_minus = np.asarray([[-1.0, -2.0], [-3.0, -4.0]], dtype=np.float64)
+    use_plus = np.asarray([[True, False, True], [False, True, False]])
+
+    op = _assemble_selected_theta_tz_operator(dd_plus=dd_plus, dd_minus=dd_minus, use_plus=use_plus)
+    expected = np.asarray(
+        [
+            [1.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0, 0.0, -2.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0, 0.0, 2.0],
+            [-3.0, 0.0, 0.0, -4.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0, 0.0, 4.0, 0.0],
+            [0.0, 0.0, -3.0, 0.0, 0.0, -4.0],
+        ],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(np.asarray(op.toarray()), expected, rtol=0.0, atol=0.0)
+
+
+def test_selected_zeta_tz_operator_matches_expected_rows() -> None:
+    dd_plus = np.asarray([[1.0, 2.0, 0.0], [3.0, 4.0, 5.0], [0.0, 6.0, 7.0]], dtype=np.float64)
+    dd_minus = np.asarray([[-1.0, -2.0, 0.0], [-3.0, -4.0, -5.0], [0.0, -6.0, -7.0]], dtype=np.float64)
+    use_plus = np.asarray([[True, False, True], [False, True, False]])
+
+    op = _assemble_selected_zeta_tz_operator(dd_plus=dd_plus, dd_minus=dd_minus, use_plus=use_plus)
+    expected = np.asarray(
+        [
+            [1.0, 2.0, 0.0, 0.0, 0.0, 0.0],
+            [-3.0, -4.0, -5.0, 0.0, 0.0, 0.0],
+            [0.0, 6.0, 7.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, -1.0, -2.0, 0.0],
+            [0.0, 0.0, 0.0, 3.0, 4.0, 5.0],
+            [0.0, 0.0, 0.0, 0.0, -6.0, -7.0],
+        ],
+        dtype=np.float64,
+    )
+    np.testing.assert_allclose(np.asarray(op.toarray()), expected, rtol=0.0, atol=0.0)

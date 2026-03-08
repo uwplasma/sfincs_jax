@@ -498,6 +498,113 @@ def _rhsmode1_sparse_xblock_rescue_allowed(
     return float(residual_norm) > float(target) * float(rescue_ratio)
 
 
+def _rhsmode1_fp_xblock_assembled_host_allowed(
+    *,
+    op: V3FullSystemOperator,
+    preconditioner_species: int,
+    preconditioner_xi: int,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XBLOCK_ASSEMBLED_HOST", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if bool(use_implicit):
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None or op.fblock.pas is not None:
+        return False
+    if int(preconditioner_species) == 0:
+        return False
+    if int(preconditioner_xi) != 1:
+        return False
+    if bool(op.point_at_x0):
+        return False
+    return True
+
+
+def _rhsmode1_large_cpu_xblock_skip_primary_allowed(
+    *,
+    op: V3FullSystemOperator,
+    solve_method_kind: str,
+    active_size: int,
+    sparse_max_size: int,
+    preconditioner_species: int,
+    preconditioner_x: int,
+    preconditioner_xi: int,
+    pre_theta: int,
+    pre_zeta: int,
+    use_implicit: bool,
+    rhs1_precond_env: str,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_LARGE_CPU_XBLOCK_SKIP_PRIMARY", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if bool(use_implicit):
+        return False
+    if solve_method_kind in {"dense", "dense_ksp"}:
+        return False
+    if int(active_size) <= int(sparse_max_size):
+        return False
+    if int(preconditioner_x) == 0 or int(pre_theta) != 0 or int(pre_zeta) != 0:
+        return False
+    if rhs1_precond_env not in {"", "auto", "default"}:
+        return False
+    return _rhsmode1_fp_xblock_assembled_host_allowed(
+        op=op,
+        preconditioner_species=preconditioner_species,
+        preconditioner_xi=preconditioner_xi,
+        use_implicit=bool(use_implicit),
+    )
+
+
+def _rhsmode1_sparse_sxblock_rescue_allowed(
+    *,
+    op: V3FullSystemOperator,
+    solve_method_kind: str,
+    active_size: int,
+    sparse_max_size: int,
+    preconditioner_x: int,
+    pre_theta: int,
+    pre_zeta: int,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_SXBLOCK_RESCUE", "").strip().lower()
+    if env not in {"1", "true", "yes", "on"}:
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if bool(use_implicit):
+        return False
+    if solve_method_kind in {"dense", "dense_ksp"}:
+        return False
+    if int(active_size) <= int(sparse_max_size):
+        return False
+    if int(preconditioner_x) == 0 or int(pre_theta) != 0 or int(pre_zeta) != 0:
+        return False
+    if int(getattr(op, "n_species", 1)) <= 1:
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None or op.fblock.pas is not None:
+        return False
+    rescue_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_SXBLOCK_RESCUE_MIN", "").strip()
+    rescue_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_SXBLOCK_RESCUE_MAX", "").strip()
+    try:
+        rescue_min = int(rescue_min_env) if rescue_min_env else max(int(sparse_max_size) + 1, 12000)
+    except ValueError:
+        rescue_min = max(int(sparse_max_size) + 1, 12000)
+    try:
+        rescue_max = int(rescue_max_env) if rescue_max_env else 120000
+    except ValueError:
+        rescue_max = 120000
+    return max(1, int(rescue_min)) <= int(active_size) <= max(1, int(rescue_max))
+
+
 def _transport_sparse_direct_rescue_allowed(
     *,
     op: V3FullSystemOperator,
@@ -702,6 +809,49 @@ class _RHSMode1SparseXBlockHostPrecondCache:
 
 _RHSMODE1_SPARSE_XBLOCK_HOST_PRECOND_CACHE: dict[
     tuple[object, ...], _RHSMode1SparseXBlockHostPrecondCache
+] = {}
+
+
+@dataclass(frozen=True)
+class _RHSMode1SparseSXBlockHostPrecondCache:
+    """Host sparse per-L species/x block preconditioner cache for explicit solves."""
+
+    block_indices: tuple[np.ndarray, ...]
+    block_factors: tuple[object | None, ...]
+    extra_idx_np: np.ndarray
+    extra_inv_np: np.ndarray | None
+
+
+_RHSMODE1_SPARSE_SXBLOCK_HOST_PRECOND_CACHE: dict[
+    tuple[object, ...], _RHSMode1SparseSXBlockHostPrecondCache
+] = {}
+
+
+@dataclass(frozen=True)
+class _RHSMode1FPXBlockAssembledHostCache:
+    """Cached host-side ingredients for explicit FP x-block assembly."""
+
+    x: np.ndarray
+    z_s: np.ndarray
+    fp_diag_sxl: np.ndarray
+    n_tz_eye: object
+    stream_tz_by_species: tuple[object, ...]
+    mirror_diag_by_species: tuple[object, ...]
+    exb_op_tz: object | None
+    mag_theta_m1_tz_by_species: tuple[object, ...] | None
+    mag_theta_m2_tz_by_species: tuple[object, ...] | None
+    mag_zeta_m1_tz_by_species: tuple[object, ...] | None
+    mag_zeta_m2_tz_by_species: tuple[object, ...] | None
+    mag_xidot_factor_flat: np.ndarray | None
+    er_xidot_factor_flat: np.ndarray | None
+    er_xdot_factor_flat: np.ndarray | None
+    ddx_plus_diag: np.ndarray | None
+    ddx_minus_diag: np.ndarray | None
+    identity_shift: float
+
+
+_RHSMODE1_FP_XBLOCK_ASSEMBLED_HOST_CACHE: dict[
+    tuple[object, ...], _RHSMode1FPXBlockAssembledHostCache
 ] = {}
 
 
@@ -1260,6 +1410,554 @@ def _build_sparse_ilu_from_matvec(
         upper_diag=upper_diag_jnp,
     )
     return a_csr_full, a_csr_drop, ilu, a_dense, l_dense, u_dense, l_unit_diag
+
+
+def _factorize_sparse_matrix_csr_host(
+    *,
+    a_csr_full,
+    cache_key: tuple[object, ...],
+    drop_tol: float,
+    drop_rel: float,
+    ilu_drop_tol: float,
+    fill_factor: float,
+    factorization: str = "ilu",
+    emit: Callable[[int, str], None] | None = None,
+) -> tuple[object, object, object]:
+    cached = _RHSMODE1_SPARSE_ILU_CACHE.get(cache_key)
+    if cached is not None and cached.ilu is not None:
+        return cached.a_csr_full, cached.a_csr_drop, cached.ilu
+
+    import scipy.sparse as sp  # noqa: PLC0415
+    from scipy.sparse.linalg import spilu, splu  # noqa: PLC0415
+
+    factorization_use = str(factorization).strip().lower()
+    exact_lu = factorization_use == "lu"
+    log_tag = "sparse_lu" if exact_lu else "sparse_ilu"
+
+    a_csr_full = a_csr_full.tocsr()
+    a_csr_full.eliminate_zeros()
+    max_abs = float(np.max(np.abs(a_csr_full.data))) if int(a_csr_full.nnz) > 0 else 0.0
+    thresh0 = 0.0 if exact_lu else max(float(drop_tol), float(drop_rel) * max_abs)
+
+    reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_REG", "").strip()
+    try:
+        reg = float(reg_env) if reg_env else (1.0e-12 * max_abs)
+    except ValueError:
+        reg = 1.0e-12 * max_abs
+    reg = max(0.0, float(reg))
+
+    attempts_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ILU_ATTEMPTS", "").strip()
+    try:
+        attempts = int(attempts_env) if attempts_env else 3
+    except ValueError:
+        attempts = 3
+    attempts = max(1, int(attempts))
+
+    ilu = None
+    a_csr_drop = None
+    ilu_drop_tol_eff = float(ilu_drop_tol)
+    fill_factor_eff = float(fill_factor)
+    last_exc: Exception | None = None
+
+    for attempt in range(int(attempts)):
+        thresh = float(thresh0) * (0.1 ** int(attempt))
+        a_csr_drop = a_csr_full.copy()
+        if thresh > 0.0 and int(a_csr_drop.nnz) > 0:
+            if emit is not None:
+                emit(1, f"{log_tag}: dropping entries |a| < {thresh:.3e}")
+            data = a_csr_drop.data
+            data[np.abs(data) < thresh] = 0.0
+        if int(a_csr_drop.shape[0]) > 0 and reg != 0.0:
+            diag_idx = np.arange(int(a_csr_drop.shape[0]), dtype=np.int32)
+            a_csr_drop = a_csr_drop.tolil(copy=False)
+            diag_vals = np.asarray(a_csr_drop[diag_idx, diag_idx].toarray(), dtype=np.float64).reshape((-1,)) + reg
+            a_csr_drop[diag_idx, diag_idx] = diag_vals
+            a_csr_drop = a_csr_drop.tocsr()
+        a_csr_drop.eliminate_zeros()
+        if emit is not None:
+            nnz = int(a_csr_drop.nnz)
+            n = int(a_csr_drop.shape[0])
+            emit(1, f"{log_tag}: nnz={nnz} ({nnz / max(1, n * n):.3e} density)")
+        try:
+            if exact_lu:
+                ilu = splu(a_csr_drop.tocsc(), permc_spec="COLAMD")
+            else:
+                ilu = spilu(
+                    a_csr_drop.tocsc(),
+                    drop_tol=float(ilu_drop_tol_eff),
+                    fill_factor=float(fill_factor_eff),
+                    permc_spec="COLAMD",
+                )
+            last_exc = None
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            msg = str(exc).lower()
+            if emit is not None:
+                emit(
+                    1,
+                    f"{log_tag}: factorization failed "
+                    f"(attempt={attempt + 1}/{int(attempts)} "
+                    f"thresh={thresh:.3e} drop_tol={ilu_drop_tol_eff:.1e} fill={fill_factor_eff:.1f}) "
+                    f"({type(exc).__name__}: {exc})",
+                )
+            if exact_lu:
+                if ("singular" in msg) or ("pivot" in msg) or ("dpivot" in msg) or ("zero" in msg):
+                    reg = max(float(reg), max(1.0e-12, 1.0e-10 * max_abs))
+                    continue
+                raise
+            if ("singular" in msg) or ("pivot" in msg) or ("dpivot" in msg) or ("zero" in msg):
+                ilu_drop_tol_eff = max(0.0, float(ilu_drop_tol_eff) * 0.1)
+                fill_factor_eff = max(float(fill_factor_eff), float(fill_factor) * 2.0, 20.0)
+                continue
+            raise
+
+    if ilu is None:
+        if last_exc is not None:
+            raise RuntimeError(
+                f"{log_tag}: factorization failed after {int(attempts)} attempts "
+                f"({type(last_exc).__name__}: {last_exc})"
+            )
+        raise RuntimeError(f"{log_tag}: factorization failed with no exception detail")
+
+    _RHSMODE1_SPARSE_ILU_CACHE[cache_key] = _SparseILUCache(
+        a_csr_full=a_csr_full,
+        a_csr_drop=a_csr_drop,
+        ilu=ilu,
+        a_dense=None,
+        l_dense=None,
+        u_dense=None,
+        l_unit_diag=True,
+    )
+    cached = _RHSMODE1_SPARSE_ILU_CACHE[cache_key]
+    assert cached.ilu is not None
+    return cached.a_csr_full, cached.a_csr_drop, cached.ilu
+
+
+def _rhsmode1_host_factor_probe_ok(*, factor: object | None, block_size: int) -> bool:
+    if factor is None or int(block_size) <= 0:
+        return False
+    probe_env = os.environ.get("SFINCS_JAX_RHSMODE1_XBLOCK_FACTOR_PROBE_MAX", "").strip()
+    try:
+        probe_max = float(probe_env) if probe_env else 1.0e8
+    except ValueError:
+        probe_max = 1.0e8
+    probe_max = max(float(probe_max), 1.0)
+    probe = np.ones((int(block_size),), dtype=np.float64)
+    try:
+        solved = np.asarray(factor.solve(probe), dtype=np.float64).reshape((-1,))
+    except Exception:
+        return False
+    if solved.shape != probe.shape or not np.all(np.isfinite(solved)):
+        return False
+    ratio = float(np.linalg.norm(solved)) / max(float(np.linalg.norm(probe)), 1.0e-300)
+    return np.isfinite(ratio) and ratio <= probe_max
+
+
+def _assemble_selected_theta_tz_operator(*, dd_plus: np.ndarray, dd_minus: np.ndarray, use_plus: np.ndarray):
+    import scipy.sparse as sp  # noqa: PLC0415
+
+    n_theta, n_zeta = use_plus.shape
+    n_tz = int(n_theta * n_zeta)
+    struct_tol = _sparse_structural_tol()
+    rows: list[np.ndarray] = []
+    cols: list[np.ndarray] = []
+    data: list[np.ndarray] = []
+    for it in range(n_theta):
+        row_plus = np.asarray(dd_plus[it, :], dtype=np.float64)
+        row_minus = np.asarray(dd_minus[it, :], dtype=np.float64)
+        if struct_tol > 0.0:
+            row_plus = row_plus.copy()
+            row_minus = row_minus.copy()
+            row_plus[np.abs(row_plus) <= struct_tol] = 0.0
+            row_minus[np.abs(row_minus) <= struct_tol] = 0.0
+        nz_plus = np.flatnonzero(row_plus)
+        nz_minus = np.flatnonzero(row_minus)
+        for iz in range(n_zeta):
+            row = int(it * n_zeta + iz)
+            nz = nz_plus if bool(use_plus[it, iz]) else nz_minus
+            row_vals = row_plus if bool(use_plus[it, iz]) else row_minus
+            if int(nz.size) == 0:
+                continue
+            rows.append(np.full((int(nz.size),), row, dtype=np.int32))
+            cols.append((nz.astype(np.int32, copy=False) * int(n_zeta)) + int(iz))
+            data.append(np.asarray(row_vals[nz], dtype=np.float64))
+    if not data:
+        return sp.csr_matrix((n_tz, n_tz), dtype=np.float64)
+    row_idx = np.concatenate(rows)
+    col_idx = np.concatenate(cols)
+    values = np.concatenate(data)
+    return sp.csr_matrix((values, (row_idx, col_idx)), shape=(n_tz, n_tz), dtype=np.float64)
+
+
+def _assemble_selected_zeta_tz_operator(*, dd_plus: np.ndarray, dd_minus: np.ndarray, use_plus: np.ndarray):
+    import scipy.sparse as sp  # noqa: PLC0415
+
+    n_theta, n_zeta = use_plus.shape
+    n_tz = int(n_theta * n_zeta)
+    struct_tol = _sparse_structural_tol()
+    rows: list[np.ndarray] = []
+    cols: list[np.ndarray] = []
+    data: list[np.ndarray] = []
+    for it in range(n_theta):
+        for iz in range(n_zeta):
+            row = int(it * n_zeta + iz)
+            row_vals = np.asarray(dd_plus[iz, :] if bool(use_plus[it, iz]) else dd_minus[iz, :], dtype=np.float64)
+            if struct_tol > 0.0:
+                row_vals = row_vals.copy()
+                row_vals[np.abs(row_vals) <= struct_tol] = 0.0
+            nz = np.flatnonzero(row_vals)
+            if int(nz.size) == 0:
+                continue
+            rows.append(np.full((int(nz.size),), row, dtype=np.int32))
+            cols.append((int(it) * int(n_zeta)) + nz.astype(np.int32, copy=False))
+            data.append(np.asarray(row_vals[nz], dtype=np.float64))
+    if not data:
+        return sp.csr_matrix((n_tz, n_tz), dtype=np.float64)
+    row_idx = np.concatenate(rows)
+    col_idx = np.concatenate(cols)
+    values = np.concatenate(data)
+    return sp.csr_matrix((values, (row_idx, col_idx)), shape=(n_tz, n_tz), dtype=np.float64)
+
+
+def _get_rhsmode1_fp_xblock_assembled_host_cache(*, op: V3FullSystemOperator) -> _RHSMode1FPXBlockAssembledHostCache:
+    import scipy.sparse as sp  # noqa: PLC0415
+
+    cache_key = _rhsmode1_precond_cache_key(op, "fp_xblock_assembled_host")
+    cached = _RHSMODE1_FP_XBLOCK_ASSEMBLED_HOST_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    colless = op.fblock.collisionless
+    fp = op.fblock.fp
+    if colless is None or fp is None:
+        raise ValueError("assembled FP x-block host cache requires collisionless and FP operators")
+
+    n_species = int(op.n_species)
+    n_x = int(op.n_x)
+    n_l = int(op.n_xi)
+    n_theta = int(op.n_theta)
+    n_zeta = int(op.n_zeta)
+    n_tz = int(n_theta * n_zeta)
+
+    x = np.asarray(colless.x, dtype=np.float64).reshape((n_x,))
+    z_s = np.asarray(op.z_s, dtype=np.float64).reshape((n_species,))
+    identity_shift = float(np.asarray(op.fblock.identity_shift, dtype=np.float64).reshape(()))
+    fp_diag_sxl = np.zeros((n_species, n_x, n_l), dtype=np.float64)
+    for s in range(n_species):
+        for ix in range(n_x):
+            fp_diag_sxl[s, ix, :] = np.asarray(fp.mat[s, s, :, ix, ix], dtype=np.float64)
+
+    struct_tol = _sparse_structural_tol()
+    ddtheta = np.asarray(colless.ddtheta, dtype=np.float64)
+    ddzeta = np.asarray(colless.ddzeta, dtype=np.float64)
+    if struct_tol > 0.0:
+        ddtheta = ddtheta.copy()
+        ddzeta = ddzeta.copy()
+        ddtheta[np.abs(ddtheta) <= struct_tol] = 0.0
+        ddzeta[np.abs(ddzeta) <= struct_tol] = 0.0
+    n_tz_eye = sp.eye(n_tz, format="csr", dtype=np.float64)
+    dtheta_tz = sp.kron(sp.csr_matrix(ddtheta), sp.eye(n_zeta, format="csr", dtype=np.float64), format="csr")
+    dzeta_tz = sp.kron(sp.eye(n_theta, format="csr", dtype=np.float64), sp.csr_matrix(ddzeta), format="csr")
+
+    b_hat = np.asarray(colless.b_hat, dtype=np.float64)
+    b_hat_sup_theta = np.asarray(colless.b_hat_sup_theta, dtype=np.float64)
+    b_hat_sup_zeta = np.asarray(colless.b_hat_sup_zeta, dtype=np.float64)
+    db_hat_dtheta = np.asarray(colless.db_hat_dtheta, dtype=np.float64)
+    db_hat_dzeta = np.asarray(colless.db_hat_dzeta, dtype=np.float64)
+    t_hats = np.asarray(colless.t_hats, dtype=np.float64).reshape((n_species,))
+    m_hats = np.asarray(colless.m_hats, dtype=np.float64).reshape((n_species,))
+    sqrt_t_over_m = np.sqrt(t_hats / m_hats)
+
+    stream_tz_by_species: list[object] = []
+    mirror_diag_by_species: list[object] = []
+    v_theta = b_hat_sup_theta / b_hat
+    v_zeta = b_hat_sup_zeta / b_hat
+    mirror_geom = b_hat_sup_theta * db_hat_dtheta + b_hat_sup_zeta * db_hat_dzeta
+    for s in range(n_species):
+        stream_tz = sp.diags((sqrt_t_over_m[s] * v_theta).reshape((-1,)), 0, format="csr") @ dtheta_tz
+        stream_tz = stream_tz + (sp.diags((sqrt_t_over_m[s] * v_zeta).reshape((-1,)), 0, format="csr") @ dzeta_tz)
+        mirror_factor = (-sqrt_t_over_m[s] * mirror_geom / (2.0 * (b_hat**2))).reshape((-1,))
+        stream_tz_by_species.append(stream_tz.tocsr())
+        mirror_diag_by_species.append(sp.diags(mirror_factor, 0, format="csr"))
+
+    exb_op_tz = None
+    exb_theta = op.fblock.exb_theta
+    exb_zeta = op.fblock.exb_zeta
+    if exb_theta is not None:
+        denom = (
+            float(np.asarray(exb_theta.fsab_hat2, dtype=np.float64).reshape(()))
+            if bool(getattr(exb_theta, "use_dkes_exb_drift", False))
+            else None
+        )
+        coef = np.asarray(exb_theta.d_hat * exb_theta.b_hat_sub_zeta, dtype=np.float64)
+        coef = coef / denom if denom is not None else coef / (np.asarray(exb_theta.b_hat, dtype=np.float64) ** 2)
+        factor = float(np.asarray(exb_theta.alpha * exb_theta.delta * 0.5 * exb_theta.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+        exb_op_tz = sp.diags((factor * coef).reshape((-1,)), 0, format="csr") @ dtheta_tz
+    if exb_zeta is not None:
+        denom = (
+            float(np.asarray(exb_zeta.fsab_hat2, dtype=np.float64).reshape(()))
+            if bool(getattr(exb_zeta, "use_dkes_exb_drift", False))
+            else None
+        )
+        coef = np.asarray(exb_zeta.d_hat * exb_zeta.b_hat_sub_theta, dtype=np.float64)
+        coef = coef / denom if denom is not None else coef / (np.asarray(exb_zeta.b_hat, dtype=np.float64) ** 2)
+        factor = float(np.asarray(-exb_zeta.alpha * exb_zeta.delta * 0.5 * exb_zeta.dphi_hat_dpsi_hat, dtype=np.float64).reshape(()))
+        exb_term = sp.diags((factor * coef).reshape((-1,)), 0, format="csr") @ dzeta_tz
+        exb_op_tz = exb_term if exb_op_tz is None else (exb_op_tz + exb_term)
+    if exb_op_tz is not None:
+        exb_op_tz = exb_op_tz.tocsr()
+
+    mag_theta_m1_tz_by_species = None
+    mag_theta_m2_tz_by_species = None
+    mag_theta = op.fblock.magdrift_theta
+    if mag_theta is not None:
+        gf1 = np.asarray(
+            mag_theta.b_hat_sub_zeta * mag_theta.db_hat_dpsi_hat - mag_theta.b_hat_sub_psi * mag_theta.db_hat_dzeta,
+            dtype=np.float64,
+        )
+        gf2 = np.asarray(
+            2.0 * mag_theta.b_hat * (mag_theta.db_hat_sub_psi_dzeta - mag_theta.db_hat_sub_zeta_dpsi_hat),
+            dtype=np.float64,
+        )
+        base = np.asarray(
+            mag_theta.delta * mag_theta.t_hat * mag_theta.d_hat / (2.0 * mag_theta.z * (mag_theta.b_hat**3)),
+            dtype=np.float64,
+        )
+        d_hat_ref = float(np.asarray(mag_theta.d_hat, dtype=np.float64).reshape((-1,))[0])
+        mag_theta_m1_tz_by_species = []
+        mag_theta_m2_tz_by_species = []
+        for s in range(n_species):
+            use_plus = (gf1 * d_hat_ref / float(z_s[s])) > 0.0
+            dtheta_used_tz = _assemble_selected_theta_tz_operator(
+                dd_plus=np.asarray(mag_theta.ddtheta_plus, dtype=np.float64),
+                dd_minus=np.asarray(mag_theta.ddtheta_minus, dtype=np.float64),
+                use_plus=np.asarray(use_plus, dtype=bool),
+            )
+            mag_theta_m1_tz_by_species.append(
+                (sp.diags((base * gf1).reshape((-1,)), 0, format="csr") @ dtheta_used_tz).tocsr()
+            )
+            mag_theta_m2_tz_by_species.append(
+                (sp.diags((base * gf2).reshape((-1,)), 0, format="csr") @ dtheta_used_tz).tocsr()
+            )
+        mag_theta_m1_tz_by_species = tuple(mag_theta_m1_tz_by_species)
+        mag_theta_m2_tz_by_species = tuple(mag_theta_m2_tz_by_species)
+
+    mag_zeta_m1_tz_by_species = None
+    mag_zeta_m2_tz_by_species = None
+    mag_zeta = op.fblock.magdrift_zeta
+    if mag_zeta is not None:
+        gf1 = np.asarray(
+            mag_zeta.b_hat_sub_psi * mag_zeta.db_hat_dtheta - mag_zeta.b_hat_sub_theta * mag_zeta.db_hat_dpsi_hat,
+            dtype=np.float64,
+        )
+        gf2 = np.asarray(
+            2.0 * mag_zeta.b_hat * (mag_zeta.db_hat_sub_theta_dpsi_hat - mag_zeta.db_hat_sub_psi_dtheta),
+            dtype=np.float64,
+        )
+        base = np.asarray(
+            mag_zeta.delta * mag_zeta.t_hat * mag_zeta.d_hat / (2.0 * mag_zeta.z * (mag_zeta.b_hat**3)),
+            dtype=np.float64,
+        )
+        d_hat_ref = float(np.asarray(mag_zeta.d_hat, dtype=np.float64).reshape((-1,))[0])
+        mag_zeta_m1_tz_by_species = []
+        mag_zeta_m2_tz_by_species = []
+        for s in range(n_species):
+            use_plus = (gf1 * d_hat_ref / float(z_s[s])) > 0.0
+            dzeta_used_tz = _assemble_selected_zeta_tz_operator(
+                dd_plus=np.asarray(mag_zeta.ddzeta_plus, dtype=np.float64),
+                dd_minus=np.asarray(mag_zeta.ddzeta_minus, dtype=np.float64),
+                use_plus=np.asarray(use_plus, dtype=bool),
+            )
+            mag_zeta_m1_tz_by_species.append(
+                (sp.diags((base * gf1).reshape((-1,)), 0, format="csr") @ dzeta_used_tz).tocsr()
+            )
+            mag_zeta_m2_tz_by_species.append(
+                (sp.diags((base * gf2).reshape((-1,)), 0, format="csr") @ dzeta_used_tz).tocsr()
+            )
+        mag_zeta_m1_tz_by_species = tuple(mag_zeta_m1_tz_by_species)
+        mag_zeta_m2_tz_by_species = tuple(mag_zeta_m2_tz_by_species)
+
+    mag_xidot_factor_flat = None
+    mag_xidot = op.fblock.magdrift_xidot
+    if mag_xidot is not None:
+        temp = np.asarray(
+            (mag_xidot.db_hat_sub_psi_dzeta - mag_xidot.db_hat_sub_zeta_dpsi_hat) * mag_xidot.db_hat_dtheta
+            + (mag_xidot.db_hat_sub_theta_dpsi_hat - mag_xidot.db_hat_sub_psi_dtheta) * mag_xidot.db_hat_dzeta,
+            dtype=np.float64,
+        )
+        mag_xidot_factor_flat = np.asarray(
+            (-(mag_xidot.delta * mag_xidot.t_hat) * mag_xidot.d_hat / (2.0 * mag_xidot.z * (mag_xidot.b_hat**3)) * temp),
+            dtype=np.float64,
+        ).reshape((-1,))
+
+    er_xidot_factor_flat = None
+    er_xidot = op.fblock.er_xidot
+    if er_xidot is not None:
+        temp = np.asarray(
+            er_xidot.b_hat_sub_zeta * er_xidot.db_hat_dtheta - er_xidot.b_hat_sub_theta * er_xidot.db_hat_dzeta,
+            dtype=np.float64,
+        )
+        er_xidot_factor_flat = np.asarray(
+            er_xidot.alpha
+            * er_xidot.delta
+            * er_xidot.dphi_hat_dpsi_hat
+            / (4.0 * (er_xidot.b_hat**3))
+            * er_xidot.d_hat
+            * temp,
+            dtype=np.float64,
+        ).reshape((-1,))
+
+    er_xdot_factor_flat = None
+    ddx_plus_diag = None
+    ddx_minus_diag = None
+    er_xdot = op.fblock.er_xdot
+    if er_xdot is not None:
+        factor0 = float(np.asarray(-(er_xdot.alpha * er_xdot.delta * er_xdot.dphi_hat_dpsi_hat) / 4.0, dtype=np.float64).reshape(()))
+        er_xdot_factor_flat = np.asarray(
+            factor0
+            * er_xdot.d_hat
+            / (er_xdot.b_hat**3)
+            * (er_xdot.b_hat_sub_theta * er_xdot.db_hat_dzeta - er_xdot.b_hat_sub_zeta * er_xdot.db_hat_dtheta),
+            dtype=np.float64,
+        ).reshape((-1,))
+        ddx_plus_diag = np.asarray(np.diag(np.asarray(er_xdot.ddx_plus, dtype=np.float64)), dtype=np.float64)
+        ddx_minus_diag = np.asarray(np.diag(np.asarray(er_xdot.ddx_minus, dtype=np.float64)), dtype=np.float64)
+
+    cached = _RHSMode1FPXBlockAssembledHostCache(
+        x=x,
+        z_s=z_s,
+        fp_diag_sxl=fp_diag_sxl,
+        n_tz_eye=n_tz_eye,
+        stream_tz_by_species=tuple(stream_tz_by_species),
+        mirror_diag_by_species=tuple(mirror_diag_by_species),
+        exb_op_tz=exb_op_tz,
+        mag_theta_m1_tz_by_species=mag_theta_m1_tz_by_species,
+        mag_theta_m2_tz_by_species=mag_theta_m2_tz_by_species,
+        mag_zeta_m1_tz_by_species=mag_zeta_m1_tz_by_species,
+        mag_zeta_m2_tz_by_species=mag_zeta_m2_tz_by_species,
+        mag_xidot_factor_flat=mag_xidot_factor_flat,
+        er_xidot_factor_flat=er_xidot_factor_flat,
+        er_xdot_factor_flat=er_xdot_factor_flat,
+        ddx_plus_diag=ddx_plus_diag,
+        ddx_minus_diag=ddx_minus_diag,
+        identity_shift=identity_shift,
+    )
+    _RHSMODE1_FP_XBLOCK_ASSEMBLED_HOST_CACHE[cache_key] = cached
+    return cached
+
+
+def _assemble_rhsmode1_fp_xblock_tz_sparse_matrix(
+    *,
+    op: V3FullSystemOperator,
+    species: int,
+    ix: int,
+    preconditioner_xi: int,
+    host_cache: _RHSMode1FPXBlockAssembledHostCache | None = None,
+):
+    import scipy.sparse as sp  # noqa: PLC0415
+
+    if op.fblock.fp is None:
+        raise ValueError("assembled FP x-block matrix requires an FP operator")
+    if int(preconditioner_xi) != 1:
+        raise ValueError("assembled FP x-block matrix currently requires preconditioner_xi=1")
+    if bool(op.point_at_x0):
+        raise ValueError("assembled FP x-block matrix currently requires pointAtX0=false")
+
+    colless = op.fblock.collisionless
+    host = host_cache if host_cache is not None else _get_rhsmode1_fp_xblock_assembled_host_cache(op=op)
+    mag_theta = op.fblock.magdrift_theta
+    mag_zeta = op.fblock.magdrift_zeta
+
+    n_theta = int(op.n_theta)
+    n_zeta = int(op.n_zeta)
+    n_lx = int(np.asarray(colless.n_xi_for_x, dtype=np.int32)[int(ix)])
+    if n_lx <= 0:
+        return sp.csc_matrix((0, 0), dtype=np.float64)
+
+    n_l = int(op.n_xi)
+    x_val = float(host.x[int(ix)])
+    z_val = float(host.z_s[int(species)])
+
+    diag_vals = float(host.identity_shift) + host.fp_diag_sxl[int(species), int(ix), :n_lx]
+    a = sp.kron(sp.diags(diag_vals, 0, format="csr"), host.n_tz_eye, format="csc")
+    stream_tz = host.stream_tz_by_species[int(species)]
+    mirror_diag = host.mirror_diag_by_species[int(species)]
+
+    l = np.arange(n_lx, dtype=np.float64)
+    coef_plus = x_val * (l + 1.0) / (2.0 * l + 3.0)
+    coef_minus = np.where(l > 0, x_val * l / (2.0 * l - 1.0), 0.0)
+    coef_mirror_plus = x_val * (l + 1.0) * (l + 2.0) / (2.0 * l + 3.0)
+    coef_mirror_minus = np.where(l > 1, -x_val * l * (l - 1.0) / (2.0 * l - 1.0), 0.0)
+    if n_lx > 1:
+        c_stream = sp.diags(
+            [coef_minus[1:], coef_plus[:-1]],
+            offsets=[-1, 1],
+            shape=(n_lx, n_lx),
+            format="csr",
+            dtype=np.float64,
+        )
+        c_mirror = sp.diags(
+            [coef_mirror_minus[1:], coef_mirror_plus[:-1]],
+            offsets=[-1, 1],
+            shape=(n_lx, n_lx),
+            format="csr",
+            dtype=np.float64,
+        )
+        a = a + sp.kron(c_stream, stream_tz, format="csc") + sp.kron(c_mirror, mirror_diag, format="csc")
+
+    if host.exb_op_tz is not None:
+        a = a + sp.kron(sp.eye(n_lx, format="csr", dtype=np.float64), host.exb_op_tz, format="csc")
+
+    if mag_theta is not None:
+        assert host.mag_theta_m1_tz_by_species is not None
+        assert host.mag_theta_m2_tz_by_species is not None
+        m1 = (x_val * x_val) * host.mag_theta_m1_tz_by_species[int(species)]
+        m2 = (x_val * x_val) * host.mag_theta_m2_tz_by_species[int(species)]
+        denom = (2.0 * l + 3.0) * (2.0 * l - 1.0)
+        c1 = 2.0 * (3.0 * l * l + 3.0 * l - 2.0) / denom
+        c2 = (2.0 * l * l + 2.0 * l - 1.0) / denom
+        a = a + sp.kron(sp.diags(c1, 0, format="csr"), m1, format="csc")
+        a = a + sp.kron(sp.diags(c2, 0, format="csr"), m2, format="csc")
+
+    if mag_zeta is not None:
+        assert host.mag_zeta_m1_tz_by_species is not None
+        assert host.mag_zeta_m2_tz_by_species is not None
+        m1 = (x_val * x_val) * host.mag_zeta_m1_tz_by_species[int(species)]
+        m2 = (x_val * x_val) * host.mag_zeta_m2_tz_by_species[int(species)]
+        denom = (2.0 * l + 3.0) * (2.0 * l - 1.0)
+        c1 = 2.0 * (3.0 * l * l + 3.0 * l - 2.0) / denom
+        c2 = (2.0 * l * l + 2.0 * l - 1.0) / denom
+        a = a + sp.kron(sp.diags(c1, 0, format="csr"), m1, format="csc")
+        a = a + sp.kron(sp.diags(c2, 0, format="csr"), m2, format="csc")
+
+    if host.mag_xidot_factor_flat is not None:
+        diag_c = np.where(l > 0, (l + 1.0) * l / ((2.0 * l - 1.0) * (2.0 * l + 3.0)), 0.0)
+        a = a + sp.kron(
+            sp.diags(diag_c, 0, format="csr"),
+            sp.diags((x_val * x_val * host.mag_xidot_factor_flat).reshape((-1,)), 0, format="csr"),
+            format="csc",
+        )
+
+    if host.er_xidot_factor_flat is not None:
+        diag_c = np.where(l > 0, (l + 1.0) * l / ((2.0 * l - 1.0) * (2.0 * l + 3.0)), 0.0)
+        a = a + sp.kron(
+            sp.diags(diag_c, 0, format="csr"),
+            sp.diags((x_val * x_val * host.er_xidot_factor_flat).reshape((-1,)), 0, format="csr"),
+            format="csc",
+        )
+
+    if host.er_xdot_factor_flat is not None and host.ddx_plus_diag is not None and host.ddx_minus_diag is not None:
+        use_plus = host.er_xdot_factor_flat > 0.0
+        xdiag = x_val * np.where(use_plus, host.ddx_plus_diag[int(ix)], host.ddx_minus_diag[int(ix)])
+        denom = (2.0 * l + 3.0) * (2.0 * l - 1.0)
+        diag_coef = 2.0 * (3.0 * l * l + 3.0 * l - 2.0) / denom
+        xdot_diag = sp.diags((xdiag * host.er_xdot_factor_flat).reshape((-1,)), 0, format="csr")
+        a = a + sp.kron(sp.diags(diag_coef, 0, format="csr"), xdot_diag, format="csc")
+
+    a = a.tocsc()
+    a.eliminate_zeros()
+    return a
 
 
 def _build_sparse_jax_preconditioner_from_matvec(
@@ -7281,6 +7979,8 @@ def _build_rhsmode1_xblock_tz_sparse_preconditioner(
     reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     build_jax_factors: bool,
+    preconditioner_species: int,
+    preconditioner_xi: int,
     drop_tol: float,
     drop_rel: float,
     ilu_drop_tol: float,
@@ -7335,6 +8035,13 @@ def _build_rhsmode1_xblock_tz_sparse_preconditioner(
         extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
         reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
         reg_val = float(reg_env) if reg_env else 1e-10
+        assembled_host_fp = _rhsmode1_fp_xblock_assembled_host_allowed(
+            op=op,
+            preconditioner_species=preconditioner_species,
+            preconditioner_xi=preconditioner_xi,
+            use_implicit=build_jax_factors,
+        )
+        assembled_host_cache = _get_rhsmode1_fp_xblock_assembled_host_cache(op=op) if assembled_host_fp else None
 
         if build_jax_factors:
             perm_r_blocks: list[np.ndarray] = []
@@ -7542,24 +8249,51 @@ def _build_rhsmode1_xblock_tz_sparse_preconditioner(
                     block_cache_key = (cache_key, int(s), int(ix), int(block_size))
                     exact_lu = block_size <= int(lu_max)
                     try:
-                        _build_sparse_ilu_from_matvec(
-                            matvec=_mv_block,
-                            n=int(block_size),
-                            dtype=jnp.float64,
-                            cache_key=block_cache_key,
-                            drop_tol=drop_tol,
-                            drop_rel=drop_rel,
-                            ilu_drop_tol=ilu_drop_tol,
-                            fill_factor=fill_factor,
-                            build_dense_factors=False,
-                            build_jax_factors=False,
-                            build_ilu=True,
-                            store_dense=False,
-                            factorization="lu" if exact_lu else "ilu",
-                            row_nnz_cap=int(row_cap),
-                            emit=emit,
-                        )
                         fac_cache = _RHSMODE1_SPARSE_ILU_CACHE.get(block_cache_key)
+                        if fac_cache is None or fac_cache.ilu is None:
+                            if assembled_host_fp:
+                                if emit is not None:
+                                    emit(
+                                        1,
+                                        "xblock_sparse_host: assembling explicit FP x-block "
+                                        f"(species={int(s)} x={int(ix)} size={int(block_size)})",
+                                    )
+                                a_block = _assemble_rhsmode1_fp_xblock_tz_sparse_matrix(
+                                    op=op,
+                                    species=int(s),
+                                    ix=int(ix),
+                                    preconditioner_xi=preconditioner_xi,
+                                    host_cache=assembled_host_cache,
+                                )
+                                _factorize_sparse_matrix_csr_host(
+                                    a_csr_full=a_block.tocsr(),
+                                    cache_key=block_cache_key,
+                                    drop_tol=drop_tol,
+                                    drop_rel=drop_rel,
+                                    ilu_drop_tol=ilu_drop_tol,
+                                    fill_factor=fill_factor,
+                                    factorization="lu" if exact_lu else "ilu",
+                                    emit=emit,
+                                )
+                            else:
+                                _build_sparse_ilu_from_matvec(
+                                    matvec=_mv_block,
+                                    n=int(block_size),
+                                    dtype=jnp.float64,
+                                    cache_key=block_cache_key,
+                                    drop_tol=drop_tol,
+                                    drop_rel=drop_rel,
+                                    ilu_drop_tol=ilu_drop_tol,
+                                    fill_factor=fill_factor,
+                                    build_dense_factors=False,
+                                    build_jax_factors=False,
+                                    build_ilu=True,
+                                    store_dense=False,
+                                    factorization="lu" if exact_lu else "ilu",
+                                    row_nnz_cap=int(row_cap),
+                                    emit=emit,
+                                )
+                            fac_cache = _RHSMODE1_SPARSE_ILU_CACHE.get(block_cache_key)
                     except Exception as exc:  # noqa: BLE001
                         fac_cache = None
                         if emit is not None:
@@ -7569,8 +8303,18 @@ def _build_rhsmode1_xblock_tz_sparse_preconditioner(
                                 f"(species={int(s)} x={int(ix)} size={int(block_size)}) "
                                 f"({type(exc).__name__}: {exc})",
                             )
+                    host_factor = None if fac_cache is None else fac_cache.ilu
+                    if assembled_host_fp and host_factor is not None:
+                        if not _rhsmode1_host_factor_probe_ok(factor=host_factor, block_size=int(block_size)):
+                            if emit is not None:
+                                emit(
+                                    1,
+                                    "xblock_sparse_host: rejecting unstable block factor "
+                                    f"(species={int(s)} x={int(ix)} size={int(block_size)})",
+                                )
+                            host_factor = None
                     block_slices.append((start, block_size))
-                    block_factors.append(None if fac_cache is None else fac_cache.ilu)
+                    block_factors.append(host_factor)
 
             extra_inv_np: np.ndarray | None = None
             if extra_size > 0:
@@ -7685,6 +8429,306 @@ def _build_rhsmode1_xblock_tz_sparse_preconditioner(
         return reduce_full(z_full)
 
     return _apply_reduced
+
+
+def _build_rhsmode1_sxblock_tz_sparse_host_preconditioner(
+    *,
+    op: V3FullSystemOperator,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    drop_tol: float,
+    drop_rel: float,
+    ilu_drop_tol: float,
+    fill_factor: float,
+    emit: Callable[[int, str], None] | None = None,
+) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """Explicit-only sparse per-L species/x rescue preconditioner for large FP systems."""
+    cache_key = (
+        *_rhsmode1_precond_cache_key(op, "sxblock_tz_sparse_host"),
+        float(drop_tol),
+        float(drop_rel),
+        float(ilu_drop_tol),
+        float(fill_factor),
+    )
+    cached = _RHSMODE1_SPARSE_SXBLOCK_HOST_PRECOND_CACHE.get(cache_key)
+    n_species = int(op.n_species)
+    n_x = int(op.n_x)
+    n_l = int(op.n_xi)
+    n_theta = int(op.n_theta)
+    n_zeta = int(op.n_zeta)
+    total_size = int(op.total_size)
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    lu_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SXBLOCK_SPARSE_LU_MAX", "").strip()
+    try:
+        lu_max = int(lu_max_env) if lu_max_env else 4000
+    except ValueError:
+        lu_max = 4000
+    lu_max = max(0, int(lu_max))
+
+    if cached is None:
+        import scipy.sparse as sp  # noqa: PLC0415
+
+        extra_start = int(op.f_size + op.phi1_size)
+        extra_size = int(op.extra_size)
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        struct_tol = _sparse_structural_tol()
+        block_indices: list[np.ndarray] = []
+        block_factors: list[object | None] = []
+        for il in range(n_l):
+            active_x = np.where(nxi_for_x > il)[0]
+            if active_x.size == 0:
+                continue
+            idx: list[int] = []
+            for s in range(n_species):
+                for ix in active_x:
+                    base = int((((s * n_x + int(ix)) * n_l + il) * n_theta) * n_zeta)
+                    for it in range(n_theta):
+                        for iz in range(n_zeta):
+                            idx.append(base + it * n_zeta + iz)
+            rep_idx_np = np.asarray(idx, dtype=np.int32)
+            block_cache_key = (cache_key, int(il), int(rep_idx_np.size))
+            exact_lu = int(rep_idx_np.size) <= int(lu_max)
+            try:
+                if emit is not None:
+                    emit(
+                        1,
+                        "sxblock_sparse_host: assembling per-L species/x block "
+                        f"(L={int(il)} size={int(rep_idx_np.size)})",
+                    )
+                chunk_cols = _precond_chunk_cols(total_size, int(rep_idx_np.shape[0]))
+                y_sub = _matvec_submatrix(
+                    op,
+                    col_idx=rep_idx_np,
+                    row_idx=rep_idx_np,
+                    total_size=total_size,
+                    chunk_cols=chunk_cols,
+                )
+                a_block = np.asarray(y_sub.T, dtype=np.float64)
+                if struct_tol > 0.0 and a_block.size:
+                    a_block[np.abs(a_block) <= struct_tol] = 0.0
+                a_csr = sp.csr_matrix(a_block)
+                a_csr.eliminate_zeros()
+                _factorize_sparse_matrix_csr_host(
+                    a_csr_full=a_csr,
+                    cache_key=block_cache_key,
+                    drop_tol=drop_tol,
+                    drop_rel=drop_rel,
+                    ilu_drop_tol=ilu_drop_tol,
+                    fill_factor=fill_factor,
+                    factorization="lu" if exact_lu else "ilu",
+                    emit=emit,
+                )
+                fac_cache = _RHSMODE1_SPARSE_ILU_CACHE.get(block_cache_key)
+            except Exception as exc:  # noqa: BLE001
+                fac_cache = None
+                if emit is not None:
+                    emit(
+                        1,
+                        "sxblock_sparse_host: factorization failed for block "
+                        f"(L={int(il)} size={int(rep_idx_np.size)}) "
+                        f"({type(exc).__name__}: {exc})",
+                    )
+            host_factor = None if fac_cache is None else fac_cache.ilu
+            if host_factor is not None and (
+                not _rhsmode1_host_factor_probe_ok(factor=host_factor, block_size=int(rep_idx_np.size))
+            ):
+                if emit is not None:
+                    emit(
+                        1,
+                        "sxblock_sparse_host: rejecting unstable block factor "
+                        f"(L={int(il)} size={int(rep_idx_np.size)})",
+                    )
+                host_factor = None
+            block_indices.append(rep_idx_np)
+            block_factors.append(host_factor)
+
+        extra_inv_np: np.ndarray | None = None
+        if extra_size > 0:
+            chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+            y_sub = _matvec_submatrix(
+                op,
+                col_idx=extra_idx_np,
+                row_idx=extra_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            ee = np.asarray(y_sub.T, dtype=np.float64)
+            ee = ee + np.float64(reg_val) * np.eye(extra_size, dtype=np.float64)
+            try:
+                extra_inv_np = np.linalg.inv(ee)
+            except np.linalg.LinAlgError:
+                extra_inv_np = np.linalg.pinv(ee, rcond=1e-12)
+            if not np.all(np.isfinite(extra_inv_np)):
+                extra_inv_np = np.linalg.pinv(ee, rcond=1e-12)
+
+        cached = _RHSMode1SparseSXBlockHostPrecondCache(
+            block_indices=tuple(block_indices),
+            block_factors=tuple(block_factors),
+            extra_idx_np=extra_idx_np,
+            extra_inv_np=extra_inv_np,
+        )
+        _RHSMODE1_SPARSE_SXBLOCK_HOST_PRECOND_CACHE[cache_key] = cached
+
+    def _apply_full(r_full: jnp.ndarray) -> jnp.ndarray:
+        r_np = np.asarray(r_full, dtype=np.float64).reshape((-1,))
+        z_np = np.array(r_np, copy=True)
+        for idx_np, fac in zip(cached.block_indices, cached.block_factors, strict=True):
+            if fac is None or idx_np.size == 0:
+                continue
+            z_np[idx_np] = np.asarray(fac.solve(r_np[idx_np]), dtype=np.float64)
+        if cached.extra_inv_np is not None and cached.extra_idx_np.size:
+            z_np[cached.extra_idx_np] = cached.extra_inv_np @ r_np[cached.extra_idx_np]
+        return jnp.asarray(z_np, dtype=jnp.float64)
+
+    apply_full_safe = _safe_preconditioner(_apply_full)
+
+    if reduce_full is None or expand_reduced is None:
+        return apply_full_safe
+
+    def _apply_reduced(r_reduced: jnp.ndarray) -> jnp.ndarray:
+        z_full = apply_full_safe(expand_reduced(r_reduced))
+        return reduce_full(z_full)
+
+    return _apply_reduced
+
+
+def _compute_rhsmode1_sxblock_tz_sparse_host_seed(
+    *,
+    op: V3FullSystemOperator,
+    rhs_reduced: jnp.ndarray,
+    reduce_full: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    expand_reduced: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
+    drop_tol: float,
+    drop_rel: float,
+    ilu_drop_tol: float,
+    fill_factor: float,
+    emit: Callable[[int, str], None] | None = None,
+) -> jnp.ndarray:
+    """Build an explicit sxblock_tz seed without retaining all per-L factors."""
+    import scipy.sparse as sp  # noqa: PLC0415
+
+    rhs_full = expand_reduced(rhs_reduced) if expand_reduced is not None else rhs_reduced
+    rhs_full_np = np.asarray(rhs_full, dtype=np.float64).reshape((-1,))
+    seed_full_np = np.array(rhs_full_np, copy=True)
+
+    n_species = int(op.n_species)
+    n_x = int(op.n_x)
+    n_l = int(op.n_xi)
+    n_theta = int(op.n_theta)
+    n_zeta = int(op.n_zeta)
+    total_size = int(op.total_size)
+    nxi_for_x = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+    lu_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SXBLOCK_SPARSE_LU_MAX", "").strip()
+    chunk_cols_env = os.environ.get("SFINCS_JAX_RHSMODE1_SXBLOCK_CHUNK_COLS", "").strip()
+    try:
+        lu_max = int(lu_max_env) if lu_max_env else 4000
+    except ValueError:
+        lu_max = 4000
+    lu_max = max(0, int(lu_max))
+    try:
+        chunk_cols_cap = int(chunk_cols_env) if chunk_cols_env else 32
+    except ValueError:
+        chunk_cols_cap = 32
+    chunk_cols_cap = max(1, int(chunk_cols_cap))
+    struct_tol = _sparse_structural_tol()
+
+    for il in range(n_l):
+        active_x = np.where(nxi_for_x > il)[0]
+        if active_x.size == 0:
+            continue
+        idx: list[int] = []
+        for s in range(n_species):
+            for ix in active_x:
+                base = int((((s * n_x + int(ix)) * n_l + il) * n_theta) * n_zeta)
+                for it in range(n_theta):
+                    for iz in range(n_zeta):
+                        idx.append(base + it * n_zeta + iz)
+        rep_idx_np = np.asarray(idx, dtype=np.int32)
+        exact_lu = int(rep_idx_np.size) <= int(lu_max)
+        block_cache_key = (
+            *_rhsmode1_precond_cache_key(op, "sxblock_tz_sparse_seed"),
+            int(il),
+            int(rep_idx_np.size),
+            float(drop_tol),
+            float(drop_rel),
+            float(ilu_drop_tol),
+            float(fill_factor),
+            int(exact_lu),
+        )
+        try:
+            if emit is not None:
+                emit(
+                    1,
+                    "sxblock_sparse_seed: assembling per-L species/x block "
+                    f"(L={int(il)} size={int(rep_idx_np.size)})",
+                )
+            chunk_cols = min(_precond_chunk_cols(total_size, int(rep_idx_np.shape[0])), int(chunk_cols_cap))
+            y_sub = _matvec_submatrix(
+                op,
+                col_idx=rep_idx_np,
+                row_idx=rep_idx_np,
+                total_size=total_size,
+                chunk_cols=chunk_cols,
+            )
+            a_block = np.asarray(y_sub.T, dtype=np.float64)
+            if struct_tol > 0.0 and a_block.size:
+                a_block[np.abs(a_block) <= struct_tol] = 0.0
+            a_csr = sp.csr_matrix(a_block)
+            a_csr.eliminate_zeros()
+            _factorize_sparse_matrix_csr_host(
+                a_csr_full=a_csr,
+                cache_key=block_cache_key,
+                drop_tol=drop_tol,
+                drop_rel=drop_rel,
+                ilu_drop_tol=ilu_drop_tol,
+                fill_factor=fill_factor,
+                factorization="lu" if exact_lu else "ilu",
+                emit=emit,
+            )
+            fac_cache = _RHSMODE1_SPARSE_ILU_CACHE.pop(block_cache_key, None)
+            fac = None if fac_cache is None else fac_cache.ilu
+            if fac is None:
+                continue
+            sol = np.asarray(fac.solve(rhs_full_np[rep_idx_np]), dtype=np.float64)
+            if np.all(np.isfinite(sol)):
+                seed_full_np[rep_idx_np] = sol
+        except Exception as exc:  # noqa: BLE001
+            if emit is not None:
+                emit(
+                    1,
+                    "sxblock_sparse_seed: block solve failed "
+                    f"(L={int(il)} size={int(rep_idx_np.size)}) "
+                    f"({type(exc).__name__}: {exc})",
+                )
+
+    extra_start = int(op.f_size + op.phi1_size)
+    extra_size = int(op.extra_size)
+    if extra_size > 0:
+        extra_idx_np = np.arange(extra_start, extra_start + extra_size, dtype=np.int32)
+        reg_env = os.environ.get("SFINCS_JAX_RHSMODE1_PRECOND_REG", "").strip()
+        reg_val = float(reg_env) if reg_env else 1e-10
+        chunk_cols = _precond_chunk_cols(total_size, int(extra_idx_np.shape[0]))
+        y_sub = _matvec_submatrix(
+            op,
+            col_idx=extra_idx_np,
+            row_idx=extra_idx_np,
+            total_size=total_size,
+            chunk_cols=chunk_cols,
+        )
+        ee = np.asarray(y_sub.T, dtype=np.float64)
+        ee = ee + np.float64(reg_val) * np.eye(extra_size, dtype=np.float64)
+        try:
+            extra_inv_np = np.linalg.inv(ee)
+        except np.linalg.LinAlgError:
+            extra_inv_np = np.linalg.pinv(ee, rcond=1e-12)
+        if not np.all(np.isfinite(extra_inv_np)):
+            extra_inv_np = np.linalg.pinv(ee, rcond=1e-12)
+        seed_full_np[extra_idx_np] = extra_inv_np @ rhs_full_np[extra_idx_np]
+
+    seed_full = jnp.asarray(seed_full_np, dtype=jnp.float64)
+    return reduce_full(seed_full) if reduce_full is not None else seed_full
 
 
 def _build_rhsmode1_sxblock_tz_preconditioner(
@@ -11369,6 +12413,7 @@ def solve_v3_full_system_linear_gmres(
             except Exception as exc:  # noqa: BLE001
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: probe failed ({type(exc).__name__}: {exc})")
+        cpu_large_xblock_shortcut = False
         if cs0_petsc_compat:
             pass
         elif probe_shortcut:
@@ -11461,6 +12506,19 @@ def solve_v3_full_system_linear_gmres(
             # fallback is not allowed (e.g. medium FP DKES systems), avoid spending
             # many matvecs on a weak/expensive preconditioner. Instead, jump directly
             # to the sparse ILU branch.
+            cpu_large_xblock_shortcut = _rhsmode1_large_cpu_xblock_skip_primary_allowed(
+                op=op,
+                solve_method_kind=solve_method_kind,
+                active_size=int(active_size),
+                sparse_max_size=int(sparse_max_size),
+                preconditioner_species=preconditioner_species,
+                preconditioner_x=preconditioner_x,
+                preconditioner_xi=preconditioner_xi,
+                pre_theta=pre_theta,
+                pre_zeta=pre_zeta,
+                use_implicit=bool(use_implicit),
+                rhs1_precond_env=str(rhs1_precond_env),
+            )
             skip_primary_krylov = (
                 (
                     (op.fblock.fp is not None)
@@ -11471,12 +12529,15 @@ def solve_v3_full_system_linear_gmres(
                     and solve_method_kind not in {"dense", "dense_ksp"}
                 )
                 or gpu_dkes_sparse_shortcut
+                or cpu_large_xblock_shortcut
             )
             if skip_primary_krylov:
                 if emit is not None:
                     reason = "probe ratio huge, dense disabled"
                     if gpu_dkes_sparse_shortcut:
                         reason = "GPU DKES auto sparse shortcut"
+                    elif cpu_large_xblock_shortcut:
+                        reason = "CPU large FP x-block shortcut"
                     emit(
                         0,
                         "solve_v3_full_system_linear_gmres: skipping initial Krylov "
@@ -11636,6 +12697,14 @@ def solve_v3_full_system_linear_gmres(
         )
         if fp_force_stage2:
             stage2_trigger = True
+        if cpu_large_xblock_shortcut:
+            stage2_trigger = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: CPU large FP x-block shortcut "
+                    "skipping stage2 GMRES and proceeding directly to x-block rescue",
+                )
         if op.fblock.pas is not None and rhs1_precond_kind in {"pas_lite", "pas_hybrid", "pas_tz", "pas_schur", "pas_tokamak_theta"}:
             pas_stage2_skip_env = os.environ.get("SFINCS_JAX_PAS_STAGE2_SKIP_RATIO", "").strip()
             try:
@@ -11896,6 +12965,16 @@ def solve_v3_full_system_linear_gmres(
             pre_zeta=int(pre_zeta),
             residual_norm=float(res_reduced.residual_norm),
             target=float(target_reduced),
+        )
+        sparse_sxblock_rescue_active = _rhsmode1_sparse_sxblock_rescue_allowed(
+            op=op,
+            solve_method_kind=solve_method_kind,
+            active_size=int(active_size),
+            sparse_max_size=int(sparse_max_size),
+            preconditioner_x=int(preconditioner_x),
+            pre_theta=int(pre_theta),
+            pre_zeta=int(pre_zeta),
+            use_implicit=bool(use_implicit),
         )
         strong_precond_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_MIN", "").strip()
         try:
@@ -12528,6 +13607,7 @@ def solve_v3_full_system_linear_gmres(
 
         dense_matrix_cache: np.ndarray | None = None
         host_sparse_direct_used = False
+        precond_sparse_xblock_current = None
         if sparse_enabled and float(res_reduced.residual_norm) > target_reduced:
             if sparse_xblock_rescue_active:
                 try:
@@ -12537,18 +13617,27 @@ def solve_v3_full_system_linear_gmres(
                             "solve_v3_full_system_linear_gmres: v3-like sparse x-block rescue "
                             f"(size={int(active_size)} preconditioner_x={int(preconditioner_x)})",
                         )
+                    assembled_host_fp = _rhsmode1_fp_xblock_assembled_host_allowed(
+                        op=op,
+                        preconditioner_species=preconditioner_species,
+                        preconditioner_xi=preconditioner_xi,
+                        use_implicit=bool(use_implicit),
+                    )
                     _mark("rhs1_sparse_precond_build_start")
                     precond_sparse_xblock = _build_rhsmode1_xblock_tz_sparse_preconditioner(
                         op=op,
                         reduce_full=reduce_full,
                         expand_reduced=expand_reduced,
                         build_jax_factors=bool(use_implicit),
+                        preconditioner_species=preconditioner_species,
+                        preconditioner_xi=preconditioner_xi,
                         drop_tol=sparse_drop_tol,
                         drop_rel=sparse_drop_rel,
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                         emit=emit,
                     )
+                    precond_sparse_xblock_current = precond_sparse_xblock
                     _mark("rhs1_sparse_precond_build_done")
                     _mark("rhs1_sparse_precond_solve_start")
                     if use_implicit:
@@ -12565,37 +13654,225 @@ def solve_v3_full_system_linear_gmres(
                             precond_side=gmres_precond_side,
                         )
                     else:
-                        x_np, _rn_sparse_xblock, _history = gmres_solve_with_history_scipy(
-                            matvec=mv_reduced,
-                            b=rhs_reduced,
-                            preconditioner=precond_sparse_xblock,
-                            x0=res_reduced.x,
-                            tol=tol,
-                            atol=atol,
-                            restart=restart,
-                            maxiter=maxiter,
-                            precondition_side=gmres_precond_side,
-                        )
-                        x_sparse_xblock = jnp.asarray(x_np, dtype=jnp.float64)
-                        residual_vec_sparse_xblock = rhs_reduced - mv_reduced(x_sparse_xblock)
-                        res_sparse_xblock = GMRESSolveResult(
-                            x=x_sparse_xblock,
-                            residual_norm=jnp.asarray(jnp.linalg.norm(residual_vec_sparse_xblock), dtype=jnp.float64),
-                        )
+                        res_sparse_xblock = None
+                        if assembled_host_fp:
+                            refine_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XBLOCK_REFINES", "").strip()
+                            try:
+                                refine_steps = int(refine_env) if refine_env else 2
+                            except ValueError:
+                                refine_steps = 2
+                            refine_steps = max(0, int(refine_steps))
+                            accept_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XBLOCK_ACCEPT_RATIO", "").strip()
+                            try:
+                                accept_ratio = float(accept_ratio_env) if accept_ratio_env else 10.0
+                            except ValueError:
+                                accept_ratio = 10.0
+                            accept_ratio = max(1.0, float(accept_ratio))
+                            polish_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XBLOCK_POLISH", "").strip().lower()
+                            polish_enabled = polish_env not in {"0", "false", "no", "off"}
+                            polish_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XBLOCK_POLISH_RESTART", "").strip()
+                            polish_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_XBLOCK_POLISH_MAXITER", "").strip()
+                            try:
+                                polish_restart = int(polish_restart_env) if polish_restart_env else min(int(restart), 40)
+                            except ValueError:
+                                polish_restart = min(int(restart), 40)
+                            try:
+                                polish_maxiter = int(polish_maxiter_env) if polish_maxiter_env else min(int(maxiter or 80), 80)
+                            except ValueError:
+                                polish_maxiter = min(int(maxiter or 80), 80)
+                            polish_restart = max(5, int(polish_restart))
+                            polish_maxiter = max(5, int(polish_maxiter))
+                            base_residual_norm = float(res_reduced.residual_norm)
+                            x_trial = jnp.asarray(precond_sparse_xblock(rhs_reduced), dtype=jnp.float64)
+                            residual_vec_sparse_xblock = rhs_reduced - mv_reduced(x_trial)
+                            residual_norm_sparse_xblock = float(jnp.linalg.norm(residual_vec_sparse_xblock))
+                            if emit is not None:
+                                emit(
+                                    0,
+                                    "solve_v3_full_system_linear_gmres: explicit FP x-block seed "
+                                    f"(residual={residual_norm_sparse_xblock:.6e})",
+                                )
+                            for _ in range(refine_steps):
+                                if not np.isfinite(residual_norm_sparse_xblock) or residual_norm_sparse_xblock == 0.0:
+                                    break
+                                dx_trial = jnp.asarray(precond_sparse_xblock(residual_vec_sparse_xblock), dtype=jnp.float64)
+                                x_next = x_trial + dx_trial
+                                residual_vec_next = rhs_reduced - mv_reduced(x_next)
+                                residual_norm_next = float(jnp.linalg.norm(residual_vec_next))
+                                if not np.isfinite(residual_norm_next) or residual_norm_next >= residual_norm_sparse_xblock:
+                                    break
+                                x_trial = x_next
+                                residual_vec_sparse_xblock = residual_vec_next
+                                residual_norm_sparse_xblock = residual_norm_next
+                            if (
+                                np.isfinite(residual_norm_sparse_xblock)
+                                and residual_norm_sparse_xblock <= max(float(target_reduced), base_residual_norm * accept_ratio)
+                            ):
+                                if polish_enabled and residual_norm_sparse_xblock > float(target_reduced):
+                                    polish_precond = precond_sparse_xblock if precond_sparse_xblock is not None else ksp_precond
+                                    x_np, _rn_sparse_xblock, _history = gmres_solve_with_history_scipy(
+                                        matvec=mv_reduced,
+                                        b=rhs_reduced,
+                                        preconditioner=polish_precond,
+                                        x0=x_trial,
+                                        tol=tol,
+                                        atol=atol,
+                                        restart=polish_restart,
+                                        maxiter=polish_maxiter,
+                                        precondition_side=gmres_precond_side,
+                                    )
+                                    x_polish = jnp.asarray(x_np, dtype=jnp.float64)
+                                    residual_vec_polish = rhs_reduced - mv_reduced(x_polish)
+                                    residual_norm_polish = float(jnp.linalg.norm(residual_vec_polish))
+                                    if np.isfinite(residual_norm_polish) and residual_norm_polish < residual_norm_sparse_xblock:
+                                        x_trial = x_polish
+                                        residual_norm_sparse_xblock = residual_norm_polish
+                                res_sparse_xblock = GMRESSolveResult(
+                                    x=x_trial,
+                                    residual_norm=jnp.asarray(residual_norm_sparse_xblock, dtype=jnp.float64),
+                                )
+                            elif emit is not None:
+                                emit(
+                                    0,
+                                    "solve_v3_full_system_linear_gmres: explicit FP x-block seed rejected "
+                                    f"(residual={residual_norm_sparse_xblock:.6e}, base={base_residual_norm:.6e}, "
+                                    f"accept_ratio={accept_ratio:.1e})",
+                                )
+                        else:
+                            x_np, _rn_sparse_xblock, _history = gmres_solve_with_history_scipy(
+                                matvec=mv_reduced,
+                                b=rhs_reduced,
+                                preconditioner=precond_sparse_xblock,
+                                x0=res_reduced.x,
+                                tol=tol,
+                                atol=atol,
+                                restart=restart,
+                                maxiter=maxiter,
+                                precondition_side=gmres_precond_side,
+                            )
+                            x_sparse_xblock = jnp.asarray(x_np, dtype=jnp.float64)
+                            residual_vec_sparse_xblock = rhs_reduced - mv_reduced(x_sparse_xblock)
+                            res_sparse_xblock = GMRESSolveResult(
+                                x=x_sparse_xblock,
+                                residual_norm=jnp.asarray(jnp.linalg.norm(residual_vec_sparse_xblock), dtype=jnp.float64),
+                            )
                     _mark("rhs1_sparse_precond_solve_done")
-                    if float(res_sparse_xblock.residual_norm) < float(res_reduced.residual_norm):
+                    if res_sparse_xblock is not None and float(res_sparse_xblock.residual_norm) < float(res_reduced.residual_norm):
                         res_reduced = res_sparse_xblock
-                        ksp_matvec = mv_reduced
-                        ksp_b = rhs_reduced
-                        ksp_precond = precond_sparse_xblock
-                        ksp_x0 = res_reduced.x
-                        ksp_restart = restart
-                        ksp_maxiter = maxiter
-                        ksp_precond_side = gmres_precond_side
-                        ksp_solver_kind = _solver_kind("incremental")[0]
+                        if assembled_host_fp:
+                            ksp_x0 = res_reduced.x
+                        else:
+                            ksp_matvec = mv_reduced
+                            ksp_b = rhs_reduced
+                            ksp_precond = precond_sparse_xblock
+                            ksp_x0 = res_reduced.x
+                            ksp_restart = restart
+                            ksp_maxiter = maxiter
+                            ksp_precond_side = gmres_precond_side
+                            ksp_solver_kind = _solver_kind("incremental")[0]
                 except Exception as exc:  # noqa: BLE001
                     if emit is not None:
                         emit(1, f"xblock_sparse: failed ({type(exc).__name__}: {exc})")
+            if float(res_reduced.residual_norm) > target_reduced and sparse_sxblock_rescue_active:
+                try:
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: sparse sxblock_tz rescue "
+                            f"(size={int(active_size)} n_species={int(op.n_species)})",
+                        )
+                    _mark("rhs1_sparse_precond_build_start")
+                    x_sparse_sxblock = _compute_rhsmode1_sxblock_tz_sparse_host_seed(
+                        op=op,
+                        rhs_reduced=rhs_reduced,
+                        reduce_full=reduce_full,
+                        expand_reduced=expand_reduced,
+                        drop_tol=sparse_drop_tol,
+                        drop_rel=sparse_drop_rel,
+                        ilu_drop_tol=sparse_ilu_drop_tol,
+                        fill_factor=sparse_ilu_fill,
+                        emit=emit,
+                    )
+                    _mark("rhs1_sparse_precond_build_done")
+                    _mark("rhs1_sparse_precond_solve_start")
+                    residual_vec_sparse_sxblock = rhs_reduced - mv_reduced(x_sparse_sxblock)
+                    res_sparse_sxblock = GMRESSolveResult(
+                        x=x_sparse_sxblock,
+                        residual_norm=jnp.asarray(jnp.linalg.norm(residual_vec_sparse_sxblock), dtype=jnp.float64),
+                    )
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: explicit sxblock seed "
+                            f"(residual={float(res_sparse_sxblock.residual_norm):.6e})",
+                        )
+                    _mark("rhs1_sparse_precond_solve_done")
+                    if float(res_sparse_sxblock.residual_norm) < float(res_reduced.residual_norm):
+                        res_reduced = res_sparse_sxblock
+                        ksp_x0 = res_reduced.x
+                        if float(res_reduced.residual_norm) > target_reduced:
+                            polish_precond = precond_sparse_xblock_current or preconditioner_reduced
+                            if polish_precond is not None:
+                                sxblock_polish_restart_env = os.environ.get(
+                                    "SFINCS_JAX_RHSMODE1_SXBLOCK_POLISH_RESTART", ""
+                                ).strip()
+                                sxblock_polish_maxiter_env = os.environ.get(
+                                    "SFINCS_JAX_RHSMODE1_SXBLOCK_POLISH_MAXITER", ""
+                                ).strip()
+                                try:
+                                    sxblock_polish_restart = (
+                                        int(sxblock_polish_restart_env)
+                                        if sxblock_polish_restart_env
+                                        else min(int(restart), 40)
+                                    )
+                                except ValueError:
+                                    sxblock_polish_restart = min(int(restart), 40)
+                                try:
+                                    sxblock_polish_maxiter = (
+                                        int(sxblock_polish_maxiter_env)
+                                        if sxblock_polish_maxiter_env
+                                        else min(max(40, int(maxiter or 120)), 120)
+                                    )
+                                except ValueError:
+                                    sxblock_polish_maxiter = min(max(40, int(maxiter or 120)), 120)
+                                sxblock_polish_restart = max(5, int(sxblock_polish_restart))
+                                sxblock_polish_maxiter = max(5, int(sxblock_polish_maxiter))
+                                if emit is not None:
+                                    emit(
+                                        0,
+                                        "solve_v3_full_system_linear_gmres: sxblock seed polish "
+                                        f"restart={sxblock_polish_restart} maxiter={sxblock_polish_maxiter}",
+                                    )
+                                x_np, _rn_sxpolish, _history = gmres_solve_with_history_scipy(
+                                    matvec=mv_reduced,
+                                    b=rhs_reduced,
+                                    preconditioner=polish_precond,
+                                    x0=res_reduced.x,
+                                    tol=tol,
+                                    atol=atol,
+                                    restart=sxblock_polish_restart,
+                                    maxiter=sxblock_polish_maxiter,
+                                    precondition_side=gmres_precond_side,
+                                )
+                                x_sxpolish = jnp.asarray(x_np, dtype=jnp.float64)
+                                residual_vec_sxpolish = rhs_reduced - mv_reduced(x_sxpolish)
+                                res_sxpolish = GMRESSolveResult(
+                                    x=x_sxpolish,
+                                    residual_norm=jnp.asarray(jnp.linalg.norm(residual_vec_sxpolish), dtype=jnp.float64),
+                                )
+                                if float(res_sxpolish.residual_norm) < float(res_reduced.residual_norm):
+                                    res_reduced = res_sxpolish
+                                    ksp_matvec = mv_reduced
+                                    ksp_b = rhs_reduced
+                                    ksp_precond = polish_precond
+                                    ksp_x0 = res_reduced.x
+                                    ksp_restart = sxblock_polish_restart
+                                    ksp_maxiter = sxblock_polish_maxiter
+                                    ksp_precond_side = gmres_precond_side
+                                    ksp_solver_kind = _solver_kind("incremental")[0]
+                except Exception as exc:  # noqa: BLE001
+                    if emit is not None:
+                        emit(1, f"sxblock_sparse: failed ({type(exc).__name__}: {exc})")
             if float(res_reduced.residual_norm) > target_reduced and sparse_kind_use == "jax":
                 try:
                     _mark("rhs1_sparse_precond_build_start")
