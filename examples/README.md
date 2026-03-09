@@ -87,6 +87,9 @@ The script keeps the runnable input text from `--examples-root`, rewrites only
 These suite-level artifacts are checkpointed after every finished case, so an
 interrupted long run still leaves a usable partial audit instead of only
 per-case directories.
+If you restart a long sweep after changing `sfincs_jax` code or after a bad
+launch, reuse the same `--out-root` only with `--reset-report`, otherwise the
+old case rows remain merged into the new `suite_report*.json` checkpoint files.
 For the legacy `examples/upstream/fortran_multispecies` tree, the Fortran lane
 also canonicalizes the old pre-v3 namelist groups and aliases into the v3
 input shape expected by the reference executable, while the `sfincs_jax` lane

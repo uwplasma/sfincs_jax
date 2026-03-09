@@ -1,6 +1,6 @@
 # SFINCS_JAX Master Handoff + Execution Plan
 
-Last updated: 2026-03-07 (America/Chicago)
+Last updated: 2026-03-09 (America/Chicago)
 Owner: incoming agent
 
 ## 1) Prompt For A New Agent (copy/paste)
@@ -400,6 +400,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-09
+- Scope: Fix two distributed-Krylov initialization regressions uncovered by the scaled example sweeps, add explicit regressions for RHSMode=1 and RHSMode=3 write-output paths, and restart the frozen-reference office GPU audit from clean `main` with `--reset-report`.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_cli_solve_mode.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_parallel.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/examples/README.md`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_cli_solve_mode.py tests/test_transport_parallel.py`; `pytest -q tests/test_cli_solve_mode.py tests/test_transport_parallel.py tests/test_scaled_example_suite_reference.py tests/test_compare_reference_corruption.py tests/test_input_compat.py tests/test_rhs1_sparse_first_heuristic.py tests/test_sparse_assembly.py` (`68 passed`); targeted scaled-suite rerun in `/Users/rogeriojorge/local/tests/sfincs_jax/tests/debug_mono_scheme1_fix_v1`.
+- Runtime/memory delta: the office GPU frozen-reference lane at `/home/rjorge/sfincs_jax_main_clean/tests/scaled_example_suite_ref_gpu_full_v12` moved from immediate `jax_error` on the first three cases back to `parity_ok` on `inductiveE_noEr` (`41.43s`, `1415.8 MB`), `quick_2species_FPCollisions_noEr`, and `tokamak_1species_PASCollisions_noEr_Nx1` after the clean `7ee720f` restart; the old `monoenergetic_geometryScheme1` scaled CPU hard failure is now confirmed to be the underlying `geometry parsing mismatch`, not the transport `distributed_axis` regression.
+- Remaining risks: the full office GPU sweep is still running from clean `main`; the reduced-scale CPU audit root `/Users/rogeriojorge/local/tests/sfincs_jax/tests/scaled_example_suite_ref_cpu_full_v12` is still the current offender baseline (`19 parity_ok`, `11 parity_mismatch`, `8 max_attempts`, `1 jax_error`), but the single `jax_error` there is now partially retired because `monoenergetic_geometryScheme1` reaches the real parser failure instead of crashing in the transport driver.
+- Next actions: let the clean office GPU sweep continue checkpointing into `tests/scaled_example_suite_ref_gpu_full_v12`, refresh the offender summary once that report finishes, and only then update any final cross-lane audit tables from the completed CPU/GPU artifacts.
 
 ### 2026-03-08
 - Scope: Make long scaled-example sweeps checkpoint suite artifacts after every finished case, fix the scheme-1 `Er -> dPhiHatdpsiHat` regression that broke `tokamak_1species_FPCollisions_withEr_DKESTrajectories`, and harden VMEC comparison against corrupted Fortran reference geometry fields that appear as uninitialized garbage in monoenergetic outputs.
