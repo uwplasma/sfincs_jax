@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from sfincs_jax import cli
+from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
 
 
 class _FakeNamelist:
@@ -104,3 +105,24 @@ def test_cmd_transport_matrix_v3_forces_explicit_mode(monkeypatch, tmp_path: Pat
     )
     assert cli._cmd_transport_matrix_v3(args) == 0
     assert captured["differentiable"] is False
+
+
+def test_write_output_full_system_regression(tmp_path: Path, monkeypatch) -> None:
+    """Full-system write-output should not reference transport-only distributed state."""
+    input_path = (
+        Path(__file__).parent / "reduced_inputs" / "inductiveE_noEr.input.namelist"
+    )
+    assert input_path.exists()
+
+    monkeypatch.setenv("SFINCS_JAX_FORTRAN_STDOUT", "0")
+    monkeypatch.setenv("SFINCS_JAX_SOLVER_ITER_STATS", "0")
+
+    out_path = tmp_path / "sfincsOutput.h5"
+    write_sfincs_jax_output_h5(
+        input_namelist=input_path,
+        output_path=out_path,
+    )
+
+    data = read_sfincs_h5(out_path)
+    assert int(np.asarray(data["RHSMode"]).item()) == 1
+    assert "classicalParticleFluxNoPhi1_psiHat" in data

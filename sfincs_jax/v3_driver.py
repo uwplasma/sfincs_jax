@@ -11003,7 +11003,6 @@ def solve_v3_full_system_linear_gmres(
         # when it is already parity-accurate at our regression tolerances.
         bicgstab_fallback_strict = False
     use_implicit = _resolve_use_implicit(differentiable=differentiable)
-    distributed_axis = _resolve_distributed_gmres_axis(op=op0, emit=emit)
     distributed_axis = _resolve_distributed_gmres_axis(op=op, emit=emit)
     use_sharded_matvec = distributed_axis in {"theta", "zeta"} and (not use_implicit)
     distributed_auto_solver_env = os.environ.get("SFINCS_JAX_DISTRIBUTED_KRYLOV", "").strip().lower()
@@ -17566,6 +17565,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 emit(0, f"solve_v3_transport_matrix_linear_gmres: dense fallback enabled for RHSMode={rhs_mode} (n={int(op0.total_size)})")
 
     use_implicit = _resolve_use_implicit(differentiable=differentiable)
+    distributed_axis = _resolve_distributed_gmres_axis(op=op0, emit=emit)
 
     gmres_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_GMRES_RESTART", "").strip()
     try:
