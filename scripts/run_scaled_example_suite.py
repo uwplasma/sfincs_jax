@@ -293,9 +293,9 @@ def _stage_reference_fortran_artifacts(
     case_input: Path,
     case_out_dir: Path,
     reference_results_root: Path | None,
-) -> bool:
+) -> tuple[bool, Path]:
     if reference_results_root is None:
-        return False
+        return False, case_input
     ref_case_dir = reference_results_root / case_name
     h5_candidates = (
         ref_case_dir / "last_success" / "sfincsOutput_fortran.h5",
@@ -313,16 +313,30 @@ def _stage_reference_fortran_artifacts(
     ref_log = next((path for path in log_candidates if path.exists()), None)
     ref_input = next((path for path in input_candidates if path.exists()), None)
     if ref_h5 is None:
-        return False
-    if ref_input is not None and ref_input.read_text(encoding="utf-8") != case_input.read_text(encoding="utf-8"):
-        raise RuntimeError(f"Reference input mismatch for case {case_name}: {ref_input} does not match {case_input}")
+        return False, case_input
+    effective_input = case_input
+    if ref_input is not None:
+        case_text = case_input.read_text(encoding="utf-8")
+        ref_text = ref_input.read_text(encoding="utf-8")
+        if ref_text != case_text:
+            ref_res = _resolution_from_namelist(ref_input)
+            case_res = _resolution_from_namelist(case_input)
+            if ref_res != case_res:
+                # Reuse the exact reduced resolution from the frozen reference root
+                # while preserving the current lane's localized equilibrium paths.
+                effective_input = case_out_dir / "input.reference_seed.namelist"
+                effective_input.parent.mkdir(parents=True, exist_ok=True)
+                effective_input.write_text(
+                    _replace_resolution_values_in_text(case_text, updates=ref_res),
+                    encoding="utf-8",
+                )
     staged_dir = case_out_dir / "fortran_run"
     staged_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(case_input, staged_dir / "input.namelist")
+    shutil.copyfile(effective_input, staged_dir / "input.namelist")
     shutil.copyfile(ref_h5, staged_dir / "sfincsOutput.h5")
     if ref_log is not None:
         shutil.copyfile(ref_log, staged_dir / "sfincs.log")
-    return True
+    return True, effective_input
 
 
 def _run_prepared_case(
@@ -342,7 +356,7 @@ def _run_prepared_case(
     equilibria_search_dir: Path | None,
     reference_results_root: Path | None,
 ) -> CaseResult:
-    staged_reference = _stage_reference_fortran_artifacts(
+    staged_reference, effective_case_input = _stage_reference_fortran_artifacts(
         case_name=case_name,
         case_input=case_input,
         case_out_dir=case_out_dir,
@@ -362,7 +376,7 @@ def _run_prepared_case(
     try:
         return _run_case(
             case_name=case_name,
-            case_input=case_input,
+            case_input=effective_case_input,
             case_out_dir=case_out_dir,
             fortran_exe=fortran_exe if fortran_exe is not None else (case_out_dir / "__unused_sfincs__"),
             timeout_s=timeout_s,
