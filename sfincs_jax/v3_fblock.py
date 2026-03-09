@@ -190,6 +190,7 @@ def _dphi_hat_dpsi_hat_from_er(*, nml: Namelist, er: float) -> float:
         return 0.0
 
     geom_params = nml.group("geometryParameters")
+    phys_params = nml.group("physicsParameters")
     geometry_scheme = _get_int(geom_params, "geometryScheme", -1)
 
     input_radial = _get_int(geom_params, "inputRadialCoordinate", 3)

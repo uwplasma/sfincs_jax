@@ -15,6 +15,7 @@ from sfincs_jax.input_compat import (
 from sfincs_jax.io import localize_equilibrium_file_in_place, sfincs_jax_output_dict
 from sfincs_jax.namelist import read_sfincs_input
 from sfincs_jax.v3 import grids_from_namelist
+from sfincs_jax.v3_fblock import _dphi_hat_dpsi_hat_from_er
 from sfincs_jax.v3_system import full_system_operator_from_namelist
 
 
@@ -170,6 +171,21 @@ def test_sfincs_output_dict_preserves_legacy_er_coordinate_and_value() -> None:
     assert int(np.asarray(data["inputRadialCoordinateForGradients"]).reshape(-1)[0]) == 4
     assert np.isclose(er, -8.5897)
     assert np.isclose(float(np.asarray(data["dPhiHatdpsiHat"]).reshape(-1)[0]), ddrhat2ddpsihat * (-er))
+
+
+def test_dphi_hat_dpsi_hat_from_er_supports_geometry_scheme1_with_er() -> None:
+    input_path = (
+        Path(__file__).resolve().parents[1]
+        / "examples"
+        / "sfincs_examples"
+        / "tokamak_1species_FPCollisions_withEr_DKESTrajectories"
+        / "input.namelist"
+    )
+    nml = read_sfincs_input(input_path)
+    er = float(nml.group("physicsParameters").get("Er", nml.group("physicsParameters").get("ER", 0.0)))
+    dphi = _dphi_hat_dpsi_hat_from_er(nml=nml, er=er)
+    assert np.isfinite(dphi)
+    assert dphi != 0.0
 
 
 def test_full_system_operator_uses_split_legacy_gradient_coordinates() -> None:

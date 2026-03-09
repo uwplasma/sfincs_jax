@@ -84,6 +84,9 @@ The script keeps the runnable input text from `--examples-root`, rewrites only
 `examples/additional_examples/input.namelist`, and writes per-case outputs plus
 `suite_report.json`, `suite_report_strict.json`, `suite_status*.rst`,
 `run_manifest.json`, and `summary.md` into the chosen `--out-root`.
+These suite-level artifacts are checkpointed after every finished case, so an
+interrupted long run still leaves a usable partial audit instead of only
+per-case directories.
 For the legacy `examples/upstream/fortran_multispecies` tree, the Fortran lane
 also canonicalizes the old pre-v3 namelist groups and aliases into the v3
 input shape expected by the reference executable, while the `sfincs_jax` lane
@@ -116,3 +119,23 @@ python scripts/run_scaled_example_suite.py \
 
 This keeps the Fortran reference H5/log files fixed across lanes, which is
 useful when comparing local CPU and remote GPU runs against the same baseline.
+
+For a full-sweep audit on laptops or workstations where the original v3
+resolution is too expensive, keep the upstream resolution ratios but reduce the
+global scale factor instead of hand-editing individual examples:
+
+```bash
+cd /Users/rogeriojorge/local/tests/sfincs_jax
+python scripts/run_scaled_example_suite.py \
+  --examples-root examples/sfincs_examples \
+  --extra-input examples/additional_examples/input.namelist \
+  --resolution-reference-root /Users/rogeriojorge/local/tests/sfincs_original/fortran/version3/examples \
+  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --out-root tests/scaled_example_suite_ref_cpu_full \
+  --scale-factor 0.75 \
+  --timeout-s 3600 \
+  --max-attempts 1
+```
+
+This preserves the original example mix while reducing `NTHETA/NZETA/NX/NXI`
+consistently from the upstream reference tree.
