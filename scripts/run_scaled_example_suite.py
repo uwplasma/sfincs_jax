@@ -196,6 +196,35 @@ def _write_lane_summary(rows: list[CaseResult], out_path: Path) -> None:
     out_path.write_text("".join(lines), encoding="utf-8")
 
 
+def _write_suite_outputs(rows: list[CaseResult], out_root: Path) -> None:
+    ordered = [rows_by_case for rows_by_case in sorted(rows, key=lambda row: row.case)]
+    report_json = out_root / "suite_report.json"
+    report_json.write_text(json.dumps([asdict(row) for row in ordered], indent=2), encoding="utf-8")
+
+    report_json_strict = out_root / "suite_report_strict.json"
+    strict_rows = []
+    for row in ordered:
+        row_dict = asdict(row)
+        row_dict["status"] = _status_for_mode(row, strict=True)
+        row_dict["n_common_keys"] = row.strict_n_common_keys
+        row_dict["n_mismatch_common"] = row.strict_n_mismatch_common
+        row_dict["mismatch_keys_sample"] = list(row.strict_mismatch_keys_sample)
+        row_dict["n_mismatch_solver"] = row.strict_n_mismatch_solver
+        row_dict["n_mismatch_physics"] = row.strict_n_mismatch_physics
+        row_dict["mismatch_solver_sample"] = list(row.strict_mismatch_solver_sample)
+        row_dict["mismatch_physics_sample"] = list(row.strict_mismatch_physics_sample)
+        row_dict["max_abs_mismatch"] = row.strict_max_abs_mismatch
+        row_dict["compare_mode"] = "strict"
+        strict_rows.append(row_dict)
+    report_json_strict.write_text(json.dumps(strict_rows, indent=2), encoding="utf-8")
+
+    report_rst = out_root / "suite_status.rst"
+    report_rst_strict = out_root / "suite_status_strict.rst"
+    _write_rst(ordered, report_rst, strict=False)
+    _write_rst(ordered, report_rst_strict, strict=True)
+    _write_lane_summary(ordered, out_root / "summary.md")
+
+
 def _scaled_resolution_from_reference(*, reference_input: Path, runtime_input: Path, scale_factor: float) -> dict[str, int]:
     reference_res = _resolution_from_namelist(reference_input)
     rhs_mode = _rhs_mode_from_namelist(runtime_input)
@@ -573,6 +602,7 @@ def main() -> int:
                     setattr(result, attr, getattr(prev, attr))
         current_run_results.append(result)
         merged_results[result.case] = result
+        _write_suite_outputs(list(merged_results.values()), out_root)
         print(
             f"  status={result.status} attempts={result.attempts} reductions={result.reductions} "
             f"res={result.final_resolution} mismatch={result.n_mismatch_common}/{result.n_common_keys} "
@@ -639,35 +669,12 @@ def main() -> int:
                 _handle_result(result)
 
     ordered = [merged_results[key] for key in sorted(merged_results)]
-    report_json.write_text(json.dumps([asdict(row) for row in ordered], indent=2), encoding="utf-8")
-
-    report_json_strict = out_root / "suite_report_strict.json"
-    strict_rows = []
-    for row in ordered:
-        row_dict = asdict(row)
-        row_dict["status"] = _status_for_mode(row, strict=True)
-        row_dict["n_common_keys"] = row.strict_n_common_keys
-        row_dict["n_mismatch_common"] = row.strict_n_mismatch_common
-        row_dict["mismatch_keys_sample"] = list(row.strict_mismatch_keys_sample)
-        row_dict["n_mismatch_solver"] = row.strict_n_mismatch_solver
-        row_dict["n_mismatch_physics"] = row.strict_n_mismatch_physics
-        row_dict["mismatch_solver_sample"] = list(row.strict_mismatch_solver_sample)
-        row_dict["mismatch_physics_sample"] = list(row.strict_mismatch_physics_sample)
-        row_dict["max_abs_mismatch"] = row.strict_max_abs_mismatch
-        row_dict["compare_mode"] = "strict"
-        strict_rows.append(row_dict)
-    report_json_strict.write_text(json.dumps(strict_rows, indent=2), encoding="utf-8")
-
-    report_rst = out_root / "suite_status.rst"
-    report_rst_strict = out_root / "suite_status_strict.rst"
-    _write_rst(ordered, report_rst, strict=False)
-    _write_rst(ordered, report_rst_strict, strict=True)
-    _write_lane_summary(ordered, out_root / "summary.md")
+    _write_suite_outputs(ordered, out_root)
 
     print(f"Wrote {report_json}")
-    print(f"Wrote {report_json_strict}")
-    print(f"Wrote {report_rst}")
-    print(f"Wrote {report_rst_strict}")
+    print(f"Wrote {out_root / 'suite_report_strict.json'}")
+    print(f"Wrote {out_root / 'suite_status.rst'}")
+    print(f"Wrote {out_root / 'suite_status_strict.rst'}")
     print(f"Wrote {out_root / 'summary.md'}")
     return 0
 
