@@ -11003,6 +11003,7 @@ def solve_v3_full_system_linear_gmres(
         # when it is already parity-accurate at our regression tolerances.
         bicgstab_fallback_strict = False
     use_implicit = _resolve_use_implicit(differentiable=differentiable)
+    distributed_axis = _resolve_distributed_gmres_axis(op=op0, emit=emit)
     distributed_axis = _resolve_distributed_gmres_axis(op=op, emit=emit)
     use_sharded_matvec = distributed_axis in {"theta", "zeta"} and (not use_implicit)
     distributed_auto_solver_env = os.environ.get("SFINCS_JAX_DISTRIBUTED_KRYLOV", "").strip().lower()
