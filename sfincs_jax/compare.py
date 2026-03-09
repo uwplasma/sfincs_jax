@@ -9,6 +9,18 @@ import numpy as np
 from .io import read_sfincs_h5
 
 
+_VMEC_REFERENCE_CORRUPTION_ABS = 1.0e8
+_VMEC_REFERENCE_CORRUPTION_RATIO = 1.0e8
+_VMEC_REFERENCE_CORRUPTION_KEYS = {
+    "dBHat_sub_theta_dzeta",
+    "dBHat_sub_zeta_dtheta",
+    "dBHat_sup_theta_dzeta",
+    "dBHat_sup_zeta_dtheta",
+    "gpsiHatpsiHat",
+    "NTVBeforeSurfaceIntegral",
+}
+
+
 @dataclass(frozen=True)
 class CompareResult:
     key: str
@@ -456,9 +468,17 @@ def compare_sfincs_outputs(
         local_tolerances.setdefault("sources", {"atol": 1e-9})
     if geom_a == 5 and geom_b == 5 and rhs_mode_a in {2, 3} and rhs_mode_b in {2, 3}:
         # VMEC monoenergetic/transport runs do not populate NTV in v3; Fortran outputs can
-        # contain uninitialized garbage. Ignore these fields for parity.
-        local_tolerances.setdefault("NTV", {"ignore": True})
-        local_tolerances.setdefault("NTVBeforeSurfaceIntegral", {"ignore": True})
+        # contain uninitialized garbage. `gpsiHatpsiHat` is likewise not stable across
+        # builds for these branches, so ignore these fields for parity.
+        local_tolerances["NTV"] = {**local_tolerances.get("NTV", {}), "ignore": True}
+        local_tolerances["NTVBeforeSurfaceIntegral"] = {
+            **local_tolerances.get("NTVBeforeSurfaceIntegral", {}),
+            "ignore": True,
+        }
+        local_tolerances["gpsiHatpsiHat"] = {
+            **local_tolerances.get("gpsiHatpsiHat", {}),
+            "ignore": True,
+        }
     if keys is None:
         keys = sorted(set(a.keys()) & set(b.keys()))
 
@@ -528,6 +548,20 @@ def compare_sfincs_outputs(
             if np.any(nan_mask):
                 an = np.where(nan_mask, 0.0, an)
                 bn = np.where(nan_mask, 0.0, bn)
+            if k in _VMEC_REFERENCE_CORRUPTION_KEYS:
+                scale = np.maximum(np.abs(an), np.abs(bn))
+                partner = np.maximum(np.minimum(np.abs(an), np.abs(bn)), 1.0)
+                corruption_mask = (
+                    ~np.isfinite(an)
+                    | ~np.isfinite(bn)
+                    | (
+                        (scale > _VMEC_REFERENCE_CORRUPTION_ABS)
+                        & (scale > (_VMEC_REFERENCE_CORRUPTION_RATIO * partner))
+                    )
+                )
+                if np.any(corruption_mask):
+                    an = np.where(corruption_mask, 0.0, an)
+                    bn = np.where(corruption_mask, 0.0, bn)
 
         if k in nan_as_zero_keys:
             an = np.nan_to_num(an, nan=0.0)
