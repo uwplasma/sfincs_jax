@@ -52,12 +52,12 @@ def infer_species_input_radial_coordinate_for_gradients(
     if explicit is not None:
         return int(explicit)
 
+    if _group_get(species_params, "dNHatdrHats", "dTHatdrHats") is not None:
+        return 2
     if _group_get(species_params, "dNHatdpsiHats", "dTHatdpsiHats") is not None:
         return 0
     if _group_get(species_params, "dNHatdpsiNs", "dTHatdpsiNs") is not None:
         return 1
-    if _group_get(species_params, "dNHatdrHats", "dTHatdrHats") is not None:
-        return 2
     if _group_get(species_params, "dNHatdrNs", "dTHatdrNs") is not None:
         return 3
     return int(default)
@@ -73,16 +73,16 @@ def infer_phi_input_radial_coordinate_for_gradients(
     if explicit is not None:
         return int(explicit)
 
+    if _group_get(phys_params, "Er") is not None:
+        return 4
+    if _group_get(phys_params, "dPhiHatdrHat") is not None:
+        return 2
     if _group_get(phys_params, "dPhiHatdpsiHat") is not None:
         return 0
     if _group_get(phys_params, "dPhiHatdpsiN") is not None:
         return 1
-    if _group_get(phys_params, "dPhiHatdrHat") is not None:
-        return 2
     if _group_get(phys_params, "dPhiHatdrN") is not None:
         return 3
-    if _group_get(phys_params, "Er") is not None:
-        return 4
     return int(default)
 
 

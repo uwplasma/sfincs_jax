@@ -65,6 +65,29 @@ def test_infer_gradient_coordinates_legacy_mixed_species_and_er() -> None:
     )
 
 
+def test_infer_gradient_coordinates_prefers_v3_default_when_mixed_fields_are_present() -> None:
+    input_path = (
+        Path(__file__).resolve().parent
+        / "ref"
+        / "pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear.input.namelist"
+    )
+    nml = read_sfincs_input(input_path)
+    geom = nml.group("geometryParameters")
+    species = nml.group("speciesParameters")
+    phys = nml.group("physicsParameters")
+    assert infer_species_input_radial_coordinate_for_gradients(geom_params=geom, species_params=species, default=4) == 2
+    assert infer_phi_input_radial_coordinate_for_gradients(geom_params=geom, phys_params=phys, default=4) == 4
+    assert (
+        infer_input_radial_coordinate_for_gradients(
+            geom_params=geom,
+            species_params=species,
+            phys_params=phys,
+            default=4,
+        )
+        == 4
+    )
+
+
 def test_effective_equilibrium_file_supports_legacy_jgboozer_alias() -> None:
     input_path = (
         Path(__file__).resolve().parents[1]
@@ -209,3 +232,16 @@ def test_full_system_operator_uses_split_legacy_gradient_coordinates() -> None:
         np.asarray(op.dn_hat_dpsi_hat),
         ddrhat2ddpsihat * np.asarray([-15.0, -15.5, -0.025]),
     )
+
+
+def test_full_system_operator_prefers_v3_default_gradients_for_mixed_phi1_fixture() -> None:
+    input_path = Path(__file__).resolve().parent / "ref" / "pas_1species_PAS_noEr_tiny_withPhi1_inKinetic_linear.input.namelist"
+    nml = read_sfincs_input(input_path)
+    op = full_system_operator_from_namelist(nml=nml)
+    psi_a_hat = -0.384935
+    a_hat = 0.5109
+    r_n = 0.5
+    ddrhat2ddpsihat = a_hat / (2.0 * psi_a_hat * r_n)
+    assert np.allclose(np.asarray(op.dn_hat_dpsi_hat), ddrhat2ddpsihat * np.asarray([-0.5]))
+    assert np.allclose(np.asarray(op.dt_hat_dpsi_hat), ddrhat2ddpsihat * np.asarray([-2.0]))
+    assert np.isclose(float(op.dphi_hat_dpsi_hat), 0.0)
