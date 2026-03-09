@@ -139,3 +139,9 @@ python scripts/run_scaled_example_suite.py \
 
 This preserves the original example mix while reducing `NTHETA/NZETA/NX/NXI`
 consistently from the upstream reference tree.
+
+Use these reduced-scale full sweeps as an audit tool for runtime, memory, and
+solver-branch fragility. They preserve the upstream resolution ratios, but they
+can still shift conditioning enough to expose branch-sensitive mismatches that
+do not appear at the original example resolution. The release gate remains the
+standard reduced-suite comparisons plus targeted original-resolution examples.
