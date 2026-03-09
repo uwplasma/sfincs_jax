@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import numpy as np
 
 from sfincs_jax import cli
-from sfincs_jax.io import read_sfincs_h5, write_sfincs_jax_output_h5
+from sfincs_jax.io import (
+    _select_phi1_newton_linear_solve_method,
+    read_sfincs_h5,
+    write_sfincs_jax_output_h5,
+)
 
 
 class _FakeNamelist:
@@ -126,3 +130,37 @@ def test_write_output_full_system_regression(tmp_path: Path, monkeypatch) -> Non
     data = read_sfincs_h5(out_path)
     assert int(np.asarray(data["RHSMode"]).item()) == 1
     assert "classicalParticleFluxNoPhi1_psiHat" in data
+
+
+def test_phi1_newton_auto_method_uses_dense_on_cpu() -> None:
+    msgs: list[str] = []
+
+    method = _select_phi1_newton_linear_solve_method(
+        active_total_size=1090,
+        dense_cutoff=5000,
+        default_method="incremental",
+        dense_auto_ok=True,
+        dense_auto_backend="cpu",
+        env_override="",
+        emit=lambda _lvl, msg: msgs.append(str(msg)),
+    )
+
+    assert method == "dense"
+    assert any("using dense Newton step" in msg for msg in msgs)
+
+
+def test_phi1_newton_auto_method_skips_dense_on_gpu() -> None:
+    msgs: list[str] = []
+
+    method = _select_phi1_newton_linear_solve_method(
+        active_total_size=1090,
+        dense_cutoff=5000,
+        default_method="incremental",
+        dense_auto_ok=False,
+        dense_auto_backend="gpu",
+        env_override="",
+        emit=lambda _lvl, msg: msgs.append(str(msg)),
+    )
+
+    assert method == "incremental"
+    assert any("skipping dense auto mode on backend=gpu" in msg for msg in msgs)

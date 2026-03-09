@@ -67,6 +67,37 @@ def _output_cache_enabled() -> bool:
     return True
 
 
+def _select_phi1_newton_linear_solve_method(
+    *,
+    active_total_size: int,
+    dense_cutoff: int,
+    default_method: str,
+    dense_auto_ok: bool,
+    dense_auto_backend: str,
+    env_override: str,
+    emit=None,
+) -> str:
+    method = default_method
+    if int(active_total_size) <= int(dense_cutoff):
+        if dense_auto_ok:
+            method = "dense"
+            if emit is not None:
+                emit(
+                    1,
+                    "write_sfincs_jax_output_h5: includePhi1 -> "
+                    f"using dense Newton step (active_n={active_total_size})",
+                )
+        elif emit is not None:
+            emit(
+                1,
+                "write_sfincs_jax_output_h5: includePhi1 -> skipping dense auto mode on "
+                f"backend={dense_auto_backend}; using {default_method} Newton step",
+            )
+    if env_override in {"dense", "incremental", "batched"}:
+        method = env_override
+    return method
+
+
 def _output_cache_dir() -> Path | None:
     cache_dir_env = os.environ.get("SFINCS_JAX_OUTPUT_CACHE_DIR", "").strip()
     if cache_dir_env:
@@ -2478,17 +2509,16 @@ def write_sfincs_jax_output_h5(
                 dense_cutoff = int(dense_cutoff_env) if dense_cutoff_env else 5000
             except ValueError:
                 dense_cutoff = 5000
-            if int(active_total_size) <= int(dense_cutoff):
-                nk_solve_method = "dense"
-                if emit is not None:
-                    emit(
-                        1,
-                        "write_sfincs_jax_output_h5: includePhi1 -> "
-                        f"using dense Newton step (active_n={active_total_size})",
-                    )
             env_nk_method = os.environ.get("SFINCS_JAX_PHI1_NK_SOLVE_METHOD", "").strip().lower()
-            if env_nk_method in {"dense", "incremental", "batched"}:
-                nk_solve_method = env_nk_method
+            nk_solve_method = _select_phi1_newton_linear_solve_method(
+                active_total_size=int(active_total_size),
+                dense_cutoff=int(dense_cutoff),
+                default_method=nk_solve_method,
+                dense_auto_ok=bool(dense_auto_ok),
+                dense_auto_backend=str(dense_auto_backend),
+                env_override=env_nk_method,
+                emit=emit,
+            )
             # Default to full Newton updates for includePhi1 runs. Allow explicit
             # frozen-linearization overrides via environment variables.
             use_frozen_linearization = False

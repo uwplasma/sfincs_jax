@@ -18,6 +18,7 @@ _stage_reference_fortran_artifacts = _MODULE._stage_reference_fortran_artifacts
 _write_suite_outputs = _MODULE._write_suite_outputs
 
 from run_reduced_upstream_suite import CaseResult
+from run_reduced_upstream_suite import _classify_blocker
 
 
 def test_stage_reference_fortran_artifacts_uses_last_success(tmp_path: Path) -> None:
@@ -151,3 +152,22 @@ def test_write_suite_outputs_writes_incremental_reports(tmp_path: Path) -> None:
     assert strict_rows[0]["status"] == "parity_mismatch"
     assert strict_rows[0]["n_mismatch_common"] == 1
     assert "Scaled Example Suite Summary" in summary.read_text(encoding="utf-8")
+
+
+def test_classify_blocker_treats_cuda_dense_custom_calls_as_solver_branch(tmp_path: Path) -> None:
+    log_path = tmp_path / "sfincs_jax.log"
+    log_path.write_text(
+        "jaxlib._jax.XlaRuntimeError: UNIMPLEMENTED: No registered implementation for custom call "
+        "to cusolver_getrf_ffi for platform CUDA\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        _classify_blocker(
+            status="jax_error",
+            note="JAX error: CalledProcessError",
+            mismatch_keys=[],
+            jax_log=log_path,
+        )
+        == "solver branch mismatch"
+    )

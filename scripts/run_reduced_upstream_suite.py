@@ -1292,6 +1292,8 @@ def _classify_blocker(*, status: str, note: str, mismatch_keys: list[str], jax_l
             return "solver branch mismatch"
         return "output field mismatch"
 
+    if "cusolver_" in text or "xla_ffi" in text or "ffi_python_gpu_callback" in text:
+        return "solver branch mismatch"
     if "notimplemented" in text or "unsupported" in text or "todo" in text:
         return "unsupported physics/path"
     if "equilibrium" in text or "geometryscheme" in text or ".bc" in text or ".nc" in text or "netcdf" in text:
