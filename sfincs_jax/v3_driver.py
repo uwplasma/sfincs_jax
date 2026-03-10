@@ -399,6 +399,46 @@ def _rhsmode1_sparse_exact_lu_requested(
     return int(preconditioner_x) == 0 or (jax.default_backend() != "cpu" and (bool(use_dkes) or accel_small_case))
 
 
+def _rhsmode1_prefer_sparse_over_dense_shortcut(
+    *,
+    op: V3FullSystemOperator,
+    active_size: int,
+    sparse_max_size: int,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_PREFER_OVER_DENSE_SHORTCUT", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None or bool(use_implicit):
+        return False
+    if int(active_size) > int(sparse_max_size):
+        return False
+    min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_PREFER_OVER_DENSE_SHORTCUT_MIN", "").strip()
+    try:
+        min_size = int(min_env) if min_env else 2000
+    except ValueError:
+        min_size = 2000
+    if env in {"1", "true", "yes", "on"}:
+        return int(active_size) >= max(1, int(min_size))
+    return int(active_size) >= max(1, int(min_size))
+
+
+def _rhsmode1_sparse_prefer_skips_stage2(
+    *,
+    sparse_prefer_over_dense_shortcut: bool,
+    sparse_precond_mode: str,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_SKIP_STAGE2", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    enabled = bool(sparse_prefer_over_dense_shortcut) and str(sparse_precond_mode).strip().lower() != "off"
+    if env in {"1", "true", "yes", "on"}:
+        return enabled
+    return enabled
+
+
 def _rhsmode1_large_cpu_sparse_rescue_allowed(
     *,
     op: V3FullSystemOperator,
@@ -11183,6 +11223,16 @@ def solve_v3_full_system_linear_gmres(
         sparse_exact_lu=sparse_exact_lu,
         use_implicit=bool(use_implicit),
     )
+    sparse_prefer_over_dense_shortcut = _rhsmode1_prefer_sparse_over_dense_shortcut(
+        op=op,
+        active_size=int(active_size),
+        sparse_max_size=int(sparse_max_size),
+        use_implicit=bool(use_implicit),
+    )
+    sparse_prefer_skips_stage2 = _rhsmode1_sparse_prefer_skips_stage2(
+        sparse_prefer_over_dense_shortcut=bool(sparse_prefer_over_dense_shortcut),
+        sparse_precond_mode=sparse_precond_mode,
+    )
     gpu_dkes_sparse_shortcut = bool(
         rhs1_precond_env_user in {"", "auto"}
         and rhs1_bicgstab_env_user in {"", "auto"}
@@ -12435,7 +12485,7 @@ def solve_v3_full_system_linear_gmres(
                 probe_ratio = probe_norm / max(float(target_reduced), 1e-300)
                 if dense_shortcut_ratio > 0 and probe_ratio >= dense_shortcut_ratio:
                     allow_probe_shortcut = dense_fallback_max > 0 and int(active_size) <= dense_fallback_max
-                    if allow_probe_shortcut:
+                    if allow_probe_shortcut and (not sparse_prefer_over_dense_shortcut):
                         early_dense_shortcut = True
                         probe_shortcut = True
                         res_reduced = GMRESSolveResult(x=probe_x0, residual_norm=jnp.asarray(probe_norm))
@@ -12453,11 +12503,18 @@ def solve_v3_full_system_linear_gmres(
                             )
                     else:
                         if emit is not None:
-                            emit(
-                                1,
-                                "solve_v3_full_system_linear_gmres: probe shortcut skipped "
-                                f"(size={int(active_size)} > dense_max={dense_fallback_max})",
-                            )
+                            if sparse_prefer_over_dense_shortcut and allow_probe_shortcut:
+                                emit(
+                                    1,
+                                    "solve_v3_full_system_linear_gmres: probe shortcut skipped "
+                                    "(preferring sparse rescue over dense shortcut)",
+                                )
+                            else:
+                                emit(
+                                    1,
+                                    "solve_v3_full_system_linear_gmres: probe shortcut skipped "
+                                    f"(size={int(active_size)} > dense_max={dense_fallback_max})",
+                                )
                         if x0_reduced is None:
                             x0_reduced = probe_x0
                 elif x0_reduced is None:
@@ -12777,6 +12834,7 @@ def solve_v3_full_system_linear_gmres(
             and (cs0_dense_fallback_allowed or int(op.constraint_scheme) != 0)
             and dense_shortcut_ratio > 0
             and res_ratio >= dense_shortcut_ratio
+            and (not sparse_prefer_over_dense_shortcut)
         ):
             dense_fallback_max_huge_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_MAX_HUGE", "").strip()
             dense_fallback_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_DENSE_FALLBACK_RATIO", "").strip()
@@ -12849,11 +12907,26 @@ def solve_v3_full_system_linear_gmres(
             ksp_precond_side = gmres_precond_side
             ksp_solver_kind = "gmres"
         if (
+            sparse_prefer_skips_stage2
+            and float(res_reduced.residual_norm) > target_reduced
+            and stage2_enabled
+            and stage2_trigger
+            and not early_dense_shortcut
+            and not gpu_dkes_sparse_shortcut
+            and emit is not None
+        ):
+            emit(
+                1,
+                "solve_v3_full_system_linear_gmres: stage2 reduced GMRES skipped "
+                "(preferring sparse rescue first)",
+            )
+        if (
             (float(res_reduced.residual_norm) > target_reduced or fp_force_stage2)
             and stage2_enabled
             and stage2_trigger
             and not early_dense_shortcut
             and not gpu_dkes_sparse_shortcut
+            and not sparse_prefer_skips_stage2
             and t.elapsed_s() < stage2_time_cap_s
         ):
             if preconditioner_reduced is None and rhs1_precond_enabled:
@@ -13605,13 +13678,21 @@ def solve_v3_full_system_linear_gmres(
                     and (float(residual_norm_true) > target_reduced or force_dense_cs0)
                     and res_ratio >= dense_shortcut_ratio
                 ):
-                    dense_shortcut = True
-                    if emit is not None:
-                        emit(
-                            0,
-                            "solve_v3_full_system_linear_gmres: dense fallback shortcut "
-                            f"(ratio={res_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
-                        )
+                    if sparse_prefer_over_dense_shortcut and (not sparse_exact_direct):
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: dense shortcut skipped "
+                                "(preferring sparse rescue over dense shortcut)",
+                            )
+                    else:
+                        dense_shortcut = True
+                        if emit is not None:
+                            emit(
+                                0,
+                                "solve_v3_full_system_linear_gmres: dense fallback shortcut "
+                                f"(ratio={res_ratio:.3e} >= {dense_shortcut_ratio:.1e})",
+                            )
 
         sparse_kind_use = sparse_precond_kind
         sparse_enabled = False

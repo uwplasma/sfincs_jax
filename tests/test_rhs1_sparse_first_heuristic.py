@@ -13,6 +13,8 @@ from sfincs_jax.v3_driver import (
     _rhsmode1_large_cpu_sparse_rescue_allowed,
     _rhsmode1_large_cpu_sparse_exact_lu_allowed,
     _rhsmode1_large_cpu_sparse_rescue_first,
+    _rhsmode1_prefer_sparse_over_dense_shortcut,
+    _rhsmode1_sparse_prefer_skips_stage2,
     _resolve_use_implicit,
     _rhsmode1_sparse_sxblock_rescue_allowed,
     _rhsmode1_sparse_exact_lu_requested,
@@ -504,6 +506,70 @@ def test_sparse_exact_lu_can_exceed_sparse_ilu_cap_on_gpu_dkes(monkeypatch) -> N
         sparse_max_size=6000,
         preconditioner_x=0,
         use_dkes=True,
+    )
+
+
+def test_prefer_sparse_over_dense_shortcut_for_explicit_moderate_fp(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_PREFER_OVER_DENSE_SHORTCUT", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_PREFER_OVER_DENSE_SHORTCUT_MIN", raising=False)
+    assert _rhsmode1_prefer_sparse_over_dense_shortcut(
+        op=_op(constraint_scheme=1),
+        active_size=4288,
+        sparse_max_size=6000,
+        use_implicit=False,
+    )
+
+
+def test_prefer_sparse_over_dense_shortcut_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_PREFER_OVER_DENSE_SHORTCUT", raising=False)
+    assert not _rhsmode1_prefer_sparse_over_dense_shortcut(
+        op=_op(constraint_scheme=1),
+        active_size=1000,
+        sparse_max_size=6000,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_prefer_sparse_over_dense_shortcut(
+        op=_op(constraint_scheme=1),
+        active_size=4288,
+        sparse_max_size=4000,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_prefer_sparse_over_dense_shortcut(
+        op=_op(constraint_scheme=1, has_fp=False),
+        active_size=4288,
+        sparse_max_size=6000,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_prefer_sparse_over_dense_shortcut(
+        op=_op(constraint_scheme=1),
+        active_size=4288,
+        sparse_max_size=6000,
+        use_implicit=True,
+    )
+
+
+def test_sparse_prefer_skips_stage2_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_SKIP_STAGE2", raising=False)
+    assert _rhsmode1_sparse_prefer_skips_stage2(
+        sparse_prefer_over_dense_shortcut=True,
+        sparse_precond_mode="auto",
+    )
+
+
+def test_sparse_prefer_skips_stage2_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_SKIP_STAGE2", raising=False)
+    assert not _rhsmode1_sparse_prefer_skips_stage2(
+        sparse_prefer_over_dense_shortcut=False,
+        sparse_precond_mode="auto",
+    )
+    assert not _rhsmode1_sparse_prefer_skips_stage2(
+        sparse_prefer_over_dense_shortcut=True,
+        sparse_precond_mode="off",
+    )
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SPARSE_SKIP_STAGE2", "0")
+    assert not _rhsmode1_sparse_prefer_skips_stage2(
+        sparse_prefer_over_dense_shortcut=True,
+        sparse_precond_mode="auto",
     )
 
 

@@ -338,11 +338,11 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 ## 14) Roadmap
 
 ### 14.1 Short-term (next 1-3 weeks)
-- [ ] Ensure all reduced-suite rows are complete for CPU and GPU lanes (no missing runtime/memory cells).
+- [~] Ensure all reduced-suite rows are complete for CPU and GPU lanes (no missing runtime/memory cells).
 - [ ] Re-run additional high-resolution example on CPU+GPU and integrate into comparison reporting.
 - [ ] Close remaining worst runtime/memory offenders (especially PAS-heavy cases) while preserving tolerances.
 - [~] Strengthen default PAS preconditioner path to avoid expensive fallback branches where possible.
-- [ ] Keep docs and README synchronized with measured reality (no stale claims).
+- [~] Keep docs and README synchronized with measured reality (no stale claims).
 - [ ] Keep CI wall-time under control without reducing scientific coverage.
 
 ### 14.2 Medium-term (1-3 months)
@@ -371,8 +371,8 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 - [ ] Profile (`SFINCS_JAX_PROFILE=1`) and isolate dominant phase.
 - [ ] Implement smallest high-ROI change.
 - [ ] Re-run targeted case(s), verify tolerances and print diagnostics.
-- [ ] Re-run reduced-suite subset, then full suite when stable.
-- [ ] Regenerate table + docs + this plan.
+- [x] Re-run reduced-suite subset, then full suite when stable.
+- [x] Regenerate table + docs + this plan.
 
 ### 15.2 "Do not regress" list
 - [ ] Differentiability on JAX-native solver paths.
@@ -400,6 +400,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-10
+- Scope: Close the remaining local CPU reduced-suite offenders by making timeout handling honest, preserving model-based RHSMode=1 comparison floors over stale case files, and replacing two stale reduced-input fixtures with the runner’s current source-halving policy while bounding stored seeds against the source example resolutions.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/run_reduced_upstream_suite.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/compare.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_compare_reference_corruption.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_fortran_reference_solver_options.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_rhs1_sparse_first_heuristic.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/geometryScheme4_1species_PAS_withEr_DKESTrajectories.input.namelist`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_inputs/tokamak_1species_PASCollisions_noEr_Nx1.input.namelist`, `/Users/rogeriojorge/local/tests/sfincs_jax/README.md`, `/Users/rogeriojorge/local/tests/sfincs_jax/docs/_generated/reduced_upstream_suite_status.rst`, `/Users/rogeriojorge/local/tests/sfincs_jax/docs/_generated/reduced_upstream_suite_status_strict.rst`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/suite_report.json`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/suite_report_strict.json`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `pytest -q tests/test_fortran_reference_solver_options.py tests/test_compare_reference_corruption.py tests/test_rhs1_sparse_first_heuristic.py tests/test_solver_gmres.py` (`67 passed`); `JAX_PLATFORM_NAME=cpu pytest -q` (`279 passed in 213.85s`); `python scripts/run_reduced_upstream_suite.py --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs --max-attempts 1 --timeout-s 1200 --rtol 5e-4 --atol 1e-9 --jax-repeats 1`; `python scripts/generate_readme_reduced_suite_table.py`
+- Runtime/memory delta: the local CPU reduced suite moved from `36 parity_ok / 2 max_attempts` to `38 parity_ok / 0` in practical mode. The repaired fixture rows are now `geometryScheme4_1species_PAS_withEr_DKESTrajectories` at `7x12x3x24` with `0/207` practical and strict mismatches, and `tokamak_1species_PASCollisions_noEr_Nx1` at `11x1x1x16` with `0/212` practical and strict mismatches. Strict-mode-only mismatches remain in four legacy-sensitive rows, but practical parity is now full.
+- Remaining risks: the reduced suite is clean only in practical mode; strict mismatches remain in `HSX_PASCollisions_fullTrajectories`, `monoenergetic_geometryScheme1`, `tokamak_1species_FPCollisions_noEr`, and `tokamak_2species_PASCollisions_withEr_fullTrajectories`. Full original-resolution example sweeps and the frozen-reference office GPU lanes still need a final refresh from this revision.
+- Next actions: rerun the frozen-reference GPU/example audits from the current `main`, then decide whether the remaining strict-only rows should be eliminated numerically or documented explicitly as solver-branch sensitivity in the release notes.
 
 ### 2026-03-10
 - Scope: Remove the explicit CUDA host-dense callback blocker by running host dense fallback fully off-device for non-differentiable solves, and revalidate the latest solver path with full local tests plus targeted CPU/GPU DKES probes.

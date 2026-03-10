@@ -41,10 +41,10 @@
 /
 
 &resolutionparameters
-    ntheta = 32
-    nzeta = 5
-    nxi = 30
-    nx = 6
+    ntheta = 11
+    nzeta = 1
+    nxi = 16
+    nx = 1
     solvertolerance = 1e-08
 /
 

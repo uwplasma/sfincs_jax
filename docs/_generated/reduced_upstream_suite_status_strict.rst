@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_mismatch=7, parity_ok=31
+- Status counts: parity_mismatch=4, parity_ok=34
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -34,13 +34,13 @@
      - 1
      - 0
      - 0.596
-     - 5.348
+     - 103.156
      - 146.6
-     - 2932.1
-     - 0/192
+     - 2906.9
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_FPCollisions_fullTrajectories
      - parity_ok
      - none
@@ -48,13 +48,13 @@
      - 1
      - 0
      - 2.702
-     - 5.110
+     - 40.663
      - 99.9
-     - 1870.4
-     - 0/192
+     - 2886.0
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_PASCollisions_DKESTrajectories
      - parity_ok
      - none
@@ -62,13 +62,13 @@
      - 1
      - 0
      - 2.778
-     - 61.428
+     - 31.581
      - 346.0
-     - 5508.7
-     - 0/192
+     - 5147.1
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_PASCollisions_fullTrajectories
      - parity_mismatch
      - none
@@ -76,13 +76,13 @@
      - 1
      - 0
      - 32.903
-     - 196.472
+     - 92.264
      - 467.0
-     - 3053.3
-     - 3/192
+     - 5099.4
+     - 3/193
      - S:2 P:1
      - 9/9
-     - All common numeric datasets matched tolerance. strict=3/192
+     - All common numeric datasets matched tolerance. strict=3/193
    * - filteredW7XNetCDF_2species_magneticDrifts_noEr
      - parity_ok
      - none
@@ -90,13 +90,13 @@
      - 1
      - 0
      - 3.642
-     - 3.797
+     - 2.130
      - 138.0
-     - 558.7
-     - 0/192
+     - 547.4
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_magneticDrifts_withEr
      - parity_ok
      - none
@@ -104,13 +104,13 @@
      - 1
      - 0
      - 4.337
-     - 3.782
+     - 2.341
      - 137.5
-     - 595.7
-     - 0/192
+     - 585.5
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - filteredW7XNetCDF_2species_noEr
      - parity_ok
      - none
@@ -118,27 +118,27 @@
      - 1
      - 0
      - 5.021
-     - 2.761
+     - 1.772
      - 136.0
-     - 819.5
-     - 0/192
+     - 843.0
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - geometryScheme4_1species_PAS_withEr_DKESTrajectories
      - parity_ok
      - none
-     - NTHETA=9,NX=4,NXI=14,NZETA=15
+     - NTHETA=7,NX=3,NXI=24,NZETA=12
      - 1
      - 0
-     - 8.257
-     - 2.674
-     - 484.6
-     - 994.9
+     - 0.318
+     - 6.385
+     - 124.2
+     - 1863.2
      - 0/207
      - S:0 P:0
      - 9/9
-     - Using last successful run after timeout.
+     - All common numeric datasets matched tolerance. strict=0/207
    * - geometryScheme4_2species_PAS_noEr
      - parity_ok
      - none
@@ -146,9 +146,9 @@
      - 1
      - 0
      - 0.355
-     - 3.498
+     - 2.865
      - 139.0
-     - 878.9
+     - 1842.8
      - 0/207
      - S:0 P:0
      - 9/9
@@ -160,13 +160,13 @@
      - 1
      - 0
      - 0.300
-     - 3.475
+     - 53.300
      - 134.5
-     - 1582.5
-     - 0/206
+     - 3329.3
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - geometryScheme4_2species_noEr_withPhi1InDKE
      - parity_ok
      - none
@@ -174,9 +174,9 @@
      - 1
      - 0
      - 0.123
-     - 2.698
+     - 2.254
      - 129.6
-     - 482.8
+     - 484.6
      - 0/264
      - S:0 P:0
      - 9/9
@@ -188,9 +188,9 @@
      - 1
      - 0
      - 0.062
-     - 2.335
+     - 1.926
      - 112.3
-     - 456.1
+     - 458.1
      - 0/264
      - S:0 P:0
      - 9/9
@@ -202,13 +202,13 @@
      - 1
      - 0
      - 0.074
-     - 2.847
+     - 2.119
      - 118.4
-     - 792.3
-     - 0/192
+     - 762.1
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - geometryScheme4_2species_withEr_fullTrajectories_withQN
      - parity_ok
      - none
@@ -216,9 +216,9 @@
      - 1
      - 0
      - 0.080
-     - 3.099
+     - 2.272
      - 117.0
-     - 589.6
+     - 543.5
      - 0/250
      - S:0 P:0
      - 9/9
@@ -230,13 +230,13 @@
      - 1
      - 0
      - 1.734
-     - 4.378
+     - 52.924
      - 163.1
-     - 1648.6
-     - 0/192
+     - 2368.7
+     - 0/193
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/192
+     - All common numeric datasets matched tolerance. strict=0/193
    * - inductiveE_noEr
      - parity_ok
      - none
@@ -244,13 +244,13 @@
      - 1
      - 0
      - 0.167
-     - 2.696
+     - 2.140
      - 129.0
-     - 827.0
-     - 0/206
+     - 520.4
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - monoenergetic_geometryScheme1
      - parity_mismatch
      - none
@@ -258,13 +258,13 @@
      - 1
      - 0
      - 0.612
-     - 4.465
+     - 2.783
      - 133.7
-     - 281.4
+     - 3765.9
      - 4/203
      - S:3 P:1
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=4/203 printParity=7/9 missing=residual,jacobian
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=4/203
    * - monoenergetic_geometryScheme11
      - parity_ok
      - none
@@ -272,41 +272,41 @@
      - 1
      - 0
      - 2.665
-     - 6.405
+     - 3.514
      - 204.3
-     - 300.1
-     - 0/207
+     - 565.7
+     - 0/208
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/207 printParity=7/9 missing=residual,jacobian
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/208
    * - monoenergetic_geometryScheme5_ASCII
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=18,NX=16,NXI=12,NZETA=16
      - 1
      - 0
      - 0.978
-     - 5.228
+     - 2.588
      - 158.8
-     - 299.2
-     - 2/206
-     - S:1 P:1
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=2/206 printParity=7/9 missing=residual,jacobian
+     - 3214.1
+     - 0/205
+     - S:0 P:0
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/205
    * - monoenergetic_geometryScheme5_netCDF
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=18,NX=16,NXI=12,NZETA=16
      - 1
      - 0
      - 0.971
-     - 5.048
+     - 2.530
      - 151.1
-     - 308.2
-     - 2/206
-     - S:1 P:1
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=2/206 printParity=7/9 missing=residual,jacobian
+     - 3194.5
+     - 0/205
+     - S:0 P:0
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/205
    * - quick_2species_FPCollisions_noEr
      - parity_ok
      - none
@@ -314,13 +314,13 @@
      - 1
      - 0
      - 0.315
-     - 2.513
+     - 2.069
      - 125.4
-     - 838.7
-     - 0/206
+     - 514.2
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories
      - parity_ok
      - none
@@ -328,9 +328,9 @@
      - 1
      - 0
      - 0.065
-     - 1.926
+     - 1.925
      - 113.9
-     - 598.8
+     - 565.3
      - 0/207
      - S:0 P:0
      - 9/9
@@ -342,13 +342,13 @@
      - 1
      - 0
      - 0.173
-     - 3.077
+     - 2.522
      - 126.8
-     - 879.4
-     - 0/206
+     - 573.6
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories
      - parity_ok
      - none
@@ -356,13 +356,13 @@
      - 1
      - 0
      - 2.452
-     - 22.427
+     - 13.258
      - 263.1
-     - 2407.6
-     - 0/206
+     - 4502.9
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories
      - parity_ok
      - none
@@ -370,13 +370,13 @@
      - 1
      - 0
      - 4.769
-     - 8.444
+     - 6.206
      - 375.5
-     - 1947.9
-     - 0/206
+     - 4125.9
+     - 0/207
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/206
+     - All common numeric datasets matched tolerance. strict=0/207
    * - tokamak_1species_FPCollisions_noEr
      - parity_mismatch
      - none
@@ -384,13 +384,13 @@
      - 1
      - 0
      - 9.724
-     - 1.934
+     - 1.640
      - 132.8
-     - 732.0
-     - 12/187
+     - 716.1
+     - 12/188
      - S:8 P:4
      - 9/9
-     - All common numeric datasets matched tolerance. strict=12/187
+     - All common numeric datasets matched tolerance. strict=12/188
    * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
      - parity_ok
      - none
@@ -398,9 +398,9 @@
      - 1
      - 0
      - 13.340
-     - 2.313
+     - 2.219
      - 141.0
-     - 468.3
+     - 471.5
      - 0/274
      - S:0 P:0
      - 9/9
@@ -412,9 +412,9 @@
      - 1
      - 0
      - 6.150
-     - 2.238
+     - 1.991
      - 127.1
-     - 520.7
+     - 472.4
      - 0/274
      - S:0 P:0
      - 9/9
@@ -426,13 +426,13 @@
      - 1
      - 0
      - 4.400
-     - 2.062
+     - 1.710
      - 116.8
-     - 527.0
-     - 0/213
+     - 477.8
+     - 0/214
      - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=0/213
+     - All common numeric datasets matched tolerance. strict=0/214
    * - tokamak_1species_FPCollisions_withEr_fullTrajectories
      - parity_ok
      - none
@@ -440,9 +440,9 @@
      - 1
      - 0
      - 55.728
-     - 4.194
+     - 88.209
      - 334.2
-     - 1759.9
+     - 3543.0
      - 0/142
      - S:0 P:0
      - 7/7
@@ -454,27 +454,27 @@
      - 1
      - 0
      - 2.301
-     - 2.695
+     - 130.575
      - 718.5
-     - 560.4
+     - 658.8
      - 0/140
      - S:0 P:0
      - 7/7
      - All common numeric datasets matched tolerance. strict=0/140
    * - tokamak_1species_PASCollisions_noEr_Nx1
-     - parity_mismatch
+     - parity_ok
      - none
-     - NTHETA=32,NX=6,NXI=30,NZETA=5
+     - NTHETA=11,NX=1,NXI=16,NZETA=1
      - 1
      - 0
-     - 2.124
-     - 39.621
-     - 250.9
-     - 5260.5
-     - 33/212
-     - S:12 P:0
+     - 0.079
+     - 1.864
+     - 101.8
+     - 516.9
+     - 0/212
+     - S:0 P:0
      - 9/9
-     - All common numeric datasets matched tolerance. strict=33/212
+     - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_1species_PASCollisions_noEr_withQN
      - parity_ok
      - none
@@ -482,9 +482,9 @@
      - 1
      - 0
      - 4.851
-     - 106.650
+     - 104.390
      - 389.6
-     - 556.9
+     - 518.9
      - 0/274
      - S:0 P:0
      - 9/9
@@ -496,9 +496,9 @@
      - 1
      - 0
      - 49.530
-     - 11.348
+     - 11.593
      - 574.4
-     - 1302.0
+     - 3607.5
      - 0/212
      - S:0 P:0
      - 9/9
@@ -510,9 +510,9 @@
      - 1
      - 0
      - 5.667
-     - 3.922
+     - 9.926
      - 478.3
-     - 3372.4
+     - 11072.9
      - 0/212
      - S:0 P:0
      - 9/9
@@ -524,9 +524,9 @@
      - 1
      - 0
      - 15.875
-     - 180.320
+     - 9.870
      - 442.1
-     - 1732.1
+     - 2080.7
      - 1/212
      - S:1 P:0
      - 9/9
@@ -538,13 +538,13 @@
      - 1
      - 0
      - 0.303
-     - 3.584
+     - 1.863
      - 129.2
-     - 256.3
-     - 0/193
+     - 953.6
+     - 0/194
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/193 printParity=7/9 missing=residual,jacobian
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/194
    * - transportMatrix_geometryScheme2
      - parity_ok
      - none
@@ -552,10 +552,10 @@
      - 1
      - 0
      - 0.236
-     - 3.579
+     - 1.749
      - 118.8
-     - 251.6
-     - 0/193
+     - 820.2
+     - 0/194
      - S:0 P:0
-     - 7/9
-     - All common numeric datasets matched tolerance. strict=0/193 printParity=7/9 missing=residual,jacobian
+     - 9/9
+     - All common numeric datasets matched tolerance. strict=0/194

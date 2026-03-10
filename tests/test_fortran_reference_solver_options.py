@@ -12,7 +12,9 @@ assert _SPEC is not None and _SPEC.loader is not None
 _MODULE = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _MODULE
 _SPEC.loader.exec_module(_MODULE)
+_clamp_resolution_to_reference_max_in_place = _MODULE._clamp_resolution_to_reference_max_in_place
 _canonicalize_fortran_v3_input_text = _MODULE._canonicalize_fortran_v3_input_text
+_resolution_from_namelist = _MODULE._resolution_from_namelist
 _run_fortran_direct = _MODULE._run_fortran_direct
 
 
@@ -177,3 +179,43 @@ def test_run_fortran_direct_canonicalizes_legacy_flowcontrol_for_fortran_v3(
 
     assert "&general" in seen["input_text"]
     assert "&flowControl" not in seen["input_text"]
+
+
+def test_clamp_resolution_to_reference_max_in_place_preserves_reference_single_zeta(tmp_path: Path) -> None:
+    seed = tmp_path / "seed.input.namelist"
+    ref = tmp_path / "reference.input.namelist"
+    seed.write_text(
+        "&general\n  RHSMODE = 1\n/\n"
+        "&resolutionParameters\n  NTHETA = 32\n  NZETA = 5\n  NX = 6\n  NXI = 30\n/\n",
+        encoding="utf-8",
+    )
+    ref.write_text(
+        "&general\n  RHSMODE = 1\n/\n"
+        "&resolutionParameters\n  NTHETA = 21\n  NZETA = 1\n  NX = 1\n  NXI = 31\n/\n",
+        encoding="utf-8",
+    )
+
+    got = _clamp_resolution_to_reference_max_in_place(seed, reference_input=ref)
+
+    assert got == {"NTHETA": 21, "NZETA": 1, "NX": 1, "NXI": 30}
+    assert _resolution_from_namelist(seed) == got
+
+
+def test_clamp_resolution_to_reference_max_in_place_only_caps_axes_above_reference(tmp_path: Path) -> None:
+    seed = tmp_path / "seed.input.namelist"
+    ref = tmp_path / "reference.input.namelist"
+    seed.write_text(
+        "&general\n  RHSMODE = 1\n/\n"
+        "&resolutionParameters\n  NTHETA = 14\n  NZETA = 20\n  NX = 6\n  NXI = 20\n/\n",
+        encoding="utf-8",
+    )
+    ref.write_text(
+        "&general\n  RHSMODE = 1\n/\n"
+        "&resolutionParameters\n  NTHETA = 13\n  NZETA = 23\n  NX = 5\n  NXI = 48\n/\n",
+        encoding="utf-8",
+    )
+
+    got = _clamp_resolution_to_reference_max_in_place(seed, reference_input=ref)
+
+    assert got == {"NTHETA": 13, "NZETA": 20, "NX": 5, "NXI": 20}
+    assert _resolution_from_namelist(seed) == got

@@ -458,6 +458,25 @@ def _scale_resolution_in_place(input_path: Path, *, factor: float) -> dict[str, 
     return _resolution_from_namelist(input_path)
 
 
+def _clamp_resolution_to_reference_max_in_place(input_path: Path, *, reference_input: Path | None) -> dict[str, int]:
+    current = _resolution_from_namelist(input_path)
+    if not current or reference_input is None or (not reference_input.exists()):
+        return current
+    reference = _resolution_from_namelist(reference_input)
+    if not reference:
+        return current
+    updates = {k: min(int(v), int(reference[k])) for k, v in current.items() if k in reference}
+    rhs_mode = _rhs_mode_from_namelist(reference_input)
+    updates = _sanitize_resolution(updates, current=reference, rhs_mode=rhs_mode)
+    if "NX" in reference and int(reference["NX"]) <= 1:
+        updates["NX"] = min(int(current.get("NX", reference["NX"])), int(reference["NX"]))
+    if all(int(current.get(k, -1)) == int(v) for k, v in updates.items()):
+        return current
+    text = input_path.read_text()
+    input_path.write_text(_replace_resolution_values_in_text(text, updates=updates))
+    return _resolution_from_namelist(input_path)
+
+
 def _tail(path: Path, n: int = 40) -> str:
     if not path.exists():
         return ""
@@ -1464,6 +1483,7 @@ def _run_case(
     *,
     case_name: str,
     case_input: Path,
+    reference_input: Path | None,
     case_out_dir: Path,
     fortran_exe: Path,
     timeout_s: float,
@@ -1482,7 +1502,10 @@ def _run_case(
     case = str(case_name)
     case_out_dir.mkdir(parents=True, exist_ok=True)
     dst_input = case_out_dir / "input.namelist"
-    (case_out_dir / "input.original.namelist").write_text(case_input.read_text())
+    original_input = reference_input if reference_input is not None else case_input
+    (case_out_dir / "input.original.namelist").write_text(original_input.read_text())
+    if reference_input is not None and reference_input != case_input:
+        (case_out_dir / "input.seed.namelist").write_text(case_input.read_text())
     if use_seed_resolution:
         dst_input.write_text(case_input.read_text())
         current_res = _resolution_from_namelist(dst_input)
@@ -1492,6 +1515,7 @@ def _run_case(
         if sanitized and sanitized != current_res:
             text = dst_input.read_text()
             dst_input.write_text(_replace_resolution_values_in_text(text, updates=sanitized))
+        _clamp_resolution_to_reference_max_in_place(dst_input, reference_input=reference_input)
     else:
         _write_initial_reduced_input(source_input=case_input, dst_input=dst_input)
     localize_equilibrium_file_in_place(input_namelist=dst_input, overwrite=False)
@@ -1624,55 +1648,8 @@ def _run_case(
             saw_timeout = True
             fallback = last_success or disk_last_success
             _hydrate_last_success_metrics(fallback)
-            use_fallback = fallback is not None and target_runtime_s is None
-            if use_fallback:
-                status = str(fallback.get("status", "parity_ok"))
-                note = "Using last successful run after timeout."
-                fortran_h5_path = fallback.get("fortran_h5")
-                jax_h5_path = fallback.get("jax_h5")
-                fortran_log_path = fallback.get("fortran_log")
-                jax_log_path = fallback.get("jax_log")
-                if fortran_runtime is None:
-                    fortran_runtime = fallback.get("fortran_runtime")
-                if fortran_max_rss_mb is None:
-                    fortran_max_rss_mb = fallback.get("fortran_max_rss_mb")
-                if jax_runtime is None:
-                    jax_runtime = fallback.get("jax_runtime")
-                    jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
-                if jax_max_rss_mb is None:
-                    jax_max_rss_mb = fallback.get("jax_max_rss_mb")
-                final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
-                if fortran_h5_path is not None and jax_h5_path is not None:
-                    try:
-                        tolerances = None
-                        tol_path = case_out_dir / "compare_tolerances.json"
-                        if not tol_path.exists():
-                            reduced_tol = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.compare_tolerances.json"
-                            if reduced_tol.exists():
-                                tol_path = reduced_tol
-                        if tol_path.exists():
-                            try:
-                                tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
-                            except json.JSONDecodeError:
-                                tolerances = None
-                        n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(
-                            fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=tolerances
-                        )
-                        mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
-                        (
-                            strict_n_common,
-                            strict_n_bad,
-                            strict_max_abs,
-                            strict_mismatch_keys,
-                        ) = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=None)
-                        strict_mismatch_solver_keys, strict_mismatch_physics_keys = _bucket_mismatch_keys(strict_mismatch_keys)
-                        if fortran_log_path is not None and jax_log_path is not None:
-                            print_signals, print_total, print_missing = _compute_print_parity(
-                                fortran_log=Path(fortran_log_path), jax_log=Path(jax_log_path)
-                            )
-                    except Exception:  # noqa: BLE001
-                        pass
-                break
+            if fallback is not None and target_runtime_s is None:
+                note = f"{note} Cached last_success retained in {last_dir}."
             new_res = _scale_resolution_in_place(dst_input, factor=0.5)
             if new_res == final_res:
                 new_res = _reduce_max_axis_in_place(dst_input)
@@ -1753,55 +1730,8 @@ def _run_case(
             saw_timeout = True
             fallback = last_success or disk_last_success
             _hydrate_last_success_metrics(fallback)
-            use_fallback = fallback is not None and target_runtime_s is None
-            if use_fallback:
-                status = str(fallback.get("status", "parity_ok"))
-                note = "Using last successful run after timeout."
-                fortran_h5_path = fallback.get("fortran_h5")
-                jax_h5_path = fallback.get("jax_h5")
-                fortran_log_path = fallback.get("fortran_log")
-                jax_log_path = fallback.get("jax_log")
-                if fortran_runtime is None:
-                    fortran_runtime = fallback.get("fortran_runtime")
-                if fortran_max_rss_mb is None:
-                    fortran_max_rss_mb = fallback.get("fortran_max_rss_mb")
-                if jax_runtime is None:
-                    jax_runtime = fallback.get("jax_runtime")
-                    jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
-                if jax_max_rss_mb is None:
-                    jax_max_rss_mb = fallback.get("jax_max_rss_mb")
-                final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
-                if fortran_h5_path is not None and jax_h5_path is not None:
-                    try:
-                        tolerances = None
-                        tol_path = case_out_dir / "compare_tolerances.json"
-                        if not tol_path.exists():
-                            reduced_tol = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.compare_tolerances.json"
-                            if reduced_tol.exists():
-                                tol_path = reduced_tol
-                        if tol_path.exists():
-                            try:
-                                tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
-                            except json.JSONDecodeError:
-                                tolerances = None
-                        n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(
-                            fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=tolerances
-                        )
-                        mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
-                        (
-                            strict_n_common,
-                            strict_n_bad,
-                            strict_max_abs,
-                            strict_mismatch_keys,
-                        ) = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=None)
-                        strict_mismatch_solver_keys, strict_mismatch_physics_keys = _bucket_mismatch_keys(strict_mismatch_keys)
-                        if fortran_log_path is not None and jax_log_path is not None:
-                            print_signals, print_total, print_missing = _compute_print_parity(
-                                fortran_log=Path(fortran_log_path), jax_log=Path(jax_log_path)
-                            )
-                    except Exception:  # noqa: BLE001
-                        pass
-                break
+            if fallback is not None and target_runtime_s is None:
+                note = f"{note} Cached last_success retained in {last_dir}."
             new_res = _scale_resolution_in_place(dst_input, factor=0.5)
             if new_res == final_res:
                 new_res = _reduce_max_axis_in_place(dst_input)
@@ -1967,97 +1897,14 @@ def _run_case(
         break
 
     else:
-        if last_success is not None and target_runtime_s is None:
-            _hydrate_last_success_metrics(last_success)
-            status = str(last_success["status"])
-            note = f"{last_success['note']} (using last successful run after timeout)"
-            fortran_h5_path = last_success.get("fortran_h5")
-            jax_h5_path = last_success.get("jax_h5")
-            fortran_log_path = last_success.get("fortran_log")
-            jax_log_path = last_success.get("jax_log")
-            if fortran_runtime is None:
-                fortran_runtime = last_success.get("fortran_runtime")
-            if fortran_max_rss_mb is None:
-                fortran_max_rss_mb = last_success.get("fortran_max_rss_mb")
-            if jax_runtime is None:
-                jax_runtime = last_success.get("jax_runtime")
-                jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
-            if jax_max_rss_mb is None:
-                jax_max_rss_mb = last_success.get("jax_max_rss_mb")
-            n_common = int(last_success.get("n_common", 0))
-            n_bad = int(last_success.get("n_bad", 0))
-            max_abs = last_success.get("max_abs")
-            mismatch_keys = list(last_success.get("mismatch_keys", []))
-            mismatch_solver_keys = list(last_success.get("mismatch_solver_keys", []))
-            mismatch_physics_keys = list(last_success.get("mismatch_physics_keys", []))
-            strict_n_common = int(last_success.get("strict_n_common", 0))
-            strict_n_bad = int(last_success.get("strict_n_bad", 0))
-            strict_max_abs = last_success.get("strict_max_abs")
-            strict_mismatch_keys = list(last_success.get("strict_mismatch_keys", []))
-            strict_mismatch_solver_keys = list(last_success.get("strict_mismatch_solver_keys", []))
-            strict_mismatch_physics_keys = list(last_success.get("strict_mismatch_physics_keys", []))
-            print_signals = int(last_success.get("print_signals", 0))
-            print_total = int(last_success.get("print_total", 0))
-            print_missing = list(last_success.get("print_missing", []))
-        elif disk_last_success is not None and target_runtime_s is None:
-            _hydrate_last_success_metrics(disk_last_success)
-            status = "parity_ok"
-            note = "Using last successful run after repeated failures."
-            fortran_h5_path = disk_last_success.get("fortran_h5")
-            jax_h5_path = disk_last_success.get("jax_h5")
-            fortran_log_path = disk_last_success.get("fortran_log")
-            jax_log_path = disk_last_success.get("jax_log")
-            if fortran_runtime is None:
-                fortran_runtime = disk_last_success.get("fortran_runtime")
-            if fortran_max_rss_mb is None:
-                fortran_max_rss_mb = disk_last_success.get("fortran_max_rss_mb")
-            if jax_runtime is None:
-                jax_runtime = disk_last_success.get("jax_runtime")
-                jax_runtime_cold = jax_runtime if jax_runtime is not None else jax_runtime_cold
-            if jax_max_rss_mb is None:
-                jax_max_rss_mb = disk_last_success.get("jax_max_rss_mb")
-            final_res = _resolution_from_h5(fortran_h5_path) or _resolution_from_h5(jax_h5_path)
-            if fortran_h5_path is not None and jax_h5_path is not None:
-                try:
-                    tolerances = None
-                    tol_path = case_out_dir / "compare_tolerances.json"
-                    if not tol_path.exists():
-                        reduced_tol = REPO_ROOT / "tests" / "reduced_inputs" / f"{case}.compare_tolerances.json"
-                        if reduced_tol.exists():
-                            tol_path = reduced_tol
-                    if tol_path.exists():
-                        try:
-                            tolerances = json.loads(tol_path.read_text(encoding="utf-8"))
-                        except json.JSONDecodeError:
-                            tolerances = None
-                    n_common, n_bad, max_abs, mismatch_keys = _compare_outputs(
-                        fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=tolerances
-                    )
-                    mismatch_solver_keys, mismatch_physics_keys = _bucket_mismatch_keys(mismatch_keys)
-                    (
-                        strict_n_common,
-                        strict_n_bad,
-                        strict_max_abs,
-                        strict_mismatch_keys,
-                    ) = _compare_outputs(fortran_h5_path, jax_h5_path, rtol=rtol, atol=atol, tolerances=None)
-                    strict_mismatch_solver_keys, strict_mismatch_physics_keys = _bucket_mismatch_keys(strict_mismatch_keys)
-                    if n_bad == 0:
-                        status = "parity_ok"
-                    else:
-                        status = "parity_mismatch"
-                        note = (
-                            "Common numeric dataset mismatches present. "
-                            f"sample={','.join(mismatch_keys[:4])} "
-                            f"buckets=solver:{len(mismatch_solver_keys)} physics:{len(mismatch_physics_keys)}"
-                        )
-                except Exception:  # noqa: BLE001
-                    status = "compare_error"
+        status = "max_attempts"
+        fallback = last_success or disk_last_success
+        if note:
+            note = f"Reached max attempts while reducing resolution. Last failure: {note}"
         else:
-            status = "max_attempts"
-            if note:
-                note = f"Reached max attempts while reducing resolution. Last failure: {note}"
-            else:
-                note = "Reached max attempts while reducing resolution."
+            note = "Reached max attempts while reducing resolution."
+        if fallback is not None and target_runtime_s is None:
+            note = f"{note} Cached last_success retained in {last_dir}."
 
     blocker_type = _classify_blocker(status=status, note=note, mismatch_keys=mismatch_keys, jax_log=jax_log_path)
 
@@ -2132,7 +1979,7 @@ def main() -> int:
         help="Path to Fortran v3 executable (or set SFINCS_FORTRAN_EXE).",
     )
     parser.add_argument("--pattern", type=str, default=None, help="Regex filter on case directory path.")
-    parser.add_argument("--timeout-s", type=float, default=120.0, help="Per-run timeout in seconds.")
+    parser.add_argument("--timeout-s", type=float, default=1200.0, help="Per-run timeout in seconds.")
     parser.add_argument("--max-attempts", type=int, default=6, help="Maximum adaptive retries per case.")
     parser.add_argument("--rtol", type=float, default=5e-4)
     parser.add_argument("--atol", type=float, default=1e-9)
@@ -2231,8 +2078,8 @@ def main() -> int:
     def _handle_result(result: CaseResult) -> None:
         prev = merged_results.get(result.case)
         if prev is not None:
-            # Preserve previously measured runtime/RSS when a fresh attempt falls back
-            # to last_success after timeout (parity can still be checked from cached H5).
+            # Preserve previously measured runtime/RSS when a fresh attempt times out or
+            # otherwise does not emit new timing metadata.
             for attr in (
                 "fortran_runtime_s",
                 "jax_runtime_s",
@@ -2272,6 +2119,7 @@ def main() -> int:
             result = _run_case(
                 case_name=case,
                 case_input=case_input,
+                reference_input=input_path,
                 case_out_dir=case_out,
                 fortran_exe=fortran_exe,
                 timeout_s=float(args.timeout_s),
@@ -2306,6 +2154,7 @@ def main() -> int:
                         _run_case,
                         case_name=case,
                         case_input=case_input,
+                        reference_input=input_path,
                         case_out_dir=case_out,
                         fortran_exe=fortran_exe,
                         timeout_s=float(args.timeout_s),

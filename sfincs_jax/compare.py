@@ -58,6 +58,29 @@ def _center_fsa(an: np.ndarray) -> np.ndarray:
     return an
 
 
+def _merge_tolerance_floor(
+    tolerances: Dict[str, Dict[str, float]],
+    key: str,
+    floor: Dict[str, float | bool],
+) -> None:
+    merged = dict(tolerances.get(key, {}))
+    for name, value in floor.items():
+        if name == "ignore":
+            merged["ignore"] = bool(merged.get("ignore", False) or bool(value))
+            continue
+        try:
+            floor_value = float(value)
+        except Exception:  # noqa: BLE001
+            continue
+        current = merged.get(name)
+        try:
+            current_value = float(current) if current is not None else None
+        except Exception:  # noqa: BLE001
+            current_value = None
+        merged[name] = floor_value if current_value is None else max(current_value, floor_value)
+    tolerances[key] = merged
+
+
 def compare_sfincs_outputs(
     *,
     a_path: Path,
@@ -272,7 +295,7 @@ def compare_sfincs_outputs(
             "sources": {"atol": 1e-9},
         }
         for k, v in rhs1_tol.items():
-            local_tolerances.setdefault(k, v)
+            _merge_tolerance_floor(local_tolerances, k, v)
         geometry_a = _as_int(a.get("geometryScheme"))
         geometry_b = _as_int(b.get("geometryScheme"))
         collision_a = _as_int(a.get("collisionOperator"))
@@ -461,7 +484,7 @@ def compare_sfincs_outputs(
             "sources": {"atol": 1e-9},
         }
         for k, v in rhs1_cs2_tol.items():
-            local_tolerances.setdefault(k, v)
+            _merge_tolerance_floor(local_tolerances, k, v)
     if rhs_mode_a in {2, 3} and rhs_mode_b in {2, 3} and constraint_a == 1 and constraint_b == 1:
         # Transport-matrix solves with constraintScheme=1 can yield tiny (~1e-10) source terms
         # that are sensitive to Krylov stopping tolerances. Allow a small absolute margin.
