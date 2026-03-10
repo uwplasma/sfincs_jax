@@ -693,6 +693,16 @@ def _resolve_distributed_gmres_axis(
         if env not in {"theta", "zeta", "1", "true", "yes", "on", "auto"} and emit is not None:
             emit(1, f"SFINCS_JAX_GMRES_DISTRIBUTED={env!r} not recognized; distributed GMRES disabled.")
         return None
+    if env in {"1", "true", "yes", "on", "auto"} and jax.default_backend() != "cpu":
+        allow_accel = os.environ.get("SFINCS_JAX_GMRES_DISTRIBUTED_ALLOW_ACCELERATOR", "").strip().lower()
+        if allow_accel not in {"1", "true", "yes", "on"}:
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_*: distributed GMRES auto mode disabled on "
+                    f"backend={jax.default_backend()}",
+                )
+            return None
     n_devices = jax.local_device_count()
     if n_devices <= 1:
         return None

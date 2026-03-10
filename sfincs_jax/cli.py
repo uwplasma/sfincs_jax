@@ -300,7 +300,8 @@ def _apply_cores_setting(cores: int | None) -> None:
     if cores_val <= 0:
         return
     os.environ["SFINCS_JAX_CORES"] = str(cores_val)
-    if cores_val > 1:
+    backend_hint = os.environ.get("JAX_PLATFORM_NAME", "").strip().lower()
+    if cores_val > 1 and backend_hint not in {"gpu", "cuda", "rocm"}:
         os.environ.setdefault("SFINCS_JAX_GMRES_DISTRIBUTED", "auto")
     # Ensure host device count and XLA threading reflect the requested cores.
     xla_flags = os.environ.get("XLA_FLAGS", "")

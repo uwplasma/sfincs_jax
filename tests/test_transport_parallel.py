@@ -376,6 +376,7 @@ def test_apply_cores_setting_does_not_force_transport_parallel(monkeypatch: pyte
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", raising=False)
     monkeypatch.delenv("SFINCS_JAX_GMRES_DISTRIBUTED", raising=False)
     monkeypatch.delenv("SFINCS_JAX_CORES", raising=False)
+    monkeypatch.delenv("JAX_PLATFORM_NAME", raising=False)
 
     cli._apply_cores_setting(4)
 
@@ -383,3 +384,16 @@ def test_apply_cores_setting_does_not_force_transport_parallel(monkeypatch: pyte
     assert os.environ["SFINCS_JAX_GMRES_DISTRIBUTED"] == "auto"
     assert "SFINCS_JAX_TRANSPORT_PARALLEL" not in os.environ
     assert "SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS" not in os.environ
+
+
+def test_apply_cores_setting_skips_distributed_gmres_auto_on_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PARALLEL", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PARALLEL_WORKERS", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_GMRES_DISTRIBUTED", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_CORES", raising=False)
+    monkeypatch.setenv("JAX_PLATFORM_NAME", "gpu")
+
+    cli._apply_cores_setting(4)
+
+    assert os.environ["SFINCS_JAX_CORES"] == "4"
+    assert "SFINCS_JAX_GMRES_DISTRIBUTED" not in os.environ
