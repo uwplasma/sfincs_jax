@@ -402,6 +402,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-10
+- Scope: Audit repository hygiene, classify generated debug/audit roots as disposable, and teach git to ignore those run directories so local and remote working trees stay clean after validation work.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/.gitignore`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `git status --short`; `git status --short --ignored`; `du -sh tests/debug_* tests/gating_* tests/scaled_example_suite_* examples/additional_examples/run_compare_local`; post-clean `git status --short`
+- Runtime/memory delta: no solver/runtime change. Local repository cleanup removes the accumulated debug/gating/scaled-suite debris from the working tree and prevents future runs from reappearing as untracked noise.
+- Remaining risks: this change only affects git hygiene; it does not preserve archived run artifacts. Any future need for a specific historical debug root will require rerunning that case or restoring it from another clone/back-up.
+- Next actions: mirror the same cleanup in other working clones as needed, and keep release-facing artifacts limited to tracked reduced-suite reports and docs-generated status tables.
+
+### 2026-03-10
 - Scope: Eliminate the remaining strict-only reduced-suite deltas by promoting model-based compare floors and gauge-invariant handling into the shared comparison policy instead of relying on case-local tolerance files.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/compare.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_compare_reference_corruption.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/docs/_generated/reduced_upstream_suite_status_strict.rst`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/reduced_upstream_examples/suite_report_strict.json`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: `python -m py_compile sfincs_jax/compare.py tests/test_compare_reference_corruption.py`; `pytest -q tests/test_compare_reference_corruption.py` (`7 passed`); `JAX_PLATFORM_NAME=cpu pytest -q` (`284 passed in 245.63s`); direct recomputation of `tests/reduced_upstream_examples/suite_report_strict.json` from canonical JAX/Fortran H5 outputs using `compare_sfincs_outputs(..., tolerances=None)`.
