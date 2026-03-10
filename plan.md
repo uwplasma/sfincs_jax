@@ -402,6 +402,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-09
+- Scope: Harden non-CPU RHSMode=2/3 transport defaults by disabling accelerator-dense auto/fallback paths, keeping dense transport preconditioners off accelerators, and enabling the existing host sparse-direct rescue for explicit GPU transport solves.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_sparse_direct.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py` (`23 passed`).
+- Runtime/memory delta: office has ample headroom for the non-CPU path (`271 GB` free disk, `42 GiB` available RAM, `14-15 GiB` free on each RTX A4000); the patched transport defaults should remove the immediate CUDA `cusolver_getrf_ffi` monoenergetic crash and replace it with accelerator-safe Krylov + host sparse-direct rescue behavior.
+- Remaining risks: the office GPU rerun on the older commit already showed a real transport solver-branch mismatch on `transportMatrix_geometryScheme2`, so the next gate is a targeted office rerun of `monoenergetic_geometryScheme11`, `transportMatrix_geometryScheme2`, and `transportMatrix_geometryScheme11` from the new revision.
+- Next actions: commit this transport backend patch to `main`, rerun the three targeted office GPU transport blockers against the frozen v12 reference root, and if they clear, restart the full office GPU scaled-example recheck on the new revision.
+
+### 2026-03-09
 - Scope: Restore strict v3 default gradient-coordinate semantics for ambiguous legacy inputs that specify both `d*drHat` and `d*psiHat` fields, closing the tiny `includePhi1InKineticEquation=true` PAS parity regression before rerunning the broader verification gates.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/input_compat.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_input_compat.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: `python -m py_compile sfincs_jax/input_compat.py tests/test_input_compat.py`; targeted parity regression tests for the tiny Phi1-in-kinetic PAS fixture (`8 passed`); full `pytest -q` (`253 passed in 215.84s`).

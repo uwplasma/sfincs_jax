@@ -247,6 +247,15 @@ def _rhsmode1_dense_backend_allowed() -> bool:
     return jax.default_backend() == "cpu"
 
 
+def _transport_dense_backend_allowed() -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_DENSE_ALLOW_ACCELERATOR", "").strip().lower()
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return jax.default_backend() == "cpu"
+
+
 def _rhsmode1_host_dense_fallback_allowed() -> bool:
     if jax.default_backend() == "cpu":
         return True
@@ -611,11 +620,12 @@ def _transport_sparse_direct_rescue_allowed(
     size: int,
     residual_norm: float,
     target: float,
+    use_implicit: bool,
 ) -> bool:
     env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", "").strip().lower()
     if env in {"0", "false", "no", "off"}:
         return False
-    if jax.default_backend() != "cpu":
+    if bool(use_implicit):
         return False
     if int(op.rhs_mode) not in {2, 3} or bool(op.include_phi1):
         return False
@@ -17511,6 +17521,19 @@ def solve_v3_transport_matrix_linear_gmres(
         dense_fallback = int(rhs_mode) == 3
         if dense_fallback and not dense_fallback_max_env:
             dense_fallback_max = 6000
+    dense_backend_allowed = _transport_dense_backend_allowed()
+    if not dense_backend_allowed:
+        dense_fallback = False
+        dense_retry_max = 0
+        force_dense = False
+        if str(solve_method_use).lower() == "dense":
+            solve_method_use = "incremental"
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: dense transport path disabled "
+                f"on backend={jax.default_backend()}",
+            )
     if dense_mem_block:
         dense_fallback = False
         dense_retry_max = 0
@@ -17852,6 +17875,7 @@ def solve_v3_transport_matrix_linear_gmres(
         and (not low_memory_outputs)
         and (not dense_mem_block)
         and (not dense_precond_mem_block)
+        and dense_backend_allowed
     )
     dense_precond_cache_full: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
     dense_precond_cache_reduced: dict[tuple[object, int], Callable[[jnp.ndarray], jnp.ndarray]] = {}
@@ -18952,6 +18976,8 @@ def solve_v3_transport_matrix_linear_gmres(
     dense_batch_fallback_enabled = dense_batch_fallback_env not in {"0", "false", "no", "off"}
 
     def _dense_batch_solve_all(*, op_probe_ref: V3FullSystemOperator, reason: str) -> bool:
+        if not dense_backend_allowed:
+            return False
         requested_epar_krylov = any(
             (_rhs3_krylov_flags(which_rhs)[0] or _rhs3_krylov_flags(which_rhs)[1]) for which_rhs in which_rhs_values
         )
@@ -19164,6 +19190,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     size=int(active_size),
                     residual_norm=float(res_reduced.residual_norm),
                     target=float(target_rhs),
+                    use_implicit=bool(use_implicit),
                 )
                 sparse_direct_rescue_first = _transport_sparse_direct_rescue_first(
                     sparse_direct_rescue=sparse_direct_rescue,
@@ -19504,6 +19531,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     size=int(op0.total_size),
                     residual_norm=float(res.residual_norm),
                     target=float(target_rhs),
+                    use_implicit=bool(use_implicit),
                 )
                 sparse_direct_rescue_first = _transport_sparse_direct_rescue_first(
                     sparse_direct_rescue=sparse_direct_rescue,
