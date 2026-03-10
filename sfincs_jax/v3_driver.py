@@ -14355,16 +14355,20 @@ def solve_v3_full_system_linear_gmres(
                                 "solve_v3_full_system_linear_gmres: dense fallback "
                                 f"non-square matrix shape={a_np.shape}; using least-squares host solve",
                             )
+                        if not use_implicit:
+                            x_np = np.asarray(np.linalg.lstsq(a_np, np.asarray(b_dense, dtype=np.float64), rcond=None)[0], dtype=np.float64)
+                            x_dense = jnp.asarray(x_np, dtype=jnp.float64)
+                            r_dense = rhs_reduced - mv_reduced(x_dense)
+                            res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
+                        else:
+                            def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
+                                rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                                return np.asarray(np.linalg.lstsq(a_np, rhs_np, rcond=None)[0], dtype=np.float64)
 
-                        def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
-                            rhs_np = np.asarray(rhs_np, dtype=np.float64)
-                            return np.asarray(np.linalg.lstsq(a_np, rhs_np, rcond=None)[0], dtype=np.float64)
-
-                        out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
-
-                        x_dense = jax.pure_callback(_solve_cb, out_spec, b_dense)
-                        r_dense = rhs_reduced - mv_reduced(x_dense)
-                        res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
+                            out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
+                            x_dense = jax.pure_callback(_solve_cb, out_spec, b_dense)
+                            r_dense = rhs_reduced - mv_reduced(x_dense)
+                            res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
                         lu = None
                         piv = None
                     else:
@@ -14374,39 +14378,48 @@ def solve_v3_full_system_linear_gmres(
                         refine_steps = 0
                         if op.fblock.pas is not None and int(active_size) <= 2000:
                             refine_steps = 2
-                        out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
-
-                        def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
-                            rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                        if not use_implicit:
+                            rhs_np = np.asarray(b_dense, dtype=np.float64)
                             x_np = np.asarray(sla.lu_solve((lu, piv), rhs_np), dtype=np.float64)
                             for _ in range(int(refine_steps)):
                                 r_np = rhs_np - a_np @ x_np
                                 dx_np = np.asarray(sla.lu_solve((lu, piv), r_np), dtype=np.float64)
                                 x_np = x_np + dx_np
-                            return x_np
+                            x_dense = jnp.asarray(x_np, dtype=jnp.float64)
+                        else:
+                            out_spec = jax.ShapeDtypeStruct(b_dense.shape, jnp.float64)
 
-                        def _solveT_cb(rhs_np: np.ndarray) -> np.ndarray:
-                            rhs_np = np.asarray(rhs_np, dtype=np.float64)
-                            x_np = np.asarray(sla.lu_solve((lu, piv), rhs_np, trans=1), dtype=np.float64)
-                            for _ in range(int(refine_steps)):
-                                r_np = rhs_np - a_np.T @ x_np
-                                dx_np = np.asarray(sla.lu_solve((lu, piv), r_np, trans=1), dtype=np.float64)
-                                x_np = x_np + dx_np
-                            return x_np
+                            def _solve_cb(rhs_np: np.ndarray) -> np.ndarray:
+                                rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                                x_np = np.asarray(sla.lu_solve((lu, piv), rhs_np), dtype=np.float64)
+                                for _ in range(int(refine_steps)):
+                                    r_np = rhs_np - a_np @ x_np
+                                    dx_np = np.asarray(sla.lu_solve((lu, piv), r_np), dtype=np.float64)
+                                    x_np = x_np + dx_np
+                                return x_np
 
-                        def _solve_host(_mv, rhs: jnp.ndarray) -> jnp.ndarray:
-                            return jax.pure_callback(_solve_cb, out_spec, rhs)
+                            def _solveT_cb(rhs_np: np.ndarray) -> np.ndarray:
+                                rhs_np = np.asarray(rhs_np, dtype=np.float64)
+                                x_np = np.asarray(sla.lu_solve((lu, piv), rhs_np, trans=1), dtype=np.float64)
+                                for _ in range(int(refine_steps)):
+                                    r_np = rhs_np - a_np.T @ x_np
+                                    dx_np = np.asarray(sla.lu_solve((lu, piv), r_np, trans=1), dtype=np.float64)
+                                    x_np = x_np + dx_np
+                                return x_np
 
-                        def _transpose_solve_host(_mv_t, rhs: jnp.ndarray) -> jnp.ndarray:
-                            return jax.pure_callback(_solveT_cb, out_spec, rhs)
+                            def _solve_host(_mv, rhs: jnp.ndarray) -> jnp.ndarray:
+                                return jax.pure_callback(_solve_cb, out_spec, rhs)
 
-                        x_dense = jax.lax.custom_linear_solve(
-                            mv_dense,
-                            b_dense,
-                            solve=_solve_host,
-                            transpose_solve=_transpose_solve_host,
-                            symmetric=False,
-                        )
+                            def _transpose_solve_host(_mv_t, rhs: jnp.ndarray) -> jnp.ndarray:
+                                return jax.pure_callback(_solveT_cb, out_spec, rhs)
+
+                            x_dense = jax.lax.custom_linear_solve(
+                                mv_dense,
+                                b_dense,
+                                solve=_solve_host,
+                                transpose_solve=_transpose_solve_host,
+                                symmetric=False,
+                            )
                         r_dense = rhs_reduced - mv_reduced(x_dense)
                         res_dense = GMRESSolveResult(x=x_dense, residual_norm=jnp.linalg.norm(r_dense))
                 elif dense_backend_allowed and dense_matrix_cache is not None:
