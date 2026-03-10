@@ -114,6 +114,18 @@ def test_transport_sparse_direct_rescue_enabled_for_gpu_collisionless_transport(
     )
 
 
+def test_transport_sparse_direct_rescue_enabled_for_nonfinite_residual(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert _transport_sparse_direct_rescue_allowed(
+        op=_op(rhs_mode=3, has_fp=False),
+        size=5383,
+        residual_norm=float("nan"),
+        target=1.0e-9,
+        use_implicit=False,
+    )
+
+
 def test_transport_dense_backend_allowed_defaults_to_cpu(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_DENSE_ALLOW_ACCELERATOR", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")

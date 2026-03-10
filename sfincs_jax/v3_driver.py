@@ -650,6 +650,8 @@ def _transport_sparse_direct_rescue_allowed(
         rescue_ratio = 1.0e2
     if int(size) > max(1, int(rescue_max)):
         return False
+    if not np.isfinite(float(residual_norm)):
+        return True
     if float(target) <= 0.0:
         return True
     return float(residual_norm) > float(target) * float(rescue_ratio)
@@ -18028,7 +18030,7 @@ def solve_v3_transport_matrix_linear_gmres(
                     strong_precond_kind = "block"
                 else:
                     precond_kind = "collision"
-                    strong_precond_kind = "xmg"
+                    strong_precond_kind = "collision" if (no_fp and (not tzfft_backend_allowed)) else "xmg"
             # For large parallel transport solves, prefer a domain-decomposition preconditioner
             # aligned with the active matvec shard axis to avoid global preconditioner work.
             dd_auto_min_env = os.environ.get("SFINCS_JAX_TRANSPORT_DD_AUTO_MIN", "").strip()
