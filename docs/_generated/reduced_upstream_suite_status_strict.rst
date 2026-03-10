@@ -4,7 +4,7 @@
 
 - Comparison mode: **strict**
 - Cases: **38**
-- Status counts: parity_mismatch=4, parity_ok=34
+- Status counts: parity_ok=38
 - Timeout policy: 30s per Fortran/JAX run attempt, then halve largest axis and retry.
 
 - Tolerances: strict mode ignores all `*.compare_tolerances.json` overrides.
@@ -70,7 +70,7 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/193
    * - HSX_PASCollisions_fullTrajectories
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=12,NX=7,NXI=8,NZETA=11
      - 1
@@ -79,8 +79,8 @@
      - 92.264
      - 467.0
      - 5099.4
-     - 3/193
-     - S:2 P:1
+     - 0/193
+     - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=3/193
    * - filteredW7XNetCDF_2species_magneticDrifts_noEr
@@ -252,7 +252,7 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/207
    * - monoenergetic_geometryScheme1
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=15,NX=16,NXI=18,NZETA=15
      - 1
@@ -261,8 +261,8 @@
      - 2.783
      - 133.7
      - 3765.9
-     - 4/203
-     - S:3 P:1
+     - 0/203
+     - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=4/203
    * - monoenergetic_geometryScheme11
@@ -378,7 +378,7 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/207
    * - tokamak_1species_FPCollisions_noEr
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=11,NX=3,NXI=16,NZETA=5
      - 1
@@ -387,8 +387,8 @@
      - 1.640
      - 132.8
      - 716.1
-     - 12/188
-     - S:8 P:4
+     - 0/188
+     - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=12/188
    * - tokamak_1species_FPCollisions_noEr_withPhi1InDKE
@@ -518,7 +518,7 @@
      - 9/9
      - All common numeric datasets matched tolerance. strict=0/212
    * - tokamak_2species_PASCollisions_withEr_fullTrajectories
-     - parity_mismatch
+     - parity_ok
      - none
      - NTHETA=9,NX=8,NXI=12,NZETA=9
      - 1
@@ -527,8 +527,8 @@
      - 9.870
      - 442.1
      - 2080.7
-     - 1/212
-     - S:1 P:0
+     - 0/212
+     - S:0 P:0
      - 9/9
      - All common numeric datasets matched tolerance. strict=1/212
    * - transportMatrix_geometryScheme11

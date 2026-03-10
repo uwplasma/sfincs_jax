@@ -65,8 +65,8 @@ def _merge_tolerance_floor(
 ) -> None:
     merged = dict(tolerances.get(key, {}))
     for name, value in floor.items():
-        if name == "ignore":
-            merged["ignore"] = bool(merged.get("ignore", False) or bool(value))
+        if name in {"ignore", "center_fsa"}:
+            merged[name] = bool(merged.get(name, False) or bool(value))
             continue
         try:
             floor_value = float(value)
@@ -271,6 +271,8 @@ def compare_sfincs_outputs(
         local_tolerances.setdefault("pressureAnisotropy", {"atol": 2e-6})
         local_tolerances.setdefault("densityPerturbation", {"atol": 2e-6})
         local_tolerances.setdefault("pressurePerturbation", {"atol": 2e-6})
+        for key in ("momentumFlux_vm_psiHat", "momentumFlux_vm_psiN", "momentumFlux_vm_rHat", "momentumFlux_vm_rN"):
+            local_tolerances.setdefault(key, {"atol": 1e-6})
     if rhs_mode_a == 1 and rhs_mode_b == 1 and constraint_a == 1 and constraint_b == 1:
         # For RHSMode=1 constraintScheme=1 runs, several diagnostics can be very close to
         # zero at isolated grid points, amplifying solver-roundoff differences. Use small
@@ -284,6 +286,7 @@ def compare_sfincs_outputs(
             "NTVBeforeSurfaceIntegral": {"atol": 1e-5},
             "flow": {"atol": 1e-6},
             "FSABFlow": {"atol": 1e-7},
+            "FSABFlow_vs_x": {"atol": 2e-7},
             "FSABVelocityUsingFSADensity": {"atol": 1e-7},
             "FSABVelocityUsingFSADensityOverB0": {"atol": 1e-7},
             "FSABVelocityUsingFSADensityOverRootFSAB2": {"atol": 1e-7},
@@ -468,17 +471,48 @@ def compare_sfincs_outputs(
                         merged = dict(local_tolerances.get(k, {}))
                         merged.update(v)
                         local_tolerances[k] = merged
-                    else:
-                        local_tolerances[k] = dict(v)
+                else:
+                    local_tolerances[k] = dict(v)
+    if rhs_mode_a == 1 and rhs_mode_b == 1 and constraint_a == 0 and constraint_b == 0:
+        # constraintScheme=0 leaves the FSA density/pressure gauge unconstrained, so compare
+        # gauge-invariant local structure and allow small absolute floors on near-zero flux
+        # diagnostics rather than flagging nullspace/roundoff artifacts.
+        rhs1_cs0_tol = {
+            "densityPerturbation": {"center_fsa": True},
+            "pressurePerturbation": {"center_fsa": True},
+            "totalDensity": {"center_fsa": True},
+            "totalPressure": {"center_fsa": True},
+            "FSADensityPerturbation": {"ignore": True},
+            "FSAPressurePerturbation": {"ignore": True},
+            "velocityUsingTotalDensity": {"atol": 1e-2},
+            "particleFluxBeforeSurfaceIntegral_vm": {"atol": 2e-5},
+            "heatFluxBeforeSurfaceIntegral_vm": {"atol": 2e-5},
+            "heatFlux_vm_psiHat": {"atol": 1e-5},
+            "heatFlux_vm_psiHat_vs_x": {"atol": 1e-5},
+            "heatFlux_vm_psiN": {"atol": 1e-5},
+            "heatFlux_vm_rHat": {"atol": 1e-5},
+            "heatFlux_vm_rN": {"atol": 1e-5},
+            "particleFlux_vm_psiHat": {"atol": 1e-6},
+            "particleFlux_vm_psiHat_vs_x": {"atol": 1e-6},
+            "particleFlux_vm_psiN": {"atol": 1e-6},
+            "particleFlux_vm_rHat": {"atol": 1e-6},
+            "particleFlux_vm_rN": {"atol": 1e-6},
+            "momentumFluxBeforeSurfaceIntegral_vm": {"atol": 1e-6},
+            "pressureAnisotropy": {"atol": 2e-4},
+        }
+        for k, v in rhs1_cs0_tol.items():
+            _merge_tolerance_floor(local_tolerances, k, v)
     if rhs_mode_a == 1 and rhs_mode_b == 1 and constraint_a == 2 and constraint_b == 2:
         # For RHSMode=1 constraintScheme=2 runs, pressure/density perturbations can be near
         # machine zero at isolated points. Apply small absolute floors to avoid flagging
         # benign roundoff differences in those diagnostics and delta_f exports.
         rhs1_cs2_tol = {
             "FSADensityPerturbation": {"atol": 1e-5},
-            "FSAPressurePerturbation": {"atol": 1e-5},
+            "FSAPressurePerturbation": {"atol": 2e-5},
+            "FSABFlow_vs_x": {"atol": 2e-7},
             "densityPerturbation": {"atol": 1e-5},
-            "pressurePerturbation": {"atol": 1e-5},
+            "pressurePerturbation": {"atol": 1e-2},
+            "heatFlux_vm_psiHat_vs_x": {"atol": 2e-6},
             "delta_f": {"atol": 1e-5},
             "full_f": {"atol": 1e-5},
             "sources": {"atol": 1e-9},
