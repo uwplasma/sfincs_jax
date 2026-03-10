@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from sfincs_jax.v3_driver import (
     _transport_dense_backend_allowed,
+    _transport_sparse_direct_first_attempt_allowed,
     _transport_sparse_direct_rescue_allowed,
     _transport_sparse_direct_rescue_first,
     _transport_tzfft_backend_allowed,
@@ -123,6 +124,32 @@ def test_transport_sparse_direct_rescue_enabled_for_nonfinite_residual(monkeypat
         residual_norm=float("nan"),
         target=1.0e-9,
         use_implicit=False,
+    )
+
+
+def test_transport_sparse_direct_first_attempt_allowed_for_gpu_explicit_transport(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert _transport_sparse_direct_first_attempt_allowed(
+        op=_op(rhs_mode=3, has_fp=False),
+        size=5383,
+        use_implicit=False,
+    )
+
+
+def test_transport_sparse_direct_first_attempt_disabled_for_cpu_or_implicit(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _transport_sparse_direct_first_attempt_allowed(
+        op=_op(rhs_mode=2),
+        size=16382,
+        use_implicit=False,
+    )
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _transport_sparse_direct_first_attempt_allowed(
+        op=_op(rhs_mode=2),
+        size=16382,
+        use_implicit=True,
     )
 
 

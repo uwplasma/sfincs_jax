@@ -664,6 +664,23 @@ def _transport_sparse_direct_rescue_first(*, sparse_direct_rescue: bool) -> bool
     return bool(sparse_direct_rescue)
 
 
+def _transport_sparse_direct_first_attempt_allowed(
+    *,
+    op: V3FullSystemOperator,
+    size: int,
+    use_implicit: bool,
+) -> bool:
+    if jax.default_backend() == "cpu":
+        return False
+    return _transport_sparse_direct_rescue_allowed(
+        op=op,
+        size=size,
+        residual_norm=float("nan"),
+        target=1.0,
+        use_implicit=use_implicit,
+    )
+
+
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
     if distributed_axis is not None:
         with sharding_constraints(True):
@@ -19178,20 +19195,65 @@ def solve_v3_transport_matrix_linear_gmres(
                 preconditioner_used = preconditioner_use
                 x0_used = x0_reduced
                 dense_used = False
-
-                res_reduced = _solve_linear(
-                    matvec_fn=mv_reduced,
-                    b_vec=rhs_reduced,
-                    x0_vec=x0_reduced,
-                    tol_val=tol_rhs,
-                    atol_val=atol,
-                    restart_val=_restart_for_method(solve_method_rhs),
-                    maxiter_val=maxiter,
-                    solve_method_val=solve_method_rhs,
-                    preconditioner_val=preconditioner_use,
-                    precondition_side_val="left",
-                )
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs_reduced)))
+                sparse_direct_first_attempt = _transport_sparse_direct_first_attempt_allowed(
+                    op=op0,
+                    size=int(active_size),
+                    use_implicit=bool(use_implicit),
+                )
+                if sparse_direct_first_attempt:
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_transport_matrix_linear_gmres: host sparse LU first attempt "
+                            f"(size={int(active_size)} backend={jax.default_backend()})",
+                        )
+                    try:
+                        sig = _operator_signature_cached(op_matvec)
+                        res_reduced = _transport_sparse_direct_solve(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            n=int(active_size),
+                            dtype=rhs_reduced.dtype,
+                            cache_key=("transport_sparse_lu", sig, int(active_size), "active"),
+                        )
+                        solver_kind_used = "sparse_lu"
+                        solve_method_used = "sparse_lu"
+                        restart_used = 0
+                        preconditioner_used = None
+                        x0_used = None
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: host sparse LU first attempt failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
+                        res_reduced = _solve_linear(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            x0_vec=x0_reduced,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            solve_method_val=solve_method_rhs,
+                            preconditioner_val=preconditioner_use,
+                            precondition_side_val="left",
+                        )
+                else:
+                    res_reduced = _solve_linear(
+                        matvec_fn=mv_reduced,
+                        b_vec=rhs_reduced,
+                        x0_vec=x0_reduced,
+                        tol_val=tol_rhs,
+                        atol_val=atol,
+                        restart_val=_restart_for_method(solve_method_rhs),
+                        maxiter_val=maxiter,
+                        solve_method_val=solve_method_rhs,
+                        preconditioner_val=preconditioner_use,
+                        precondition_side_val="left",
+                    )
                 solver_kind = _solver_kind(solve_method_rhs)[0]
                 if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res_reduced) or float(res_reduced.residual_norm) > target_rhs):
                     if emit is not None:
@@ -19520,19 +19582,66 @@ def solve_v3_transport_matrix_linear_gmres(
                 preconditioner_used = preconditioner_use
                 x0_used = x0_full
                 dense_used = False
-                res, residual_vec = _solve_linear_with_residual(
-                    matvec_fn=mv,
-                    b_vec=rhs,
-                    x0_vec=x0_full,
-                    tol_val=tol_rhs,
-                    atol_val=atol,
-                    restart_val=_restart_for_method(solve_method_rhs),
-                    maxiter_val=maxiter,
-                    solve_method_val=solve_method_rhs,
-                    preconditioner_val=preconditioner_use,
-                    precondition_side_val="left",
-                )
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs)))
+                sparse_direct_first_attempt = _transport_sparse_direct_first_attempt_allowed(
+                    op=op0,
+                    size=int(op0.total_size),
+                    use_implicit=bool(use_implicit),
+                )
+                if sparse_direct_first_attempt:
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_transport_matrix_linear_gmres: host sparse LU first attempt "
+                            f"(size={int(op0.total_size)} backend={jax.default_backend()})",
+                        )
+                    try:
+                        sig = _operator_signature_cached(op_matvec)
+                        res = _transport_sparse_direct_solve(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            n=int(op0.total_size),
+                            dtype=rhs.dtype,
+                            cache_key=("transport_sparse_lu", sig, int(op0.total_size), "full"),
+                        )
+                        residual_vec = None
+                        solver_kind_used = "sparse_lu"
+                        solve_method_used = "sparse_lu"
+                        restart_used = 0
+                        preconditioner_used = None
+                        x0_used = None
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: host sparse LU first attempt failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
+                        res, residual_vec = _solve_linear_with_residual(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            x0_vec=x0_full,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            solve_method_val=solve_method_rhs,
+                            preconditioner_val=preconditioner_use,
+                            precondition_side_val="left",
+                        )
+                else:
+                    res, residual_vec = _solve_linear_with_residual(
+                        matvec_fn=mv,
+                        b_vec=rhs,
+                        x0_vec=x0_full,
+                        tol_val=tol_rhs,
+                        atol_val=atol,
+                        restart_val=_restart_for_method(solve_method_rhs),
+                        maxiter_val=maxiter,
+                        solve_method_val=solve_method_rhs,
+                        preconditioner_val=preconditioner_use,
+                        precondition_side_val="left",
+                    )
                 solver_kind = _solver_kind(solve_method_rhs)[0]
                 if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res) or float(res.residual_norm) > target_rhs):
                     if emit is not None:
