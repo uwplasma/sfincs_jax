@@ -100,6 +100,47 @@ def test_transport_scheme1_monoenergetic_write_output_regression(tmp_path, monke
     assert np.all(np.isfinite(dhat))
 
 
+def test_transport_scheme1_monoenergetic_gpu_heuristic_regression(tmp_path, monkeypatch) -> None:
+    """Monoenergetic transport should avoid unsupported GPU-only tzfft paths in explicit mode."""
+    here = Path(__file__).parent
+    input_path = here / "reduced_inputs" / "monoenergetic_geometryScheme1.input.namelist"
+    if not input_path.exists():
+        input_path = here.parent / "tests" / "reduced_inputs" / "monoenergetic_geometryScheme1.input.namelist"
+    assert input_path.exists()
+
+    scaled_input = tmp_path / "mono_scheme1_gpu.input.namelist"
+    text = input_path.read_text()
+    replacements = {
+        "  Ntheta = 15": "  Ntheta = 6",
+        "  Nzeta = 15": "  Nzeta = 6",
+        "  Nxi = 18": "  Nxi = 8",
+        "  Nx = 16": "  Nx = 4",
+    }
+    for old, new in replacements.items():
+        assert old in text
+        text = text.replace(old, new, 1)
+    scaled_input.write_text(text)
+
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_PARALLEL", "off")
+    monkeypatch.setenv("SFINCS_JAX_FORTRAN_STDOUT", "0")
+    monkeypatch.setenv("SFINCS_JAX_SOLVER_ITER_STATS", "0")
+    monkeypatch.setattr(v3_driver.jax, "default_backend", lambda: "gpu")
+
+    out_path = tmp_path / "mono_scheme1_gpu.h5"
+    write_sfincs_jax_output_h5(
+        input_namelist=scaled_input,
+        output_path=out_path,
+        compute_transport_matrix=True,
+    )
+
+    data = read_sfincs_h5(out_path)
+    assert int(np.asarray(data["RHSMode"]).item()) == 3
+    assert "DHat" in data
+    dhat = np.asarray(data["DHat"])
+    assert dhat.size > 0
+    assert np.all(np.isfinite(dhat))
+
+
 def test_transport_solve_minimal_outputs_matches_full(monkeypatch: pytest.MonkeyPatch) -> None:
     """Minimal transport-output mode should preserve matrix/flux diagnostics."""
     here = Path(__file__).parent

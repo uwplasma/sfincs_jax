@@ -1,6 +1,6 @@
 # SFINCS_JAX Master Handoff + Execution Plan
 
-Last updated: 2026-03-09 (America/Chicago)
+Last updated: 2026-03-10 (America/Chicago)
 Owner: incoming agent
 
 ## 1) Prompt For A New Agent (copy/paste)
@@ -400,6 +400,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-10
+- Scope: Make collisionless RHSMode=2/3 transport robust on non-CPU backends by disabling the unsupported `tzfft` preconditioner there, allowing explicit collisionless transport to use the existing host sparse-LU rescue, and adding a local monoenergetic non-CPU heuristic regression.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_sparse_direct.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_parallel.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py tests/test_transport_parallel.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py` (`27 passed`).
+- Runtime/memory delta: this removes the immediate CUDA `cusparse_gtsv2_ffi` failure for the monoenergetic transport auto path by routing explicit accelerator runs away from `tzfft`; the local reduced upstream suite is now fully clean again (`38/38 parity_ok`).
+- Remaining risks: the office GPU monoenergetic slice still needs to be rerun from this revision to confirm that the new collision/sparse-LU path closes the `jax_error` cases without introducing a solver-branch mismatch.
+- Next actions: commit and push this backend fix to `main`, rerun the office monoenergetic/transport GPU gate against the frozen v12 reference root, and if it clears, resume the remaining missing GPU cases before refreshing suite-facing artifacts.
 
 ### 2026-03-09
 - Scope: Harden non-CPU RHSMode=2/3 transport defaults by disabling accelerator-dense auto/fallback paths, keeping dense transport preconditioners off accelerators, and enabling the existing host sparse-direct rescue for explicit GPU transport solves.

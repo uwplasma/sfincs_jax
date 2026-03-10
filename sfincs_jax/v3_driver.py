@@ -256,6 +256,15 @@ def _transport_dense_backend_allowed() -> bool:
     return jax.default_backend() == "cpu"
 
 
+def _transport_tzfft_backend_allowed() -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_TZFFT_ALLOW_ACCELERATOR", "").strip().lower()
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    if env in {"0", "false", "no", "off"}:
+        return False
+    return jax.default_backend() == "cpu"
+
+
 def _rhsmode1_host_dense_fallback_allowed() -> bool:
     if jax.default_backend() == "cpu":
         return True
@@ -628,8 +637,6 @@ def _transport_sparse_direct_rescue_allowed(
     if bool(use_implicit):
         return False
     if int(op.rhs_mode) not in {2, 3} or bool(op.include_phi1):
-        return False
-    if op.fblock.fp is None:
         return False
     rescue_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_MAX", "").strip()
     rescue_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_RATIO", "").strip()
@@ -17976,6 +17983,7 @@ def solve_v3_transport_matrix_linear_gmres(
         transport_sparse_max_mb = float(transport_sparse_max_env) if transport_sparse_max_env else 128.0
     except ValueError:
         transport_sparse_max_mb = 128.0
+    tzfft_backend_allowed = _transport_tzfft_backend_allowed()
     if transport_precond_kind is not None and int(rhs_mode) in {2, 3}:
         precond_kind = transport_precond_kind
         if precond_kind == "auto":
@@ -18012,7 +18020,7 @@ def solve_v3_transport_matrix_linear_gmres(
                 no_fp = op0.fblock.fp is None
                 small_x = int(op0.n_x) <= 2
                 multi_angle = int(op0.n_theta) * int(op0.n_zeta) >= 64
-                if no_fp and small_x and multi_angle:
+                if no_fp and small_x and multi_angle and tzfft_backend_allowed:
                     precond_kind = "tzfft"
                     strong_precond_kind = "tzfft"
                 elif int(op0.total_size) <= block_max:
@@ -18038,6 +18046,16 @@ def solve_v3_transport_matrix_linear_gmres(
                     strong_precond_kind = "zeta_schwarz"
             if dense_mem_block and strong_precond_kind is not None:
                 precond_kind = strong_precond_kind
+        if precond_kind == "tzfft" and (not tzfft_backend_allowed):
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_transport_matrix_linear_gmres: tzfft preconditioner disabled on "
+                    f"backend={jax.default_backend()}",
+                )
+            precond_kind = "collision"
+            if strong_precond_kind == "tzfft":
+                strong_precond_kind = "collision"
         precond_kind_used = precond_kind
         if precond_kind in {"xmg", "multigrid"}:
             preconditioner_full = _build_rhsmode23_xmg_preconditioner(op=op0)
