@@ -316,6 +316,12 @@ def _apply_cores_setting(cores: int | None) -> None:
         os.environ.setdefault("SFINCS_JAX_AUTO_SHARD", "1")
 
 
+def _apply_runtime_env_defaults() -> None:
+    # Avoid large eager GPU preallocation in CLI workflows so solver/benchmark
+    # runs coexist better with other accelerator jobs by default.
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+
+
 def _auto_cores_for_args(args: argparse.Namespace) -> int:
     """Choose a conservative default core count by workload type.
 
@@ -599,6 +605,7 @@ def main(argv: list[str] | None = None) -> int:
     p_pp.set_defaults(func=_cmd_postprocess_upstream)
 
     args = parser.parse_args(argv)
+    _apply_runtime_env_defaults()
     if args.cores is None and not os.environ.get("SFINCS_JAX_CORES"):
         if not (os.environ.get("SFINCS_JAX_CI") or os.environ.get("CI")):
             args.cores = _auto_cores_for_args(args)

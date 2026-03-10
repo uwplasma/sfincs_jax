@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -164,3 +165,15 @@ def test_phi1_newton_auto_method_skips_dense_on_gpu() -> None:
 
     assert method == "incremental"
     assert any("skipping dense auto mode on backend=gpu" in msg for msg in msgs)
+
+
+def test_apply_runtime_env_defaults_disables_preallocation_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("XLA_PYTHON_CLIENT_PREALLOCATE", raising=False)
+    cli._apply_runtime_env_defaults()
+    assert os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "false"
+
+
+def test_apply_runtime_env_defaults_respects_existing_preallocation(monkeypatch) -> None:
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "true")
+    cli._apply_runtime_env_defaults()
+    assert os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] == "true"
