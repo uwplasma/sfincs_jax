@@ -281,15 +281,17 @@ def _rhsmode1_dense_krylov_allowed() -> bool:
     return True
 
 
-def _rhsmode1_host_sparse_direct_allowed(*, sparse_exact_lu: bool) -> bool:
+def _rhsmode1_host_sparse_direct_allowed(*, sparse_exact_lu: bool, use_implicit: bool = False) -> bool:
     if not bool(sparse_exact_lu):
+        return False
+    if bool(use_implicit):
         return False
     env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", "").strip().lower()
     if env in {"0", "false", "no", "off"}:
         return False
     if env in {"1", "true", "yes", "on"}:
         return True
-    return jax.default_backend() != "cpu"
+    return True
 
 
 def _rhsmode1_host_sparse_skip_dense_ratio() -> float:
@@ -383,7 +385,7 @@ def _rhsmode1_sparse_exact_lu_requested(
         accel_small_max = int(accel_small_max_env) if accel_small_max_env else 4000
     except ValueError:
         accel_small_max = 4000
-    exact_max = max(0, min(int(exact_max), int(sparse_max_size)))
+    exact_max = max(0, int(exact_max))
     if int(active_size) > int(exact_max):
         return False
     if env in {"1", "true", "yes", "on"}:
@@ -11177,6 +11179,10 @@ def solve_v3_full_system_linear_gmres(
         preconditioner_x=int(preconditioner_x),
         use_dkes=bool(use_dkes),
     )
+    sparse_exact_direct = _rhsmode1_host_sparse_direct_allowed(
+        sparse_exact_lu=sparse_exact_lu,
+        use_implicit=bool(use_implicit),
+    )
     gpu_dkes_sparse_shortcut = bool(
         rhs1_precond_env_user in {"", "auto"}
         and rhs1_bicgstab_env_user in {"", "auto"}
@@ -13618,8 +13624,13 @@ def solve_v3_full_system_linear_gmres(
         if sparse_enabled:
             sparse_enabled = int(op.rhs_mode) == 1 and (not bool(op.include_phi1))
         if sparse_enabled:
-            if dense_shortcut:
+            if dense_shortcut and (not sparse_exact_direct):
                 sparse_enabled = False
+            elif dense_shortcut and sparse_exact_direct and emit is not None:
+                emit(
+                    0,
+                    "solve_v3_full_system_linear_gmres: preferring sparse exact rescue over dense shortcut",
+                )
             sparse_kind_use = sparse_precond_kind
             if sparse_kind_use == "auto":
                 # Prefer SciPy/SuperLU ILU: factors are built on the host, then applied in
@@ -13632,6 +13643,13 @@ def solve_v3_full_system_linear_gmres(
                         emit(
                             0,
                             f"solve_v3_full_system_linear_gmres: large CPU sparse {'LU' if sparse_exact_lu else 'ILU'} rescue "
+                            f"(size={int(active_size)} > max={int(sparse_max_size)})",
+                        )
+                elif sparse_exact_direct:
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: exact sparse LU rescue "
                             f"(size={int(active_size)} > max={int(sparse_max_size)})",
                         )
                 else:
@@ -13992,7 +14010,10 @@ def solve_v3_full_system_linear_gmres(
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                     )
-                    host_sparse_direct_wanted = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
+                    host_sparse_direct_wanted = _rhsmode1_host_sparse_direct_allowed(
+                        sparse_exact_lu=sparse_exact_lu,
+                        use_implicit=bool(use_implicit),
+                    )
                     if large_cpu_sparse_rescue_active and sparse_exact_lu:
                         host_sparse_direct_wanted = True
                     build_dense_factors = (
@@ -15693,6 +15714,10 @@ def solve_v3_full_system_linear_gmres(
         )
 
         sparse_kind_use = sparse_precond_kind
+        sparse_exact_direct = _rhsmode1_host_sparse_direct_allowed(
+            sparse_exact_lu=sparse_exact_lu,
+            use_implicit=bool(use_implicit),
+        )
         sparse_enabled = False
         if sparse_precond_mode == "on":
             sparse_enabled = True
@@ -15711,6 +15736,13 @@ def solve_v3_full_system_linear_gmres(
                         emit(
                             0,
                             f"solve_v3_full_system_linear_gmres: large CPU sparse {'LU' if sparse_exact_lu else 'ILU'} rescue "
+                            f"(size={int(op.total_size)} > max={int(sparse_max_size)})",
+                        )
+                elif sparse_exact_direct:
+                    if emit is not None:
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: exact sparse LU rescue "
                             f"(size={int(op.total_size)} > max={int(sparse_max_size)})",
                         )
                 else:
@@ -15807,7 +15839,10 @@ def solve_v3_full_system_linear_gmres(
                         ilu_drop_tol=sparse_ilu_drop_tol,
                         fill_factor=sparse_ilu_fill,
                     )
-                    host_sparse_direct_wanted = _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=sparse_exact_lu)
+                    host_sparse_direct_wanted = _rhsmode1_host_sparse_direct_allowed(
+                        sparse_exact_lu=sparse_exact_lu,
+                        use_implicit=bool(use_implicit),
+                    )
                     if large_cpu_sparse_rescue_full and sparse_exact_lu:
                         host_sparse_direct_wanted = True
                     build_dense_factors = (

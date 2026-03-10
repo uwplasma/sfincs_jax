@@ -72,6 +72,14 @@ def _maybe_limit_restart(n: int, restart: int, dtype: jnp.dtype) -> int:
     return min(int(restart), int(max_restart))
 
 
+def _materialize_distributed_input(arr: jnp.ndarray | None, *, dtype: jnp.dtype | None = None) -> jnp.ndarray | None:
+    """Return an unsharded host-materialized copy suitable for pjit input resharding."""
+    if arr is None:
+        return None
+    host_arr = jax.device_get(arr)
+    return jnp.asarray(host_arr, dtype=dtype)
+
+
 def gmres_solve_with_history_scipy(
     *,
     matvec,
@@ -890,8 +898,10 @@ def gmres_solve_distributed(
         )
 
     solver_kind, solve_method_use = _distributed_solver_kind(solve_method)
-    b_use = jnp.asarray(b)
-    x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
+    b_use = _materialize_distributed_input(b)
+    assert b_use is not None
+    x0_input = _materialize_distributed_input(x0, dtype=b_use.dtype)
+    x0_use = jnp.zeros_like(b_use) if x0_input is None else x0_input
     n = int(b_use.size)
     n_devices = int(np.prod(mesh.devices.shape))
     pad = (-n) % n_devices if n_devices > 0 else 0
@@ -997,8 +1007,10 @@ def gmres_solve_with_residual_distributed(
         )
 
     solver_kind, solve_method_use = _distributed_solver_kind(solve_method)
-    b_use = jnp.asarray(b)
-    x0_use = jnp.zeros_like(b_use) if x0 is None else jnp.asarray(x0)
+    b_use = _materialize_distributed_input(b)
+    assert b_use is not None
+    x0_input = _materialize_distributed_input(x0, dtype=b_use.dtype)
+    x0_use = jnp.zeros_like(b_use) if x0_input is None else x0_input
     n = int(b_use.size)
     n_devices = int(np.prod(mesh.devices.shape))
     pad = (-n) % n_devices if n_devices > 0 else 0

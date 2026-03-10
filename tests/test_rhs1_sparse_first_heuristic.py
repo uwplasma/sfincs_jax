@@ -260,7 +260,19 @@ def test_sparse_exact_lu_auto_stays_off_on_cpu_without_full_x(monkeypatch) -> No
 def test_host_sparse_direct_default_on_gpu_for_exact_lu(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
-    assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True)
+    assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True, use_implicit=False)
+
+
+def test_host_sparse_direct_default_on_cpu_for_explicit_exact_lu(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True, use_implicit=False)
+
+
+def test_host_sparse_direct_stays_off_for_implicit_exact_lu(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True, use_implicit=True)
 
 
 class _Factor:
@@ -472,13 +484,27 @@ def test_sparse_sxblock_rescue_respects_guards(monkeypatch) -> None:
 def test_host_sparse_direct_off_without_exact_lu(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
-    assert not _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=False)
+    assert not _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=False, use_implicit=False)
 
 
 def test_host_sparse_direct_can_be_forced_on_cpu(monkeypatch) -> None:
     monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_HOST", "1")
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
-    assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True)
+    assert _rhsmode1_host_sparse_direct_allowed(sparse_exact_lu=True, use_implicit=False)
+
+
+def test_sparse_exact_lu_can_exceed_sparse_ilu_cap_on_gpu_dkes(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_EXACT_LU_MAX", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert _rhsmode1_sparse_exact_lu_requested(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=6302,
+        sparse_max_size=6000,
+        preconditioner_x=0,
+        use_dkes=True,
+    )
 
 
 def test_large_cpu_sparse_rescue_enabled_for_large_fullx_fp_failures(monkeypatch) -> None:

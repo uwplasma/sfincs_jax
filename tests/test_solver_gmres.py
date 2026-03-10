@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import pytest
 
 from sfincs_jax.solver import (
+    _materialize_distributed_input,
     _distributed_solver_kind,
     assemble_dense_matrix_from_matvec,
     bicgstab_solve_with_residual,
@@ -251,3 +252,11 @@ def test_distributed_solver_kind_auto_can_force_gmres(monkeypatch: pytest.Monkey
     kind, method = _distributed_solver_kind("auto")
     assert kind == "gmres"
     assert method == "incremental"
+
+
+def test_materialize_distributed_input_preserves_values_and_dtype() -> None:
+    arr = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32)
+    out = _materialize_distributed_input(arr, dtype=jnp.float64)
+    assert out is not None
+    np.testing.assert_allclose(np.asarray(out), np.asarray(arr), rtol=0.0, atol=0.0)
+    assert out.dtype == jnp.float64
