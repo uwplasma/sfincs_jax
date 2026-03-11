@@ -302,6 +302,18 @@ def _rhsmode1_host_sparse_skip_dense_ratio() -> float:
         return 1.0e4
 
 
+def _rhs1_pas_auto_large_base_kind(*, active_size: int) -> str:
+    """Keep large auto-selected PAS solves in the PAS-native preconditioner family."""
+    pas_lite_min_env = os.environ.get("SFINCS_JAX_PAS_LITE_MIN", "").strip()
+    try:
+        pas_lite_min = int(pas_lite_min_env) if pas_lite_min_env else 20000
+    except ValueError:
+        pas_lite_min = 20000
+    if int(active_size) >= max(1, int(pas_lite_min)):
+        return "pas_lite"
+    return "pas_hybrid"
+
+
 def _rhsmode1_constraint0_sparse_first(
     *,
     op: V3FullSystemOperator,
@@ -10558,10 +10570,11 @@ def solve_v3_full_system_linear_gmres(
                         ):
                             rhs1_precond_kind = "xmg"
                         elif op.fblock.pas is not None and int(op.total_size) >= pas_xmg_min:
-                            # Constrained PAS+Er systems can be stiff in x due to the v3 Er xDot term.
-                            # Use a Schur preconditioner (with an x-coarse base) to preserve constraints
-                            # while capturing the dominant dense-x coupling.
-                            rhs1_precond_kind = "schur"
+                            # Large constrained PAS+Er systems need stronger x/L coupling than
+                            # collision/point/xmg alone, but a global Schur setup can dominate
+                            # wall time. Keep the auto path in the PAS-native family here so
+                            # the later tokamak/3D refinements can promote to pas_tz/pas_ilu.
+                            rhs1_precond_kind = _rhs1_pas_auto_large_base_kind(active_size=int(active_size))
                         elif op.fblock.pas is not None and int(op.total_size) >= pas_xdiag_min:
                             lmax_use = xblock_tz_lmax_override if xblock_tz_lmax_override > 0 else lmax_auto
                             if lmax_use >= 1:
@@ -10570,7 +10583,10 @@ def solve_v3_full_system_linear_gmres(
                             else:
                                 rhs1_precond_kind = "point_xdiag"
                         else:
-                            rhs1_precond_kind = "schur"
+                            if op.fblock.pas is not None:
+                                rhs1_precond_kind = _rhs1_pas_auto_large_base_kind(active_size=int(active_size))
+                            else:
+                                rhs1_precond_kind = "schur"
                 elif full_precond_requested and (int(op.n_theta) > 1 or int(op.n_zeta) > 1):
                     if (
                         op.fblock.pas is not None
@@ -10625,7 +10641,7 @@ def solve_v3_full_system_linear_gmres(
                                 "schur_auto -> xmg preconditioner",
                             )
                     else:
-                        rhs1_precond_kind = "schur"
+                        rhs1_precond_kind = _rhs1_pas_auto_large_base_kind(active_size=int(active_size))
                 elif op.fblock.fp is not None and use_dkes:
                     # DKES-trajectory FP cases can stagnate with collision-only
                     # preconditioners. Prefer a lightweight xmg/sxblock_tz path for

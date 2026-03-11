@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from sfincs_jax.v3_driver import (
+    _rhs1_pas_auto_large_base_kind,
     _rhsmode1_constraint0_dense_fallback_allowed,
     _rhsmode1_constraint0_petsc_compat,
     _rhsmode1_host_sparse_direct_allowed,
@@ -202,6 +203,16 @@ def test_constraint0_dense_fallback_disabled_by_default(monkeypatch) -> None:
 def test_constraint0_dense_fallback_can_be_enabled(monkeypatch) -> None:
     monkeypatch.setenv("SFINCS_JAX_RHSMODE1_CS0_DENSE_FALLBACK", "1")
     assert _rhsmode1_constraint0_dense_fallback_allowed(_op(constraint_scheme=0))
+
+
+def test_large_pas_auto_prefers_pas_lite_above_threshold(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_PAS_LITE_MIN", raising=False)
+    assert _rhs1_pas_auto_large_base_kind(active_size=25000) == "pas_lite"
+
+
+def test_large_pas_auto_prefers_pas_hybrid_below_threshold(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_PAS_LITE_MIN", raising=False)
+    assert _rhs1_pas_auto_large_base_kind(active_size=5000) == "pas_hybrid"
 
 
 def test_resolve_use_implicit_honors_explicit_flag(monkeypatch) -> None:
