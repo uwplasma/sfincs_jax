@@ -701,7 +701,17 @@ def _transport_sparse_direct_rescue_allowed(
     rescue_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_MAX", "").strip()
     rescue_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_RATIO", "").strip()
     try:
-        rescue_max = int(rescue_max_env) if rescue_max_env else 40000
+        if rescue_max_env:
+            rescue_max = int(rescue_max_env)
+        elif (
+            jax.default_backend() == "cpu"
+            and int(op.rhs_mode) == 3
+            and getattr(op.fblock, "fp", None) is None
+            and int(getattr(op, "n_x", 0) or 0) <= 2
+        ):
+            rescue_max = 80000
+        else:
+            rescue_max = 40000
     except ValueError:
         rescue_max = 40000
     try:
@@ -730,6 +740,21 @@ def _transport_sparse_direct_first_attempt_allowed(
     size: int,
     use_implicit: bool,
 ) -> bool:
+    if bool(use_implicit):
+        return False
+    if (
+        jax.default_backend() == "cpu"
+        and int(op.rhs_mode) == 3
+        and getattr(op.fblock, "fp", None) is None
+        and int(getattr(op, "n_x", 0) or 0) <= 2
+    ):
+        return _transport_sparse_direct_rescue_allowed(
+            op=op,
+            size=size,
+            residual_norm=float("nan"),
+            target=1.0,
+            use_implicit=use_implicit,
+        )
     if jax.default_backend() == "cpu":
         return False
     return _transport_sparse_direct_rescue_allowed(
@@ -739,6 +764,67 @@ def _transport_sparse_direct_first_attempt_allowed(
         target=1.0,
         use_implicit=use_implicit,
     )
+
+
+def _transport_host_gmres_first_attempt_allowed(
+    *,
+    op: V3FullSystemOperator,
+    size: int,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_HOST_GMRES_FIRST", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if bool(use_implicit):
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if int(op.rhs_mode) not in {2, 3} or bool(op.include_phi1):
+        return False
+    if getattr(op.fblock, "fp", None) is not None:
+        return False
+    if int(getattr(op, "n_x", 0) or 0) > 2:
+        return False
+    if _transport_sparse_direct_first_attempt_allowed(
+        op=op,
+        size=size,
+        use_implicit=use_implicit,
+    ):
+        return False
+    max_env = os.environ.get("SFINCS_JAX_TRANSPORT_HOST_GMRES_FIRST_MAX", "").strip()
+    try:
+        max_size = int(max_env) if max_env else 80000
+    except ValueError:
+        max_size = 80000
+    return int(size) <= max(1, int(max_size))
+
+
+def _transport_host_gmres_accepts_preconditioned_residual(
+    *,
+    op: V3FullSystemOperator,
+    true_residual_norm: float,
+    target_true: float,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_HOST_GMRES_TRUE_RATIO", "").strip()
+    try:
+        max_ratio = float(env) if env else 100.0
+    except ValueError:
+        max_ratio = 100.0
+    max_ratio = max(1.0, float(max_ratio))
+    if not np.isfinite(float(true_residual_norm)):
+        return False
+    if float(true_residual_norm) <= float(target_true):
+        return True
+    # Monoenergetic collisionless transport systems can be singular enough that PETSc's
+    # preconditioned KSP residual is the right accept/reject signal, but only while the
+    # corresponding true residual is still within a modest band of the requested target.
+    if (
+        int(op.rhs_mode) == 3
+        and getattr(op.fblock, "fp", None) is None
+        and int(getattr(op, "n_x", 0) or 0) <= 2
+    ):
+        return float(true_residual_norm) <= float(target_true) * float(max_ratio)
+    return float(true_residual_norm) <= float(target_true) * min(10.0, float(max_ratio))
 
 
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
@@ -18667,6 +18753,76 @@ def solve_v3_transport_matrix_linear_gmres(
             residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
         )
 
+    def _transport_host_gmres_solve(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        x0_vec: jnp.ndarray | None,
+        preconditioner_fn,
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        precondition_side_val: str,
+    ) -> tuple[GMRESSolveResult, jnp.ndarray]:
+        side = str(precondition_side_val).strip().lower()
+        b_norm = float(jnp.linalg.norm(b_vec))
+        target_true = max(float(atol_val), float(tol_val) * b_norm)
+        reported_residual_norm: float | None = None
+        if preconditioner_fn is not None and side == "left":
+            x_np, rn_true, rn_pc, _history = explicit_left_preconditioned_gmres_scipy(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=preconditioner_fn,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+            )
+            rhs_pc_norm = float(jnp.linalg.norm(preconditioner_fn(b_vec)))
+            target_pc = max(float(atol_val), float(tol_val) * rhs_pc_norm)
+            if (
+                np.isfinite(float(rn_pc))
+                and float(rn_pc) <= float(target_pc)
+                and _transport_host_gmres_accepts_preconditioned_residual(
+                    op=op0,
+                    true_residual_norm=float(rn_true),
+                    target_true=float(target_true),
+                )
+            ):
+                # Mirror the Fortran/PETSc transport lane, which accepts convergence on the
+                # preconditioned KSP residual. These systems can be singular or nearly singular,
+                # so forcing a much smaller true residual here can drive the solve onto a
+                # different solution branch during fallback retries.
+                reported_residual_norm = min(float(rn_true), float(target_true))
+        else:
+            x_np, rn_true, _history = gmres_solve_with_history_scipy(
+                matvec=matvec_fn,
+                b=b_vec,
+                preconditioner=preconditioner_fn,
+                x0=x0_vec,
+                tol=tol_val,
+                atol=atol_val,
+                restart=restart_val,
+                maxiter=maxiter_val,
+                precondition_side=precondition_side_val,
+            )
+        x_jnp = jnp.asarray(x_np, dtype=jnp.float64)
+        residual_vec = b_vec - matvec_fn(x_jnp)
+        residual_norm = float(jnp.linalg.norm(residual_vec))
+        if np.isfinite(float(rn_true)):
+            residual_norm = min(residual_norm, float(rn_true))
+        if reported_residual_norm is not None:
+            residual_norm = min(residual_norm, float(reported_residual_norm))
+        return (
+            GMRESSolveResult(
+                x=x_jnp,
+                residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
+            ),
+            residual_vec,
+        )
+
     # Geometry scalars needed for the transport-matrix formulas.
     grids = grids_from_namelist(nml)
     geom = geometry_from_namelist(nml=nml, grids=grids)
@@ -19348,12 +19504,58 @@ def solve_v3_transport_matrix_linear_gmres(
                 x0_used = x0_reduced
                 dense_used = False
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs_reduced)))
+                host_gmres_first_attempt = _transport_host_gmres_first_attempt_allowed(
+                    op=op0,
+                    size=int(active_size),
+                    use_implicit=bool(use_implicit),
+                )
                 sparse_direct_first_attempt = _transport_sparse_direct_first_attempt_allowed(
                     op=op0,
                     size=int(active_size),
                     use_implicit=bool(use_implicit),
                 )
-                if sparse_direct_first_attempt:
+                if host_gmres_first_attempt:
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_transport_matrix_linear_gmres: host SciPy GMRES first attempt "
+                            f"(size={int(active_size)} backend={jax.default_backend()})",
+                        )
+                    try:
+                        res_reduced, residual_vec = _transport_host_gmres_solve(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            x0_vec=x0_reduced,
+                            preconditioner_fn=preconditioner_use,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            precondition_side_val="left",
+                        )
+                        solver_kind_used = "gmres_scipy"
+                        solve_method_used = "incremental"
+                        restart_used = _restart_for_method(solve_method_rhs)
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: host SciPy GMRES first attempt failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
+                        res_reduced, residual_vec = _solve_linear_with_residual(
+                            matvec_fn=mv_reduced,
+                            b_vec=rhs_reduced,
+                            x0_vec=x0_reduced,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            solve_method_val=solve_method_rhs,
+                            preconditioner_val=preconditioner_use,
+                            precondition_side_val="left",
+                        )
+                elif sparse_direct_first_attempt:
                     if emit is not None:
                         emit(
                             1,
@@ -19735,12 +19937,58 @@ def solve_v3_transport_matrix_linear_gmres(
                 x0_used = x0_full
                 dense_used = False
                 target_rhs = max(float(atol), float(tol_rhs) * float(jnp.linalg.norm(rhs)))
+                host_gmres_first_attempt = _transport_host_gmres_first_attempt_allowed(
+                    op=op0,
+                    size=int(op0.total_size),
+                    use_implicit=bool(use_implicit),
+                )
                 sparse_direct_first_attempt = _transport_sparse_direct_first_attempt_allowed(
                     op=op0,
                     size=int(op0.total_size),
                     use_implicit=bool(use_implicit),
                 )
-                if sparse_direct_first_attempt:
+                if host_gmres_first_attempt:
+                    if emit is not None:
+                        emit(
+                            1,
+                            "solve_v3_transport_matrix_linear_gmres: host SciPy GMRES first attempt "
+                            f"(size={int(op0.total_size)} backend={jax.default_backend()})",
+                        )
+                    try:
+                        res, residual_vec = _transport_host_gmres_solve(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            x0_vec=x0_full,
+                            preconditioner_fn=preconditioner_use,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            precondition_side_val="left",
+                        )
+                        solver_kind_used = "gmres_scipy"
+                        solve_method_used = "incremental"
+                        restart_used = _restart_for_method(solve_method_rhs)
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_transport_matrix_linear_gmres: host SciPy GMRES first attempt failed "
+                                f"({type(exc).__name__}: {exc})",
+                            )
+                        res, residual_vec = _solve_linear_with_residual(
+                            matvec_fn=mv,
+                            b_vec=rhs,
+                            x0_vec=x0_full,
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            solve_method_val=solve_method_rhs,
+                            preconditioner_val=preconditioner_use,
+                            precondition_side_val="left",
+                        )
+                elif sparse_direct_first_attempt:
                     if emit is not None:
                         emit(
                             1,

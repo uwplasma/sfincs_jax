@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 from sfincs_jax.v3_driver import (
     _transport_dense_backend_allowed,
+    _transport_host_gmres_accepts_preconditioned_residual,
+    _transport_host_gmres_first_attempt_allowed,
     _transport_sparse_direct_first_attempt_allowed,
     _transport_sparse_direct_rescue_allowed,
     _transport_sparse_direct_rescue_first,
@@ -11,10 +13,11 @@ from sfincs_jax.v3_driver import (
 )
 
 
-def _op(*, rhs_mode: int = 2, has_fp: bool = True, has_phi1: bool = False):
+def _op(*, rhs_mode: int = 2, has_fp: bool = True, has_phi1: bool = False, n_x: int = 4):
     return SimpleNamespace(
         rhs_mode=rhs_mode,
         include_phi1=has_phi1,
+        n_x=n_x,
         fblock=SimpleNamespace(fp=object() if has_fp else None),
     )
 
@@ -29,6 +32,19 @@ def test_transport_sparse_direct_rescue_enabled_for_cpu_fp_transport(monkeypatch
         size=16382,
         residual_norm=1.0e-3,
         target=1.0e-9,
+        use_implicit=False,
+    )
+
+
+def test_transport_sparse_direct_rescue_enabled_for_cpu_collisionless_mono_medium_size(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_MAX", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_sparse_direct_rescue_allowed(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        size=54811,
+        residual_norm=1.0e-2,
+        target=1.0e-6,
         use_implicit=False,
     )
 
@@ -107,7 +123,7 @@ def test_transport_sparse_direct_rescue_enabled_for_gpu_collisionless_transport(
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
     assert _transport_sparse_direct_rescue_allowed(
-        op=_op(rhs_mode=3, has_fp=False),
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
         size=5383,
         residual_norm=1.0e-3,
         target=1.0e-9,
@@ -119,7 +135,7 @@ def test_transport_sparse_direct_rescue_enabled_for_nonfinite_residual(monkeypat
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
     assert _transport_sparse_direct_rescue_allowed(
-        op=_op(rhs_mode=3, has_fp=False),
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
         size=5383,
         residual_norm=float("nan"),
         target=1.0e-9,
@@ -131,13 +147,23 @@ def test_transport_sparse_direct_first_attempt_allowed_for_gpu_explicit_transpor
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
     assert _transport_sparse_direct_first_attempt_allowed(
-        op=_op(rhs_mode=3, has_fp=False),
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
         size=5383,
         use_implicit=False,
     )
 
 
-def test_transport_sparse_direct_first_attempt_disabled_for_cpu_or_implicit(monkeypatch) -> None:
+def test_transport_sparse_direct_first_attempt_enabled_for_cpu_collisionless_mono_medium_size(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_sparse_direct_first_attempt_allowed(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        size=54811,
+        use_implicit=False,
+    )
+
+
+def test_transport_sparse_direct_first_attempt_disabled_for_other_cpu_or_implicit(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
     assert not _transport_sparse_direct_first_attempt_allowed(
@@ -150,6 +176,60 @@ def test_transport_sparse_direct_first_attempt_disabled_for_cpu_or_implicit(monk
         op=_op(rhs_mode=2),
         size=16382,
         use_implicit=True,
+    )
+
+
+def test_transport_host_gmres_first_attempt_disabled_when_sparse_direct_first_is_available(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_FIRST", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _transport_host_gmres_first_attempt_allowed(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        size=54811,
+        use_implicit=False,
+    )
+
+
+def test_transport_host_gmres_first_attempt_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_FIRST", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _transport_host_gmres_first_attempt_allowed(
+        op=_op(rhs_mode=2),
+        size=16382,
+        use_implicit=False,
+    )
+    assert not _transport_host_gmres_first_attempt_allowed(
+        op=_op(rhs_mode=3, has_fp=False, n_x=3),
+        size=54811,
+        use_implicit=False,
+    )
+    assert not _transport_host_gmres_first_attempt_allowed(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1, has_phi1=True),
+        size=54811,
+        use_implicit=False,
+    )
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _transport_host_gmres_first_attempt_allowed(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        size=54811,
+        use_implicit=False,
+    )
+
+
+def test_transport_host_gmres_accepts_preconditioned_residual_for_moderate_true_gap(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_TRUE_RATIO", raising=False)
+    assert _transport_host_gmres_accepts_preconditioned_residual(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        true_residual_norm=5.0e-5,
+        target_true=1.0e-6,
+    )
+
+
+def test_transport_host_gmres_rejects_preconditioned_residual_for_large_true_gap(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_TRUE_RATIO", raising=False)
+    assert not _transport_host_gmres_accepts_preconditioned_residual(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        true_residual_norm=1.0e-2,
+        target_true=1.0e-6,
     )
 
 

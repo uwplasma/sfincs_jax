@@ -1,6 +1,6 @@
 # SFINCS_JAX Master Handoff + Execution Plan
 
-Last updated: 2026-03-10 (America/Chicago)
+Last updated: 2026-03-11 (America/Chicago)
 Owner: incoming agent
 
 ## 1) Prompt For A New Agent (copy/paste)
@@ -400,6 +400,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-11
+- Scope: Tighten the CPU collisionless transport branch so original-resolution monoenergetic RHSMode=3 solves do not spend minutes in host-GMRES before eventually reaching sparse direct rescue; sparse-LU is now allowed as the first explicit CPU attempt for small-`Nx` collisionless transport, and host-GMRES is demoted behind that branch.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_sparse_direct.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py` (`39 passed`)
+- Runtime/memory delta: heuristic-only change. Original-resolution `monoenergetic_geometryScheme1` rerun in `tests/debug_mono_scheme1_transport_retryfix4` now enters a materially faster multi-core branch than the old `scaled_example_suite_release_cpu_v4` path (`1956.145s`, `41/203` mismatches), but the long transport-matrix confirmation run was still in progress at handoff time.
+- Remaining risks: the transport-matrix artifact from the long original-resolution rerun had not finished writing yet, so this update is validated by targeted tests plus branch/runtime behavior, not yet by a completed H5 parity artifact.
+- Next actions: let `tests/debug_mono_scheme1_transport_retryfix4/monoenergetic_geometryScheme1` finish, compare the resulting transport matrix / H5 to the Fortran reference, and keep iterating only if that final artifact still shows a parity delta.
 
 ### 2026-03-10
 - Scope: Audit repository hygiene, classify generated debug/audit roots as disposable, and teach git to ignore those run directories so local and remote working trees stay clean after validation work.
