@@ -343,6 +343,7 @@ def _run_prepared_case(
     *,
     case_name: str,
     case_input: Path,
+    reference_input: Path,
     case_out_dir: Path,
     fortran_exe: Path | None,
     timeout_s: float,
@@ -377,6 +378,7 @@ def _run_prepared_case(
         return _run_case(
             case_name=case_name,
             case_input=effective_case_input,
+            reference_input=reference_input,
             case_out_dir=case_out_dir,
             fortran_exe=fortran_exe if fortran_exe is not None else (case_out_dir / "__unused_sfincs__"),
             timeout_s=timeout_s,
@@ -635,6 +637,7 @@ def main() -> int:
             result = _run_prepared_case(
                 case_name=case,
                 case_input=seed_input,
+                reference_input=reference_input,
                 case_out_dir=case_out,
                 fortran_exe=fortran_exe,
                 timeout_s=float(args.timeout_s),
@@ -664,6 +667,7 @@ def main() -> int:
                         _run_prepared_case,
                         case_name=case,
                         case_input=seed_input,
+                        reference_input=reference_input,
                         case_out_dir=case_out,
                         fortran_exe=fortran_exe,
                         timeout_s=float(args.timeout_s),

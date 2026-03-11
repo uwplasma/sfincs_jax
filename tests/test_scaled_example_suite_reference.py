@@ -15,6 +15,7 @@ assert _SPEC is not None and _SPEC.loader is not None
 _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 _stage_reference_fortran_artifacts = _MODULE._stage_reference_fortran_artifacts
+_run_prepared_case = _MODULE._run_prepared_case
 _write_suite_outputs = _MODULE._write_suite_outputs
 
 from run_reduced_upstream_suite import CaseResult
@@ -171,3 +172,40 @@ def test_classify_blocker_treats_cuda_dense_custom_calls_as_solver_branch(tmp_pa
         )
         == "solver branch mismatch"
     )
+
+
+def test_run_prepared_case_passes_reference_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run_case(**kwargs):
+        seen.update(kwargs)
+        return _case_result("tokamak_case")
+
+    monkeypatch.setattr(_MODULE, "_run_case", fake_run_case)
+
+    case_input = tmp_path / "input.scale_seed.namelist"
+    case_input.write_text("&general\n/\n", encoding="utf-8")
+    reference_input = tmp_path / "input.reference.namelist"
+    reference_input.write_text("&general\n/\n", encoding="utf-8")
+
+    result = _run_prepared_case(
+        case_name="tokamak_case",
+        case_input=case_input,
+        reference_input=reference_input,
+        case_out_dir=tmp_path / "out",
+        fortran_exe=tmp_path / "sfincs",
+        timeout_s=10.0,
+        rtol=5e-4,
+        atol=1e-9,
+        max_attempts=1,
+        reuse_fortran=False,
+        collect_iterations=True,
+        jax_repeats=1,
+        jax_cache_dir=tmp_path / ".jax_cache",
+        equilibria_search_dir=case_input.parent,
+        reference_results_root=None,
+    )
+
+    assert result.case == "tokamak_case"
+    assert seen["case_input"] == case_input
+    assert seen["reference_input"] == reference_input
