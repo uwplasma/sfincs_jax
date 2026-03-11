@@ -375,6 +375,7 @@ def _rhsmode1_sparse_exact_lu_requested(
     solve_method_kind: str,
     active_size: int,
     sparse_max_size: int,
+    full_precond_requested: bool = False,
     preconditioner_x: int,
     use_dkes: bool,
 ) -> bool:
@@ -383,7 +384,12 @@ def _rhsmode1_sparse_exact_lu_requested(
         return False
     if int(op.rhs_mode) != 1 or bool(op.include_phi1):
         return False
-    if op.fblock.fp is None:
+    has_fp = op.fblock.fp is not None
+    has_pas = getattr(op.fblock, "pas", None) is not None
+    allow_pas_full = bool(has_pas) and (
+        bool(full_precond_requested) or env in {"1", "true", "yes", "on"}
+    )
+    if (not has_fp) and (not allow_pas_full):
         return False
     if solve_method_kind in {"dense", "dense_ksp"}:
         return False
@@ -11232,6 +11238,7 @@ def solve_v3_full_system_linear_gmres(
         solve_method_kind=solve_method_kind,
         active_size=int(active_size),
         sparse_max_size=int(sparse_max_size),
+        full_precond_requested=bool(full_precond_requested),
         preconditioner_x=int(preconditioner_x),
         use_dkes=bool(use_dkes),
     )
