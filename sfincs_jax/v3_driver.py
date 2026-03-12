@@ -670,6 +670,54 @@ def _rhsmode1_large_cpu_sparse_exact_lu_allowed(*, active_size: int) -> bool:
     return int(active_size) <= max(0, int(exact_max))
 
 
+def _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+    *,
+    op: V3FullSystemOperator,
+    active_size: int,
+    preconditioner_x: int,
+    used_large_cpu_xblock_shortcut: bool,
+    used_explicit_fp_xblock_seed: bool,
+    xblock_seed_residual: float,
+    xblock_seed_improvement_ratio: float,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if bool(use_implicit):
+        return False
+    if not bool(used_large_cpu_xblock_shortcut) or not bool(used_explicit_fp_xblock_seed):
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None or op.fblock.pas is not None:
+        return False
+    if int(preconditioner_x) == 0:
+        return False
+    max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK_MAX", "").strip()
+    ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK_RATIO", "").strip()
+    abs_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK_ABS", "").strip()
+    try:
+        exact_max = int(max_env) if max_env else 70000
+    except ValueError:
+        exact_max = 70000
+    try:
+        improvement_ratio = float(ratio_env) if ratio_env else 100.0
+    except ValueError:
+        improvement_ratio = 100.0
+    try:
+        residual_abs = float(abs_env) if abs_env else 5.0e-4
+    except ValueError:
+        residual_abs = 5.0e-4
+    if int(active_size) > max(0, int(exact_max)):
+        return False
+    if not np.isfinite(float(xblock_seed_residual)) or float(xblock_seed_residual) > float(residual_abs):
+        return False
+    return float(xblock_seed_improvement_ratio) >= max(1.0, float(improvement_ratio))
+
+
 def _rhsmode1_sparse_xblock_rescue_allowed(
     *,
     op: V3FullSystemOperator,
@@ -14287,6 +14335,8 @@ def solve_v3_full_system_linear_gmres(
         host_sparse_direct_used = False
         precond_sparse_xblock_current = None
         explicit_fp_xblock_seed_used = False
+        explicit_fp_xblock_seed_residual = float("inf")
+        explicit_fp_xblock_seed_improvement_ratio = 1.0
         if pas_fast_accept and sparse_enabled and emit is not None:
             emit(
                 1,
@@ -14373,6 +14423,13 @@ def solve_v3_full_system_linear_gmres(
                             x_trial = jnp.asarray(precond_sparse_xblock(rhs_reduced), dtype=jnp.float64)
                             residual_vec_sparse_xblock = rhs_reduced - mv_reduced(x_trial)
                             residual_norm_sparse_xblock = float(jnp.linalg.norm(residual_vec_sparse_xblock))
+                            explicit_fp_xblock_seed_residual = float(residual_norm_sparse_xblock)
+                            if np.isfinite(residual_norm_sparse_xblock) and residual_norm_sparse_xblock > 0.0:
+                                explicit_fp_xblock_seed_improvement_ratio = float(base_residual_norm) / float(
+                                    residual_norm_sparse_xblock
+                                )
+                            elif np.isfinite(residual_norm_sparse_xblock):
+                                explicit_fp_xblock_seed_improvement_ratio = float("inf")
                             if emit is not None:
                                 emit(
                                     0,
@@ -14469,7 +14526,29 @@ def solve_v3_full_system_linear_gmres(
                 used_large_cpu_xblock_shortcut=bool(cpu_large_xblock_shortcut),
                 used_explicit_fp_xblock_seed=bool(explicit_fp_xblock_seed_used),
                 use_implicit=bool(use_implicit),
-            )
+                )
+            if (
+                large_cpu_sparse_rescue_active
+                and (not sparse_exact_lu)
+                and _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+                    op=op,
+                    active_size=int(active_size),
+                    preconditioner_x=int(preconditioner_x),
+                    used_large_cpu_xblock_shortcut=bool(cpu_large_xblock_shortcut),
+                    used_explicit_fp_xblock_seed=bool(explicit_fp_xblock_seed_used),
+                    xblock_seed_residual=float(explicit_fp_xblock_seed_residual),
+                    xblock_seed_improvement_ratio=float(explicit_fp_xblock_seed_improvement_ratio),
+                    use_implicit=bool(use_implicit),
+                )
+            ):
+                sparse_exact_lu = True
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: promoting large CPU sparse rescue to exact LU "
+                        f"after x-block seed (residual={float(explicit_fp_xblock_seed_residual):.3e} "
+                        f"improvement={float(explicit_fp_xblock_seed_improvement_ratio):.1f}x)",
+                    )
             if skip_global_sparse_after_xblock and emit is not None:
                 emit(
                     1,

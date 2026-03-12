@@ -178,11 +178,14 @@ from this newer solver revision.
 Since that partial audit, targeted fast-path reruns have already moved one of the listed
 transport blockers: `transportMatrix_geometryScheme11` is now `parity_ok` on the branch
 with explicit CPU sparse-LU factorization promoted to float64 on large transport solves
-(`~185.3s`, `~5.17 GB` peak RSS on the stored scaled input). The remaining known fast-path
-mismatches are still concentrated in `monoenergetic_geometryScheme1` and
-`geometryScheme4_2species_noEr`; the latter still lands on the wrong flow/current branch
-after the current x-block shortcut, even after a bounded post-shortcut Krylov polish
-attempt (`~386.7s`, `~4.26 GB` peak RSS, same bad branch as before).
+(`~185.3s`, `~5.17 GB` peak RSS on the stored scaled input). `geometryScheme4_2species_noEr`
+has also moved materially: the default fast explicit CPU path now promotes the large sparse
+rescue to exact host sparse-LU when the x-block seed is already strong on this x-coupled FP
+case. On the stored scaled input that produces practical parity with only 4 tiny strict-only
+velocity/Mach deltas, at about `456.7s` and about `8.7 GB` peak RSS. So the remaining known
+fast-path mismatch is now concentrated primarily in `monoenergetic_geometryScheme1`; the
+geometry4 CPU blocker is no longer on the old wrong-flow branch, though its memory cost is
+still a real offender.
 
 Additional targeted original-resolution work on `monoenergetic_geometryScheme1` has narrowed
 that remaining mismatch substantially. The fast explicit branch now reproduces the dumped

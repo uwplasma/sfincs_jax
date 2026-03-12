@@ -17,6 +17,7 @@ from sfincs_jax.v3_driver import (
     _rhsmode1_large_cpu_xblock_skip_primary_allowed,
     _rhsmode1_large_cpu_sparse_rescue_allowed,
     _rhsmode1_large_cpu_sparse_exact_lu_allowed,
+    _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed,
     _rhsmode1_large_cpu_sparse_rescue_first,
     _rhsmode1_prefer_sparse_over_dense_shortcut,
     _rhsmode1_sparse_prefer_skips_stage2,
@@ -675,6 +676,89 @@ def test_skip_global_sparse_after_xblock_disabled_by_default(monkeypatch) -> Non
         used_large_cpu_xblock_shortcut=True,
         used_explicit_fp_xblock_seed=True,
         use_implicit=False,
+    )
+
+
+def test_large_cpu_sparse_exact_lu_promoted_after_good_xblock_seed(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK_MAX", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK_RATIO", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK_ABS", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        preconditioner_x=1,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        xblock_seed_residual=4.052229e-4,
+        xblock_seed_improvement_ratio=212.1,
+        use_implicit=False,
+    )
+
+
+def test_large_cpu_sparse_exact_lu_xblock_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_XBLOCK", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=80000,
+        preconditioner_x=1,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        xblock_seed_residual=4.052229e-4,
+        xblock_seed_improvement_ratio=212.1,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        preconditioner_x=0,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        xblock_seed_residual=4.052229e-4,
+        xblock_seed_improvement_ratio=212.1,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        preconditioner_x=1,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        xblock_seed_residual=8.0e-4,
+        xblock_seed_improvement_ratio=212.1,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        preconditioner_x=1,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        xblock_seed_residual=4.052229e-4,
+        xblock_seed_improvement_ratio=50.0,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        preconditioner_x=1,
+        used_large_cpu_xblock_shortcut=False,
+        used_explicit_fp_xblock_seed=True,
+        xblock_seed_residual=4.052229e-4,
+        xblock_seed_improvement_ratio=212.1,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_large_cpu_sparse_exact_lu_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        preconditioner_x=1,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        xblock_seed_residual=4.052229e-4,
+        xblock_seed_improvement_ratio=212.1,
+        use_implicit=True,
     )
 
 
