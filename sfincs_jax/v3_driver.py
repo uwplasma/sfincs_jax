@@ -417,6 +417,48 @@ def _rhs1_pas_auto_large_base_kind(*, active_size: int) -> str:
     return "pas_hybrid"
 
 
+def _rhsmode1_pas_fast_accept(
+    *,
+    op: V3FullSystemOperator,
+    active_size: int,
+    residual_norm: float,
+    target: float,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_PAS_FAST_ACCEPT", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if bool(use_implicit):
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.pas is None:
+        return False
+    min_env = os.environ.get("SFINCS_JAX_PAS_FAST_ACCEPT_MIN", "").strip()
+    ratio_env = os.environ.get("SFINCS_JAX_PAS_FAST_ACCEPT_RATIO", "").strip()
+    abs_env = os.environ.get("SFINCS_JAX_PAS_FAST_ACCEPT_ABS", "").strip()
+    try:
+        min_size = int(min_env) if min_env else 20000
+    except ValueError:
+        min_size = 20000
+    try:
+        ratio = float(ratio_env) if ratio_env else 1.0e2
+    except ValueError:
+        ratio = 1.0e2
+    try:
+        abs_floor = float(abs_env) if abs_env else 1.0e-7
+    except ValueError:
+        abs_floor = 1.0e-7
+    if int(active_size) < max(1, int(min_size)):
+        return False
+    if not np.isfinite(float(residual_norm)):
+        return False
+    accept_thresh = max(float(target) * max(1.0, float(ratio)), max(0.0, float(abs_floor)))
+    return float(residual_norm) <= float(accept_thresh)
+
+
 def _rhsmode1_constraint0_sparse_first(
     *,
     op: V3FullSystemOperator,
@@ -13223,6 +13265,13 @@ def solve_v3_full_system_linear_gmres(
                 ksp_maxiter = stage2_maxiter
                 ksp_precond_side = gmres_precond_side
                 ksp_solver_kind = _solver_kind(stage2_method)[0]
+        pas_fast_accept = _rhsmode1_pas_fast_accept(
+            op=op,
+            active_size=int(active_size),
+            residual_norm=float(res_reduced.residual_norm),
+            target=float(target_reduced),
+            use_implicit=bool(use_implicit),
+        )
         res_ratio = float(res_reduced.residual_norm) / max(float(target_reduced), 1e-300)
         strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
         try:
@@ -13385,6 +13434,15 @@ def solve_v3_full_system_linear_gmres(
                     "solve_v3_full_system_linear_gmres: PAS auto strong preconditioner skipped "
                     f"after base={rhs1_precond_kind} "
                     f"(residual={float(res_reduced.residual_norm):.3e} <= {float(pas_auto_strong_ratio):.1f}x target)",
+                )
+        if pas_fast_accept and strong_precond_env in {"", "auto"}:
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: PAS fast-accept "
+                    f"(residual={float(res_reduced.residual_norm):.3e}) -> skip strong preconditioner tail",
                 )
         pas_force_strong_ratio_env = os.environ.get("SFINCS_JAX_PAS_FORCE_STRONG_RATIO", "").strip()
         try:
@@ -13989,6 +14047,14 @@ def solve_v3_full_system_linear_gmres(
         dense_matrix_cache: np.ndarray | None = None
         host_sparse_direct_used = False
         precond_sparse_xblock_current = None
+        if pas_fast_accept and sparse_enabled and emit is not None:
+            emit(
+                1,
+                "solve_v3_full_system_linear_gmres: PAS fast-accept "
+                f"(residual={float(res_reduced.residual_norm):.3e}) -> skip sparse rescue tail",
+            )
+        if pas_fast_accept:
+            sparse_enabled = False
         if sparse_enabled and float(res_reduced.residual_norm) > target_reduced:
             if sparse_xblock_rescue_active:
                 try:
@@ -15666,6 +15732,13 @@ def solve_v3_full_system_linear_gmres(
                 residual_vec = residual_vec_true
         except Exception:
             pass
+        pas_fast_accept = _rhsmode1_pas_fast_accept(
+            op=op,
+            active_size=int(op.total_size),
+            residual_norm=float(result.residual_norm),
+            target=float(target),
+            use_implicit=bool(use_implicit),
+        )
         res_ratio = float(result.residual_norm) / max(float(target), 1e-300)
         strong_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_STRONG_PRECOND_RATIO", "").strip()
         try:
@@ -15766,6 +15839,15 @@ def solve_v3_full_system_linear_gmres(
                     "solve_v3_full_system_linear_gmres: PAS auto strong preconditioner skipped "
                     f"after base={rhs1_precond_kind} "
                     f"(residual={float(result.residual_norm):.3e} <= {float(pas_auto_strong_ratio):.1f}x target)",
+                )
+        if pas_fast_accept and strong_precond_env in {"", "auto"}:
+            strong_precond_disabled = True
+            strong_precond_auto = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: PAS fast-accept "
+                    f"(residual={float(result.residual_norm):.3e}) -> skip strong preconditioner tail",
                 )
         strong_precond_kind: str | None = None
         if strong_precond_disabled:
@@ -16165,6 +16247,14 @@ def solve_v3_full_system_linear_gmres(
 
         dense_matrix_cache: np.ndarray | None = None
         host_sparse_direct_used = False
+        if pas_fast_accept and sparse_enabled and emit is not None:
+            emit(
+                1,
+                "solve_v3_full_system_linear_gmres: PAS fast-accept "
+                f"(residual={float(result.residual_norm):.3e}) -> skip sparse rescue tail",
+            )
+        if pas_fast_accept:
+            sparse_enabled = False
         if sparse_enabled and float(result.residual_norm) > target:
             if sparse_kind_use == "jax":
                 try:

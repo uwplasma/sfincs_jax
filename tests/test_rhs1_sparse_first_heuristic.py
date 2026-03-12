@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from sfincs_jax.v3_driver import (
     _rhs1_pas_auto_large_base_kind,
+    _rhsmode1_pas_fast_accept,
     _rhsmode1_constraint0_dense_fallback_allowed,
     _rhsmode1_constraint0_petsc_compat,
     _rhsmode1_host_sparse_direct_allowed,
@@ -213,6 +214,59 @@ def test_large_pas_auto_prefers_pas_lite_above_threshold(monkeypatch) -> None:
 def test_large_pas_auto_prefers_pas_hybrid_below_threshold(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_PAS_LITE_MIN", raising=False)
     assert _rhs1_pas_auto_large_base_kind(active_size=5000) == "pas_hybrid"
+
+
+def test_pas_fast_accept_enabled_for_large_explicit_cpu_pas(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_PAS_FAST_ACCEPT", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_PAS_FAST_ACCEPT_MIN", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_PAS_FAST_ACCEPT_RATIO", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_PAS_FAST_ACCEPT_ABS", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    op = _op(constraint_scheme=1, has_fp=False)
+    op.fblock.pas = object()
+    assert _rhsmode1_pas_fast_accept(
+        op=op,
+        active_size=41561,
+        residual_norm=6.6e-8,
+        target=4.8e-10,
+        use_implicit=False,
+    )
+
+
+def test_pas_fast_accept_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_PAS_FAST_ACCEPT", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    op = _op(constraint_scheme=1, has_fp=False)
+    op.fblock.pas = object()
+    assert not _rhsmode1_pas_fast_accept(
+        op=op,
+        active_size=5000,
+        residual_norm=6.6e-8,
+        target=4.8e-10,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_pas_fast_accept(
+        op=op,
+        active_size=41561,
+        residual_norm=1.0e-5,
+        target=4.8e-10,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_pas_fast_accept(
+        op=op,
+        active_size=41561,
+        residual_norm=6.6e-8,
+        target=4.8e-10,
+        use_implicit=True,
+    )
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_pas_fast_accept(
+        op=op,
+        active_size=41561,
+        residual_norm=6.6e-8,
+        target=4.8e-10,
+        use_implicit=False,
+    )
 
 
 def test_resolve_use_implicit_honors_explicit_flag(monkeypatch) -> None:
