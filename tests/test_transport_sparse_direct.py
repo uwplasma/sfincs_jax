@@ -7,6 +7,8 @@ from sfincs_jax.v3_driver import (
     _transport_dense_backend_allowed,
     _transport_host_gmres_accepts_preconditioned_residual,
     _transport_host_gmres_first_attempt_allowed,
+    _transport_sparse_factor_dtype,
+    _transport_sparse_direct_needs_float64_retry,
     _transport_sparse_direct_first_attempt_allowed,
     _transport_sparse_direct_rescue_allowed,
     _transport_sparse_direct_rescue_first,
@@ -203,6 +205,16 @@ def test_host_sparse_factor_dtype_defaults_to_float32_for_large_explicit_cpu_lu(
     assert _host_sparse_factor_dtype(size=16382, factorization="lu", use_implicit=True).name == "float64"
 
 
+def test_transport_sparse_factor_dtype_defaults_to_float64_for_large_cpu_transport(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_FACTOR_DTYPE", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_FLOAT64_MIN", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_HOST_SPARSE_FACTOR_DTYPE", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_HOST_SPARSE_FACTOR_FLOAT32_MIN", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_sparse_factor_dtype(size=35063, use_implicit=False).name == "float64"
+    assert _transport_sparse_factor_dtype(size=16382, use_implicit=False).name == "float32"
+
+
 def test_transport_host_gmres_first_attempt_disabled_when_sparse_direct_first_is_available(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_FIRST", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
@@ -253,6 +265,26 @@ def test_transport_host_gmres_rejects_preconditioned_residual_for_large_true_gap
     assert not _transport_host_gmres_accepts_preconditioned_residual(
         op=_op(rhs_mode=3, has_fp=False, n_x=1),
         true_residual_norm=1.0e-2,
+        target_true=1.0e-6,
+    )
+
+
+def test_transport_sparse_direct_float64_retry_only_triggers_for_large_float32_gap(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FLOAT64_RETRY_RATIO", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_sparse_direct_needs_float64_retry(
+        factor_dtype=_host_sparse_factor_dtype(size=16382, factorization="lu", use_implicit=False),
+        residual_norm=2.0e-5,
+        target_true=1.0e-6,
+    )
+    assert not _transport_sparse_direct_needs_float64_retry(
+        factor_dtype=_host_sparse_factor_dtype(size=16382, factorization="lu", use_implicit=False),
+        residual_norm=5.0e-6,
+        target_true=1.0e-6,
+    )
+    assert not _transport_sparse_direct_needs_float64_retry(
+        factor_dtype=_host_sparse_factor_dtype(size=8000, factorization="lu", use_implicit=False),
+        residual_norm=2.0e-5,
         target_true=1.0e-6,
     )
 

@@ -991,6 +991,51 @@ def _transport_host_gmres_accepts_preconditioned_residual(
     return float(true_residual_norm) <= float(target_true) * min(10.0, float(max_ratio))
 
 
+def _transport_sparse_direct_needs_float64_retry(
+    *,
+    factor_dtype: np.dtype,
+    residual_norm: float,
+    target_true: float,
+) -> bool:
+    if np.dtype(factor_dtype) != np.dtype(np.float32):
+        return False
+    if not np.isfinite(float(residual_norm)):
+        return True
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FLOAT64_RETRY_RATIO", "").strip()
+    try:
+        ratio = float(env) if env else 10.0
+    except ValueError:
+        ratio = 10.0
+    ratio = max(1.0, float(ratio))
+    return float(residual_norm) > float(target_true) * float(ratio)
+
+
+def _transport_sparse_factor_dtype(*, size: int, use_implicit: bool) -> np.dtype:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_FACTOR_DTYPE", "").strip().lower()
+    if env == "float64":
+        return np.dtype(np.float64)
+    if env == "float32":
+        return np.dtype(np.float32)
+    factor_dtype = _host_sparse_factor_dtype(
+        size=int(size),
+        factorization="lu",
+        use_implicit=use_implicit,
+    )
+    if (
+        factor_dtype == np.dtype(np.float32)
+        and (not bool(use_implicit))
+        and jax.default_backend() == "cpu"
+    ):
+        min_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_FLOAT64_MIN", "").strip()
+        try:
+            float64_min = int(min_env) if min_env else 30000
+        except ValueError:
+            float64_min = 30000
+        if int(size) >= max(1, int(float64_min)):
+            return np.dtype(np.float64)
+    return factor_dtype
+
+
 def _gmres_solve_dispatch(*, distributed_axis: str | None = None, **kwargs):
     if distributed_axis is not None:
         with sharding_constraints(True):
@@ -17147,11 +17192,7 @@ def solve_v3_full_system_newton_krylov_history(
         restart_val: int,
         maxiter_val: int | None,
     ) -> GMRESSolveResult:
-        factor_dtype = _host_sparse_factor_dtype(
-            size=int(n),
-            factorization="lu",
-            use_implicit=False,
-        )
+        factor_dtype = _transport_sparse_factor_dtype(size=int(n), use_implicit=False)
         cache_key_use = _sparse_factor_cache_key(("phi1_nk_sparse_direct", *cache_tag), factor_dtype)
         a_csr_full, _a_csr_drop, ilu, _a_dense, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
             matvec=matvec_fn,
@@ -19180,38 +19221,44 @@ def solve_v3_transport_matrix_linear_gmres(
         maxiter_val: int | None,
         precondition_side_val: str,
     ) -> GMRESSolveResult:
-        factor_dtype = _host_sparse_factor_dtype(
-            size=int(n),
-            factorization="lu",
-            use_implicit=False,
-        )
-        cache_key_use = _sparse_factor_cache_key(cache_key, factor_dtype)
-        a_csr_full, _a_csr_drop, ilu, _a_dense, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
-            matvec=matvec_fn,
-            n=int(n),
-            dtype=dtype,
-            cache_key=cache_key_use,
-            factor_dtype=factor_dtype,
-            drop_tol=transport_sparse_drop_tol,
-            drop_rel=transport_sparse_drop_rel,
-            ilu_drop_tol=0.0,
-            fill_factor=1.0,
-            build_dense_factors=False,
-            build_jax_factors=False,
-            build_ilu=True,
-            store_dense=False,
-            factorization="lu",
-            emit=emit,
-        )
-        if ilu is None:
-            raise RuntimeError("transport sparse_lu: factors unavailable")
-        x_np, residual_norm = _host_sparse_direct_solve_with_refinement(
-            ilu=ilu,
-            a_csr_full=a_csr_full,
-            rhs_vec=b_vec,
-            factor_dtype=factor_dtype,
-            refine_steps=_host_sparse_direct_refine_steps("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_REFINE", default=2),
-        )
+        def _solve_with_factor_dtype(factor_dtype_use: np.dtype) -> tuple[np.ndarray, float]:
+            cache_key_use = _sparse_factor_cache_key(cache_key, factor_dtype_use)
+            a_csr_full, _a_csr_drop, ilu, _a_dense, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
+                matvec=matvec_fn,
+                n=int(n),
+                dtype=dtype,
+                cache_key=cache_key_use,
+                factor_dtype=factor_dtype_use,
+                drop_tol=transport_sparse_drop_tol,
+                drop_rel=transport_sparse_drop_rel,
+                ilu_drop_tol=0.0,
+                fill_factor=1.0,
+                build_dense_factors=False,
+                build_jax_factors=False,
+                build_ilu=True,
+                store_dense=False,
+                factorization="lu",
+                emit=emit,
+            )
+            if ilu is None:
+                raise RuntimeError("transport sparse_lu: factors unavailable")
+            x_local, residual_local = _host_sparse_direct_solve_with_refinement(
+                ilu=ilu,
+                a_csr_full=a_csr_full,
+                rhs_vec=b_vec,
+                factor_dtype=factor_dtype_use,
+                refine_steps=_host_sparse_direct_refine_steps("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_REFINE", default=2),
+            )
+            return x_local, float(residual_local)
+
+        factor_dtype = _transport_sparse_factor_dtype(size=int(n), use_implicit=False)
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: sparse LU factor_dtype="
+                f"{np.dtype(factor_dtype).name}",
+            )
+        x_np, residual_norm = _solve_with_factor_dtype(factor_dtype)
         target_true = max(float(atol_val), float(tol_val) * float(jnp.linalg.norm(b_vec)))
         if factor_dtype == np.dtype(np.float32) and residual_norm > target_true:
             polish_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_POLISH", "").strip().lower()
@@ -19247,6 +19294,23 @@ def solve_v3_transport_matrix_linear_gmres(
                 if np.isfinite(residual_norm_polish) and residual_norm_polish < residual_norm:
                     x_np = x_polish
                     residual_norm = residual_norm_polish
+        if _transport_sparse_direct_needs_float64_retry(
+            factor_dtype=factor_dtype,
+            residual_norm=float(residual_norm),
+            target_true=float(target_true),
+        ):
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_transport_matrix_linear_gmres: retrying sparse LU with float64 factors "
+                    f"(residual={float(residual_norm):.6e}, target={float(target_true):.6e})",
+                )
+            x64_np, residual64 = _solve_with_factor_dtype(np.dtype(np.float64))
+            if np.isfinite(residual64) and (
+                not np.isfinite(float(residual_norm)) or float(residual64) < float(residual_norm)
+            ):
+                x_np = x64_np
+                residual_norm = residual64
         return GMRESSolveResult(
             x=jnp.asarray(x_np, dtype=jnp.float64),
             residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
