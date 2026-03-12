@@ -46,7 +46,7 @@ def test_transport_sparse_direct_rescue_enabled_for_cpu_collisionless_mono_mediu
     assert _transport_sparse_direct_rescue_allowed(
         op=_op(rhs_mode=3, has_fp=False, n_x=1),
         size=54811,
-        residual_norm=1.0e-2,
+        residual_norm=2.0e-2,
         target=1.0e-6,
         use_implicit=False,
     )
@@ -156,11 +156,11 @@ def test_transport_sparse_direct_first_attempt_allowed_for_gpu_explicit_transpor
     )
 
 
-def test_transport_sparse_direct_first_attempt_enabled_for_cpu_collisionless_mono_medium_size(monkeypatch) -> None:
+def test_transport_sparse_direct_first_attempt_disabled_for_cpu_collisionless_mono_medium_size(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MIN", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
-    assert _transport_sparse_direct_first_attempt_allowed(
+    assert not _transport_sparse_direct_first_attempt_allowed(
         op=_op(rhs_mode=3, has_fp=False, n_x=1),
         size=54811,
         use_implicit=False,
@@ -215,10 +215,10 @@ def test_transport_sparse_factor_dtype_defaults_to_float64_for_large_cpu_transpo
     assert _transport_sparse_factor_dtype(size=16382, use_implicit=False).name == "float32"
 
 
-def test_transport_host_gmres_first_attempt_disabled_when_sparse_direct_first_is_available(monkeypatch) -> None:
+def test_transport_host_gmres_first_attempt_enabled_for_cpu_collisionless_mono_medium_size(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_FIRST", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
-    assert not _transport_host_gmres_first_attempt_allowed(
+    assert _transport_host_gmres_first_attempt_allowed(
         op=_op(rhs_mode=3, has_fp=False, n_x=1),
         size=54811,
         use_implicit=False,
@@ -260,12 +260,34 @@ def test_transport_host_gmres_accepts_preconditioned_residual_for_moderate_true_
     )
 
 
+def test_transport_host_gmres_accepts_preconditioned_residual_for_branch_sensitive_mono_cpu_gap(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_TRUE_RATIO", raising=False)
+    assert _transport_host_gmres_accepts_preconditioned_residual(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        true_residual_norm=6.5e-8,
+        target_true=5.5e-10,
+    )
+
+
 def test_transport_host_gmres_rejects_preconditioned_residual_for_large_true_gap(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_HOST_GMRES_TRUE_RATIO", raising=False)
     assert not _transport_host_gmres_accepts_preconditioned_residual(
         op=_op(rhs_mode=3, has_fp=False, n_x=1),
-        true_residual_norm=1.0e-2,
+        true_residual_norm=2.0e-2,
         target_true=1.0e-6,
+    )
+
+
+def test_transport_sparse_direct_rescue_waits_longer_for_branch_sensitive_mono_cpu_gap(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_RATIO", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _transport_sparse_direct_rescue_allowed(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1),
+        size=54811,
+        residual_norm=6.5e-8,
+        target=5.5e-10,
+        use_implicit=False,
     )
 
 

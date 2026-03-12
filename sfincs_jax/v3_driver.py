@@ -886,24 +886,30 @@ def _transport_sparse_direct_rescue_allowed(
         return False
     if int(op.rhs_mode) not in {2, 3} or bool(op.include_phi1):
         return False
+    mono_pas_cpu_priority = (
+        jax.default_backend() == "cpu"
+        and int(op.rhs_mode) == 3
+        and getattr(op.fblock, "fp", None) is None
+        and int(getattr(op, "n_x", 0) or 0) <= 2
+    )
     rescue_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_MAX", "").strip()
     rescue_ratio_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_RATIO", "").strip()
     try:
         if rescue_max_env:
             rescue_max = int(rescue_max_env)
-        elif (
-            jax.default_backend() == "cpu"
-            and int(op.rhs_mode) == 3
-            and getattr(op.fblock, "fp", None) is None
-            and int(getattr(op, "n_x", 0) or 0) <= 2
-        ):
+        elif mono_pas_cpu_priority:
             rescue_max = 80000
         else:
             rescue_max = 40000
     except ValueError:
         rescue_max = 40000
     try:
-        rescue_ratio = float(rescue_ratio_env) if rescue_ratio_env else 1.0e2
+        if rescue_ratio_env:
+            rescue_ratio = float(rescue_ratio_env)
+        elif mono_pas_cpu_priority:
+            rescue_ratio = 1.0e4
+        else:
+            rescue_ratio = 1.0e2
     except ValueError:
         rescue_ratio = 1.0e2
     if int(size) > max(1, int(rescue_max)):
@@ -934,6 +940,15 @@ def _transport_sparse_direct_first_attempt_allowed(
         return False
     size_int = int(size)
     if jax.default_backend() == "cpu":
+        if (
+            int(op.rhs_mode) == 3
+            and getattr(op.fblock, "fp", None) is None
+            and int(getattr(op, "n_x", 0) or 0) <= 2
+        ):
+            # Monoenergetic PAS transport solves are branch-sensitive on CPU: sparse LU can
+            # satisfy the true residual while landing on a different source/flow branch than
+            # PETSc GMRES. Keep sparse direct available as a late rescue, but prefer Krylov first.
+            return False
         first_min_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MIN", "").strip()
         first_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MAX", "").strip()
         try:
@@ -992,6 +1007,13 @@ def _transport_host_gmres_first_attempt_allowed(
         return False
     if int(getattr(op, "n_x", 0) or 0) > 2:
         return False
+    if int(op.rhs_mode) == 3:
+        max_env = os.environ.get("SFINCS_JAX_TRANSPORT_HOST_GMRES_FIRST_MAX", "").strip()
+        try:
+            max_size = int(max_env) if max_env else 80000
+        except ValueError:
+            max_size = 80000
+        return int(size) <= max(1, int(max_size))
     if _transport_sparse_direct_first_attempt_allowed(
         op=op,
         size=size,
@@ -1014,7 +1036,16 @@ def _transport_host_gmres_accepts_preconditioned_residual(
 ) -> bool:
     env = os.environ.get("SFINCS_JAX_TRANSPORT_HOST_GMRES_TRUE_RATIO", "").strip()
     try:
-        max_ratio = float(env) if env else 100.0
+        if env:
+            max_ratio = float(env)
+        elif (
+            int(op.rhs_mode) == 3
+            and getattr(op.fblock, "fp", None) is None
+            and int(getattr(op, "n_x", 0) or 0) <= 2
+        ):
+            max_ratio = 1.0e4
+        else:
+            max_ratio = 100.0
     except ValueError:
         max_ratio = 100.0
     max_ratio = max(1.0, float(max_ratio))
