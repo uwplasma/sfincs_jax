@@ -229,6 +229,21 @@ class CaseResult:
     jax_h5: str | None
 
 
+def _runtime_metric_for_basis(
+    *,
+    fortran_runtime_s: float | None,
+    jax_runtime_s: float | None,
+    basis: str,
+) -> float | None:
+    mode = str(basis).strip().lower()
+    if mode == "fortran":
+        return None if fortran_runtime_s is None else float(fortran_runtime_s)
+    runtimes = [float(v) for v in (fortran_runtime_s, jax_runtime_s) if v is not None]
+    if not runtimes:
+        return None
+    return max(runtimes)
+
+
 PRINT_SIGNALS: dict[str, tuple[str, str]] = {
     # These patterns are intentionally aligned with upstream v3 stdout so we can
     # track how close `sfincs_jax` is to being a drop-in replacement.
@@ -475,6 +490,19 @@ def _clamp_resolution_to_reference_max_in_place(input_path: Path, *, reference_i
     text = input_path.read_text()
     input_path.write_text(_replace_resolution_values_in_text(text, updates=updates))
     return _resolution_from_namelist(input_path)
+
+
+def _scale_resolution_with_reference_cap_in_place(
+    input_path: Path,
+    *,
+    factor: float,
+    reference_input: Path | None,
+) -> dict[str, int]:
+    before = _resolution_from_namelist(input_path)
+    _scale_resolution_in_place(input_path, factor=factor)
+    _clamp_resolution_to_reference_max_in_place(input_path, reference_input=reference_input)
+    after = _resolution_from_namelist(input_path)
+    return after if after else before
 
 
 def _tail(path: Path, n: int = 40) -> str:
@@ -1493,6 +1521,7 @@ def _run_case(
     target_runtime_s: float | None = None,
     target_runtime_max_s: float | None = None,
     target_runtime_max_iters: int = 0,
+    target_runtime_basis: str = "max",
     use_seed_resolution: bool = False,
     reuse_fortran: bool = False,
     collect_iterations: bool = True,
@@ -1500,6 +1529,7 @@ def _run_case(
     jax_cache_dir: Path | None = None,
 ) -> CaseResult:
     case = str(case_name)
+    runtime_basis = str(target_runtime_basis).strip().lower() or "max"
     case_out_dir.mkdir(parents=True, exist_ok=True)
     dst_input = case_out_dir / "input.namelist"
     original_input = reference_input if reference_input is not None else case_input
@@ -1690,7 +1720,7 @@ def _run_case(
             reductions += 1
             continue
 
-        if target_runtime_s is not None and fortran_runtime is not None:
+        if target_runtime_s is not None and fortran_runtime is not None and runtime_basis == "fortran":
             target_cap = target_runtime_max_s if target_runtime_max_s is not None else target_runtime_s
             if (
                 target_cap is not None
@@ -1699,7 +1729,11 @@ def _run_case(
             ):
                 ratio = float(target_cap) / float(fortran_runtime)
                 factor = max(0.2, min(0.8, ratio**0.8))
-                new_res = _scale_resolution_in_place(dst_input, factor=factor)
+                new_res = _scale_resolution_with_reference_cap_in_place(
+                    dst_input,
+                    factor=factor,
+                    reference_input=reference_input,
+                )
                 if new_res != final_res:
                     scale_iters += 1
                     note = (
@@ -1856,43 +1890,63 @@ def _run_case(
             except Exception:  # noqa: BLE001
                 last_success = None
 
-        if target_runtime_s is not None and fortran_runtime is not None and jax_runtime is not None:
+        metric_runtime = _runtime_metric_for_basis(
+            fortran_runtime_s=fortran_runtime,
+            jax_runtime_s=jax_runtime,
+            basis=runtime_basis,
+        )
+        if target_runtime_s is not None and metric_runtime is not None:
             target_cap = target_runtime_max_s if target_runtime_max_s is not None else target_runtime_s
-            max_rt = max(float(fortran_runtime), float(jax_runtime))
             if (
-                max_rt < float(target_runtime_s)
+                metric_runtime < float(target_runtime_s)
                 and scale_iters < int(target_runtime_max_iters)
-                and max_rt > 0.0
+                and metric_runtime > 0.0
                 and not saw_timeout
             ):
-                ratio = float(target_runtime_s) / max_rt
+                ratio = float(target_runtime_s) / metric_runtime
                 factor = max(1.1, min(2.0, ratio**0.25))
-                new_res = _scale_resolution_in_place(dst_input, factor=factor)
-                if new_res != final_res:
-                    scale_iters += 1
-                    note = f"Scaled resolution by {factor:.2f} to target runtime."
-                    continue
-            if (
-                target_cap is not None
-                and max_rt > float(target_cap)
-                and scale_iters < int(target_runtime_max_iters)
-            ):
-                ratio = float(target_cap) / max_rt
-                factor = max(0.2, min(0.8, ratio**0.8))
-                new_res = _scale_resolution_in_place(dst_input, factor=factor)
+                new_res = _scale_resolution_with_reference_cap_in_place(
+                    dst_input,
+                    factor=factor,
+                    reference_input=reference_input,
+                )
                 if new_res != final_res:
                     scale_iters += 1
                     note = (
-                        f"Scaled resolution down by {factor:.2f} to keep runtime under "
+                        f"Scaled resolution by {factor:.2f} to target "
+                        f"{runtime_basis} runtime."
+                    )
+                    continue
+            if (
+                target_cap is not None
+                and metric_runtime > float(target_cap)
+                and scale_iters < int(target_runtime_max_iters)
+            ):
+                ratio = float(target_cap) / metric_runtime
+                factor = max(0.2, min(0.8, ratio**0.8))
+                new_res = _scale_resolution_with_reference_cap_in_place(
+                    dst_input,
+                    factor=factor,
+                    reference_input=reference_input,
+                )
+                if new_res != final_res:
+                    scale_iters += 1
+                    note = (
+                        f"Scaled resolution down by {factor:.2f} to keep {runtime_basis} runtime under "
                         f"{float(target_cap):.2f}s."
                     )
                     continue
                 new_res = _reduce_max_axis_in_place(dst_input)
+                _clamp_resolution_to_reference_max_in_place(dst_input, reference_input=reference_input)
+                new_res = _resolution_from_namelist(dst_input)
                 if new_res != final_res:
                     scale_iters += 1
-                    note = f"Reduced resolution to keep runtime under cap {float(target_cap):.2f}s."
+                    note = f"Reduced resolution to keep {runtime_basis} runtime under cap {float(target_cap):.2f}s."
                     continue
-                note = f"Runtime {max_rt:.2f}s exceeds cap {float(target_cap):.2f}s; keeping resolution."
+                note = (
+                    f"{runtime_basis} runtime {metric_runtime:.2f}s exceeds cap "
+                    f"{float(target_cap):.2f}s; keeping resolution."
+                )
 
         break
 

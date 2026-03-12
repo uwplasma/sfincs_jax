@@ -164,16 +164,30 @@ Status labels in table cells:
 Regenerate this block on the fast-path branch with:
 
 ```bash
-python scripts/generate_readme_fast_branch_audit.py
+python scripts/run_scaled_example_suite.py \
+  --examples-root examples/sfincs_examples \
+  --resolution-reference-root /Users/rogeriojorge/local/tests/sfincs_original/fortran/version3/examples \
+  --fortran-exe /Users/rogeriojorge/local/tests/sfincs/fortran/version3/sfincs \
+  --out-root tests/scaled_example_suite_fast_cpu_rtwindow_v1 \
+  --scale-factor 1.0 \
+  --runtime-target-basis fortran \
+  --fortran-min-runtime-s 1.0 \
+  --fortran-max-runtime-s 20.0 \
+  --runtime-adjustment-iters 3
+python scripts/generate_readme_fast_branch_audit.py \
+  --out-root tests/scaled_example_suite_fast_cpu_rtwindow_v1
 ```
 
-The generated block below is still based on the partial `scaled_example_suite_fast_cpu_v1`
-rerun. After commit `d792d64`, the branch also switched large explicit nonlinear `includePhi1`
-CPU solves to a host sparse-direct Newton step. A targeted rerun of
-`geometryScheme4_2species_noEr_withPhi1InDKE` from the current branch converged in
-`1092.8s` with peak RSS about `12.1 GB`, but still showed `7/264` practical mismatches
-against the stored Fortran reference, so the next full-suite refresh still needs to be run
-from this newer solver revision.
+The benchmark policy on this branch is now:
+
+- start from the original Fortran v3 example resolution,
+- only downscale when a case is too expensive for a practical suite run,
+- and never intentionally push a reduced case below about `1s` of Fortran wall time unless
+  the original example is already that small.
+
+That avoids the misleading sub-second Fortran rows that came from blind global downscaling.
+The next full fast-branch README refresh should therefore come from the runtime-windowed
+audit command above, not from the older fixed-scale partial reruns.
 
 Since that partial audit, targeted fast-path reruns have already moved one of the listed
 transport blockers: `transportMatrix_geometryScheme11` is now `parity_ok` on the branch

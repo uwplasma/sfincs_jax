@@ -20,6 +20,7 @@ _write_suite_outputs = _MODULE._write_suite_outputs
 
 from run_reduced_upstream_suite import CaseResult
 from run_reduced_upstream_suite import _classify_blocker
+from run_reduced_upstream_suite import _runtime_metric_for_basis
 
 
 def test_stage_reference_fortran_artifacts_uses_last_success(tmp_path: Path) -> None:
@@ -198,6 +199,10 @@ def test_run_prepared_case_passes_reference_input(tmp_path: Path, monkeypatch: p
         rtol=5e-4,
         atol=1e-9,
         max_attempts=1,
+        target_runtime_s=1.0,
+        target_runtime_max_s=30.0,
+        target_runtime_max_iters=2,
+        target_runtime_basis="fortran",
         reuse_fortran=False,
         collect_iterations=True,
         jax_repeats=1,
@@ -209,3 +214,13 @@ def test_run_prepared_case_passes_reference_input(tmp_path: Path, monkeypatch: p
     assert result.case == "tokamak_case"
     assert seen["case_input"] == case_input
     assert seen["reference_input"] == reference_input
+    assert seen["target_runtime_s"] == 1.0
+    assert seen["target_runtime_max_s"] == 30.0
+    assert seen["target_runtime_max_iters"] == 2
+    assert seen["target_runtime_basis"] == "fortran"
+
+
+def test_runtime_metric_for_basis_uses_fortran_only_when_requested() -> None:
+    assert _runtime_metric_for_basis(fortran_runtime_s=0.8, jax_runtime_s=12.0, basis="fortran") == pytest.approx(0.8)
+    assert _runtime_metric_for_basis(fortran_runtime_s=0.8, jax_runtime_s=12.0, basis="max") == pytest.approx(12.0)
+    assert _runtime_metric_for_basis(fortran_runtime_s=None, jax_runtime_s=12.0, basis="fortran") is None

@@ -356,6 +356,10 @@ def _run_prepared_case(
     jax_cache_dir: Path,
     equilibria_search_dir: Path | None,
     reference_results_root: Path | None,
+    target_runtime_s: float | None,
+    target_runtime_max_s: float | None,
+    target_runtime_max_iters: int,
+    target_runtime_basis: str,
 ) -> CaseResult:
     staged_reference, effective_case_input = _stage_reference_fortran_artifacts(
         case_name=case_name,
@@ -385,6 +389,10 @@ def _run_prepared_case(
             rtol=rtol,
             atol=atol,
             max_attempts=max_attempts,
+            target_runtime_s=target_runtime_s,
+            target_runtime_max_s=target_runtime_max_s,
+            target_runtime_max_iters=target_runtime_max_iters,
+            target_runtime_basis=target_runtime_basis,
             use_seed_resolution=True,
             reuse_fortran=bool(reuse_fortran or staged_reference),
             collect_iterations=collect_iterations,
@@ -449,6 +457,41 @@ def main() -> int:
         ),
     )
     parser.add_argument("--timeout-s", type=float, default=900.0, help="Per-attempt timeout in seconds.")
+    parser.add_argument(
+        "--fortran-min-runtime-s",
+        type=float,
+        default=1.0,
+        help=(
+            "Minimum per-case benchmark runtime target. If the selected runtime basis falls below "
+            "this after downscaling, the runner will try to scale back up, capped at the original "
+            "reference resolution."
+        ),
+    )
+    parser.add_argument(
+        "--fortran-max-runtime-s",
+        type=float,
+        default=None,
+        help=(
+            "Optional per-case runtime cap for the selected benchmark basis. Use this to downscale "
+            "only the largest original-resolution cases while keeping smaller cases near their "
+            "original v3 resolution."
+        ),
+    )
+    parser.add_argument(
+        "--runtime-adjustment-iters",
+        type=int,
+        default=3,
+        help="Maximum per-case runtime-guided resolution adjustments.",
+    )
+    parser.add_argument(
+        "--runtime-target-basis",
+        choices=("fortran", "max"),
+        default="fortran",
+        help=(
+            "Runtime metric used to adjust resolution. 'fortran' keeps example benchmarking tied "
+            "to the original v3 runtime window; 'max' uses max(Fortran, JAX)."
+        ),
+    )
     parser.add_argument("--rtol", type=float, default=5e-4, help="Relative tolerance for H5 comparison.")
     parser.add_argument("--atol", type=float, default=1e-9, help="Absolute tolerance for H5 comparison.")
     parser.add_argument("--max-attempts", type=int, default=3, help="Maximum attempts per case.")
@@ -588,8 +631,17 @@ def main() -> int:
     prepared.sort(key=lambda item: (item[0], item[1]))
 
     manifest = {
+        "resolution_policy": (
+            "reference_first_runtime_window"
+            if args.fortran_min_runtime_s is not None or args.fortran_max_runtime_s is not None
+            else "reference_scale_only"
+        ),
         "scale_factor": float(args.scale_factor),
         "timeout_s": float(args.timeout_s),
+        "fortran_min_runtime_s": float(args.fortran_min_runtime_s) if args.fortran_min_runtime_s is not None else None,
+        "fortran_max_runtime_s": float(args.fortran_max_runtime_s) if args.fortran_max_runtime_s is not None else None,
+        "runtime_adjustment_iters": int(args.runtime_adjustment_iters),
+        "runtime_target_basis": str(args.runtime_target_basis),
         "rtol": float(args.rtol),
         "atol": float(args.atol),
         "max_attempts": int(args.max_attempts),
@@ -644,6 +696,12 @@ def main() -> int:
                 rtol=float(args.rtol),
                 atol=float(args.atol),
                 max_attempts=int(args.max_attempts),
+                target_runtime_s=float(args.fortran_min_runtime_s) if args.fortran_min_runtime_s is not None else None,
+                target_runtime_max_s=(
+                    float(args.fortran_max_runtime_s) if args.fortran_max_runtime_s is not None else None
+                ),
+                target_runtime_max_iters=int(args.runtime_adjustment_iters),
+                target_runtime_basis=str(args.runtime_target_basis),
                 reuse_fortran=bool(args.reuse_fortran),
                 collect_iterations=not bool(args.no_collect_iterations),
                 jax_repeats=int(args.jax_repeats),
@@ -674,6 +732,14 @@ def main() -> int:
                         rtol=float(args.rtol),
                         atol=float(args.atol),
                         max_attempts=int(args.max_attempts),
+                        target_runtime_s=(
+                            float(args.fortran_min_runtime_s) if args.fortran_min_runtime_s is not None else None
+                        ),
+                        target_runtime_max_s=(
+                            float(args.fortran_max_runtime_s) if args.fortran_max_runtime_s is not None else None
+                        ),
+                        target_runtime_max_iters=int(args.runtime_adjustment_iters),
+                        target_runtime_basis=str(args.runtime_target_basis),
                         reuse_fortran=bool(args.reuse_fortran),
                         collect_iterations=not bool(args.no_collect_iterations),
                         jax_repeats=int(args.jax_repeats),

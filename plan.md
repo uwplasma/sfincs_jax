@@ -350,6 +350,7 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 
 ### 14.1 Short-term (next 1-3 weeks)
 - [~] Ensure all reduced-suite rows are complete for CPU and GPU lanes (no missing runtime/memory cells).
+- [~] Replace blind global example-suite downscaling with original-reference, Fortran-runtime-window benchmarking so tiny Fortran rows are not artifacts of over-reduction.
 - [ ] Re-run additional high-resolution example on CPU+GPU and integrate into comparison reporting.
 - [ ] Close remaining worst runtime/memory offenders (especially PAS-heavy cases) while preserving tolerances.
 - [~] Strengthen default PAS preconditioner path to avoid expensive fallback branches where possible.
@@ -385,6 +386,7 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 
 ### 15.1 Always-on loop
 - [ ] Use the original Fortran v3 example inputs as the resolution reference for example-suite benchmarking; do not use blind `2x` enlargement as the default benchmark mode.
+- [ ] For example-suite audits, start from original reference resolution and only downscale when needed to satisfy a configured Fortran runtime window; do not intentionally reduce a case below about `1s` of Fortran wall time unless the original case is already that small.
 - [ ] Benchmark CPU/GPU JAX lanes against a fixed CPU-generated Fortran reference root when machine-local Fortran outputs are not proven deterministic.
 - [ ] For `constraintScheme=0` reference generation, force a stable Fortran Krylov solve (`PETSC_OPTIONS='-ksp_type gmres -pc_type none'`) unless an explicit PETSc override is requested.
 - [ ] Pick top 1-2 offenders from latest report (runtime and memory separately).
@@ -420,6 +422,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-12
+- Scope: Rework example-suite benchmarking policy so the full runner can target a Fortran-runtime window from the original v3 reference resolutions instead of relying on blind global scaling, and update the fast-branch audit instructions to use that policy.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/run_reduced_upstream_suite.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/run_scaled_example_suite.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/scripts/generate_readme_fast_branch_audit.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_scaled_example_suite_reference.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/README.md`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile scripts/run_reduced_upstream_suite.py scripts/run_scaled_example_suite.py scripts/generate_readme_fast_branch_audit.py tests/test_scaled_example_suite_reference.py`; `pytest -q tests/test_scaled_example_suite_reference.py tests/test_transport_sparse_direct.py tests/test_rhs1_sparse_first_heuristic.py tests/test_cli_solve_mode.py` (`104 passed in 0.53s`); branch-wide `JAX_PLATFORM_NAME=cpu pytest -q` (`318 passed in 215.48s`)
+- Runtime/memory delta: policy/infrastructure change; no new full-suite measurements yet.
+- Remaining risks: the README fast-branch audit block is still based on the stale partial `scaled_example_suite_fast_cpu_v1` run until a fresh runtime-windowed sweep is completed. The main scientific fast-branch mismatches are still `monoenergetic_geometryScheme1`, and geometry4 exact-LU remains memory-heavy.
+- Next actions: run the fast explicit CPU/GPU example suite from original v3 reference resolution with `--runtime-target-basis fortran`, a floor around `1s`, and a bounded cap, then refresh the README audit block from that new suite root.
 
 ### 2026-03-12
 - Scope: Promote the fast explicit CPU `geometryScheme4_2species_noEr` large sparse rescue to exact host sparse-LU when the preceding x-block seed is already exceptionally strong, validate that dynamic heuristic on the default fast path, and refresh the fast-branch narrative to reflect that the geometry4 CPU blocker is now practically clean.
@@ -807,7 +817,11 @@ python scripts/run_scaled_example_suite.py \
   --out-root tests/scaled_example_suite_ref_cpu_local \
   --timeout-s 240 \
   --max-attempts 2 \
-  --scale-factor 1.0
+  --scale-factor 1.0 \
+  --runtime-target-basis fortran \
+  --fortran-min-runtime-s 1.0 \
+  --fortran-max-runtime-s 20.0 \
+  --runtime-adjustment-iters 3
 ```
 
 ---

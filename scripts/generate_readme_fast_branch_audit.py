@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 
+import argparse
 import json
 from collections import Counter
 from pathlib import Path
@@ -19,6 +20,13 @@ END = "<!-- END FAST_BRANCH_AUDIT -->"
 
 def _load_json(path: Path) -> object:
     return json.loads(path.read_text())
+
+
+def _repo_rel(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except Exception:  # noqa: BLE001
+        return str(path)
 
 
 def _case_names_for_inputs(inputs: list[Path], *, base_root: Path | None = None) -> dict[Path, str]:
@@ -141,10 +149,27 @@ def _format_improvement(
 
 
 def main() -> int:
-    out_root = DEFAULT_OUT_ROOT
+    parser = argparse.ArgumentParser(description="Update README fast-branch audit block.")
+    parser.add_argument(
+        "--out-root",
+        type=Path,
+        default=DEFAULT_OUT_ROOT,
+        help="Suite output root containing suite_report.json and run_manifest.json.",
+    )
+    parser.add_argument(
+        "--baseline-report",
+        type=Path,
+        default=BASELINE_REPORT,
+        help="Optional baseline report used for improvement summaries.",
+    )
+    args = parser.parse_args()
+
+    out_root = Path(args.out_root)
     report_path = out_root / "suite_report.json"
     if not report_path.exists():
         raise SystemExit(f"Missing report: {report_path}")
+    manifest_path = out_root / "run_manifest.json"
+    manifest = _load_json(manifest_path) if manifest_path.exists() else {}
 
     rows = list(_load_json(report_path))
     case_order = _expected_cases()
@@ -171,8 +196,9 @@ def main() -> int:
 
     improvements_runtime: list[str] = []
     improvements_memory: list[str] = []
-    if BASELINE_REPORT.exists():
-        baseline_rows = {str(row["case"]): row for row in _load_json(BASELINE_REPORT)}
+    baseline_report = Path(args.baseline_report)
+    if baseline_report.exists():
+        baseline_rows = {str(row["case"]): row for row in _load_json(baseline_report)}
         paired_runtime = []
         paired_memory = []
         for case, row in rows_by_case.items():
@@ -192,12 +218,24 @@ def main() -> int:
 
     lines = [
         BEGIN,
-        f"Current fast explicit CPU audit comes from `tests/scaled_example_suite_fast_cpu_v1`.",
+        f"Current fast explicit CPU audit comes from `{_repo_rel(out_root)}`.",
         "",
         f"- Recorded cases: `{len(rows)}/{total_cases}`",
         f"- Practical status counts: `{', '.join(f'{k}={status_counts[k]}' for k in sorted(status_counts))}`",
         f"- Strict status counts: `{', '.join(f'{k}={strict_counts[k]}' for k in sorted(strict_counts))}`",
     ]
+    if manifest:
+        resolution_policy = manifest.get("resolution_policy")
+        scale_factor = manifest.get("scale_factor")
+        runtime_basis = manifest.get("runtime_target_basis")
+        runtime_floor = manifest.get("fortran_min_runtime_s")
+        runtime_cap = manifest.get("fortran_max_runtime_s")
+        adjust_iters = manifest.get("runtime_adjustment_iters")
+        lines.append(
+            "- Resolution policy: "
+            f"`{resolution_policy}, scale_factor={scale_factor}, runtime_basis={runtime_basis}, "
+            f"fortran_min={runtime_floor}, fortran_max={runtime_cap}, adjust_iters={adjust_iters}`"
+        )
     if missing_cases:
         lines.append(f"- Remaining cases: `{', '.join(missing_cases)}`")
     else:
@@ -227,7 +265,7 @@ def main() -> int:
         lines.extend(
             [
                 "",
-                "Largest CPU runtime improvements vs `scaled_example_suite_release_cpu_v4`:",
+                f"Largest CPU runtime improvements vs `{_repo_rel(baseline_report)}`:",
                 *improvements_runtime,
             ]
         )
@@ -235,7 +273,7 @@ def main() -> int:
         lines.extend(
             [
                 "",
-                "Largest CPU memory improvements vs `scaled_example_suite_release_cpu_v4`:",
+                f"Largest CPU memory improvements vs `{_repo_rel(baseline_report)}`:",
                 *improvements_memory,
             ]
         )
