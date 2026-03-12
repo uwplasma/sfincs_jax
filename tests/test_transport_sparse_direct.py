@@ -155,6 +155,7 @@ def test_transport_sparse_direct_first_attempt_allowed_for_gpu_explicit_transpor
 
 def test_transport_sparse_direct_first_attempt_enabled_for_cpu_collisionless_mono_medium_size(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MIN", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
     assert _transport_sparse_direct_first_attempt_allowed(
         op=_op(rhs_mode=3, has_fp=False, n_x=1),
@@ -163,12 +164,24 @@ def test_transport_sparse_direct_first_attempt_enabled_for_cpu_collisionless_mon
     )
 
 
-def test_transport_sparse_direct_first_attempt_disabled_for_other_cpu_or_implicit(monkeypatch) -> None:
+def test_transport_sparse_direct_first_attempt_enabled_for_cpu_transport_fast_path(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MIN", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_sparse_direct_first_attempt_allowed(
+        op=_op(rhs_mode=2),
+        size=16382,
+        use_implicit=False,
+    )
+
+
+def test_transport_sparse_direct_first_attempt_disabled_for_small_cpu_or_implicit(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MIN", raising=False)
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
     assert not _transport_sparse_direct_first_attempt_allowed(
         op=_op(rhs_mode=2),
-        size=16382,
+        size=8000,
         use_implicit=False,
     )
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")

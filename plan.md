@@ -422,6 +422,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-11
+- Scope: Start the first real fast explicit CLI/default solver change by skipping the CPU transport GMRES-to-sparse-rescue ladder on medium/large explicit transport systems and going straight to host sparse direct when that branch is predictably the winning explicit solve.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_sparse_direct.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py` (`40 passed`)
+- Runtime/memory delta: `transportMatrix_geometryScheme2` explicit CPU path dropped from about `262.188s` in `tests/scaled_example_suite_release_cpu_v4` to about `44.64s` with the new sparse-direct-first branch, with max RSS about `4.18 GB`; `transportMatrix_geometryScheme11` dropped from about `749.456s` to about `164.13s`, with max RSS about `6.27 GB`. Both cases now spend almost all runtime in a single sparse factorization plus cheap reused RHS solves instead of repeated GMRES ladders.
+- Remaining risks: raw matrix entries are still not exact under a strict `np.allclose(rtol=5e-4, atol=1e-9)` check on these fast-path runs, so this branch is appropriate for the new performance-first CLI/default mode but not yet a replacement for the explicit reference/parity path.
+- Next actions: commit this transport fast path, then tackle the large explicit `RHSMode=1` offenders where runtime is still dominated by sparse-preconditioner build rather than Krylov iteration count.
+
+### 2026-03-11
 - Scope: Start a dedicated fast-path branch and refactor the project plan around dual execution modes: a performance-first explicit CLI/default path and an explicitly selected reference/differentiable Python path.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: offender review from `/Users/rogeriojorge/local/tests/sfincs_jax/tests/scaled_example_suite_release_cpu_v4/summary.md`; stored solver-path profiling review from the per-case `sfincs_jax.log` files for `monoenergetic_geometryScheme1`, `transportMatrix_geometryScheme11`, `geometryScheme4_1species_PAS_withEr_DKESTrajectories`, `transportMatrix_geometryScheme2`, and `geometryScheme5_3species_loRes`.

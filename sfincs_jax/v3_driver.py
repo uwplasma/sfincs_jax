@@ -742,28 +742,47 @@ def _transport_sparse_direct_first_attempt_allowed(
 ) -> bool:
     if bool(use_implicit):
         return False
-    if (
-        jax.default_backend() == "cpu"
-        and int(op.rhs_mode) == 3
-        and getattr(op.fblock, "fp", None) is None
-        and int(getattr(op, "n_x", 0) or 0) <= 2
-    ):
-        return _transport_sparse_direct_rescue_allowed(
+    if int(op.rhs_mode) not in {2, 3} or bool(op.include_phi1):
+        return False
+    size_int = int(size)
+    if jax.default_backend() == "cpu":
+        first_min_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MIN", "").strip()
+        first_max_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_FIRST_CPU_MAX", "").strip()
+        try:
+            first_min = int(first_min_env) if first_min_env else 12000
+        except ValueError:
+            first_min = 12000
+        if size_int < max(1, int(first_min)):
+            return False
+        # For explicit CLI/default transport solves, medium-to-large CPU systems are
+        # typically dominated by the GMRES->sparse-rescue ladder rather than by the
+        # sparse factorization itself. Prefer going straight to the host sparse-direct
+        # branch when the system is large enough that the direct path is predictably
+        # the winning explicit solve.
+        allowed = _transport_sparse_direct_rescue_allowed(
             op=op,
-            size=size,
+            size=size_int,
             residual_norm=float("nan"),
             target=1.0,
             use_implicit=use_implicit,
         )
-    if jax.default_backend() == "cpu":
-        return False
-    return _transport_sparse_direct_rescue_allowed(
-        op=op,
-        size=size,
-        residual_norm=float("nan"),
-        target=1.0,
-        use_implicit=use_implicit,
-    )
+        if not allowed:
+            return False
+        if first_max_env:
+            try:
+                return size_int <= max(1, int(first_max_env))
+            except ValueError:
+                return True
+        return True
+    if jax.default_backend() != "cpu":
+        return _transport_sparse_direct_rescue_allowed(
+            op=op,
+            size=size_int,
+            residual_norm=float("nan"),
+            target=1.0,
+            use_implicit=use_implicit,
+        )
+    return False
 
 
 def _transport_host_gmres_first_attempt_allowed(
