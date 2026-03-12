@@ -422,6 +422,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-11
+- Scope: Make the explicit host sparse-direct fallback cheaper on the fast-path branch by allowing large CPU exact-LU factorizations to use float32 factors plus iterative refinement and a short GMRES polish, instead of forcing the full float64 direct path for every explicit solve.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_sparse_direct.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py tests/test_rhs1_sparse_first_heuristic.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py tests/test_rhs1_sparse_first_heuristic.py` (`87 passed`)
+- Runtime/memory delta: on `tests/scaled_example_suite_release_cpu_v4/geometryScheme5_3species_loRes/input.namelist`, the explicit CPU fast path dropped from about `161.8s` / `4.56 GB` max RSS on the float64 sparse-LU branch to about `134.2s` / `3.33 GB` max RSS with float32 host sparse LU plus short GMRES polish. The polished state stayed on the same solution branch as the float64 reference solve (`rel_l2≈6.97e-07`, `max_abs≈5.53e-09` against the stored exact-LU state).
+- Remaining risks: the transport direct path is still using refinement-only on top of float32 factors; it likely wants the same short polish strategy if strict matrix-entry deltas remain visible on the biggest transport offenders. Large PAS-heavy cases still need a separate fast-path change because their cost is not dominated by exact sparse LU.
+- Next actions: commit this host sparse-direct fast-path block, then apply the same “cheap factorization + cheap polish” pattern to transport direct solves and continue profiling the PAS-heavy offenders separately.
+
+### 2026-03-11
 - Scope: Start the first real fast explicit CLI/default solver change by skipping the CPU transport GMRES-to-sparse-rescue ladder on medium/large explicit transport systems and going straight to host sparse direct when that branch is predictably the winning explicit solve.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_sparse_direct.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py` (`40 passed`)

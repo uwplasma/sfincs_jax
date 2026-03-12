@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from sfincs_jax.v3_driver import (
+    _host_sparse_factor_dtype,
     _transport_dense_backend_allowed,
     _transport_host_gmres_accepts_preconditioned_residual,
     _transport_host_gmres_first_attempt_allowed,
@@ -190,6 +191,16 @@ def test_transport_sparse_direct_first_attempt_disabled_for_small_cpu_or_implici
         size=16382,
         use_implicit=True,
     )
+
+
+def test_host_sparse_factor_dtype_defaults_to_float32_for_large_explicit_cpu_lu(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_HOST_SPARSE_FACTOR_DTYPE", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_HOST_SPARSE_FACTOR_FLOAT32_MIN", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _host_sparse_factor_dtype(size=16382, factorization="lu", use_implicit=False).name == "float32"
+    assert _host_sparse_factor_dtype(size=8000, factorization="lu", use_implicit=False).name == "float64"
+    assert _host_sparse_factor_dtype(size=16382, factorization="ilu", use_implicit=False).name == "float64"
+    assert _host_sparse_factor_dtype(size=16382, factorization="lu", use_implicit=True).name == "float64"
 
 
 def test_transport_host_gmres_first_attempt_disabled_when_sparse_direct_first_is_available(monkeypatch) -> None:

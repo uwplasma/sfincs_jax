@@ -294,6 +294,109 @@ def _rhsmode1_host_sparse_direct_allowed(*, sparse_exact_lu: bool, use_implicit:
     return True
 
 
+def _host_sparse_factor_dtype(
+    *,
+    size: int,
+    factorization: str,
+    use_implicit: bool,
+) -> np.dtype:
+    env = os.environ.get("SFINCS_JAX_HOST_SPARSE_FACTOR_DTYPE", "").strip().lower()
+    if env in {"float64", "fp64", "64"}:
+        return np.dtype(np.float64)
+    if env in {"float32", "fp32", "32"}:
+        return np.dtype(np.float32)
+    if bool(use_implicit):
+        return np.dtype(np.float64)
+    if jax.default_backend() != "cpu":
+        return np.dtype(np.float64)
+    if str(factorization).strip().lower() != "lu":
+        return np.dtype(np.float64)
+    min_env = os.environ.get("SFINCS_JAX_HOST_SPARSE_FACTOR_FLOAT32_MIN", "").strip()
+    try:
+        min_size = int(min_env) if min_env else 12000
+    except ValueError:
+        min_size = 12000
+    if int(size) >= max(1, int(min_size)):
+        return np.dtype(np.float32)
+    return np.dtype(np.float64)
+
+
+def _sparse_factor_cache_key(cache_key: tuple[object, ...], factor_dtype: np.dtype) -> tuple[object, ...]:
+    return (*cache_key, np.dtype(factor_dtype).str)
+
+
+def _host_sparse_direct_refine_steps(env_name: str, default: int = 2) -> int:
+    env = os.environ.get(env_name, "").strip()
+    try:
+        refine_steps = int(env) if env else int(default)
+    except ValueError:
+        refine_steps = int(default)
+    return max(0, int(refine_steps))
+
+
+def _host_sparse_direct_solve_with_refinement(
+    *,
+    ilu,
+    a_csr_full,
+    rhs_vec: jnp.ndarray,
+    factor_dtype: np.dtype,
+    refine_steps: int,
+    ) -> tuple[np.ndarray, float]:
+    rhs64 = np.asarray(rhs_vec, dtype=np.float64).reshape((-1,))
+    rhs_factor = np.asarray(rhs_vec, dtype=factor_dtype).reshape((-1,))
+    x_np = np.asarray(ilu.solve(rhs_factor), dtype=np.float64)
+    residual_np = rhs64 - a_csr_full @ x_np
+    residual_norm = float(np.linalg.norm(residual_np))
+    for _ in range(max(0, int(refine_steps))):
+        if not np.isfinite(residual_norm) or residual_norm == 0.0:
+            break
+        dx_np = np.asarray(ilu.solve(np.asarray(residual_np, dtype=factor_dtype)), dtype=np.float64)
+        x_trial = x_np + dx_np
+        residual_trial = rhs64 - a_csr_full @ x_trial
+        residual_norm_trial = float(np.linalg.norm(residual_trial))
+        if not np.isfinite(residual_norm_trial) or residual_norm_trial >= residual_norm:
+            break
+        x_np = x_trial
+        residual_np = residual_trial
+        residual_norm = residual_norm_trial
+    return x_np, residual_norm
+
+
+def _host_sparse_direct_polish(
+    *,
+    matvec_fn,
+    rhs_vec: jnp.ndarray,
+    x0_np: np.ndarray,
+    ilu,
+    factor_dtype: np.dtype,
+    tol: float,
+    atol: float,
+    restart: int,
+    maxiter: int | None,
+    precondition_side: str,
+) -> tuple[np.ndarray, float]:
+    def _precond_sparse(v: jnp.ndarray) -> jnp.ndarray:
+        v_np = np.asarray(v, dtype=factor_dtype).reshape((-1,))
+        y_np = ilu.solve(v_np)
+        return jnp.asarray(y_np, dtype=jnp.float64)
+
+    x_np, _rn_sparse, _history = gmres_solve_with_history_scipy(
+        matvec=matvec_fn,
+        b=rhs_vec,
+        preconditioner=_precond_sparse,
+        x0=jnp.asarray(x0_np, dtype=jnp.float64),
+        tol=tol,
+        atol=atol,
+        restart=restart,
+        maxiter=maxiter,
+        precondition_side=precondition_side,
+    )
+    x_polish = np.asarray(x_np, dtype=np.float64)
+    residual_vec = rhs_vec - matvec_fn(jnp.asarray(x_polish, dtype=jnp.float64))
+    residual_norm = float(jnp.linalg.norm(residual_vec))
+    return x_polish, residual_norm
+
+
 def _rhsmode1_host_sparse_skip_dense_ratio() -> float:
     env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_SKIP_DENSE_RATIO", "").strip()
     try:
@@ -1132,6 +1235,7 @@ def _build_sparse_ilu_from_matvec(
     n: int,
     dtype: jnp.dtype,
     cache_key: tuple[object, ...],
+    factor_dtype: np.dtype | None = None,
     drop_tol: float,
     drop_rel: float,
     ilu_drop_tol: float,
@@ -1310,6 +1414,7 @@ def _build_sparse_ilu_from_matvec(
     factorization_use = str(factorization).strip().lower()
     exact_lu = factorization_use == "lu"
     log_tag = "sparse_lu" if exact_lu else "sparse_ilu"
+    factor_dtype_use = np.dtype(np.float64 if factor_dtype is None else factor_dtype)
 
     sparse_block_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ASSEMBLE_BLOCK", "").strip()
     sparse_block_min_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_ASSEMBLE_BLOCK_MIN", "").strip()
@@ -1363,7 +1468,7 @@ def _build_sparse_ilu_from_matvec(
                 if row_idx.size:
                     rows_parts.append(row_idx.astype(np.int32, copy=False))
                     cols_parts.append((col_local + int(start)).astype(np.int32, copy=False))
-                    data_parts.append(chunk[row_idx, col_local].astype(np.float64, copy=False))
+                    data_parts.append(chunk[row_idx, col_local].astype(factor_dtype_use, copy=False))
         if rows_parts:
             rows = np.concatenate(rows_parts, axis=0)
             cols = np.concatenate(cols_parts, axis=0)
@@ -1371,14 +1476,14 @@ def _build_sparse_ilu_from_matvec(
         else:
             rows = np.zeros((0,), dtype=np.int32)
             cols = np.zeros((0,), dtype=np.int32)
-            data = np.zeros((0,), dtype=np.float64)
+            data = np.zeros((0,), dtype=factor_dtype_use)
         a_csr_full = sp.csr_matrix((data, (rows, cols)), shape=(int(n), int(n)))
         a_csr_full.eliminate_zeros()
     else:
         if emit is not None:
             emit(1, f"{log_tag}: assembling dense operator (n={n})")
         a_dense = assemble_dense_matrix_from_matvec(matvec=matvec, n=int(n), dtype=dtype)
-        a_np_full = np.array(a_dense, dtype=np.float64, copy=True)
+        a_np_full = np.array(a_dense, dtype=factor_dtype_use, copy=True)
         if struct_tol > 0.0 and a_np_full.size:
             a_np_full[np.abs(a_np_full) <= struct_tol] = 0.0
         max_abs = float(np.max(np.abs(a_np_full))) if a_np_full.size else 0.0
@@ -1416,7 +1521,10 @@ def _build_sparse_ilu_from_matvec(
             if int(n) > 0 and reg != 0.0:
                 diag_idx = np.arange(int(n), dtype=np.int32)
                 a_csr_drop = a_csr_drop.tolil(copy=False)
-                diag_vals = np.asarray(a_csr_drop[diag_idx, diag_idx].toarray(), dtype=np.float64).reshape((-1,)) + reg
+                diag_vals = (
+                    np.asarray(a_csr_drop[diag_idx, diag_idx].toarray(), dtype=factor_dtype_use).reshape((-1,))
+                    + factor_dtype_use.type(reg)
+                )
                 a_csr_drop[diag_idx, diag_idx] = diag_vals
                 a_csr_drop = a_csr_drop.tocsr()
         else:
@@ -1434,7 +1542,7 @@ def _build_sparse_ilu_from_matvec(
             # zero pivots in the incomplete factorization.
             if int(n) > 0 and reg != 0.0:
                 diag_idx = np.arange(int(n), dtype=np.int32)
-                a_np_drop[diag_idx, diag_idx] = a_np_full[diag_idx, diag_idx] + reg
+                a_np_drop[diag_idx, diag_idx] = a_np_full[diag_idx, diag_idx] + factor_dtype_use.type(reg)
 
             a_csr_drop = sp.csr_matrix(a_np_drop)
         a_csr_drop.eliminate_zeros()
@@ -14225,6 +14333,16 @@ def solve_v3_full_system_linear_gmres(
                     )
                     if large_cpu_sparse_rescue_active and sparse_exact_lu:
                         host_sparse_direct_wanted = True
+                    factor_dtype = _host_sparse_factor_dtype(
+                        size=int(active_size),
+                        factorization="lu" if sparse_exact_lu else "ilu",
+                        use_implicit=bool(use_implicit),
+                    ) if host_sparse_direct_wanted else np.dtype(np.float64)
+                    cache_key_use = (
+                        _sparse_factor_cache_key(cache_key, factor_dtype)
+                        if host_sparse_direct_wanted
+                        else cache_key
+                    )
                     build_dense_factors = (
                         bool(use_implicit)
                         and (not host_sparse_direct_wanted)
@@ -14235,7 +14353,8 @@ def solve_v3_full_system_linear_gmres(
                         matvec=mv_reduced,
                         n=int(active_size),
                         dtype=rhs_reduced.dtype,
-                        cache_key=cache_key,
+                        cache_key=cache_key_use,
+                        factor_dtype=factor_dtype,
                         drop_tol=sparse_drop_tol,
                         drop_rel=sparse_drop_rel,
                         ilu_drop_tol=sparse_ilu_drop_tol,
@@ -14259,12 +14378,72 @@ def solve_v3_full_system_linear_gmres(
                                 "solve_v3_full_system_linear_gmres: host sparse LU direct fallback "
                                 f"on backend={jax.default_backend()}",
                             )
-                        rhs_np = np.asarray(rhs_reduced, dtype=np.float64).reshape((-1,))
-                        x_np = np.asarray(ilu.solve(rhs_np), dtype=np.float64)
+                        x_np, residual_norm_sparse = _host_sparse_direct_solve_with_refinement(
+                            ilu=ilu,
+                            a_csr_full=a_csr_full,
+                            rhs_vec=rhs_reduced,
+                            factor_dtype=factor_dtype,
+                            refine_steps=_host_sparse_direct_refine_steps(
+                                "SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_REFINE",
+                                default=2,
+                            ),
+                        )
                         res_sparse = GMRESSolveResult(
                             x=jnp.asarray(x_np, dtype=jnp.float64),
-                            residual_norm=jnp.asarray(np.linalg.norm(rhs_np - a_csr_full @ x_np), dtype=jnp.float64),
+                            residual_norm=jnp.asarray(residual_norm_sparse, dtype=jnp.float64),
                         )
+                        if factor_dtype == np.dtype(np.float32) and float(res_sparse.residual_norm) > float(target_reduced):
+                            polish_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_POLISH", "").strip().lower()
+                            if polish_env not in {"0", "false", "no", "off"}:
+                                polish_restart_env = os.environ.get(
+                                    "SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_POLISH_RESTART",
+                                    "",
+                                ).strip()
+                                polish_maxiter_env = os.environ.get(
+                                    "SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_POLISH_MAXITER",
+                                    "",
+                                ).strip()
+                                try:
+                                    polish_restart = (
+                                        int(polish_restart_env)
+                                        if polish_restart_env
+                                        else min(int(restart), 40)
+                                    )
+                                except ValueError:
+                                    polish_restart = min(int(restart), 40)
+                                try:
+                                    polish_maxiter = (
+                                        int(polish_maxiter_env)
+                                        if polish_maxiter_env
+                                        else min(max(40, int(maxiter or 120)), 120)
+                                    )
+                                except ValueError:
+                                    polish_maxiter = min(max(40, int(maxiter or 120)), 120)
+                                polish_restart = max(5, int(polish_restart))
+                                polish_maxiter = max(5, int(polish_maxiter))
+                                if emit is not None:
+                                    emit(
+                                        0,
+                                        "solve_v3_full_system_linear_gmres: host sparse direct polish "
+                                        f"restart={polish_restart} maxiter={polish_maxiter}",
+                                    )
+                                x_polish, residual_norm_polish = _host_sparse_direct_polish(
+                                    matvec_fn=mv_reduced,
+                                    rhs_vec=rhs_reduced,
+                                    x0_np=x_np,
+                                    ilu=ilu,
+                                    factor_dtype=factor_dtype,
+                                    tol=tol,
+                                    atol=atol,
+                                    restart=polish_restart,
+                                    maxiter=polish_maxiter,
+                                    precondition_side=gmres_precond_side,
+                                )
+                                if np.isfinite(residual_norm_polish) and residual_norm_polish < float(res_sparse.residual_norm):
+                                    res_sparse = GMRESSolveResult(
+                                        x=jnp.asarray(x_polish, dtype=jnp.float64),
+                                        residual_norm=jnp.asarray(residual_norm_polish, dtype=jnp.float64),
+                                    )
                         residual_vec_sparse = rhs_reduced - mv_reduced(res_sparse.x)
                         _mv_sparse = mv_reduced
                         _precond_sparse = None
@@ -16067,6 +16246,16 @@ def solve_v3_full_system_linear_gmres(
                     )
                     if large_cpu_sparse_rescue_full and sparse_exact_lu:
                         host_sparse_direct_wanted = True
+                    factor_dtype = _host_sparse_factor_dtype(
+                        size=int(op.total_size),
+                        factorization="lu" if sparse_exact_lu else "ilu",
+                        use_implicit=bool(use_implicit),
+                    ) if host_sparse_direct_wanted else np.dtype(np.float64)
+                    cache_key_use = (
+                        _sparse_factor_cache_key(cache_key, factor_dtype)
+                        if host_sparse_direct_wanted
+                        else cache_key
+                    )
                     build_dense_factors = (
                         bool(use_implicit)
                         and (not host_sparse_direct_wanted)
@@ -16077,7 +16266,8 @@ def solve_v3_full_system_linear_gmres(
                         matvec=mv,
                         n=int(op.total_size),
                         dtype=rhs.dtype,
-                        cache_key=cache_key,
+                        cache_key=cache_key_use,
+                        factor_dtype=factor_dtype,
                         drop_tol=sparse_drop_tol,
                         drop_rel=sparse_drop_rel,
                         ilu_drop_tol=sparse_ilu_drop_tol,
@@ -16101,12 +16291,72 @@ def solve_v3_full_system_linear_gmres(
                                 "solve_v3_full_system_linear_gmres: host sparse LU direct fallback "
                                 f"on backend={jax.default_backend()}",
                             )
-                        rhs_np = np.asarray(rhs, dtype=np.float64).reshape((-1,))
-                        x_np = np.asarray(ilu.solve(rhs_np), dtype=np.float64)
+                        x_np, residual_norm_sparse = _host_sparse_direct_solve_with_refinement(
+                            ilu=ilu,
+                            a_csr_full=a_csr_full,
+                            rhs_vec=rhs,
+                            factor_dtype=factor_dtype,
+                            refine_steps=_host_sparse_direct_refine_steps(
+                                "SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_REFINE",
+                                default=2,
+                            ),
+                        )
                         res_sparse = GMRESSolveResult(
                             x=jnp.asarray(x_np, dtype=jnp.float64),
-                            residual_norm=jnp.asarray(np.linalg.norm(rhs_np - a_csr_full @ x_np), dtype=jnp.float64),
+                            residual_norm=jnp.asarray(residual_norm_sparse, dtype=jnp.float64),
                         )
+                        if factor_dtype == np.dtype(np.float32) and float(res_sparse.residual_norm) > float(target):
+                            polish_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_POLISH", "").strip().lower()
+                            if polish_env not in {"0", "false", "no", "off"}:
+                                polish_restart_env = os.environ.get(
+                                    "SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_POLISH_RESTART",
+                                    "",
+                                ).strip()
+                                polish_maxiter_env = os.environ.get(
+                                    "SFINCS_JAX_RHSMODE1_SPARSE_DIRECT_POLISH_MAXITER",
+                                    "",
+                                ).strip()
+                                try:
+                                    polish_restart = (
+                                        int(polish_restart_env)
+                                        if polish_restart_env
+                                        else min(int(restart), 40)
+                                    )
+                                except ValueError:
+                                    polish_restart = min(int(restart), 40)
+                                try:
+                                    polish_maxiter = (
+                                        int(polish_maxiter_env)
+                                        if polish_maxiter_env
+                                        else min(max(40, int(maxiter or 120)), 120)
+                                    )
+                                except ValueError:
+                                    polish_maxiter = min(max(40, int(maxiter or 120)), 120)
+                                polish_restart = max(5, int(polish_restart))
+                                polish_maxiter = max(5, int(polish_maxiter))
+                                if emit is not None:
+                                    emit(
+                                        0,
+                                        "solve_v3_full_system_linear_gmres: host sparse direct polish "
+                                        f"restart={polish_restart} maxiter={polish_maxiter}",
+                                    )
+                                x_polish, residual_norm_polish = _host_sparse_direct_polish(
+                                    matvec_fn=mv,
+                                    rhs_vec=rhs,
+                                    x0_np=x_np,
+                                    ilu=ilu,
+                                    factor_dtype=factor_dtype,
+                                    tol=tol,
+                                    atol=atol,
+                                    restart=polish_restart,
+                                    maxiter=polish_maxiter,
+                                    precondition_side=gmres_precond_side,
+                                )
+                                if np.isfinite(residual_norm_polish) and residual_norm_polish < float(res_sparse.residual_norm):
+                                    res_sparse = GMRESSolveResult(
+                                        x=jnp.asarray(x_polish, dtype=jnp.float64),
+                                        residual_norm=jnp.asarray(residual_norm_polish, dtype=jnp.float64),
+                                    )
                         residual_vec_sparse = rhs - mv(res_sparse.x)
                         _mv_sparse = mv
                         _precond_sparse = None
@@ -18727,11 +18977,18 @@ def solve_v3_transport_matrix_linear_gmres(
         dtype: jnp.dtype,
         cache_key: tuple[object, ...],
     ) -> GMRESSolveResult:
+        factor_dtype = _host_sparse_factor_dtype(
+            size=int(n),
+            factorization="lu",
+            use_implicit=False,
+        )
+        cache_key_use = _sparse_factor_cache_key(cache_key, factor_dtype)
         a_csr_full, _a_csr_drop, ilu, _a_dense, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
             matvec=matvec_fn,
             n=int(n),
             dtype=dtype,
-            cache_key=cache_key,
+            cache_key=cache_key_use,
+            factor_dtype=factor_dtype,
             drop_tol=transport_sparse_drop_tol,
             drop_rel=transport_sparse_drop_rel,
             ilu_drop_tol=0.0,
@@ -18745,28 +19002,13 @@ def solve_v3_transport_matrix_linear_gmres(
         )
         if ilu is None:
             raise RuntimeError("transport sparse_lu: factors unavailable")
-        rhs_np = np.asarray(b_vec, dtype=np.float64).reshape((-1,))
-        x_np = np.asarray(ilu.solve(rhs_np), dtype=np.float64)
-        residual_np = rhs_np - a_csr_full @ x_np
-        residual_norm = float(np.linalg.norm(residual_np))
-        refine_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_REFINE", "").strip()
-        try:
-            refine_steps = int(refine_env) if refine_env else 2
-        except ValueError:
-            refine_steps = 2
-        refine_steps = max(0, int(refine_steps))
-        for _ in range(refine_steps):
-            if not np.isfinite(residual_norm) or residual_norm == 0.0:
-                break
-            dx_np = np.asarray(ilu.solve(residual_np), dtype=np.float64)
-            x_trial = x_np + dx_np
-            residual_trial = rhs_np - a_csr_full @ x_trial
-            residual_norm_trial = float(np.linalg.norm(residual_trial))
-            if not np.isfinite(residual_norm_trial) or residual_norm_trial >= residual_norm:
-                break
-            x_np = x_trial
-            residual_np = residual_trial
-            residual_norm = residual_norm_trial
+        x_np, residual_norm = _host_sparse_direct_solve_with_refinement(
+            ilu=ilu,
+            a_csr_full=a_csr_full,
+            rhs_vec=b_vec,
+            factor_dtype=factor_dtype,
+            refine_steps=_host_sparse_direct_refine_steps("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_REFINE", default=2),
+        )
         return GMRESSolveResult(
             x=jnp.asarray(x_np, dtype=jnp.float64),
             residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
