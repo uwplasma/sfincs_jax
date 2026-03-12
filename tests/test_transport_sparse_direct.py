@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
+
 from sfincs_jax.v3_driver import (
     _host_sparse_factor_dtype,
     _transport_dense_backend_allowed,
     _transport_host_gmres_accepts_preconditioned_residual,
     _transport_host_gmres_first_attempt_allowed,
+    _transport_disable_auto_recycle,
+    _transport_precondition_side,
     _transport_sparse_factor_dtype,
     _transport_sparse_direct_needs_float64_retry,
     _transport_sparse_direct_first_attempt_allowed,
@@ -16,11 +20,19 @@ from sfincs_jax.v3_driver import (
 )
 
 
-def _op(*, rhs_mode: int = 2, has_fp: bool = True, has_phi1: bool = False, n_x: int = 4):
+def _op(
+    *,
+    rhs_mode: int = 2,
+    has_fp: bool = True,
+    has_phi1: bool = False,
+    n_x: int = 4,
+    constraint_scheme: int = 2,
+):
     return SimpleNamespace(
         rhs_mode=rhs_mode,
         include_phi1=has_phi1,
         n_x=n_x,
+        constraint_scheme=constraint_scheme,
         fblock=SimpleNamespace(fp=object() if has_fp else None),
     )
 
@@ -257,6 +269,64 @@ def test_transport_host_gmres_accepts_preconditioned_residual_for_moderate_true_
         op=_op(rhs_mode=3, has_fp=False, n_x=1),
         true_residual_norm=5.0e-5,
         target_true=1.0e-6,
+    )
+
+
+def test_transport_precondition_side_defaults_to_left(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PRECONDITION_SIDE", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_precondition_side(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1, constraint_scheme=2),
+        use_implicit=False,
+    ) == "left"
+
+
+def test_transport_precondition_side_defaults_to_left_otherwise(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_PRECONDITION_SIDE", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_precondition_side(
+        op=_op(rhs_mode=2, has_fp=False, n_x=1, constraint_scheme=1),
+        use_implicit=False,
+    ) == "left"
+    assert _transport_precondition_side(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1, constraint_scheme=2),
+        use_implicit=True,
+    ) == "left"
+
+
+def test_transport_precondition_side_respects_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_PRECONDITION_SIDE", "right")
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_precondition_side(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1, constraint_scheme=2),
+        use_implicit=False,
+    ) == "right"
+
+
+def test_transport_disable_auto_recycle_defaults_on_for_explicit_cpu_mono_pas(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_DISABLE_AUTO_RECYCLE", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _transport_disable_auto_recycle(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1, constraint_scheme=2),
+        use_implicit=False,
+    )
+
+
+def test_transport_disable_auto_recycle_respects_guards_and_env(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_TRANSPORT_DISABLE_AUTO_RECYCLE", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _transport_disable_auto_recycle(
+        op=_op(rhs_mode=2, has_fp=False, n_x=1, constraint_scheme=2),
+        use_implicit=False,
+    )
+    assert not _transport_disable_auto_recycle(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1, constraint_scheme=2),
+        use_implicit=True,
+    )
+    monkeypatch.setenv("SFINCS_JAX_TRANSPORT_DISABLE_AUTO_RECYCLE", "0")
+    assert not _transport_disable_auto_recycle(
+        op=_op(rhs_mode=3, has_fp=False, n_x=1, constraint_scheme=2),
+        use_implicit=False,
     )
 
 

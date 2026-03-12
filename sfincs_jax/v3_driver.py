@@ -1065,6 +1065,37 @@ def _transport_host_gmres_accepts_preconditioned_residual(
     return float(true_residual_norm) <= float(target_true) * min(10.0, float(max_ratio))
 
 
+def _transport_precondition_side(
+    *,
+    op: V3FullSystemOperator,
+    use_implicit: bool,
+) -> str:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_PRECONDITION_SIDE", "").strip().lower()
+    if env in {"left", "right", "none"}:
+        return env
+    return "left"
+
+
+def _transport_disable_auto_recycle(
+    *,
+    op: V3FullSystemOperator,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_TRANSPORT_DISABLE_AUTO_RECYCLE", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if env in {"1", "true", "yes", "on"}:
+        return True
+    return bool(
+        (not bool(use_implicit))
+        and jax.default_backend() == "cpu"
+        and int(op.rhs_mode) == 3
+        and int(getattr(op, "constraint_scheme", -1)) == 2
+        and getattr(op.fblock, "fp", None) is None
+        and int(getattr(op, "n_x", 0) or 0) <= 2
+    )
+
+
 def _transport_sparse_direct_needs_float64_retry(
     *,
     factor_dtype: np.dtype,
@@ -18499,6 +18530,13 @@ def solve_v3_transport_matrix_linear_gmres(
                 emit(0, f"solve_v3_transport_matrix_linear_gmres: dense fallback enabled for RHSMode={rhs_mode} (n={int(op0.total_size)})")
 
     use_implicit = _resolve_use_implicit(differentiable=differentiable)
+    transport_precondition_side = _transport_precondition_side(op=op0, use_implicit=bool(use_implicit))
+    if emit is not None and transport_precondition_side != "left":
+        emit(
+            1,
+            "solve_v3_transport_matrix_linear_gmres: transport preconditioner side="
+            f"{transport_precondition_side}",
+        )
     distributed_axis = _resolve_distributed_gmres_axis(op=op0, emit=emit)
 
     gmres_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_GMRES_RESTART", "").strip()
@@ -19842,6 +19880,14 @@ def solve_v3_transport_matrix_linear_gmres(
     except ValueError:
         recycle_k = 4
     recycle_k = max(0, recycle_k)
+    if recycle_k > 0 and _transport_disable_auto_recycle(op=op0, use_implicit=bool(use_implicit)):
+        recycle_k = 0
+        if emit is not None:
+            emit(
+                1,
+                "solve_v3_transport_matrix_linear_gmres: auto recycle disabled "
+                "for branch-sensitive explicit mono transport",
+            )
     if recycle_k > 0:
         sig_ref = _operator_signature_cached(op_matvec_by_index[0])
         for op_probe in op_matvec_by_index[1:]:
@@ -20223,7 +20269,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             atol_val=atol,
                             restart_val=_restart_for_method(solve_method_rhs),
                             maxiter_val=maxiter,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         solver_kind_used = "gmres_scipy"
                         solve_method_used = "incremental"
@@ -20245,7 +20291,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=maxiter,
                             solve_method_val=solve_method_rhs,
                             preconditioner_val=preconditioner_use,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                 elif sparse_direct_first_attempt:
                     if emit is not None:
@@ -20266,7 +20312,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             atol_val=atol,
                             restart_val=_restart_for_method(solve_method_rhs),
                             maxiter_val=maxiter,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         solver_kind_used = "sparse_lu"
                         solve_method_used = "sparse_lu"
@@ -20290,7 +20336,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=maxiter,
                             solve_method_val=solve_method_rhs,
                             preconditioner_val=preconditioner_use,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                 else:
                     res_reduced = _solve_linear(
@@ -20303,7 +20349,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         maxiter_val=maxiter,
                         solve_method_val=solve_method_rhs,
                         preconditioner_val=preconditioner_use,
-                        precondition_side_val="left",
+                        precondition_side_val=transport_precondition_side,
                     )
                 solver_kind = _solver_kind(solve_method_rhs)[0]
                 if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res_reduced) or float(res_reduced.residual_norm) > target_rhs):
@@ -20323,7 +20369,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         maxiter_val=maxiter,
                         solve_method_val="incremental",
                         preconditioner_val=preconditioner_use,
-                        precondition_side_val="left",
+                        precondition_side_val=transport_precondition_side,
                     )
                     solver_kind_used = "gmres"
                     solve_method_used = "incremental"
@@ -20361,7 +20407,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         maxiter_val=maxiter,
                         solve_method_val=solve_method_rhs,
                         preconditioner_val=None,
-                        precondition_side_val="left",
+                        precondition_side_val=transport_precondition_side,
                     )
                     if _residual_value(res_retry) < _residual_value(res_reduced):
                         res_reduced = res_retry
@@ -20386,7 +20432,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=maxiter,
                             solve_method_val="incremental",
                             preconditioner_val=strong_precond,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         if _residual_value(res_strong) < _residual_value(res_reduced):
                             res_reduced = res_strong
@@ -20414,7 +20460,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             atol_val=atol,
                             restart_val=_restart_for_method(solve_method_rhs),
                             maxiter_val=maxiter,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         if _residual_value(res_sparse) < _residual_value(res_reduced):
                             res_reduced = res_sparse
@@ -20511,7 +20557,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=polish_maxiter,
                             solve_method_val="incremental",
                             preconditioner_val=polish_precond,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         if _residual_value(res_polish) < _residual_value(res_reduced):
                             res_reduced = res_polish
@@ -20606,7 +20652,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         atol_val=float(atol),
                         restart_val=int(restart_used),
                         maxiter_val=maxiter,
-                        precond_side="left",
+                        precond_side=transport_precondition_side,
                         solver_kind=solver_kind_used,
                     )
             else:
@@ -20666,7 +20712,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             atol_val=atol,
                             restart_val=_restart_for_method(solve_method_rhs),
                             maxiter_val=maxiter,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         solver_kind_used = "gmres_scipy"
                         solve_method_used = "incremental"
@@ -20688,7 +20734,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=maxiter,
                             solve_method_val=solve_method_rhs,
                             preconditioner_val=preconditioner_use,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                 elif sparse_direct_first_attempt:
                     if emit is not None:
@@ -20709,7 +20755,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             atol_val=atol,
                             restart_val=_restart_for_method(solve_method_rhs),
                             maxiter_val=maxiter,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         residual_vec = None
                         solver_kind_used = "sparse_lu"
@@ -20734,7 +20780,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=maxiter,
                             solve_method_val=solve_method_rhs,
                             preconditioner_val=preconditioner_use,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                 else:
                     res, residual_vec = _solve_linear_with_residual(
@@ -20747,7 +20793,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         maxiter_val=maxiter,
                         solve_method_val=solve_method_rhs,
                         preconditioner_val=preconditioner_use,
-                        precondition_side_val="left",
+                        precondition_side_val=transport_precondition_side,
                     )
                 solver_kind = _solver_kind(solve_method_rhs)[0]
                 if solver_kind == "bicgstab" and (not _gmres_result_is_finite(res) or float(res.residual_norm) > target_rhs):
@@ -20767,7 +20813,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         maxiter_val=maxiter,
                         solve_method_val="incremental",
                         preconditioner_val=preconditioner_use,
-                        precondition_side_val="left",
+                        precondition_side_val=transport_precondition_side,
                     )
                     solver_kind_used = "gmres"
                     solve_method_used = "incremental"
@@ -20805,7 +20851,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         maxiter_val=maxiter,
                         solve_method_val=solve_method_rhs,
                         preconditioner_val=None,
-                        precondition_side_val="left",
+                        precondition_side_val=transport_precondition_side,
                     )
                     if _residual_value(res_retry) < _residual_value(res):
                         res = res_retry
@@ -20831,7 +20877,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=maxiter,
                             solve_method_val="incremental",
                             preconditioner_val=strong_precond,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         if _residual_value(res_strong) < _residual_value(res):
                             res = res_strong
@@ -20860,7 +20906,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             atol_val=atol,
                             restart_val=_restart_for_method(solve_method_rhs),
                             maxiter_val=maxiter,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         if _residual_value(res_sparse) < _residual_value(res):
                             res = res_sparse
@@ -20959,7 +21005,7 @@ def solve_v3_transport_matrix_linear_gmres(
                             maxiter_val=polish_maxiter,
                             solve_method_val="incremental",
                             preconditioner_val=polish_precond,
-                            precondition_side_val="left",
+                            precondition_side_val=transport_precondition_side,
                         )
                         if _residual_value(res_polish) < _residual_value(res):
                             res = res_polish
@@ -21012,7 +21058,7 @@ def solve_v3_transport_matrix_linear_gmres(
                         atol_val=float(atol),
                         restart_val=int(restart_used),
                         maxiter_val=maxiter,
-                        precond_side="left",
+                        precond_side=transport_precondition_side,
                         solver_kind=solver_kind_used,
                     )
             if emit is not None:
