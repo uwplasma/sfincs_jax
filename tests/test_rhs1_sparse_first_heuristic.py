@@ -11,7 +11,9 @@ from sfincs_jax.v3_driver import (
     _rhsmode1_host_factor_probe_ok,
     _rhsmode1_constraint0_sparse_first,
     _rhsmode1_fp_xblock_assembled_host_allowed,
+    _rhsmode1_fp_targeted_polish_allowed,
     _rhsmode1_fast_post_xblock_polish_allowed,
+    _rhsmode1_skip_global_sparse_after_xblock_allowed,
     _rhsmode1_large_cpu_xblock_skip_primary_allowed,
     _rhsmode1_large_cpu_sparse_rescue_allowed,
     _rhsmode1_large_cpu_sparse_exact_lu_allowed,
@@ -519,6 +521,159 @@ def test_fast_post_xblock_polish_respects_guards(monkeypatch) -> None:
         residual_norm=2.8e-4,
         target=1.0e-8,
         used_large_cpu_xblock_shortcut=True,
+        use_implicit=False,
+    )
+
+
+def test_fp_targeted_polish_enabled_for_medium_large_cpu_fp(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FP_TARGETED_POLISH", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FP_TARGETED_POLISH_MIN", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FP_TARGETED_POLISH_RATIO", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FP_TARGETED_POLISH_ABS", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_fp_targeted_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.8e-5,
+        target=1.0e-8,
+        rhs1_precond_kind="xmg",
+        use_implicit=False,
+    )
+
+
+def test_fp_targeted_polish_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FP_TARGETED_POLISH", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_fp_targeted_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=8000,
+        residual_norm=4.8e-5,
+        target=1.0e-8,
+        rhs1_precond_kind="xmg",
+        use_implicit=False,
+    )
+    assert not _rhsmode1_fp_targeted_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=1.0e-8,
+        target=1.0e-8,
+        rhs1_precond_kind="xmg",
+        use_implicit=False,
+    )
+    assert not _rhsmode1_fp_targeted_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.8e-5,
+        target=1.0e-8,
+        rhs1_precond_kind="schur",
+        use_implicit=False,
+    )
+    assert not _rhsmode1_fp_targeted_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.8e-5,
+        target=1.0e-8,
+        rhs1_precond_kind="xmg",
+        use_implicit=True,
+    )
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_fp_targeted_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.8e-5,
+        target=1.0e-8,
+        rhs1_precond_kind="xmg",
+        use_implicit=False,
+    )
+
+
+def test_skip_global_sparse_after_good_xblock_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SKIP_GLOBAL_SPARSE_AFTER_XBLOCK", "1")
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SKIP_GLOBAL_SPARSE_AFTER_XBLOCK_MIN", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SKIP_GLOBAL_SPARSE_AFTER_XBLOCK_RATIO", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SKIP_GLOBAL_SPARSE_AFTER_XBLOCK_ABS", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.1e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        use_implicit=False,
+    )
+
+
+def test_skip_global_sparse_after_xblock_respects_guards(monkeypatch) -> None:
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SKIP_GLOBAL_SPARSE_AFTER_XBLOCK", "1")
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=8000,
+        residual_norm=4.1e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=1.0e-3,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.1e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=False,
+        used_explicit_fp_xblock_seed=True,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.1e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=False,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.1e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        use_implicit=True,
+    )
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.1e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
+        use_implicit=False,
+    )
+
+
+def test_skip_global_sparse_after_xblock_disabled_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SKIP_GLOBAL_SPARSE_AFTER_XBLOCK", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_skip_global_sparse_after_xblock_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=4.1e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        used_explicit_fp_xblock_seed=True,
         use_implicit=False,
     )
 
