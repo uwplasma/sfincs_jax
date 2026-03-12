@@ -57,9 +57,10 @@ Execution style:
 
 Build a production-grade neoclassical transport solver in JAX that:
 - solves the drift-kinetic equation in tokamak and stellarator geometries,
-- reproduces SFINCS v3 equation set and normalizations (phase 1),
-- is differentiable end-to-end for optimization/sensitivity workflows,
-- is performant and memory-efficient by default,
+- reproduces SFINCS v3 equation set and normalizations in a reference/parity path (phase 1),
+- offers a performance-first explicit path for CLI/default usage,
+- preserves end-to-end differentiability in explicitly requested Python/JAX-native solve paths,
+- is performant and memory-efficient by default for explicit solves,
 - is extensible to alternative numerical methods (phase 2+).
 
 ---
@@ -76,7 +77,7 @@ Core requirement right now:
 - same equations,
 - same discretization intent,
 - same normalization,
-- same algorithmic behavior where practical.
+- same algorithmic behavior where practical in the reference/parity path.
 
 ---
 
@@ -136,6 +137,16 @@ Core requirement right now:
 - Still in active optimization/scaling hardening phase,
 - Needs continued runtime/memory and distributed-solve work to reach “best-in-class” HPC behavior.
 
+### 5.4 Execution modes
+- `Reference / parity path`:
+  - explicitly selected from Python,
+  - prioritizes SFINCS v3 parity, solver diagnosability, and differentiability where supported.
+- `Fast explicit path`:
+  - default CLI / terminal usage,
+  - may use different solvers, preconditioners, direct methods, caching, or host-side factorizations,
+  - does not need to be differentiable unless explicitly requested,
+  - does not need exact solver-path parity with Fortran if it converges robustly to scientifically acceptable outputs with materially better runtime and memory behavior.
+
 ---
 
 ## 6) What Has Been Done (high-level execution history)
@@ -174,8 +185,8 @@ Mark completed milestones as `[x]`, active as `[~]`, pending as `[ ]`.
 1. Default behavior must generalize:
    - no case-name hacks,
    - no hidden fallback to external reference files.
-2. Preserve differentiability for JAX-native solve paths.
-3. Keep solver choices configurable, but defaults should “just work” for unseen cases.
+2. Preserve differentiability for explicitly requested Python/JAX-native solve paths; do not force the CLI/default path to remain differentiable if that materially hurts runtime or memory.
+3. Keep solver choices configurable, but defaults should “just work” for unseen cases. CLI/default may prefer performance-first explicit methods over parity-first methods.
 4. Every performance change must report:
    - runtime delta,
    - memory delta,
@@ -342,6 +353,15 @@ Perlmutter references indicate heterogeneous CPU/GPU architecture and high-paral
 - [ ] Re-run additional high-resolution example on CPU+GPU and integrate into comparison reporting.
 - [ ] Close remaining worst runtime/memory offenders (especially PAS-heavy cases) while preserving tolerances.
 - [~] Strengthen default PAS preconditioner path to avoid expensive fallback branches where possible.
+- [~] Split execution strategy:
+  - CLI/default explicit path optimized for runtime and memory first,
+  - reference/differentiable parity path selected explicitly from Python.
+- [~] Start fast-path performance branch from full-suite offender data:
+  - `monoenergetic_geometryScheme1`,
+  - `transportMatrix_geometryScheme11`,
+  - `geometryScheme4_1species_PAS_withEr_DKESTrajectories`,
+  - `transportMatrix_geometryScheme2`,
+  - `geometryScheme5_3species_loRes`.
 - [~] Keep docs and README synchronized with measured reality (no stale claims).
 - [ ] Keep CI wall-time under control without reducing scientific coverage.
 
@@ -400,6 +420,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-11
+- Scope: Start a dedicated fast-path branch and refactor the project plan around dual execution modes: a performance-first explicit CLI/default path and an explicitly selected reference/differentiable Python path.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: offender review from `/Users/rogeriojorge/local/tests/sfincs_jax/tests/scaled_example_suite_release_cpu_v4/summary.md`; stored solver-path profiling review from the per-case `sfincs_jax.log` files for `monoenergetic_geometryScheme1`, `transportMatrix_geometryScheme11`, `geometryScheme4_1species_PAS_withEr_DKESTrajectories`, `transportMatrix_geometryScheme2`, and `geometryScheme5_3species_loRes`.
+- Runtime/memory delta: no code-path change in this entry. Profiling shows the first fast-path targets clearly: transport offenders are dominated by solve setup / retry ladders, and large RHSMode=1 offenders are dominated by sparse preconditioner build rather than Krylov iteration count.
+- Remaining risks: release-facing docs and CLI semantics still describe the old “everything parity-first” stance. This branch-level strategy change needs corresponding code and user-facing documentation once the first fast-path implementation lands.
+- Next actions: implement fast explicit transport defaults that skip expensive GMRES-to-sparse-rescue ladders when sparse direct is predictably the winning branch, then tackle RHSMode=1 sparse-preconditioner build cost on the biggest PAS/FP offenders.
 
 ### 2026-03-11
 - Scope: Tighten the CPU collisionless transport branch so original-resolution monoenergetic RHSMode=3 solves do not spend minutes in host-GMRES before eventually reaching sparse direct rescue; sparse-LU is now allowed as the first explicit CPU attempt for small-`Nx` collisionless transport, and host-GMRES is demoted behind that branch.
