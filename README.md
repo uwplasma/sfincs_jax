@@ -159,6 +159,56 @@ Status labels in table cells:
 - `max_attempts`: the suite runner retried/rescaled this case up to `--max-attempts` and still did not complete a successful comparison run.
 - `jax_error`: the JAX run exited with an exception for that benchmark lane/case.
 
+## Fast Explicit Branch Audit
+
+Regenerate this block on the fast-path branch with:
+
+```bash
+python scripts/generate_readme_fast_branch_audit.py
+```
+
+<!-- BEGIN FAST_BRANCH_AUDIT -->
+Current fast explicit CPU audit comes from `tests/scaled_example_suite_fast_cpu_v1`.
+
+- Recorded cases: `22/39`
+- Practical status counts: `parity_mismatch=3, parity_ok=19`
+- Strict status counts: `parity_mismatch=3, parity_ok=19`
+- Remaining cases: `HSX_FPCollisions_DKESTrajectories, HSX_FPCollisions_fullTrajectories, HSX_PASCollisions_DKESTrajectories, HSX_PASCollisions_fullTrajectories, additional_examples, filteredW7XNetCDF_2species_magneticDrifts_noEr, filteredW7XNetCDF_2species_magneticDrifts_withEr, filteredW7XNetCDF_2species_noEr, geometryScheme4_2species_PAS_noEr, geometryScheme4_2species_noEr_withPhi1InDKE, geometryScheme4_2species_noEr_withQN, geometryScheme4_2species_withEr_fullTrajectories, geometryScheme4_2species_withEr_fullTrajectories_withQN, sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories, sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories, sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories, sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories`
+
+Top CPU runtime offenders:
+- `geometryScheme4_2species_noEr`: jax=411.485s fortran=14.836s ratio=27.74x status=parity_mismatch, res={'NTHETA': 13, 'NZETA': 19, 'NX': 5, 'NXI': 48}
+- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: jax=171.306s fortran=10.174s ratio=16.84x status=parity_ok, res={'NTHETA': 13, 'NZETA': 23, 'NX': 5, 'NXI': 48}
+- `transportMatrix_geometryScheme11`: jax=138.583s fortran=20.690s ratio=6.70x status=parity_mismatch, res={'NTHETA': 13, 'NZETA': 31, 'NX': 6, 'NXI': 24}
+- `geometryScheme5_3species_loRes`: jax=135.604s fortran=22.129s ratio=6.13x status=parity_ok, res={'NTHETA': 9, 'NZETA': 17, 'NX': 4, 'NXI': 18}
+- `tokamak_1species_PASCollisions_withEr_fullTrajectories`: jax=116.765s fortran=0.557s ratio=209.63x status=parity_ok, res={'NTHETA': 21, 'NZETA': 1, 'NX': 8, 'NXI': 31}
+
+Top CPU memory offenders:
+- `transportMatrix_geometryScheme11`: jax=6609.1 MB fortran=567.0 MB ratio=11.66x status=parity_mismatch, res={'NTHETA': 13, 'NZETA': 31, 'NX': 6, 'NXI': 24}
+- `monoenergetic_geometryScheme1`: jax=5760.2 MB fortran=1281.9 MB ratio=4.49x status=parity_mismatch, res={'NTHETA': 27, 'NZETA': 29, 'NX': 1, 'NXI': 70}
+- `tokamak_1species_PASCollisions_withEr_fullTrajectories`: jax=4099.4 MB fortran=133.1 MB ratio=30.80x status=parity_ok, res={'NTHETA': 21, 'NZETA': 1, 'NX': 8, 'NXI': 31}
+- `tokamak_1species_FPCollisions_withEr_fullTrajectories`: jax=3495.7 MB fortran=145.0 MB ratio=24.12x status=parity_ok, res={'NTHETA': 21, 'NZETA': 1, 'NX': 8, 'NXI': 31}
+- `geometryScheme5_3species_loRes`: jax=3454.4 MB fortran=586.6 MB ratio=5.89x status=parity_ok, res={'NTHETA': 9, 'NZETA': 17, 'NX': 4, 'NXI': 18}
+
+Current mismatches:
+- `geometryScheme4_2species_noEr`: status=parity_mismatch, practical=35/207, strict=35/207, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `monoenergetic_geometryScheme1`: status=parity_mismatch, practical=41/203, strict=41/203, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `transportMatrix_geometryScheme11`: status=parity_mismatch, practical=2/194, strict=2/194, sample=totalDensity,velocityUsingTotalDensity
+
+Largest CPU runtime improvements vs `scaled_example_suite_release_cpu_v4`:
+- `monoenergetic_geometryScheme1`: 1956.1s -> 101.7s (delta=1854.4s)
+- `transportMatrix_geometryScheme11`: 750.1s -> 138.6s (delta=611.5s)
+- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: 496.0s -> 171.3s (delta=324.7s)
+- `transportMatrix_geometryScheme2`: 262.7s -> 40.5s (delta=222.1s)
+- `geometryScheme5_3species_loRes`: 227.4s -> 135.6s (delta=91.8s)
+
+Largest CPU memory improvements vs `scaled_example_suite_release_cpu_v4`:
+- `geometryScheme5_3species_loRes`: 4789.5 MB -> 3454.4 MB (delta=1335.1 MB)
+- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: 3597.3 MB -> 2420.3 MB (delta=1177.0 MB)
+- `transportMatrix_geometryScheme2`: 3937.1 MB -> 3367.0 MB (delta=570.1 MB)
+- `tokamak_2species_PASCollisions_noEr`: 2460.1 MB -> 2352.3 MB (delta=107.8 MB)
+- `tokamak_1species_FPCollisions_withEr_fullTrajectories`: 3550.7 MB -> 3495.7 MB (delta=55.0 MB)
+<!-- END FAST_BRANCH_AUDIT -->
+
 ## Documentation
 
 Build docs locally:
