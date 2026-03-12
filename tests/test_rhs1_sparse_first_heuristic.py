@@ -11,6 +11,7 @@ from sfincs_jax.v3_driver import (
     _rhsmode1_host_factor_probe_ok,
     _rhsmode1_constraint0_sparse_first,
     _rhsmode1_fp_xblock_assembled_host_allowed,
+    _rhsmode1_fast_post_xblock_polish_allowed,
     _rhsmode1_large_cpu_xblock_skip_primary_allowed,
     _rhsmode1_large_cpu_sparse_rescue_allowed,
     _rhsmode1_large_cpu_sparse_exact_lu_allowed,
@@ -458,6 +459,67 @@ def test_large_cpu_xblock_skip_primary_respects_guards(monkeypatch) -> None:
         pre_zeta=0,
         use_implicit=False,
         rhs1_precond_env="schur",
+    )
+
+
+def test_fast_post_xblock_polish_enabled_for_large_bad_shortcut_residual(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_MIN", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_RATIO", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_ABS", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_fast_post_xblock_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=2.8e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        use_implicit=False,
+    )
+
+
+def test_fast_post_xblock_polish_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_fast_post_xblock_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=1.0e-7,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_fast_post_xblock_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=8000,
+        residual_norm=2.8e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_fast_post_xblock_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=2.8e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=False,
+        use_implicit=False,
+    )
+    assert not _rhsmode1_fast_post_xblock_polish_allowed(
+        op=_op(constraint_scheme=1),
+        active_size=68670,
+        residual_norm=2.8e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        use_implicit=True,
+    )
+    assert not _rhsmode1_fast_post_xblock_polish_allowed(
+        op=_op(constraint_scheme=1, has_fp=False),
+        active_size=68670,
+        residual_norm=2.8e-4,
+        target=1.0e-8,
+        used_large_cpu_xblock_shortcut=True,
+        use_implicit=False,
     )
 
 

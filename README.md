@@ -175,6 +175,15 @@ CPU solves to a host sparse-direct Newton step. A targeted rerun of
 against the stored Fortran reference, so the next full-suite refresh still needs to be run
 from this newer solver revision.
 
+Since that partial audit, targeted fast-path reruns have already moved one of the listed
+transport blockers: `transportMatrix_geometryScheme11` is now `parity_ok` on the branch
+with explicit CPU sparse-LU factorization promoted to float64 on large transport solves
+(`~185.3s`, `~5.17 GB` peak RSS on the stored scaled input). The remaining known fast-path
+mismatches are still concentrated in `monoenergetic_geometryScheme1` and
+`geometryScheme4_2species_noEr`; the latter still lands on the wrong flow/current branch
+after the current x-block shortcut, even after a bounded post-shortcut Krylov polish
+attempt (`~386.7s`, `~4.26 GB` peak RSS, same bad branch as before).
+
 <!-- BEGIN FAST_BRANCH_AUDIT -->
 Current fast explicit CPU audit comes from `tests/scaled_example_suite_fast_cpu_v1`.
 

@@ -785,6 +785,49 @@ def _rhsmode1_large_cpu_xblock_skip_primary_allowed(
     )
 
 
+def _rhsmode1_fast_post_xblock_polish_allowed(
+    *,
+    op: V3FullSystemOperator,
+    active_size: int,
+    residual_norm: float,
+    target: float,
+    used_large_cpu_xblock_shortcut: bool,
+    use_implicit: bool,
+) -> bool:
+    env = os.environ.get("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH", "").strip().lower()
+    if env in {"0", "false", "no", "off"}:
+        return False
+    if not bool(used_large_cpu_xblock_shortcut):
+        return False
+    if bool(use_implicit):
+        return False
+    if jax.default_backend() != "cpu":
+        return False
+    if int(op.rhs_mode) != 1 or bool(op.include_phi1):
+        return False
+    if op.fblock.fp is None or op.fblock.pas is not None:
+        return False
+    min_env = os.environ.get("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_MIN", "").strip()
+    ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_RATIO", "").strip()
+    abs_env = os.environ.get("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_ABS", "").strip()
+    try:
+        polish_min = int(min_env) if min_env else 12000
+    except ValueError:
+        polish_min = 12000
+    try:
+        polish_ratio = float(ratio_env) if ratio_env else 1.0e3
+    except ValueError:
+        polish_ratio = 1.0e3
+    try:
+        polish_abs = float(abs_env) if abs_env else 1.0e-6
+    except ValueError:
+        polish_abs = 1.0e-6
+    if int(active_size) < max(1, int(polish_min)):
+        return False
+    threshold = max(float(polish_abs), float(target) * max(1.0, float(polish_ratio)))
+    return float(residual_norm) > float(threshold)
+
+
 def _rhsmode1_sparse_sxblock_rescue_allowed(
     *,
     op: V3FullSystemOperator,
@@ -14963,6 +15006,61 @@ def solve_v3_full_system_linear_gmres(
                 if emit is not None:
                     emit(1, f"solve_v3_full_system_linear_gmres: dense fallback failed ({type(exc).__name__}: {exc})")
             _mark("rhs1_dense_fallback_done")
+        if (
+            _rhsmode1_fast_post_xblock_polish_allowed(
+                op=op,
+                active_size=int(active_size),
+                residual_norm=float(res_reduced.residual_norm),
+                target=float(target_reduced),
+                used_large_cpu_xblock_shortcut=bool(cpu_large_xblock_shortcut),
+                use_implicit=bool(use_implicit),
+            )
+            and preconditioner_reduced is not None
+        ):
+            polish_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_RESTART", "").strip()
+            polish_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_MAXITER", "").strip()
+            polish_tol_env = os.environ.get("SFINCS_JAX_RHSMODE1_FAST_POST_XBLOCK_POLISH_TOL", "").strip()
+            try:
+                polish_restart = int(polish_restart_env) if polish_restart_env else min(int(restart), 40)
+            except ValueError:
+                polish_restart = min(int(restart), 40)
+            try:
+                polish_maxiter = int(polish_maxiter_env) if polish_maxiter_env else min(max(40, int(maxiter or 80)), 80)
+            except ValueError:
+                polish_maxiter = min(max(40, int(maxiter or 80)), 80)
+            try:
+                polish_tol = float(polish_tol_env) if polish_tol_env else min(float(tol), 1.0e-10)
+            except ValueError:
+                polish_tol = min(float(tol), 1.0e-10)
+            polish_restart = max(5, int(polish_restart))
+            polish_maxiter = max(5, int(polish_maxiter))
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: fast post-xblock polish "
+                    f"(restart={polish_restart} maxiter={polish_maxiter} "
+                    f"residual={float(res_reduced.residual_norm):.3e})",
+                )
+            res_polish = _solve_linear(
+                matvec_fn=mv_reduced,
+                b_vec=rhs_reduced,
+                precond_fn=preconditioner_reduced,
+                x0_vec=res_reduced.x,
+                tol_val=polish_tol,
+                atol_val=atol,
+                restart_val=polish_restart,
+                maxiter_val=polish_maxiter,
+                solve_method_val="incremental",
+                precond_side=gmres_precond_side,
+            )
+            if float(res_polish.residual_norm) < float(res_reduced.residual_norm):
+                if emit is not None:
+                    emit(
+                        1,
+                        "solve_v3_full_system_linear_gmres: fast post-xblock polish improved residual "
+                        f"{float(res_reduced.residual_norm):.3e} -> {float(res_polish.residual_norm):.3e}",
+                    )
+                res_reduced = res_polish
         # Cheap post-solve polish for large FP systems:
         # Apply a few damped preconditioned-residual correction steps to improve
         # low-order moments (flow/Mach/jHat) without paying for a full second GMRES pass.
