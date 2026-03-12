@@ -167,6 +167,14 @@ Regenerate this block on the fast-path branch with:
 python scripts/generate_readme_fast_branch_audit.py
 ```
 
+The generated block below is still based on the partial `scaled_example_suite_fast_cpu_v1`
+rerun. After commit `d792d64`, the branch also switched large explicit nonlinear `includePhi1`
+CPU solves to a host sparse-direct Newton step. A targeted rerun of
+`geometryScheme4_2species_noEr_withPhi1InDKE` from the current branch converged in
+`1092.8s` with peak RSS about `12.1 GB`, but still showed `7/264` practical mismatches
+against the stored Fortran reference, so the next full-suite refresh still needs to be run
+from this newer solver revision.
+
 <!-- BEGIN FAST_BRANCH_AUDIT -->
 Current fast explicit CPU audit comes from `tests/scaled_example_suite_fast_cpu_v1`.
 

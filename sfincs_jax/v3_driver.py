@@ -10760,7 +10760,9 @@ def solve_v3_full_system_linear_gmres(
                 schur_tokamak = schur_tokamak_env in {"1", "true", "yes", "on"}
                 tokamak_like = int(op.n_zeta) == 1 or geom_scheme == 1
                 if full_precond_requested and int(op.constraint_scheme) == 2 and int(op.extra_size) > 0:
-                    if tokamak_like and (not schur_tokamak) and er_abs <= schur_er_min:
+                    if tokamak_like and schur_tokamak and er_abs <= schur_er_min:
+                        rhs1_precond_kind = "schur"
+                    elif tokamak_like and (not schur_tokamak) and er_abs <= schur_er_min:
                         if op.fblock.pas is not None:
                             # For tiny tokamak PAS systems, prefer the xblock_tz preconditioner
                             # (matches legacy fixtures). For larger systems, keep the lighter
@@ -10902,7 +10904,7 @@ def solve_v3_full_system_linear_gmres(
                                 "schur_auto -> xmg preconditioner",
                             )
                     else:
-                        rhs1_precond_kind = _rhs1_pas_auto_large_base_kind(active_size=int(active_size))
+                        rhs1_precond_kind = "schur"
                 elif op.fblock.fp is not None and use_dkes:
                     # DKES-trajectory FP cases can stagnate with collision-only
                     # preconditioners. Prefer a lightweight xmg/sxblock_tz path for
@@ -16997,10 +16999,11 @@ def solve_v3_full_system_newton_krylov_history(
         dense_cutoff = 5000
     linear_size = active_size if use_active_dof_mode else int(op.total_size)
     solve_method_in = str(solve_method).strip().lower()
+    use_sparse_direct_linear = solve_method_in == "sparse_direct"
     use_dense_linear = solve_method_in in {"dense", "dense_row_scaled"} or (
         use_frozen_linearization and int(linear_size) <= int(dense_cutoff)
     )
-    if use_dense_linear:
+    if use_dense_linear or use_sparse_direct_linear:
         use_preconditioner = False
     precond_opts = nml.group("preconditionerOptions")
 
@@ -17132,6 +17135,87 @@ def solve_v3_full_system_newton_krylov_history(
         if history:
             emit(0, " Linear iteration (KSP) converged.  KSPConvergedReason =            2")
             emit(0, "   KSP_CONVERGED_RTOL: Norm decreased by rtol.")
+
+    def _phi1_sparse_direct_solve(
+        *,
+        matvec_fn,
+        b_vec: jnp.ndarray,
+        n: int,
+        cache_tag: tuple[object, ...],
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+    ) -> GMRESSolveResult:
+        factor_dtype = _host_sparse_factor_dtype(
+            size=int(n),
+            factorization="lu",
+            use_implicit=False,
+        )
+        cache_key_use = _sparse_factor_cache_key(("phi1_nk_sparse_direct", *cache_tag), factor_dtype)
+        a_csr_full, _a_csr_drop, ilu, _a_dense, _l_dense, _u_dense, _l_unit = _build_sparse_ilu_from_matvec(
+            matvec=matvec_fn,
+            n=int(n),
+            dtype=jnp.float64,
+            cache_key=cache_key_use,
+            factor_dtype=factor_dtype,
+            drop_tol=0.0,
+            drop_rel=0.0,
+            ilu_drop_tol=0.0,
+            fill_factor=1.0,
+            build_dense_factors=False,
+            build_jax_factors=False,
+            build_ilu=True,
+            store_dense=False,
+            factorization="lu",
+            emit=emit,
+        )
+        if ilu is None:
+            raise RuntimeError("phi1 sparse_direct: factors unavailable")
+        x_np, residual_norm = _host_sparse_direct_solve_with_refinement(
+            ilu=ilu,
+            a_csr_full=a_csr_full,
+            rhs_vec=b_vec,
+            factor_dtype=factor_dtype,
+            refine_steps=_host_sparse_direct_refine_steps("SFINCS_JAX_PHI1_SPARSE_DIRECT_REFINE", default=2),
+        )
+        target_true = max(float(atol_val), float(tol_val) * float(jnp.linalg.norm(b_vec)))
+        if factor_dtype == np.dtype(np.float32) and residual_norm > target_true:
+            polish_env = os.environ.get("SFINCS_JAX_PHI1_SPARSE_DIRECT_POLISH", "").strip().lower()
+            if polish_env not in {"0", "false", "no", "off"}:
+                polish_restart_env = os.environ.get("SFINCS_JAX_PHI1_SPARSE_DIRECT_POLISH_RESTART", "").strip()
+                polish_maxiter_env = os.environ.get("SFINCS_JAX_PHI1_SPARSE_DIRECT_POLISH_MAXITER", "").strip()
+                try:
+                    polish_restart = int(polish_restart_env) if polish_restart_env else min(int(restart_val), 40)
+                except ValueError:
+                    polish_restart = min(int(restart_val), 40)
+                try:
+                    polish_maxiter = (
+                        int(polish_maxiter_env)
+                        if polish_maxiter_env
+                        else min(max(40, int(maxiter_val or 120)), 120)
+                    )
+                except ValueError:
+                    polish_maxiter = min(max(40, int(maxiter_val or 120)), 120)
+                x_polish, residual_norm_polish = _host_sparse_direct_polish(
+                    matvec_fn=matvec_fn,
+                    rhs_vec=b_vec,
+                    x0_np=x_np,
+                    ilu=ilu,
+                    factor_dtype=factor_dtype,
+                    tol=tol_val,
+                    atol=atol_val,
+                    restart=max(5, int(polish_restart)),
+                    maxiter=max(5, int(polish_maxiter)),
+                    precondition_side="left",
+                )
+                if np.isfinite(residual_norm_polish) and residual_norm_polish < residual_norm:
+                    x_np = x_polish
+                    residual_norm = residual_norm_polish
+        return GMRESSolveResult(
+            x=jnp.asarray(x_np, dtype=jnp.float64),
+            residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
+        )
 
     for k in range(int(max_newton)):
         if emit is not None:
@@ -17266,37 +17350,22 @@ def solve_v3_full_system_newton_krylov_history(
             def matvec_reduced(dx_reduced: jnp.ndarray) -> jnp.ndarray:
                 return _reduce_full(matvec(_expand_reduced(dx_reduced)))
 
-            lin = _gmres_solve_dispatch(
-                matvec=matvec_reduced,
-                b=rhs_reduced,
-                preconditioner=preconditioner,
-                tol=float(gmres_tol),
-                restart=int(gmres_restart_use),
-                maxiter=gmres_maxiter,
-                solve_method=solve_method_linear,
-            )
-            _emit_ksp_history_nk(
-                matvec_fn=matvec_reduced,
-                b_vec=rhs_reduced,
-                precond_fn=preconditioner,
-                x0_vec=None,
-                tol_val=float(gmres_tol),
-                atol_val=0.0,
-                restart_val=int(gmres_restart_use),
-                maxiter_val=gmres_maxiter,
-                precond_side="left",
-            )
-            if preconditioner is not None and (not _gmres_result_is_finite(lin)):
-                if emit is not None:
-                    emit(
-                        0,
-                        "newton_iter="
-                        f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
-                    )
+            if solve_method_linear == "sparse_direct":
+                lin = _phi1_sparse_direct_solve(
+                    matvec_fn=matvec_reduced,
+                    b_vec=rhs_reduced,
+                    n=int(active_size),
+                    cache_tag=("reduced", int(k), int(active_size)),
+                    tol_val=float(gmres_tol),
+                    atol_val=0.0,
+                    restart_val=int(gmres_restart_use),
+                    maxiter_val=gmres_maxiter,
+                )
+            else:
                 lin = _gmres_solve_dispatch(
                     matvec=matvec_reduced,
                     b=rhs_reduced,
-                    preconditioner=None,
+                    preconditioner=preconditioner,
                     tol=float(gmres_tol),
                     restart=int(gmres_restart_use),
                     maxiter=gmres_maxiter,
@@ -17305,7 +17374,7 @@ def solve_v3_full_system_newton_krylov_history(
                 _emit_ksp_history_nk(
                     matvec_fn=matvec_reduced,
                     b_vec=rhs_reduced,
-                    precond_fn=None,
+                    precond_fn=preconditioner,
                     x0_vec=None,
                     tol_val=float(gmres_tol),
                     atol_val=0.0,
@@ -17313,40 +17382,52 @@ def solve_v3_full_system_newton_krylov_history(
                     maxiter_val=gmres_maxiter,
                     precond_side="left",
                 )
+                if preconditioner is not None and (not _gmres_result_is_finite(lin)):
+                    if emit is not None:
+                        emit(
+                            0,
+                            "newton_iter="
+                            f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
+                        )
+                    lin = _gmres_solve_dispatch(
+                        matvec=matvec_reduced,
+                        b=rhs_reduced,
+                        preconditioner=None,
+                        tol=float(gmres_tol),
+                        restart=int(gmres_restart_use),
+                        maxiter=gmres_maxiter,
+                        solve_method=solve_method_linear,
+                    )
+                    _emit_ksp_history_nk(
+                        matvec_fn=matvec_reduced,
+                        b_vec=rhs_reduced,
+                        precond_fn=None,
+                        x0_vec=None,
+                        tol_val=float(gmres_tol),
+                        atol_val=0.0,
+                        restart_val=int(gmres_restart_use),
+                        maxiter_val=gmres_maxiter,
+                        precond_side="left",
+                    )
             s = _expand_reduced(lin.x)
             linear_resid_norm = jnp.linalg.norm(matvec(s) + r)
         else:
-            lin = _gmres_solve_dispatch(
-                matvec=matvec,
-                b=-r,
-                preconditioner=preconditioner,
-                tol=float(gmres_tol),
-                restart=int(gmres_restart_use),
-                maxiter=gmres_maxiter,
-                solve_method=solve_method_linear,
-            )
-            _emit_ksp_history_nk(
-                matvec_fn=matvec,
-                b_vec=-r,
-                precond_fn=preconditioner,
-                x0_vec=None,
-                tol_val=float(gmres_tol),
-                atol_val=0.0,
-                restart_val=int(gmres_restart_use),
-                maxiter_val=gmres_maxiter,
-                precond_side="left",
-            )
-            if preconditioner is not None and (not _gmres_result_is_finite(lin)):
-                if emit is not None:
-                    emit(
-                        0,
-                        "newton_iter="
-                        f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
-                    )
+            if solve_method_linear == "sparse_direct":
+                lin = _phi1_sparse_direct_solve(
+                    matvec_fn=matvec,
+                    b_vec=-r,
+                    n=int(op.total_size),
+                    cache_tag=("full", int(k), int(op.total_size)),
+                    tol_val=float(gmres_tol),
+                    atol_val=0.0,
+                    restart_val=int(gmres_restart_use),
+                    maxiter_val=gmres_maxiter,
+                )
+            else:
                 lin = _gmres_solve_dispatch(
                     matvec=matvec,
                     b=-r,
-                    preconditioner=None,
+                    preconditioner=preconditioner,
                     tol=float(gmres_tol),
                     restart=int(gmres_restart_use),
                     maxiter=gmres_maxiter,
@@ -17355,7 +17436,7 @@ def solve_v3_full_system_newton_krylov_history(
                 _emit_ksp_history_nk(
                     matvec_fn=matvec,
                     b_vec=-r,
-                    precond_fn=None,
+                    precond_fn=preconditioner,
                     x0_vec=None,
                     tol_val=float(gmres_tol),
                     atol_val=0.0,
@@ -17363,6 +17444,33 @@ def solve_v3_full_system_newton_krylov_history(
                     maxiter_val=gmres_maxiter,
                     precond_side="left",
                 )
+                if preconditioner is not None and (not _gmres_result_is_finite(lin)):
+                    if emit is not None:
+                        emit(
+                            0,
+                            "newton_iter="
+                            f"{k}: preconditioned GMRES returned non-finite result; retrying without preconditioner",
+                        )
+                    lin = _gmres_solve_dispatch(
+                        matvec=matvec,
+                        b=-r,
+                        preconditioner=None,
+                        tol=float(gmres_tol),
+                        restart=int(gmres_restart_use),
+                        maxiter=gmres_maxiter,
+                        solve_method=solve_method_linear,
+                    )
+                    _emit_ksp_history_nk(
+                        matvec_fn=matvec,
+                        b_vec=-r,
+                        precond_fn=None,
+                        x0_vec=None,
+                        tol_val=float(gmres_tol),
+                        atol_val=0.0,
+                        restart_val=int(gmres_restart_use),
+                        maxiter_val=gmres_maxiter,
+                        precond_side="left",
+                    )
             s = lin.x
             linear_resid_norm = lin.residual_norm
 

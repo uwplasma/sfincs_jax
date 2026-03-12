@@ -72,12 +72,39 @@ def _select_phi1_newton_linear_solve_method(
     active_total_size: int,
     dense_cutoff: int,
     default_method: str,
+    fast_explicit: bool,
     dense_auto_ok: bool,
     dense_auto_backend: str,
     env_override: str,
     emit=None,
 ) -> str:
     method = default_method
+    if fast_explicit:
+        sparse_direct_min_env = os.environ.get("SFINCS_JAX_PHI1_FAST_SPARSE_DIRECT_MIN", "").strip()
+        try:
+            sparse_direct_min = int(sparse_direct_min_env) if sparse_direct_min_env else 20000
+        except ValueError:
+            sparse_direct_min = 20000
+        if (
+            int(active_total_size) > int(dense_cutoff)
+            and str(dense_auto_backend).strip().lower() == "cpu"
+            and int(active_total_size) >= max(1, int(sparse_direct_min))
+        ):
+            method = "sparse_direct"
+            if emit is not None:
+                emit(
+                    1,
+                    "write_sfincs_jax_output_h5: includePhi1 fast explicit mode -> "
+                    "preferring host sparse-direct Newton step",
+                )
+        elif method == "batched":
+            method = "incremental"
+            if emit is not None:
+                emit(
+                    1,
+                    "write_sfincs_jax_output_h5: includePhi1 fast explicit mode -> "
+                    "preferring incremental Newton step over batched solve",
+                )
     if int(active_total_size) <= int(dense_cutoff):
         if dense_auto_ok:
             method = "dense"
@@ -93,7 +120,7 @@ def _select_phi1_newton_linear_solve_method(
                 "write_sfincs_jax_output_h5: includePhi1 -> skipping dense auto mode on "
                 f"backend={dense_auto_backend}; using {default_method} Newton step",
             )
-    if env_override in {"dense", "incremental", "batched"}:
+    if env_override in {"dense", "incremental", "batched", "sparse_direct"}:
         method = env_override
     return method
 
@@ -2502,7 +2529,8 @@ def write_sfincs_jax_output_h5(
         if nonlinear_phi1:
             if emit is not None:
                 emit(0, "write_sfincs_jax_output_h5: includePhi1=true -> Newton–Krylov solve with history")
-            nk_solve_method = "incremental" if int(op0.total_size) <= 5000 else "batched"
+            fast_explicit_phi1 = bool(differentiable is False)
+            nk_solve_method = "incremental" if (fast_explicit_phi1 or int(op0.total_size) <= 5000) else "batched"
             include_phi1_in_collisions = bool(phys.get("INCLUDEPHI1INCOLLISIONOPERATOR", False))
             dense_cutoff_env = os.environ.get("SFINCS_JAX_PHI1_NK_DENSE_CUTOFF", "").strip()
             try:
@@ -2514,6 +2542,7 @@ def write_sfincs_jax_output_h5(
                 active_total_size=int(active_total_size),
                 dense_cutoff=int(dense_cutoff),
                 default_method=nk_solve_method,
+                fast_explicit=fast_explicit_phi1,
                 dense_auto_ok=bool(dense_auto_ok),
                 dense_auto_backend=str(dense_auto_backend),
                 env_override=env_nk_method,
@@ -2521,7 +2550,7 @@ def write_sfincs_jax_output_h5(
             )
             # Default to full Newton updates for includePhi1 runs. Allow explicit
             # frozen-linearization overrides via environment variables.
-            use_frozen_linearization = False
+            use_frozen_linearization = fast_explicit_phi1
             env_frozen = os.environ.get("SFINCS_JAX_PHI1_USE_FROZEN_LINEARIZATION", "").strip().lower()
             if env_frozen in {"1", "true", "yes", "on"}:
                 use_frozen_linearization = True
@@ -2540,7 +2569,12 @@ def write_sfincs_jax_output_h5(
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: includePhi1 linearized solve_method={nk_solve_method}")
                 if use_frozen_linearization:
-                    emit(1, "write_sfincs_jax_output_h5: includePhi1 parity mode -> frozen Jacobian + relative nonlinear stop")
+                    mode_label = "fast explicit mode" if fast_explicit_phi1 else "parity mode"
+                    emit(
+                        1,
+                        "write_sfincs_jax_output_h5: includePhi1 "
+                        f"{mode_label} -> frozen Jacobian + relative nonlinear stop",
+                    )
             # For qn-only includePhi1 runs, an absolute Newton tolerance of 1e-8
             # is sufficient for v3-comparison tolerances on large systems and
             # avoids an extra expensive Newton linear solve.
@@ -2551,6 +2585,13 @@ def write_sfincs_jax_output_h5(
                     newton_tol = float(env_newton_tol)
                 except ValueError:
                     newton_tol = 1.0e-12
+            elif fast_explicit_phi1:
+                if int(active_total_size) >= 20000:
+                    newton_tol = 1.0e-8
+                elif int(active_total_size) >= 8000:
+                    newton_tol = 5.0e-9
+                else:
+                    newton_tol = 1.0e-9
             elif (not include_phi1_in_kinetic) and (quasineutrality_option == 1):
                 if int(active_total_size) >= 12000:
                     newton_tol = 1.0e-8
@@ -2565,6 +2606,8 @@ def write_sfincs_jax_output_h5(
                     gmres_maxiter = int(env_gmres_maxiter)
                 except ValueError:
                     gmres_maxiter = 2000
+            elif fast_explicit_phi1:
+                gmres_maxiter = 600 if int(active_total_size) >= 20000 else 400
             gmres_tol = 1.0e-12
             env_phi1_gmres_tol = os.environ.get("SFINCS_JAX_PHI1_GMRES_TOL", "").strip()
             if env_phi1_gmres_tol:
@@ -2572,6 +2615,13 @@ def write_sfincs_jax_output_h5(
                     gmres_tol = float(env_phi1_gmres_tol)
                 except ValueError:
                     gmres_tol = 1.0e-12
+            elif fast_explicit_phi1:
+                if int(active_total_size) >= 20000:
+                    gmres_tol = 1.0e-8
+                elif int(active_total_size) >= 8000:
+                    gmres_tol = 5.0e-9
+                else:
+                    gmres_tol = 1.0e-9
             elif (not include_phi1_in_kinetic) and (quasineutrality_option == 1):
                 # For qn-only includePhi1 Newton runs, very large active systems are
                 # typically over-solved by 1e-12 linear tolerances. Relaxing to 1e-8
@@ -2580,8 +2630,19 @@ def write_sfincs_jax_output_h5(
                     gmres_tol = 1.0e-8
                 elif int(active_total_size) >= 8000:
                     gmres_tol = 5.0e-9
+            gmres_restart = 2000
+            env_gmres_restart = os.environ.get("SFINCS_JAX_PHI1_GMRES_RESTART", "").strip()
+            if env_gmres_restart:
+                try:
+                    gmres_restart = int(env_gmres_restart)
+                except ValueError:
+                    gmres_restart = 2000
+            elif fast_explicit_phi1:
+                gmres_restart = 120 if int(active_total_size) >= 20000 else 80
             if emit is not None:
                 emit(1, f"write_sfincs_jax_output_h5: includePhi1 GMRES tol={gmres_tol:.3e}")
+                emit(1, f"write_sfincs_jax_output_h5: includePhi1 GMRES restart={gmres_restart}")
+                emit(1, f"write_sfincs_jax_output_h5: includePhi1 GMRES maxiter={gmres_maxiter}")
             _mark("rhs1_solve_start")
             result, x_hist = solve_v3_full_system_newton_krylov_history(
                 nml=nml,
@@ -2589,7 +2650,7 @@ def write_sfincs_jax_output_h5(
                 tol=float(newton_tol),
                 max_newton=12,
                 gmres_tol=float(gmres_tol),
-                gmres_restart=2000,
+                gmres_restart=gmres_restart,
                 gmres_maxiter=gmres_maxiter,
                 solve_method=nk_solve_method,
                 nonlinear_rtol=nonlinear_rtol,

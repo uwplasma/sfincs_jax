@@ -140,6 +140,7 @@ def test_phi1_newton_auto_method_uses_dense_on_cpu() -> None:
         active_total_size=1090,
         dense_cutoff=5000,
         default_method="incremental",
+        fast_explicit=False,
         dense_auto_ok=True,
         dense_auto_backend="cpu",
         env_override="",
@@ -157,6 +158,7 @@ def test_phi1_newton_auto_method_skips_dense_on_gpu() -> None:
         active_total_size=1090,
         dense_cutoff=5000,
         default_method="incremental",
+        fast_explicit=False,
         dense_auto_ok=False,
         dense_auto_backend="gpu",
         env_override="",
@@ -165,6 +167,24 @@ def test_phi1_newton_auto_method_skips_dense_on_gpu() -> None:
 
     assert method == "incremental"
     assert any("skipping dense auto mode on backend=gpu" in msg for msg in msgs)
+
+
+def test_phi1_newton_fast_explicit_prefers_sparse_direct_on_large_cpu() -> None:
+    msgs: list[str] = []
+
+    method = _select_phi1_newton_linear_solve_method(
+        active_total_size=68000,
+        dense_cutoff=5000,
+        default_method="batched",
+        fast_explicit=True,
+        dense_auto_ok=True,
+        dense_auto_backend="cpu",
+        env_override="",
+        emit=lambda _lvl, msg: msgs.append(str(msg)),
+    )
+
+    assert method == "sparse_direct"
+    assert any("host sparse-direct Newton step" in msg for msg in msgs)
 
 
 def test_apply_runtime_env_defaults_disables_preallocation_by_default(monkeypatch) -> None:
