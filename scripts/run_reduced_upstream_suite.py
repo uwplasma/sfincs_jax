@@ -1863,6 +1863,7 @@ def _run_case(
                 last_success = {
                     "status": status,
                     "note": note,
+                    "final_resolution": dict(final_res),
                     "fortran_h5": fortran_copy if fortran_copy.exists() else fortran_h5_path,
                     "jax_h5": jax_copy if jax_copy.exists() else jax_h5_path,
                     "fortran_log": (last_dir / "sfincs_fortran.log") if (last_dir / "sfincs_fortran.log").exists() else fortran_log_path,
@@ -1952,13 +1953,51 @@ def _run_case(
 
     else:
         status = "max_attempts"
-        fallback = last_success or disk_last_success
+        fallback = last_success if target_runtime_s is not None else (last_success or disk_last_success)
         if note:
             note = f"Reached max attempts while reducing resolution. Last failure: {note}"
         else:
             note = "Reached max attempts while reducing resolution."
-        if fallback is not None and target_runtime_s is None:
-            note = f"{note} Cached last_success retained in {last_dir}."
+        if fallback is not None:
+            _hydrate_last_success_metrics(fallback)
+            if target_runtime_s is not None:
+                status = str(fallback.get("status", status))
+                note = (
+                    "Reached max attempts while adjusting resolution. "
+                    f"Using last_success: {fallback.get('note', '')}"
+                ).strip()
+            else:
+                note = f"{note} Cached last_success retained in {last_dir}."
+            fortran_runtime = fallback.get("fortran_runtime", fortran_runtime)
+            fortran_max_rss_mb = fallback.get("fortran_max_rss_mb", fortran_max_rss_mb)
+            jax_runtime = fallback.get("jax_runtime", jax_runtime)
+            jax_max_rss_mb = fallback.get("jax_max_rss_mb", jax_max_rss_mb)
+            n_common = int(fallback.get("n_common", n_common))
+            n_bad = int(fallback.get("n_bad", n_bad))
+            max_abs = fallback.get("max_abs", max_abs)
+            mismatch_keys = list(fallback.get("mismatch_keys", mismatch_keys))
+            mismatch_solver_keys = list(fallback.get("mismatch_solver_keys", mismatch_solver_keys))
+            mismatch_physics_keys = list(fallback.get("mismatch_physics_keys", mismatch_physics_keys))
+            strict_n_common = int(fallback.get("strict_n_common", strict_n_common))
+            strict_n_bad = int(fallback.get("strict_n_bad", strict_n_bad))
+            strict_max_abs = fallback.get("strict_max_abs", strict_max_abs)
+            strict_mismatch_keys = list(fallback.get("strict_mismatch_keys", strict_mismatch_keys))
+            strict_mismatch_solver_keys = list(
+                fallback.get("strict_mismatch_solver_keys", strict_mismatch_solver_keys)
+            )
+            strict_mismatch_physics_keys = list(
+                fallback.get("strict_mismatch_physics_keys", strict_mismatch_physics_keys)
+            )
+            print_signals = int(fallback.get("print_signals", print_signals))
+            print_total = int(fallback.get("print_total", print_total))
+            print_missing = list(fallback.get("print_missing", print_missing))
+            fallback_res = fallback.get("final_resolution")
+            if isinstance(fallback_res, dict):
+                final_res = {k: int(v) for k, v in fallback_res.items()}
+            fortran_h5_path = _path_from_obj(fallback.get("fortran_h5")) or fortran_h5_path
+            jax_h5_path = _path_from_obj(fallback.get("jax_h5")) or jax_h5_path
+            fortran_log_path = _path_from_obj(fallback.get("fortran_log")) or fortran_log_path
+            jax_log_path = _path_from_obj(fallback.get("jax_log")) or jax_log_path
 
     blocker_type = _classify_blocker(status=status, note=note, mismatch_keys=mismatch_keys, jax_log=jax_log_path)
 

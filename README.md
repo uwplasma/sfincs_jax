@@ -218,45 +218,62 @@ fast path should prefer for structurally singular or near-singular monoenergetic
 systems.
 
 <!-- BEGIN FAST_BRANCH_AUDIT -->
-Current fast explicit CPU audit comes from `tests/scaled_example_suite_fast_cpu_v1`.
+Current fast explicit CPU audit comes from `tests/scaled_example_suite_fast_cpu_rtwindow_v2`.
 
-- Recorded cases: `22/39`
-- Practical status counts: `parity_mismatch=3, parity_ok=19`
-- Strict status counts: `parity_mismatch=3, parity_ok=19`
-- Remaining cases: `HSX_FPCollisions_DKESTrajectories, HSX_FPCollisions_fullTrajectories, HSX_PASCollisions_DKESTrajectories, HSX_PASCollisions_fullTrajectories, additional_examples, filteredW7XNetCDF_2species_magneticDrifts_noEr, filteredW7XNetCDF_2species_magneticDrifts_withEr, filteredW7XNetCDF_2species_noEr, geometryScheme4_2species_PAS_noEr, geometryScheme4_2species_noEr_withPhi1InDKE, geometryScheme4_2species_noEr_withQN, geometryScheme4_2species_withEr_fullTrajectories, geometryScheme4_2species_withEr_fullTrajectories_withQN, sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories, sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories, sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories, sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_fullTrajectories`
+- Recorded cases: `39/39`
+- Practical status counts: `parity_mismatch=19, parity_ok=20`
+- Strict status counts: `parity_mismatch=19, parity_ok=20`
+- Resolution policy: `reference_first_runtime_window, scale_factor=1.0, runtime_basis=fortran, fortran_min=1.0, fortran_max=20.0, adjust_iters=3`
+- Remaining cases: none
 
 Top CPU runtime offenders:
-- `geometryScheme4_2species_noEr`: jax=411.485s fortran=14.836s ratio=27.74x status=parity_mismatch, res={'NTHETA': 13, 'NZETA': 19, 'NX': 5, 'NXI': 48}
-- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: jax=171.306s fortran=10.174s ratio=16.84x status=parity_ok, res={'NTHETA': 13, 'NZETA': 23, 'NX': 5, 'NXI': 48}
-- `transportMatrix_geometryScheme11`: jax=138.583s fortran=20.690s ratio=6.70x status=parity_mismatch, res={'NTHETA': 13, 'NZETA': 31, 'NX': 6, 'NXI': 24}
-- `geometryScheme5_3species_loRes`: jax=135.604s fortran=22.129s ratio=6.13x status=parity_ok, res={'NTHETA': 9, 'NZETA': 17, 'NX': 4, 'NXI': 18}
-- `tokamak_1species_PASCollisions_withEr_fullTrajectories`: jax=116.765s fortran=0.557s ratio=209.63x status=parity_ok, res={'NTHETA': 21, 'NZETA': 1, 'NX': 8, 'NXI': 31}
+- `sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories`: jax=437.665s fortran=0.914s ratio=478.89x status=parity_mismatch, res={'NTHETA': 8, 'NZETA': 17, 'NX': 3, 'NXI': 17}
+- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: jax=381.480s fortran=1.334s ratio=286.01x status=parity_mismatch, res={'NTHETA': 11, 'NZETA': 15, 'NX': 4, 'NXI': 32}
+- `HSX_FPCollisions_fullTrajectories`: jax=252.609s fortran=6.600s ratio=38.27x status=parity_mismatch, res={'NTHETA': 5, 'NZETA': 39, 'NX': 2, 'NXI': 50}
+- `filteredW7XNetCDF_2species_magneticDrifts_noEr`: jax=233.237s fortran=3.434s ratio=67.91x status=parity_mismatch, res={'NTHETA': 8, 'NZETA': 20, 'NX': 3, 'NXI': 38}
+- `HSX_FPCollisions_DKESTrajectories`: jax=229.402s fortran=2.885s ratio=79.51x status=parity_mismatch, res={'NTHETA': 5, 'NZETA': 39, 'NX': 2, 'NXI': 50}
 
 Top CPU memory offenders:
-- `transportMatrix_geometryScheme11`: jax=6609.1 MB fortran=567.0 MB ratio=11.66x status=parity_mismatch, res={'NTHETA': 13, 'NZETA': 31, 'NX': 6, 'NXI': 24}
-- `monoenergetic_geometryScheme1`: jax=5760.2 MB fortran=1281.9 MB ratio=4.49x status=parity_mismatch, res={'NTHETA': 27, 'NZETA': 29, 'NX': 1, 'NXI': 70}
-- `tokamak_1species_PASCollisions_withEr_fullTrajectories`: jax=4099.4 MB fortran=133.1 MB ratio=30.80x status=parity_ok, res={'NTHETA': 21, 'NZETA': 1, 'NX': 8, 'NXI': 31}
-- `tokamak_1species_FPCollisions_withEr_fullTrajectories`: jax=3495.7 MB fortran=145.0 MB ratio=24.12x status=parity_ok, res={'NTHETA': 21, 'NZETA': 1, 'NX': 8, 'NXI': 31}
-- `geometryScheme5_3species_loRes`: jax=3454.4 MB fortran=586.6 MB ratio=5.89x status=parity_ok, res={'NTHETA': 9, 'NZETA': 17, 'NX': 4, 'NXI': 18}
+- `HSX_PASCollisions_fullTrajectories`: jax=5268.0 MB fortran=305.4 MB ratio=17.25x status=parity_mismatch, res={'NTHETA': 5, 'NZETA': 39, 'NX': 2, 'NXI': 50}
+- `monoenergetic_geometryScheme11`: jax=4256.9 MB fortran=143.4 MB ratio=29.68x status=parity_ok, res={'NTHETA': 12, 'NZETA': 21, 'NX': 1, 'NXI': 17}
+- `transportMatrix_geometryScheme11`: jax=4222.7 MB fortran=164.1 MB ratio=25.74x status=parity_ok, res={'NTHETA': 9, 'NZETA': 21, 'NX': 4, 'NXI': 17}
+- `tokamak_1species_FPCollisions_withEr_fullTrajectories`: jax=3475.7 MB fortran=142.9 MB ratio=24.32x status=parity_ok, res={'NTHETA': 21, 'NZETA': 1, 'NX': 8, 'NXI': 31}
+- `geometryScheme5_3species_loRes`: jax=3453.6 MB fortran=196.0 MB ratio=17.62x status=parity_ok, res={'NTHETA': 8, 'NZETA': 11, 'NX': 3, 'NXI': 12}
 
 Current mismatches:
-- `geometryScheme4_2species_noEr`: status=parity_mismatch, practical=35/207, strict=35/207, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
-- `monoenergetic_geometryScheme1`: status=parity_mismatch, practical=41/203, strict=41/203, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
-- `transportMatrix_geometryScheme11`: status=parity_mismatch, practical=2/194, strict=2/194, sample=totalDensity,velocityUsingTotalDensity
+- `HSX_FPCollisions_DKESTrajectories`: status=parity_mismatch, practical=39/193, strict=39/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `HSX_FPCollisions_fullTrajectories`: status=parity_mismatch, practical=40/193, strict=40/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `HSX_PASCollisions_fullTrajectories`: status=parity_mismatch, practical=33/193, strict=33/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `additional_examples`: status=parity_mismatch, practical=32/193, strict=32/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `filteredW7XNetCDF_2species_magneticDrifts_noEr`: status=parity_mismatch, practical=37/193, strict=37/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `filteredW7XNetCDF_2species_magneticDrifts_withEr`: status=parity_mismatch, practical=37/193, strict=37/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `filteredW7XNetCDF_2species_noEr`: status=parity_mismatch, practical=33/193, strict=33/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: status=parity_mismatch, practical=42/207, strict=42/207, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `geometryScheme4_2species_noEr`: status=parity_mismatch, practical=37/207, strict=37/207, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `geometryScheme4_2species_noEr_withPhi1InDKE`: status=parity_mismatch, practical=89/264, strict=90/264, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `geometryScheme4_2species_noEr_withQN`: status=parity_mismatch, practical=95/264, strict=95/264, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `geometryScheme4_2species_withEr_fullTrajectories`: status=parity_mismatch, practical=36/193, strict=36/193, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `geometryScheme4_2species_withEr_fullTrajectories_withQN`: status=parity_mismatch, practical=99/250, strict=99/250, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `monoenergetic_geometryScheme1`: status=parity_mismatch, practical=25/203, strict=29/203, sample=FSADensityPerturbation,FSAPressurePerturbation,NTV,NTVBeforeSurfaceIntegral
+- `sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_DKESTrajectories`: status=parity_mismatch, practical=41/207, strict=41/207, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `sfincsPaperFigure3_geometryScheme11_FPCollisions_2Species_fullTrajectories`: status=parity_mismatch, practical=42/207, strict=42/207, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `sfincsPaperFigure3_geometryScheme11_PASCollisions_2Species_DKESTrajectories`: status=parity_mismatch, practical=37/207, strict=37/207, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `tokamak_1species_FPCollisions_noEr_withQN`: status=parity_mismatch, practical=86/274, strict=86/274, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
+- `tokamak_1species_PASCollisions_noEr_withQN`: status=parity_mismatch, practical=91/274, strict=91/274, sample=FSABFlow,FSABFlow_vs_x,FSABVelocityUsingFSADensity,FSABVelocityUsingFSADensityOverB0
 
-Largest CPU runtime improvements vs `scaled_example_suite_release_cpu_v4`:
-- `monoenergetic_geometryScheme1`: 1956.1s -> 101.7s (delta=1854.4s)
-- `transportMatrix_geometryScheme11`: 750.1s -> 138.6s (delta=611.5s)
-- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: 496.0s -> 171.3s (delta=324.7s)
-- `transportMatrix_geometryScheme2`: 262.7s -> 40.5s (delta=222.1s)
-- `geometryScheme5_3species_loRes`: 227.4s -> 135.6s (delta=91.8s)
+Largest CPU runtime improvements vs `tests/scaled_example_suite_release_cpu_v4/suite_report.json`:
+- `monoenergetic_geometryScheme1`: 1956.1s -> 11.2s (delta=1944.9s)
+- `transportMatrix_geometryScheme11`: 750.1s -> 65.7s (delta=684.3s)
+- `transportMatrix_geometryScheme2`: 262.7s -> 89.8s (delta=172.8s)
+- `geometryScheme5_3species_loRes`: 227.4s -> 104.5s (delta=122.8s)
+- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: 496.0s -> 381.5s (delta=114.5s)
 
-Largest CPU memory improvements vs `scaled_example_suite_release_cpu_v4`:
-- `geometryScheme5_3species_loRes`: 4789.5 MB -> 3454.4 MB (delta=1335.1 MB)
-- `geometryScheme4_1species_PAS_withEr_DKESTrajectories`: 3597.3 MB -> 2420.3 MB (delta=1177.0 MB)
-- `transportMatrix_geometryScheme2`: 3937.1 MB -> 3367.0 MB (delta=570.1 MB)
-- `tokamak_2species_PASCollisions_noEr`: 2460.1 MB -> 2352.3 MB (delta=107.8 MB)
-- `tokamak_1species_FPCollisions_withEr_fullTrajectories`: 3550.7 MB -> 3495.7 MB (delta=55.0 MB)
+Largest CPU memory improvements vs `tests/scaled_example_suite_release_cpu_v4/suite_report.json`:
+- `transportMatrix_geometryScheme11`: 6454.6 MB -> 4222.7 MB (delta=2231.9 MB)
+- `tokamak_1species_PASCollisions_withEr_fullTrajectories`: 4153.6 MB -> 2042.1 MB (delta=2111.5 MB)
+- `transportMatrix_geometryScheme2`: 3937.1 MB -> 2064.1 MB (delta=1873.0 MB)
+- `geometryScheme5_3species_loRes`: 4789.5 MB -> 3453.6 MB (delta=1335.9 MB)
+- `quick_2species_FPCollisions_noEr`: 1720.6 MB -> 952.6 MB (delta=768.0 MB)
 <!-- END FAST_BRANCH_AUDIT -->
 
 ## Documentation
