@@ -18976,6 +18976,11 @@ def solve_v3_transport_matrix_linear_gmres(
         n: int,
         dtype: jnp.dtype,
         cache_key: tuple[object, ...],
+        tol_val: float,
+        atol_val: float,
+        restart_val: int,
+        maxiter_val: int | None,
+        precondition_side_val: str,
     ) -> GMRESSolveResult:
         factor_dtype = _host_sparse_factor_dtype(
             size=int(n),
@@ -19009,6 +19014,41 @@ def solve_v3_transport_matrix_linear_gmres(
             factor_dtype=factor_dtype,
             refine_steps=_host_sparse_direct_refine_steps("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_REFINE", default=2),
         )
+        target_true = max(float(atol_val), float(tol_val) * float(jnp.linalg.norm(b_vec)))
+        if factor_dtype == np.dtype(np.float32) and residual_norm > target_true:
+            polish_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_POLISH", "").strip().lower()
+            if polish_env not in {"0", "false", "no", "off"}:
+                polish_restart_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_POLISH_RESTART", "").strip()
+                polish_maxiter_env = os.environ.get("SFINCS_JAX_TRANSPORT_SPARSE_DIRECT_POLISH_MAXITER", "").strip()
+                try:
+                    polish_restart = int(polish_restart_env) if polish_restart_env else min(int(restart_val), 40)
+                except ValueError:
+                    polish_restart = min(int(restart_val), 40)
+                try:
+                    polish_maxiter = (
+                        int(polish_maxiter_env)
+                        if polish_maxiter_env
+                        else min(max(40, int(maxiter_val or 120)), 120)
+                    )
+                except ValueError:
+                    polish_maxiter = min(max(40, int(maxiter_val or 120)), 120)
+                polish_restart = max(5, int(polish_restart))
+                polish_maxiter = max(5, int(polish_maxiter))
+                x_polish, residual_norm_polish = _host_sparse_direct_polish(
+                    matvec_fn=matvec_fn,
+                    rhs_vec=b_vec,
+                    x0_np=x_np,
+                    ilu=ilu,
+                    factor_dtype=factor_dtype,
+                    tol=tol_val,
+                    atol=atol_val,
+                    restart=polish_restart,
+                    maxiter=polish_maxiter,
+                    precondition_side=precondition_side_val,
+                )
+                if np.isfinite(residual_norm_polish) and residual_norm_polish < residual_norm:
+                    x_np = x_polish
+                    residual_norm = residual_norm_polish
         return GMRESSolveResult(
             x=jnp.asarray(x_np, dtype=jnp.float64),
             residual_norm=jnp.asarray(residual_norm, dtype=jnp.float64),
@@ -19831,6 +19871,11 @@ def solve_v3_transport_matrix_linear_gmres(
                             n=int(active_size),
                             dtype=rhs_reduced.dtype,
                             cache_key=("transport_sparse_lu", sig, int(active_size), "active"),
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            precondition_side_val="left",
                         )
                         solver_kind_used = "sparse_lu"
                         solve_method_used = "sparse_lu"
@@ -19974,6 +20019,11 @@ def solve_v3_transport_matrix_linear_gmres(
                             n=int(active_size),
                             dtype=rhs_reduced.dtype,
                             cache_key=("transport_sparse_lu", sig, int(active_size), "active"),
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            precondition_side_val="left",
                         )
                         if _residual_value(res_sparse) < _residual_value(res_reduced):
                             res_reduced = res_sparse
@@ -20264,6 +20314,11 @@ def solve_v3_transport_matrix_linear_gmres(
                             n=int(op0.total_size),
                             dtype=rhs.dtype,
                             cache_key=("transport_sparse_lu", sig, int(op0.total_size), "full"),
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            precondition_side_val="left",
                         )
                         residual_vec = None
                         solver_kind_used = "sparse_lu"
@@ -20410,6 +20465,11 @@ def solve_v3_transport_matrix_linear_gmres(
                             n=int(op0.total_size),
                             dtype=rhs.dtype,
                             cache_key=("transport_sparse_lu", sig, int(op0.total_size), "full"),
+                            tol_val=tol_rhs,
+                            atol_val=atol,
+                            restart_val=_restart_for_method(solve_method_rhs),
+                            maxiter_val=maxiter,
+                            precondition_side_val="left",
                         )
                         if _residual_value(res_sparse) < _residual_value(res):
                             res = res_sparse

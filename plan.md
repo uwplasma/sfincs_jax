@@ -422,6 +422,14 @@ Current latest notable changes before this handoff:
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
 
 ### 2026-03-11
+- Scope: Extend the cheap host sparse-direct strategy to the explicit transport fast path by threading tolerance/restart data into the direct-solve helper and allowing the same float32-factor + short GMRES polish flow on transport sparse-LU solves.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py` (`41 passed`)
+- Runtime/memory delta: `transportMatrix_geometryScheme2` remains on the fast sparse-direct lane at about `40.4s` / `3.69 GB` max RSS versus the old `262.7s` / `3.94 GB` release lane, with no material change relative to the earlier transport fast path (`max_abs≈3.20e-08` versus the prior fast-path matrix). `transportMatrix_geometryScheme11` now runs in about `139.6s` versus the old `750.1s`, with matrix entries unchanged relative to the prior fast-path result to within about `4.00e-07`; max RSS on this large case remains high at about `6.59 GB`, so runtime improved materially but memory is still an offender.
+- Remaining risks: transport strict entrywise deltas against Fortran are still the same small-but-visible differences as before; the polish helps robustness of the cheap factor path, but the dominant remaining transport issue is memory on the largest scheme-11 case. PAS-heavy explicit RHSMode=1 cases still need separate treatment.
+- Next actions: commit this transport polish block, then return to PAS-heavy explicit CPU offenders and profile where the fast branch should stop early versus where it still needs a cheaper assembled/direct rescue.
+
+### 2026-03-11
 - Scope: Make the explicit host sparse-direct fallback cheaper on the fast-path branch by allowing large CPU exact-LU factorizations to use float32 factors plus iterative refinement and a short GMRES polish, instead of forcing the full float64 direct path for every explicit solve.
 - Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_transport_sparse_direct.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
 - Validation run: `python -m py_compile sfincs_jax/v3_driver.py tests/test_transport_sparse_direct.py tests/test_rhs1_sparse_first_heuristic.py`; `pytest -q tests/test_transport_sparse_direct.py tests/test_transport_parallel.py tests/test_cli_solve_mode.py tests/test_rhs1_sparse_first_heuristic.py` (`87 passed`)
