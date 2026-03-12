@@ -184,6 +184,22 @@ mismatches are still concentrated in `monoenergetic_geometryScheme1` and
 after the current x-block shortcut, even after a bounded post-shortcut Krylov polish
 attempt (`~386.7s`, `~4.26 GB` peak RSS, same bad branch as before).
 
+Additional targeted original-resolution work on `monoenergetic_geometryScheme1` has narrowed
+that remaining mismatch substantially. The fast explicit branch now reproduces the dumped
+Fortran Jacobian exactly on sampled columns and vectors, and the exact sparse solve of that
+Jacobian lands on the same branch as the branch's host-GMRES fast path. In other words, the
+remaining scheme-1 delta on this branch is no longer an operator-assembly bug. It is a real
+solver-semantics divergence between:
+
+- the fast explicit branch's true-residual solution of the dumped Jacobian system, and
+- the original Fortran/PETSc lane's accepted preconditioned-residual iterate for this
+  ill-conditioned monoenergetic transport case.
+
+That means the next fast-branch step for `monoenergetic_geometryScheme1` is not more sparse
+assembly work. It is an explicit policy decision about which solution concept the CLI/default
+fast path should prefer for structurally singular or near-singular monoenergetic transport
+systems.
+
 <!-- BEGIN FAST_BRANCH_AUDIT -->
 Current fast explicit CPU audit comes from `tests/scaled_example_suite_fast_cpu_v1`.
 
