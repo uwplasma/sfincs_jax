@@ -15434,6 +15434,17 @@ def solve_v3_full_system_linear_gmres(
                 fp_lmax_default = int(fp_lmax_polish_env) if fp_lmax_polish_env else 2
             except ValueError:
                 fp_lmax_default = 2
+            if (
+                (not fp_lmax_polish_env)
+                and op.fblock.fp is not None
+                and op.fblock.pas is None
+                and int(op.n_theta) * int(op.n_zeta) <= 256
+            ):
+                # When the angular grid is small enough that the low-L blocks are still
+                # modest, pushing lmax a bit higher can substantially improve convergence
+                # of FP moments (flow/current) without needing an expensive global sparse
+                # rescue.
+                fp_lmax_default = max(int(fp_lmax_default), 6)
             try:
                 fp_lmax_block_max = int(fp_lmax_max_env) if fp_lmax_max_env else 1500
             except ValueError:
