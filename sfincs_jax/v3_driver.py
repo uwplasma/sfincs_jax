@@ -11216,14 +11216,12 @@ def solve_v3_full_system_linear_gmres(
                         rhs1_precond_kind = "collision"
                 elif (
                     op.fblock.fp is not None
-                    and op.fblock.pas is None
+                    and er_abs <= schur_er_min
                     and int(active_size) < fp_xmg_max
                 ):
-                    # For moderate-size FP systems, x-coarsened preconditioning is typically
-                    # cheaper and *much* more robust than collision-only preconditioning,
-                    # especially at low collisionality and/or nonzero Er where collision-only
-                    # left preconditioning can amplify streaming/drift terms and lead to
-                    # Krylov breakdown or large-residual "solutions".
+                    # For moderate-size FP systems at near-zero Er, x-coarsened preconditioning
+                    # is typically much cheaper than global (S,X,theta,zeta) blocks and
+                    # preserves parity for RHSMode=1.
                     rhs1_precond_kind = "xmg"
                 elif (
                     op.fblock.fp is not None
@@ -11313,7 +11311,17 @@ def solve_v3_full_system_linear_gmres(
                         ):
                             rhs1_precond_kind = "point_xdiag"
                         else:
-                            rhs1_precond_kind = "collision" if use_collision_precond else "point"
+                            # Last-resort auto mode: collision-only preconditioning is cheap but
+                            # can be too weak/unstable for FP systems at nonzero Er. Prefer xmg
+                            # when the (x,theta,zeta) grid is still moderate to improve robustness.
+                            if (
+                                op.fblock.fp is not None
+                                and op.fblock.pas is None
+                                and int(active_size) < fp_xmg_max
+                            ):
+                                rhs1_precond_kind = "xmg"
+                            else:
+                                rhs1_precond_kind = "collision" if use_collision_precond else "point"
                 theta_line_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_THETA_LINE_MAX", "").strip()
                 try:
                     theta_line_max = int(theta_line_max_env) if theta_line_max_env else 0
