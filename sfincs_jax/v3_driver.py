@@ -11216,12 +11216,14 @@ def solve_v3_full_system_linear_gmres(
                         rhs1_precond_kind = "collision"
                 elif (
                     op.fblock.fp is not None
-                    and er_abs <= schur_er_min
+                    and op.fblock.pas is None
                     and int(active_size) < fp_xmg_max
                 ):
-                    # For moderate-size FP systems at near-zero Er, x-coarsened
-                    # preconditioning is typically much cheaper than (S,X,theta,zeta)
-                    # blocks and preserves parity for RHSMode=1.
+                    # For moderate-size FP systems, x-coarsened preconditioning is typically
+                    # cheaper and *much* more robust than collision-only preconditioning,
+                    # especially at low collisionality and/or nonzero Er where collision-only
+                    # left preconditioning can amplify streaming/drift terms and lead to
+                    # Krylov breakdown or large-residual "solutions".
                     rhs1_precond_kind = "xmg"
                 elif (
                     op.fblock.fp is not None
