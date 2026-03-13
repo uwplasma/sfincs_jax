@@ -11648,9 +11648,20 @@ def solve_v3_full_system_linear_gmres(
     gmres_precond_side_env = os.environ.get("SFINCS_JAX_GMRES_PRECONDITION_SIDE", "").strip().lower()
     if gmres_precond_side_env not in {"", "left", "right", "none"}:
         gmres_precond_side_env = ""
-    # Upstream SFINCS v3 reports KSP residual norms for the *preconditioned* residual, matching
-    # a left-preconditioned solve. Default to left to align solver-branch parity.
-    gmres_precond_side = gmres_precond_side_env or "left"
+    # For strict parity, upstream v3 reports KSP residual norms for the *preconditioned* residual,
+    # matching a left-preconditioned solve. However, for FP operators (especially with nonzero Er),
+    # right preconditioning can be noticeably more robust for Krylov convergence with our
+    # approximate inverse-style preconditioners.
+    gmres_precond_side = gmres_precond_side_env or (
+        "right"
+        if (
+            int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and op.fblock.fp is not None
+            and op.fblock.pas is None
+        )
+        else "left"
+    )
 
     bicgstab_fallback_env = os.environ.get("SFINCS_JAX_BICGSTAB_FALLBACK", "").strip().lower()
     if bicgstab_fallback_env in {"0", "false", "no", "off"}:
