@@ -11648,20 +11648,10 @@ def solve_v3_full_system_linear_gmres(
     gmres_precond_side_env = os.environ.get("SFINCS_JAX_GMRES_PRECONDITION_SIDE", "").strip().lower()
     if gmres_precond_side_env not in {"", "left", "right", "none"}:
         gmres_precond_side_env = ""
-    # For strict parity, upstream v3 reports KSP residual norms for the *preconditioned* residual,
-    # matching a left-preconditioned solve. However, for FP operators (especially with nonzero Er),
-    # right preconditioning can be noticeably more robust for Krylov convergence with our
-    # approximate inverse-style preconditioners.
-    gmres_precond_side = gmres_precond_side_env or (
-        "right"
-        if (
-            int(op.rhs_mode) == 1
-            and (not bool(op.include_phi1))
-            and op.fblock.fp is not None
-            and op.fblock.pas is None
-        )
-        else "left"
-    )
+    # Upstream SFINCS v3 reports KSP residual norms for the *preconditioned* residual, matching
+    # a left-preconditioned solve. Default to left to align solver-branch parity and to avoid
+    # JAX transpose-rule limitations in the right-preconditioned path.
+    gmres_precond_side = gmres_precond_side_env or "left"
 
     bicgstab_fallback_env = os.environ.get("SFINCS_JAX_BICGSTAB_FALLBACK", "").strip().lower()
     if bicgstab_fallback_env in {"0", "false", "no", "off"}:
@@ -15703,6 +15693,74 @@ def solve_v3_full_system_linear_gmres(
                                 f"{float(res_reduced.residual_norm):.3e} -> {float(res_bi.residual_norm):.3e}",
                             )
                         res_reduced = res_bi
+        # As a last resort on CPU, retry the reduced solve using SciPy GMRES.
+        #
+        # JAX's gmres can stagnate or return a poor solution for some FP operators on CPU,
+        # even after our strong-preconditioner fallbacks, while SciPy GMRES is often more
+        # robust for the same matvec/preconditioner pair. This path is explicitly
+        # non-differentiable and intended for CLI robustness.
+        if (
+            (not bool(use_implicit))
+            and jax.default_backend() == "cpu"
+            and int(op.rhs_mode) == 1
+            and (not bool(op.include_phi1))
+            and float(res_reduced.residual_norm) > float(target_reduced)
+        ):
+            scipy_rescue_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_GMRES_RESCUE", "").strip().lower()
+            if scipy_rescue_env not in {"0", "false", "no", "off"}:
+                ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_GMRES_RESCUE_RATIO", "").strip()
+                try:
+                    rescue_ratio = float(ratio_env) if ratio_env else 1.0e3
+                except ValueError:
+                    rescue_ratio = 1.0e3
+                rescue_ratio = max(1.0, float(rescue_ratio))
+                if float(res_reduced.residual_norm) > float(target_reduced) * float(rescue_ratio):
+                    scipy_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_GMRES_RESCUE_RESTART", "").strip()
+                    scipy_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_GMRES_RESCUE_MAXITER", "").strip()
+                    try:
+                        scipy_restart = int(scipy_restart_env) if scipy_restart_env else int(restart)
+                    except ValueError:
+                        scipy_restart = int(restart)
+                    try:
+                        scipy_maxiter = int(scipy_maxiter_env) if scipy_maxiter_env else int(maxiter or 400)
+                    except ValueError:
+                        scipy_maxiter = int(maxiter or 400)
+                    scipy_restart = max(5, int(scipy_restart))
+                    scipy_maxiter = max(5, int(scipy_maxiter))
+                    try:
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: SciPy GMRES rescue "
+                                f"(residual={float(res_reduced.residual_norm):.3e} > "
+                                f"{float(rescue_ratio):.1e}x target={float(target_reduced):.3e} "
+                                f"restart={int(scipy_restart)} maxiter={int(scipy_maxiter)})",
+                            )
+                        x_np, rn_scipy, _history = gmres_solve_with_history_scipy(
+                            matvec=mv_reduced,
+                            b=rhs_reduced,
+                            preconditioner=preconditioner_reduced,
+                            x0=res_reduced.x,
+                            tol=float(tol),
+                            atol=float(atol),
+                            restart=int(scipy_restart),
+                            maxiter=int(scipy_maxiter),
+                            precondition_side=gmres_precond_side,
+                        )
+                        x_scipy = jnp.asarray(x_np, dtype=jnp.float64)
+                        r_scipy = rhs_reduced - mv_reduced(x_scipy)
+                        res_scipy = GMRESSolveResult(x=x_scipy, residual_norm=jnp.linalg.norm(r_scipy))
+                        if float(res_scipy.residual_norm) < float(res_reduced.residual_norm):
+                            if emit is not None:
+                                emit(
+                                    1,
+                                    "solve_v3_full_system_linear_gmres: SciPy GMRES rescue improved residual "
+                                    f"{float(res_reduced.residual_norm):.3e} -> {float(res_scipy.residual_norm):.3e}",
+                                )
+                            res_reduced = res_scipy
+                    except Exception as exc:  # noqa: BLE001
+                        if emit is not None:
+                            emit(1, f"solve_v3_full_system_linear_gmres: SciPy GMRES rescue failed ({type(exc).__name__}: {exc})")
         if use_pas_projection:
             f_full = _expand_active_f(res_reduced.x)
             f_full = _project_pas_f(f_full)
