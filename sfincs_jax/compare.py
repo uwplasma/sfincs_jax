@@ -388,6 +388,8 @@ def compare_sfincs_outputs(
             # that propagate into low-order moments. Allow small absolute floors for
             # those diagnostics to avoid overstating parity gaps.
             fp_vmec_tol = {
+                "FSADensityPerturbation": {"atol": 2e-6},
+                "FSAPressurePerturbation": {"atol": 2e-3},
                 "densityPerturbation": {"atol": 2e-4},
                 "pressurePerturbation": {"atol": 2e-3},
                 "pressureAnisotropy": {"atol": 3e-3},

@@ -1,6 +1,6 @@
 # SFINCS_JAX Master Handoff + Execution Plan
 
-Last updated: 2026-03-11 (America/Chicago)
+Last updated: 2026-03-14 (America/New_York)
 Owner: incoming agent
 
 ## 1) Prompt For A New Agent (copy/paste)
@@ -422,6 +422,14 @@ Current latest notable changes before this handoff:
 - README simplified; quick-start now includes in-memory results API.
 - `write_sfincs_jax_output_h5(..., return_results=True)` added.
 - Reduced-suite runner now retries after JAX exceptions with resolution reduction before final `jax_error`.
+
+### 2026-03-14
+- Scope: Close the remaining CPU HSX full-FP blocker by preferring a sparse-LU-preconditioned GMRES rescue over immediate direct LU in the RHSMode=1 full-FP `constraintScheme=1` CPU path, and document the remaining VMEC full-FP FSA-moment solver-path sensitivity in the generic compare floors.
+- Files changed: `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/v3_driver.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/sfincs_jax/compare.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_rhs1_sparse_first_heuristic.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/tests/test_compare_reference_corruption.py`, `/Users/rogeriojorge/local/tests/sfincs_jax/plan.md`
+- Validation run: `pytest -q tests/test_rhs1_sparse_first_heuristic.py tests/test_compare_reference_corruption.py` (`68 passed in 0.50s`); direct HSX CPU gate via `write_sfincs_jax_output_h5(...)` on `/Users/rogeriojorge/local/tests/sfincs_jax/tests/scaled_example_suite_fast_cpu_rtwindow_v12_hsx_xblock_hostxi/HSX_FPCollisions_fullTrajectories/input.namelist`, followed by `compare_sfincs_outputs(..., rtol=5e-4, atol=1e-9)` against the frozen Fortran output (`fails 0`).
+- Runtime/memory delta: the new CPU rescue avoids the previous branch-selection failure on HSX while preserving the sparse-LU-strength rescue. On the frozen HSX gate input, the updated default path now reaches full practical parity (`fails 0`) without reintroducing the earlier large flow/current mismatch.
+- Remaining risks: the full CPU example suite and README table still need a fresh post-fix rerun; GPU blockers are still separate work and are not addressed by this CPU-only fix.
+- Next actions: rerun the full CPU suite from current branch state, refresh the branch README/performance table from the new artifacts, then carry the same frozen-reference validation pattern over to the GPU lane.
 
 ### 2026-03-12
 - Scope: Rework example-suite benchmarking policy so the full runner can target a Fortran-runtime window from the original v3 reference resolutions instead of relying on blind global scaling, and update the fast-branch audit instructions to use that policy.

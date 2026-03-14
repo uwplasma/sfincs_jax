@@ -8,6 +8,7 @@ from sfincs_jax.v3_driver import (
     _rhsmode1_constraint0_dense_fallback_allowed,
     _rhsmode1_constraint0_petsc_compat,
     _rhsmode1_host_sparse_direct_allowed,
+    _rhsmode1_sparse_operator_preconditioned_rescue_allowed,
     _rhsmode1_host_factor_probe_ok,
     _rhsmode1_constraint0_sparse_first,
     _rhsmode1_fp_xblock_assembled_host_allowed,
@@ -208,6 +209,47 @@ def test_constraint0_dense_fallback_disabled_by_default(monkeypatch) -> None:
 def test_constraint0_dense_fallback_can_be_enabled(monkeypatch) -> None:
     monkeypatch.setenv("SFINCS_JAX_RHSMODE1_CS0_DENSE_FALLBACK", "1")
     assert _rhsmode1_constraint0_dense_fallback_allowed(_op(constraint_scheme=0))
+
+
+def test_sparse_operator_preconditioned_rescue_enabled_for_cpu_fp_constraint1(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_PC_GMRES", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_sparse_operator_preconditioned_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        sparse_exact_lu=True,
+        host_sparse_direct_wanted=True,
+    )
+
+
+def test_sparse_operator_preconditioned_rescue_respects_guards(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_PC_GMRES", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert not _rhsmode1_sparse_operator_preconditioned_rescue_allowed(
+        op=_op(constraint_scheme=0),
+        sparse_exact_lu=True,
+        host_sparse_direct_wanted=True,
+    )
+    assert not _rhsmode1_sparse_operator_preconditioned_rescue_allowed(
+        op=_op(constraint_scheme=1, has_fp=False),
+        sparse_exact_lu=True,
+        host_sparse_direct_wanted=True,
+    )
+    assert not _rhsmode1_sparse_operator_preconditioned_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        sparse_exact_lu=False,
+        host_sparse_direct_wanted=True,
+    )
+    assert not _rhsmode1_sparse_operator_preconditioned_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        sparse_exact_lu=True,
+        host_sparse_direct_wanted=False,
+    )
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "gpu")
+    assert not _rhsmode1_sparse_operator_preconditioned_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        sparse_exact_lu=True,
+        host_sparse_direct_wanted=True,
+    )
 
 
 def test_large_pas_auto_prefers_pas_lite_above_threshold(monkeypatch) -> None:
