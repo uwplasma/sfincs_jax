@@ -629,7 +629,11 @@ def _rhsmode1_large_cpu_sparse_rescue_allowed(
     except ValueError:
         fullx_min = 50000
     if int(preconditioner_x) != 0 and int(active_size) < max(0, int(fullx_min)):
-        return False
+        # Moderate-size full-x FP cases can still benefit from the assembled CPU
+        # sparse rescue when the global solve is exact LU. This avoids getting
+        # trapped in slower x-block seeds that do not fully resolve the flow branch.
+        if not _rhsmode1_large_cpu_sparse_exact_lu_allowed(active_size=int(active_size)):
+            return False
     if int(active_size) <= int(sparse_max_size):
         return False
     rescue_max_env = os.environ.get("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_MAX", "").strip()
@@ -14357,6 +14361,15 @@ def solve_v3_full_system_linear_gmres(
         explicit_fp_xblock_seed_used = False
         explicit_fp_xblock_seed_residual = float("inf")
         explicit_fp_xblock_seed_improvement_ratio = 1.0
+        if large_cpu_sparse_rescue_active and sparse_exact_lu:
+            sparse_xblock_rescue_active = False
+            sparse_sxblock_rescue_active = False
+            if emit is not None:
+                emit(
+                    1,
+                    "solve_v3_full_system_linear_gmres: exact large-CPU sparse LU selected "
+                    "-> skipping targeted sparse xblock/sxblock rescue",
+                )
         if pas_fast_accept and sparse_enabled and emit is not None:
             emit(
                 1,

@@ -959,6 +959,7 @@ def test_large_cpu_sparse_rescue_enabled_for_large_fullx_fp_failures(monkeypatch
 def test_large_cpu_sparse_rescue_respects_guards(monkeypatch) -> None:
     monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE", raising=False)
     monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_FULLX_MIN", raising=False)
+    monkeypatch.setenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_MAX", "12000")
     monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
     assert not _rhsmode1_large_cpu_sparse_rescue_allowed(
         op=_op(constraint_scheme=1),
@@ -1020,6 +1021,24 @@ def test_large_cpu_sparse_rescue_can_depend_on_active_dof_size(monkeypatch) -> N
         active_size=90001,
         sparse_max_size=6000,
         preconditioner_x=0,
+        residual_norm=1.0,
+        target=1.0e-6,
+    )
+
+
+def test_large_cpu_sparse_rescue_allows_moderate_fullx_fp_when_exact_lu_is_available(monkeypatch) -> None:
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_MAX", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_FULLX_MIN", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU", raising=False)
+    monkeypatch.delenv("SFINCS_JAX_RHSMODE1_SPARSE_LARGE_CPU_RESCUE_EXACT_LU_MAX", raising=False)
+    monkeypatch.setattr("sfincs_jax.v3_driver.jax.default_backend", lambda: "cpu")
+    assert _rhsmode1_large_cpu_sparse_rescue_allowed(
+        op=_op(constraint_scheme=1),
+        solve_method_kind="incremental",
+        active_size=18366,
+        sparse_max_size=6000,
+        preconditioner_x=1,
         residual_norm=1.0,
         target=1.0e-6,
     )
