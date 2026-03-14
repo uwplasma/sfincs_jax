@@ -12422,6 +12422,7 @@ def solve_v3_full_system_linear_gmres(
         probe_shortcut = False
         probe_x0: jnp.ndarray | None = None
         preconditioner_reduced = None
+        strong_preconditioner_reduced = None
         bicgstab_preconditioner_reduced = None
         pas_precond_force_collision = False
         if rhs1_bicgstab_kind is not None:
@@ -14325,6 +14326,14 @@ def solve_v3_full_system_linear_gmres(
                             "solve_v3_full_system_linear_gmres: exact sparse LU rescue "
                             f"(size={int(active_size)} > max={int(sparse_max_size)})",
                         )
+                elif sparse_xblock_rescue_active or sparse_sxblock_rescue_active:
+                    if emit is not None:
+                        rescue_kind = "xblock" if sparse_xblock_rescue_active else "sxblock"
+                        emit(
+                            0,
+                            "solve_v3_full_system_linear_gmres: targeted sparse "
+                            f"{rescue_kind} rescue (size={int(active_size)} > max={int(sparse_max_size)})",
+                        )
                 else:
                     sparse_enabled = False
                     if emit is not None:
@@ -14365,10 +14374,24 @@ def solve_v3_full_system_linear_gmres(
                             "solve_v3_full_system_linear_gmres: v3-like sparse x-block rescue "
                             f"(size={int(active_size)} preconditioner_x={int(preconditioner_x)})",
                         )
+                    sparse_xblock_preconditioner_xi = int(preconditioner_xi)
+                    if (
+                        sparse_xblock_preconditioner_xi == 0
+                        and (not bool(use_implicit))
+                        and op.fblock.fp is not None
+                        and op.fblock.pas is None
+                    ):
+                        sparse_xblock_preconditioner_xi = 1
+                        if emit is not None:
+                            emit(
+                                1,
+                                "solve_v3_full_system_linear_gmres: promoting sparse x-block rescue "
+                                "preconditioner_xi 0 -> 1 for stronger host FP factorization",
+                            )
                     assembled_host_fp = _rhsmode1_fp_xblock_assembled_host_allowed(
                         op=op,
                         preconditioner_species=preconditioner_species,
-                        preconditioner_xi=preconditioner_xi,
+                        preconditioner_xi=sparse_xblock_preconditioner_xi,
                         use_implicit=bool(use_implicit),
                     )
                     _mark("rhs1_sparse_precond_build_start")
@@ -14378,7 +14401,7 @@ def solve_v3_full_system_linear_gmres(
                         expand_reduced=expand_reduced,
                         build_jax_factors=bool(use_implicit),
                         preconditioner_species=preconditioner_species,
-                        preconditioner_xi=preconditioner_xi,
+                        preconditioner_xi=sparse_xblock_preconditioner_xi,
                         drop_tol=sparse_drop_tol,
                         drop_rel=sparse_drop_rel,
                         ilu_drop_tol=sparse_ilu_drop_tol,
@@ -15649,6 +15672,175 @@ def solve_v3_full_system_linear_gmres(
                         except Exception as exc:  # noqa: BLE001
                             if emit is not None:
                                 emit(1, f"solve_v3_full_system_linear_gmres: FP L1 polish failed ({type(exc).__name__}: {exc})")
+            # Low-L global polish: solve a projected system on the lowest L modes across all
+            # species/x/(theta,zeta). This is more expensive than the L1 polish but can be
+            # significantly more effective at improving flow/current parity when the full
+            # solve stalls above the strict target (especially for FP+Er).
+            global_low_l_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_L_POLISH", "").strip().lower()
+            global_low_l_enabled = global_low_l_env in {"1", "true", "yes", "on"}
+            if fp_targeted_polish and global_low_l_enabled and float(res_reduced.residual_norm) > target_reduced:
+                lmax_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_LMAX", "").strip()
+                max_size_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_MAX_SIZE", "").strip()
+                ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_RATIO", "").strip()
+                try:
+                    low_lmax = int(lmax_env) if lmax_env else 6
+                except ValueError:
+                    low_lmax = 6
+                try:
+                    low_max_size = int(max_size_env) if max_size_env else 8000
+                except ValueError:
+                    low_max_size = 8000
+                try:
+                    low_ratio = float(ratio_env) if ratio_env else 1.0e4
+                except ValueError:
+                    low_ratio = 1.0e4
+                low_lmax = max(0, min(int(low_lmax), int(op.n_xi) - 1))
+                low_max_size = max(0, int(low_max_size))
+                low_ratio = max(1.0, float(low_ratio))
+                if float(res_reduced.residual_norm) > float(target_reduced) * float(low_ratio) and low_lmax > 0:
+                    n_s = int(op.n_species)
+                    n_x = int(op.n_x)
+                    n_l = int(op.n_xi)
+                    n_t = int(op.n_theta)
+                    n_z = int(op.n_zeta)
+                    nxi_for_x_np = np.asarray(op.fblock.collisionless.n_xi_for_x, dtype=np.int32)
+                    low_full_idx: list[int] = []
+                    if use_active_dof_mode and full_to_active_jnp is not None:
+                        full_to_active_np = np.asarray(full_to_active_jnp, dtype=np.int32)
+                        for s_idx in range(n_s):
+                            for ix in range(n_x):
+                                lmax_x = min(int(nxi_for_x_np[ix]) - 1, int(low_lmax))
+                                if lmax_x < 0:
+                                    continue
+                                for il in range(lmax_x + 1):
+                                    for it in range(n_t):
+                                        for iz in range(n_z):
+                                            f_idx = int(((((s_idx * n_x + ix) * n_l + il) * n_t + it) * n_z + iz))
+                                            low_full_idx.append(f_idx)
+                        if low_full_idx:
+                            low_full_idx_np = np.asarray(low_full_idx, dtype=np.int32)
+                            low_active_idx_np = full_to_active_np[low_full_idx_np] - 1
+                            low_active_idx_np = low_active_idx_np[low_active_idx_np >= 0]
+                        else:
+                            low_active_idx_np = np.asarray([], dtype=np.int32)
+                    else:
+                        for s_idx in range(n_s):
+                            for ix in range(n_x):
+                                lmax_x = min(int(nxi_for_x_np[ix]) - 1, int(low_lmax))
+                                if lmax_x < 0:
+                                    continue
+                                for il in range(lmax_x + 1):
+                                    for it in range(n_t):
+                                        for iz in range(n_z):
+                                            f_idx = int(((((s_idx * n_x + ix) * n_l + il) * n_t + it) * n_z + iz))
+                                            low_full_idx.append(f_idx)
+                        low_active_idx_np = np.asarray(low_full_idx, dtype=np.int32)
+
+                    if int(low_active_idx_np.size) > 0:
+                        low_idx_jnp = jnp.asarray(np.unique(low_active_idx_np), dtype=jnp.int32)
+                        low_n = int(low_idx_jnp.shape[0])
+                    else:
+                        low_n = 0
+                        low_idx_jnp = None
+
+                    if low_n > 0 and (low_max_size <= 0 or low_n <= low_max_size):
+                        low_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_MAXITER", "").strip()
+                        low_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_RESTART", "").strip()
+                        try:
+                            low_maxiter = int(low_maxiter_env) if low_maxiter_env else 120
+                        except ValueError:
+                            low_maxiter = 120
+                        try:
+                            low_restart = int(low_restart_env) if low_restart_env else 80
+                        except ValueError:
+                            low_restart = 80
+                        low_maxiter = max(5, min(int(low_maxiter), 250))
+                        low_restart = max(5, min(int(low_restart), max(5, low_maxiter)))
+
+                        assert low_idx_jnp is not None
+
+                        def _low_reduce(v: jnp.ndarray) -> jnp.ndarray:
+                            return v[low_idx_jnp]
+
+                        def _low_expand(v: jnp.ndarray) -> jnp.ndarray:
+                            out = jnp.zeros((int(active_size),), dtype=jnp.float64)
+                            return out.at[low_idx_jnp].set(v, unique_indices=True)
+
+                        x_low_base = jnp.asarray(res_reduced.x, dtype=jnp.float64)
+                        r_low_full = rhs_reduced - mv_reduced(x_low_base)
+                        b_low = _low_reduce(r_low_full)
+                        rn_full_base = float(jnp.linalg.norm(r_low_full))
+                        b_low_norm = float(jnp.linalg.norm(b_low))
+                        low_abs_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_ABS", "").strip()
+                        try:
+                            low_abs = float(low_abs_env) if low_abs_env else 1.0e-8
+                        except ValueError:
+                            low_abs = 1.0e-8
+                        low_thresh = max(float(target_reduced) * 2.0, float(low_abs))
+                        if np.isfinite(b_low_norm) and b_low_norm > low_thresh:
+                            if emit is not None:
+                                emit(
+                                    1,
+                                    "solve_v3_full_system_linear_gmres: FP global low-L polish "
+                                    f"(lmax={int(low_lmax)} size={int(low_n)} restart={int(low_restart)} "
+                                    f"maxiter={int(low_maxiter)} b_norm={b_low_norm:.3e})",
+                                )
+
+                            def _mv_low(v: jnp.ndarray) -> jnp.ndarray:
+                                return _low_reduce(mv_reduced(_low_expand(v)))
+
+                            def _pre_low(v: jnp.ndarray) -> jnp.ndarray:
+                                if lmax_precond_for_l1 is not None:
+                                    return _low_reduce(lmax_precond_for_l1(_low_expand(v)))
+                                return _low_reduce(polish_precond(_low_expand(v)))
+
+                            try:
+                                corr = _solve_linear(
+                                    matvec_fn=_mv_low,
+                                    b_vec=b_low,
+                                    precond_fn=_pre_low,
+                                    x0_vec=None,
+                                    tol_val=1.0e-10,
+                                    atol_val=0.0,
+                                    restart_val=low_restart,
+                                    maxiter_val=low_maxiter,
+                                    solve_method_val="incremental",
+                                    precond_side=gmres_precond_side,
+                                )
+                                x_try = x_low_base + _low_expand(corr.x)
+                                r_try = rhs_reduced - mv_reduced(x_try)
+                                rn_try = float(jnp.linalg.norm(r_try))
+                                b_low_try = _low_reduce(r_try)
+                                rn_low_try = float(jnp.linalg.norm(b_low_try))
+                                full_ratio_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_GLOBAL_LOW_FULL_RATIO", "").strip()
+                                try:
+                                    full_ratio = float(full_ratio_env) if full_ratio_env else 1.2
+                                except ValueError:
+                                    full_ratio = 1.2
+                                full_ratio = max(1.0, float(full_ratio))
+                                if (
+                                    np.isfinite(rn_try)
+                                    and rn_try < float(res_reduced.residual_norm)
+                                    and rn_try <= max(float(rn_full_base) * full_ratio, float(rn_full_base) + 1.0e-10)
+                                ):
+                                    if emit is not None:
+                                        emit(
+                                            1,
+                                            "solve_v3_full_system_linear_gmres: FP global low-L polish improved residual "
+                                            f"full {float(rn_full_base):.3e} -> {rn_try:.3e}; "
+                                            f"low-L {b_low_norm:.3e} -> {rn_low_try:.3e}",
+                                        )
+                                    res_reduced = GMRESSolveResult(
+                                        x=jnp.asarray(x_try, dtype=jnp.float64),
+                                        residual_norm=jnp.asarray(rn_try, dtype=jnp.float64),
+                                    )
+                            except Exception as exc:  # noqa: BLE001
+                                if emit is not None:
+                                    emit(
+                                        1,
+                                        "solve_v3_full_system_linear_gmres: FP global low-L polish failed "
+                                        f"({type(exc).__name__}: {exc})",
+                                    )
                 # Optional BiCGStab polish for large FP systems: short-recurrence Krylov
                 # can reduce residuals further when restarted GMRES stagnates.
                 fp_bi_env = os.environ.get("SFINCS_JAX_RHSMODE1_FP_BICGSTAB_POLISH", "").strip().lower()
@@ -15728,36 +15920,78 @@ def solve_v3_full_system_linear_gmres(
                 if float(res_reduced.residual_norm) > float(target_reduced) * float(rescue_ratio):
                     scipy_restart_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_GMRES_RESCUE_RESTART", "").strip()
                     scipy_maxiter_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_GMRES_RESCUE_MAXITER", "").strip()
+                    scipy_strong_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_GMRES_RESCUE_USE_STRONG", "").strip().lower()
+                    scipy_method_env = os.environ.get("SFINCS_JAX_RHSMODE1_SCIPY_RESCUE_METHOD", "").strip().lower()
                     try:
-                        scipy_restart = int(scipy_restart_env) if scipy_restart_env else int(restart)
+                        scipy_restart = int(scipy_restart_env) if scipy_restart_env else max(int(restart), 120)
                     except ValueError:
-                        scipy_restart = int(restart)
+                        scipy_restart = max(int(restart), 120)
                     try:
-                        scipy_maxiter = int(scipy_maxiter_env) if scipy_maxiter_env else int(maxiter or 400)
+                        scipy_maxiter = int(scipy_maxiter_env) if scipy_maxiter_env else max(int(maxiter or 400), 600)
                     except ValueError:
-                        scipy_maxiter = int(maxiter or 400)
+                        scipy_maxiter = max(int(maxiter or 400), 600)
                     scipy_restart = max(5, int(scipy_restart))
                     scipy_maxiter = max(5, int(scipy_maxiter))
+                    rescue_preconditioner = preconditioner_reduced
+                    rescue_precond_name = rhs1_precond_kind or "none"
+                    use_strong_rescue = scipy_strong_env not in {"0", "false", "no", "off"}
+                    if use_strong_rescue and strong_preconditioner_reduced is not None:
+                        rescue_preconditioner = strong_preconditioner_reduced
+                        rescue_precond_name = strong_precond_kind or "strong"
+                    rescue_method = scipy_method_env
+                    if rescue_method not in {"gmres", "bicgstab"}:
+                        rescue_method = "bicgstab" if rescue_preconditioner is strong_preconditioner_reduced else "gmres"
                     try:
                         if emit is not None:
                             emit(
                                 1,
-                                "solve_v3_full_system_linear_gmres: SciPy GMRES rescue "
+                                "solve_v3_full_system_linear_gmres: SciPy rescue "
                                 f"(residual={float(res_reduced.residual_norm):.3e} > "
                                 f"{float(rescue_ratio):.1e}x target={float(target_reduced):.3e} "
-                                f"restart={int(scipy_restart)} maxiter={int(scipy_maxiter)})",
+                                f"method={rescue_method} restart={int(scipy_restart)} maxiter={int(scipy_maxiter)} "
+                                f"preconditioner={rescue_precond_name})",
                             )
-                        x_np, rn_scipy, _history = gmres_solve_with_history_scipy(
-                            matvec=mv_reduced,
-                            b=rhs_reduced,
-                            preconditioner=preconditioner_reduced,
-                            x0=res_reduced.x,
-                            tol=float(tol),
-                            atol=float(atol),
-                            restart=int(scipy_restart),
-                            maxiter=int(scipy_maxiter),
-                            precondition_side=gmres_precond_side,
-                        )
+                        side = str(gmres_precond_side).strip().lower()
+                        if rescue_method == "bicgstab":
+                            x_np, rn_scipy, _history = bicgstab_solve_with_history_scipy(
+                                matvec=mv_reduced,
+                                b=rhs_reduced,
+                                preconditioner=rescue_preconditioner,
+                                x0=res_reduced.x,
+                                tol=float(tol),
+                                atol=float(atol),
+                                maxiter=int(scipy_maxiter),
+                                precondition_side=gmres_precond_side,
+                            )
+                        elif rescue_preconditioner is not None and side == "left":
+                            x_np, rn_scipy, rn_pc_scipy, _history = explicit_left_preconditioned_gmres_scipy(
+                                matvec=mv_reduced,
+                                b=rhs_reduced,
+                                preconditioner=rescue_preconditioner,
+                                x0=res_reduced.x,
+                                tol=float(tol),
+                                atol=float(atol),
+                                restart=int(scipy_restart),
+                                maxiter=int(scipy_maxiter),
+                            )
+                            if emit is not None:
+                                emit(
+                                    1,
+                                    "solve_v3_full_system_linear_gmres: SciPy rescue residuals "
+                                    f"true={float(rn_scipy):.3e} preconditioned={float(rn_pc_scipy):.3e}",
+                                )
+                        else:
+                            x_np, rn_scipy, _history = gmres_solve_with_history_scipy(
+                                matvec=mv_reduced,
+                                b=rhs_reduced,
+                                preconditioner=rescue_preconditioner,
+                                x0=res_reduced.x,
+                                tol=float(tol),
+                                atol=float(atol),
+                                restart=int(scipy_restart),
+                                maxiter=int(scipy_maxiter),
+                                precondition_side=gmres_precond_side,
+                            )
                         x_scipy = jnp.asarray(x_np, dtype=jnp.float64)
                         r_scipy = rhs_reduced - mv_reduced(x_scipy)
                         res_scipy = GMRESSolveResult(x=x_scipy, residual_norm=jnp.linalg.norm(r_scipy))
@@ -15765,13 +15999,13 @@ def solve_v3_full_system_linear_gmres(
                             if emit is not None:
                                 emit(
                                     1,
-                                    "solve_v3_full_system_linear_gmres: SciPy GMRES rescue improved residual "
+                                    "solve_v3_full_system_linear_gmres: SciPy rescue improved residual "
                                     f"{float(res_reduced.residual_norm):.3e} -> {float(res_scipy.residual_norm):.3e}",
                                 )
                             res_reduced = res_scipy
                     except Exception as exc:  # noqa: BLE001
                         if emit is not None:
-                            emit(1, f"solve_v3_full_system_linear_gmres: SciPy GMRES rescue failed ({type(exc).__name__}: {exc})")
+                            emit(1, f"solve_v3_full_system_linear_gmres: SciPy rescue failed ({type(exc).__name__}: {exc})")
         if use_pas_projection:
             f_full = _expand_active_f(res_reduced.x)
             f_full = _project_pas_f(f_full)
