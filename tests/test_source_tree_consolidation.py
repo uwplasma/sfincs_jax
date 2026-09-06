@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import ast
 import importlib
 from pathlib import Path
@@ -150,7 +152,15 @@ def test_plan_md_is_the_only_authoritative_planning_file() -> None:
         if path.name != "plan.md"
     )
     assert competing_plans == [], f"competing planning files: {competing_plans}"
-    assert not (REPO_ROOT / ".test_durations").exists()
+    # 2026-07-17 archived the pytest-split durations snapshot to keep the tree
+    # light and accepted a count-only shard split; by 2026-09-06 that split had
+    # one shard at 9m53s of a 10-minute budget and timing out on stacked PRs.
+    # The snapshot is back, compact and bounded: it must parse and stay small.
+    durations = REPO_ROOT / ".test_durations"
+    if durations.exists():
+        assert durations.stat().st_size <= 512 * 1024, "durations snapshot too large"
+        loaded = json.loads(durations.read_text(encoding="utf-8"))
+        assert loaded and all(isinstance(v, (int, float)) and v >= 0 for v in loaded.values())
 
 
 def test_package_readme_describes_current_source_layout() -> None:
