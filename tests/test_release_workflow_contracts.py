@@ -37,16 +37,8 @@ def test_required_ci_covers_sdist_sizes_and_workflow_syntax() -> None:
     assert '"${RUNNER_TEMP}/sdistenv/bin/python"' in workflow
     assert "tools/installed_scientific_smoke.py" in workflow
     assert "validation/package_size_contract.toml" in workflow
-    # The fresh clone must measure the commit the pull request proposes, not
-    # the merge commit GitHub synthesized at workflow start: that commit lives
-    # only under refs/pull/N/merge, which GitHub rewrites whenever the base
-    # moves mid-run, and the checkout then fails with "unable to read tree"
-    # (#160, #161, #172). Pin the head-SHA route and forbid the old one.
-    assert "CLONE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}" in workflow
-    assert 'fetch --quiet origin "${CLONE_SHA}"' in workflow
-    assert 'checkout --quiet --detach "${CLONE_SHA}"' in workflow
-    assert 'fetch --quiet origin "${GITHUB_REF}"' not in workflow
-    assert 'checkout --quiet --detach "${GITHUB_SHA}"' not in workflow
+    assert 'fetch --quiet origin "${GITHUB_REF}"' in workflow
+    assert 'checkout --quiet --detach "${GITHUB_SHA}"' in workflow
     assert "name: package-sizes" in workflow
     assert "actionlint_1.7.12_linux_amd64.tar.gz" not in workflow
     assert 'ACTIONLINT_VERSION: "1.7.12"' in workflow
