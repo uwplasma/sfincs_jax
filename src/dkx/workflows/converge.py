@@ -19,14 +19,14 @@ letting the per-axis table imply a convergence the case has not demonstrated.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Callable
+from typing import Callable, Mapping
 
 import numpy as np
 
 #: The phase-space axes a study can refine, in the order they are reported.
 AXES: tuple[str, ...] = ("theta", "zeta", "pitch", "speed")
 
-#: Result arrays reduced to one scalar each for comparison across resolutions.
+#: Result arrays compared entrywise across resolutions, then reduced to worst change.
 DEFAULT_OBSERVABLES: tuple[str, ...] = (
     "particle_flux_m2_s",
     "heat_flux_W_m2",
@@ -66,7 +66,7 @@ class ConvergenceReport:
         worst = self.per_axis_worst
         if self.joint is not None:
             worst = max(worst, self.joint.worst)
-        return worst < self.tolerance
+        return bool(self.refinements) and np.isfinite(worst) and worst < self.tolerance
 
     @property
     def axes_understate_the_joint_change(self) -> bool:
@@ -82,33 +82,36 @@ class ConvergenceReport:
         return self.joint.worst > 2.0 * max(self.per_axis_worst, 1e-300)
 
 
-def _scalarize(array: np.ndarray) -> float:
-    """Reduce an observable to one comparable magnitude.
-
-    The max of the absolute value over surfaces and species, so a study is not
-    fooled by a per-species cancellation that leaves a sum unchanged while the
-    individual fluxes move.
-    """
-    values = np.asarray(array, dtype=float)
-    return float(np.nanmax(np.abs(values))) if values.size else 0.0
-
-
 def _relative_changes(
-    reference: dict[str, float], candidate: dict[str, float]
+    reference: dict[str, np.ndarray], candidate: dict[str, np.ndarray],
+    *, tolerance: float = 1.0, absolute_tolerances: Mapping[str, float] | None = None,
 ) -> dict[str, float]:
-    """Relative change per observable, skipping ones absent from either run.
+    """Worst signed, entrywise change per observable on aligned surfaces/species.
 
-    A reference magnitude at or below the float64 noise floor is compared
-    absolutely instead: dividing by it would report an arbitrarily large
-    relative change for a quantity that is simply zero, such as the bootstrap
-    current of an exactly symmetric configuration.
+    Missing, empty, nonfinite or shape-changing data cannot establish convergence.
+    Normalize by max(abs(reference), absolute_tolerance / tolerance), so the
+    verdict applies the requested relative OR absolute budget to every entry.
+    A zero reference has no implicit unit-dependent absolute allowance.
     """
     changes: dict[str, float] = {}
     for name, ref in reference.items():
-        if name not in candidate:
+        ref = np.asarray(ref, dtype=float)
+        got = np.asarray(candidate.get(name, np.nan), dtype=float)
+        if (ref.size == 0 or got.shape != ref.shape
+                or not np.all(np.isfinite(ref)) or not np.all(np.isfinite(got))):
+            changes[name] = float("inf")
             continue
-        got = candidate[name]
-        changes[name] = abs(got - ref) / abs(ref) if abs(ref) > 1e-300 else abs(got - ref)
+        with np.errstate(over="ignore", invalid="ignore"):
+            atol = (absolute_tolerances or {}).get(name, 0.0)
+            # Normalize first to avoid overflowing got-ref or atol/tolerance.
+            scale = np.maximum(np.abs(ref), atol)
+            divisor = np.where(scale > 0.0, scale, 1.0)
+            difference = np.abs(got / divisor - ref / divisor)
+            budget = np.maximum(tolerance * (np.abs(ref) / divisor), atol / divisor)
+            ratio = tolerance / np.where(budget > 0.0, budget, 1.0)
+            change = difference * ratio
+            change = np.where((scale == 0.0) & (got != ref), np.inf, change)
+            changes[name] = float(np.max(change))
     return changes
 
 
@@ -141,6 +144,7 @@ def converge_case(
     factor: float = 1.5,
     tolerance: float = 0.02,
     observables: tuple[str, ...] = DEFAULT_OBSERVABLES,
+    absolute_tolerances: Mapping[str, float] | None = None,
     joint: bool = True,
     emit: Callable[[str], None] | None = None,
 ) -> ConvergenceReport:
@@ -148,7 +152,9 @@ def converge_case(
 
     Runs the case once at its stated resolution, once per axis with that axis
     refined, and -- unless ``joint`` is false -- once with every requested axis
-    refined together. Costs ``len(axes) + 2`` solves.
+    refined together. Costs ``len(axes) + 2`` solves. Optional per-observable
+    ``absolute_tolerances`` are in the arrays' physical units and default to zero.
+    Each entry must change by less than max(tolerance * abs(reference), atol).
     """
     import time  # noqa: PLC0415
 
@@ -157,18 +163,31 @@ def converge_case(
     unknown = sorted(set(axes) - set(AXES))
     if unknown:
         raise ValueError(f"unknown refinement axes {unknown}; choose from {list(AXES)}")
-    if factor <= 1.0:
+    if not np.isfinite(factor) or factor <= 1.0:
         raise ValueError(f"factor must exceed 1.0 to refine, got {factor}")
+
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("tolerance must be finite and positive")
+
+    absolute_tolerances = dict(absolute_tolerances or {})
+    if set(absolute_tolerances) - set(observables):
+        raise ValueError("absolute_tolerances names must be requested observables")
+    if any(not np.isfinite(v) or v < 0.0 for v in absolute_tolerances.values()):
+        raise ValueError("absolute tolerances must be finite and nonnegative")
 
     def _say(message: str) -> None:
         if emit is not None:
             emit(message)
 
-    def _observables_of(result) -> dict[str, float]:
+    def _observables_of(result) -> dict[str, np.ndarray]:
+        if not result.metadata.get("converged", False):
+            raise ValueError("a failed solve cannot establish resolution convergence")
+        missing = set(observables) - set(result.arrays)
+        if missing:
+            raise ValueError(f"requested observables are missing: {sorted(missing)}")
         return {
-            name: _scalarize(result.arrays[name])
+            name: np.asarray(result.arrays[name], dtype=float).copy()
             for name in observables
-            if name in result.arrays
         }
 
     _say(f"baseline {_resolution_dict(case.resolution)}")
@@ -176,8 +195,7 @@ def converge_case(
     reference = _observables_of(baseline_result)
     if not reference:
         raise ValueError(
-            f"none of the requested observables {list(observables)} are present in the "
-            f"result; it carries {sorted(baseline_result.arrays)}"
+            "at least one requested observable is required"
         )
 
     refinements: list[AxisRefinement] = []
@@ -193,7 +211,10 @@ def converge_case(
             AxisRefinement(
                 label=axis,
                 resolution=_resolution_dict(resolution),
-                changes=_relative_changes(reference, _observables_of(result)),
+                changes=_relative_changes(
+                    reference, _observables_of(result), tolerance=tolerance,
+                    absolute_tolerances=absolute_tolerances,
+                ),
                 seconds=time.perf_counter() - started,
             )
         )
@@ -207,7 +228,10 @@ def converge_case(
         joint_refinement = AxisRefinement(
             label="all axes",
             resolution=_resolution_dict(resolution),
-            changes=_relative_changes(reference, _observables_of(result)),
+            changes=_relative_changes(
+                    reference, _observables_of(result), tolerance=tolerance,
+                    absolute_tolerances=absolute_tolerances,
+                ),
             seconds=time.perf_counter() - started,
         )
 

@@ -378,3 +378,20 @@ Coupled Phi1 requires an explicit linearization and is rejected here.
 The historical 2.46% report in PR #161 has no identified input pair in its PR
 body. A different supplied pair is a new audit, not a reproduction of that
 report; warm-restart promotion still requires the R1 acceptance evidence.
+
+Observable resolution checks
+----------------------------
+
+``dkx converge`` compares signed values at matching species and surfaces before
+reporting the largest relative change for each observable. Comparing only maximum
+magnitudes would hide sign reversals or changes in a smaller species flux.
+Missing, empty, nonfinite or differently shaped arrays fail the comparison; failed
+solves and studies with no refinable axes cannot certify convergence. Independent
+axis checks and the joint refinement must all satisfy the requested tolerance.
+For vanishing fluxes or currents, provide an explicit physical error budget via
+``converge_case(..., absolute_tolerances={"particle_flux_m2_s": atol})``.
+Each entry must change by less than the larger of its relative budget and this
+absolute tolerance in the array's units. The default absolute tolerance is zero;
+there is no implicit unit-dependent allowance for a zero reference.
+A two-grid difference is a resolution check, not a Richardson error estimate or
+an algebraic-error bound. Those require additional grid and adjoint evidence.
