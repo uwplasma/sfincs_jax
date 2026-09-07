@@ -445,23 +445,12 @@ jobs:
             "${GITHUB_WORKSPACE}/tools/installed_scientific_smoke.py" \
             --workspace "${GITHUB_WORKSPACE}"
       - name: Measure every DKX-owned release artifact
-        env:
-          # On a pull_request event GITHUB_SHA is the merge commit GitHub
-          # synthesized when the workflow started and GITHUB_REF is
-          # refs/pull/N/merge. Whenever the base moves during the run -- a
-          # stacked PR or a busy main does this routinely -- GitHub rewrites
-          # that ref, the old merge commit stops being reachable, and this step
-          # failed with "fatal: unable to read tree" on #160, #161 and #172
-          # while measuring nothing about the change. The head SHA is always
-          # reachable from the PR branch and is the tree the size contract is
-          # about. On push, github.sha is the pushed commit.
-          CLONE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           git clone --quiet \
             "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
             "${RUNNER_TEMP}/full-clone"
-          git -C "${RUNNER_TEMP}/full-clone" fetch --quiet origin "${CLONE_SHA}"
-          git -C "${RUNNER_TEMP}/full-clone" checkout --quiet --detach "${CLONE_SHA}"
+          git -C "${RUNNER_TEMP}/full-clone" fetch --quiet origin "${GITHUB_REF}"
+          git -C "${RUNNER_TEMP}/full-clone" checkout --quiet --detach "${GITHUB_SHA}"
           "${RUNNER_TEMP}/wheelenv/bin/python" tools/release_contracts.py \
             --policy validation/package_size_contract.toml \
             --repository "${GITHUB_WORKSPACE}" \
