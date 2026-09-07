@@ -69,6 +69,15 @@ the snippet holds them fixed. This refresh does not differentiate temperature,
 change the Coulomb-logarithm prescription, or certify preconditioner reuse.
 Changing a kernel dependency requires rebuilding the kernels.
 
+The two-species regression checks normalized current and first-species heat-flux
+density derivatives against independently rebuilt full-FP operators, central
+differences and second-order Taylor remainders on CPU and GPU. This bounded
+fixed-geometry, fixed-temperature test is not a grid-convergence certificate.
+Example 07 separately teaches a single-species PAS temperature response,
+rebuilding its pitch-angle coefficients at each temperature and checking a
+finite-difference step window. Neither path establishes full-FP temperature,
+geometry or ambipolar-root derivatives.
+
 .. list-table::
    :header-rows: 1
    :widths: 30 45 25
