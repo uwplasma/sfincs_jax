@@ -231,13 +231,81 @@ are provenance and parity tools and are **not** differentiable. Geometry
 sensitivities flow through JAX-native producers instead — the analytic geometry
 schemes, or the ``vmex -> booz_xform_jax`` transform below.
 
+Full-FP profile changes must refresh the collision coefficients as well as the
+kinetic operator fields. The host NumPy/QUADPACK builder is not differentiable.
+Prepared ``FokkerPlanckV3Phi1Operator`` kernels support
+``at_uniform_density(n_hats, n_xi=...)`` at fixed species temperatures and
+``rescale_temperature(scale)`` for one common positive scalar temperature
+multiplier. The latter preserves every species speed ratio
+``sqrt(T_a*m_b/(T_b*m_a))`` and scales all four kernels by ``scale**(-3/2)``;
+it also updates the temperature in the Phi1 Boltzmann factor. It keeps ``nu_n``
+(including the Coulomb logarithm), masses, charges and normalization fixed.
+Nonpositive/nonfinite scales yield NaNs, including under JIT; vectors are rejected.
+For independently varied species temperatures, the opt-in
+``dkx.collisions.prepare_fokker_planck_v3_profiles(...)`` prepares a callable
+``build(n_hats, t_hats)`` from fixed speed nodes/weights/derivatives, species
+masses/charges, pitch layout, ``nu_n``, ``krook`` and ``alpha``. Stage this callable
+with ``jax.jit`` to refresh all four kernels, including temperature-dependent
+species interpolation and Rosenbluth responses, on the selected device. It
+returns the same ``FokkerPlanckV3Phi1Operator`` used above. Nonfinite/negative
+densities or nonfinite/nonpositive temperatures produce NaNs; shape changes
+require preparing a new builder. Zero density is an allowed algebraic limit.
+
+The prepared response uses Gauss-Legendre quadrature with an explicit
+``quadrature_order`` (128 points per panel by default). Lower integrals split at
+``min(10, xb)``. Upper integrals use a logarithmic panel from ``xb`` to
+``max(10, 2*xb)`` followed by a rational map to infinity. The v3 polynomial
+recurrence carries its Maxwellian weight, and powers use bounded species speed
+ratios. This avoids monomial cancellation and resolves small-speed electron/ion
+contributions. Interpolation uses a normalized polynomial evaluation basis to
+retain derivatives at coincident species nodes. The host QUADPACK builder stays
+the default parity route; this API is an explicit numerical alternative.
+
+The prepared test-particle coefficients use mathematical ``sqrt(pi)`` and a
+Chandrasekhar series through ninth order for speeds below 0.05. Both direct
+subtraction and the rounded v3 ``sqrt(pi)`` lose accuracy for small electron/ion
+speed ratios. At the tested small-speed entry, the host energy-scattering
+coefficient differs from an 80-digit mathematical reference by about 1.6e-7
+relative. The prepared coefficient is tested against that independent reference;
+agreement with an inaccurate host value is not its acceptance gate. This
+numerical choice is confined to the opt-in profile builder. Recheck observable
+uncertainty when changing between builders.
+The series follows from the `error-function expansion, DLMF 7.6.1
+<https://dlmf.nist.gov/7.6.E1>`_; the quadrature uses the
+`Gauss-Legendre rule, DLMF 3.5(v) <https://dlmf.nist.gov/3.5.v>`_
+on each transformed panel. Neither reference certifies the chosen panel order
+for all plasma parameters; that requires the convergence checks described here.
+
+For each research domain, increase quadrature order and physical-grid resolution
+and check conserved quantities and accepted observables. Current tests cover
+unequal-temperature two-species full-solve current/heat sensitivities, equilibrium
+Maxwellian/common-flow null vectors, three-species electron/ion low-order
+QUADPACK responses and derivatives, and an 80-digit high-order integral
+reference. These do not certify arbitrary temperature ratios or speed orders,
+unequal-temperature entropy properties, a native SI profile builder, complete
+geometry sensitivities, or warm factor reuse. Masses, charges and normalization
+remain static; the Coulomb logarithm does not change automatically.
+
+For a uniform full-FP kinetic operator, a common-temperature scan can use::
+
+   scaled = kernels.rescale_temperature(scale)
+   op = dataclasses.replace(
+       base, t_hat=base.t_hat * scale,
+       fp=scaled.at_uniform_density(base.n_hat, n_xi=base.n_xi),
+   )
+
+Here ``kernels`` must have been built from the same species/grid as ``base``.
+Update radial gradients and other profile fields according to the intended
+experiment; this snippet keeps them fixed. It is a coefficient update, not a
+complete native profile builder or a reusable-factor certificate.
+
 .. note::
 
-   The differentiable ambipolar :math:`E_r` and :math:`\Phi_1` helpers require the
+   The differentiable :math:`\Phi_1` helper requires the
    untruncated pitch embedding (``Nxi_for_x_option = 0``); with an active
-   :math:`N_\xi`-for-:math:`x` ramp they raise ``NotImplementedError`` rather than
-   return an approximate gradient. RHSMode=1 outputs remain differentiable through
-   the ramped structured direct route.
+   :math:`N_\xi`-for-:math:`x` ramp it raises ``NotImplementedError``.
+   Ambipolar sensitivities use the routed differentiable solve and support
+   the tested PAS/full-FP ramped layouts.
 
 Measured gradient accuracy
 --------------------------

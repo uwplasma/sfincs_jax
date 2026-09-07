@@ -17,6 +17,7 @@ from dkx.collisions import (
     nu_d_hat_pitch_angle_scattering_v3,
     polynomial_interpolation_matrix_np,
     rosenbluth_potential_terms_v3_np,
+    prepare_fokker_planck_v3_profiles,
 )
 from dkx.xgrid import make_x_grid
 from dkx.phase_space import make_speed_grid, speed_grid_diff_matrices
@@ -304,12 +305,12 @@ def test_pas_apply_rejects_bad_shapes() -> None:
 _FP_XGRID_K = 0.0
 
 
-def _fp_blocks_v3(z, m, n, t, *, n_x: int = 8, nl: int = 4, n_xi: int = 5) -> np.ndarray:
+def _fp_blocks_v3(z, m, n, t, *, n_x: int = 8, nl: int = 4, n_xi: int = 5, prepared=False) -> np.ndarray:
     sg = make_speed_grid(n_x=n_x, k=_FP_XGRID_K)
     x = np.asarray(sg.x, dtype=np.float64)
     x_weights = np.asarray(sg.dx_weights(_FP_XGRID_K), dtype=np.float64)
     ddx, d2dx2 = speed_grid_diff_matrices(x, k=_FP_XGRID_K)
-    op = make_fokker_planck_v3_operator(
+    kwargs = dict(
         x=x,
         x_weights=x_weights,
         ddx=ddx,
@@ -325,17 +326,24 @@ def _fp_blocks_v3(z, m, n, t, *, n_x: int = 8, nl: int = 4, n_xi: int = 5) -> np
         nl=nl,
         n_xi_for_x=np.full((n_x,), n_xi, dtype=np.int32),
     )
+    if prepared:
+        builder = prepare_fokker_planck_v3_profiles(
+            **{k: v for k, v in kwargs.items() if k not in ("n_hats", "t_hats", "n_xi")})
+        op = builder(kwargs["n_hats"], kwargs["t_hats"]).at_uniform_density(kwargs["n_hats"], n_xi=n_xi)
+    else:
+        op = make_fokker_planck_v3_operator(**kwargs)
     return np.asarray(op.mat)
 
 
-def test_fokker_planck_annihilates_maxwellian_null_vectors_single_species() -> None:
+@pytest.mark.parametrize("prepared", [False, True])
+def test_fokker_planck_annihilates_maxwellian_null_vectors_single_species(prepared) -> None:
     """C[F_M] = 0 at L=0 (density AND energy) and C[x F_M] = 0 at L=1 (momentum).
 
     The linearized self-collision operator annihilates the perturbations that
     correspond to shifting the background Maxwellian's density, temperature,
     and mean velocity; the discretization preserves this to machine precision.
     """
-    mat = _fp_blocks_v3([1.0], [1.0], [1.0], [1.0])
+    mat = _fp_blocks_v3([1.0], [1.0], [1.0], [1.0], prepared=prepared)
     x = np.asarray(make_speed_grid(n_x=8, k=_FP_XGRID_K).x)
     f_m = np.exp(-(x * x))
     scale = float(np.max(np.abs(mat[0, 0, :2])))
@@ -347,7 +355,8 @@ def test_fokker_planck_annihilates_maxwellian_null_vectors_single_species() -> N
     assert np.max(np.abs(mat[0, 0, 2] @ (x * x * f_m))) > 1e-6 * scale
 
 
-def test_fokker_planck_interspecies_conservation_equal_temperature() -> None:
+@pytest.mark.parametrize("prepared", [False, True])
+def test_fokker_planck_interspecies_conservation_equal_temperature(prepared) -> None:
     """Cross-species null vectors: per-species density at L=0 and a common flow at L=1.
 
     For equal temperatures, C_ab[F_Ma, F_Mb] = 0, so per-species density
@@ -358,7 +367,7 @@ def test_fokker_planck_interspecies_conservation_equal_temperature() -> None:
     """
     n_hat = np.asarray([0.6, 0.009], dtype=np.float64)
     m_hat = np.asarray([1.0, 6.0], dtype=np.float64)
-    mat = _fp_blocks_v3([1.0, 6.0], m_hat, n_hat, [1.0, 1.0])
+    mat = _fp_blocks_v3([1.0, 6.0], m_hat, n_hat, [1.0, 1.0], prepared=prepared)
     x = np.asarray(make_speed_grid(n_x=8, k=_FP_XGRID_K).x)
     f_m = np.exp(-(x * x))
     scale = float(np.max(np.abs(mat[:, :, :2])))

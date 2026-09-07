@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # The JAX backend is imported below; dkx/runtime.py explains why this is here.
 from .runtime import configure as _configure_runtime
@@ -32,7 +33,9 @@ def _erf_np(x: np.ndarray) -> np.ndarray:
     vec = np.vectorize(math.erf, otypes=[np.float64])
     return vec(x)
 
-def _psi_chandra(x: jnp.ndarray) -> jnp.ndarray:
+def _psi_chandra(
+    x: jnp.ndarray, *, series_threshold: float = 1e-5, sqrt_pi: float = _V3_SQRTPI,
+) -> jnp.ndarray:
     """Chandrasekhar function Ψ(x).
 
     Matches the definition used in SFINCS v3 Fortran (`populateMatrix.F90`):
@@ -40,16 +43,17 @@ def _psi_chandra(x: jnp.ndarray) -> jnp.ndarray:
       Ψ = (erf(x) - (2/sqrt(pi)) x exp(-x^2)) / (2 x^2)
     """
     x = x.astype(jnp.float64)
-    sqrt_pi = jnp.asarray(_V3_SQRTPI, dtype=jnp.float64)
+    sqrt_pi = jnp.asarray(sqrt_pi, dtype=jnp.float64)
     num = erf(x) - (2.0 / sqrt_pi) * x * jnp.exp(-(x * x))
     den = 2.0 * x * x
     # Avoid NaNs at x=0 (not typically used with v3 default x grids, but keep robust).
-    eps = jnp.asarray(1e-5, dtype=jnp.float64)
+    eps = jnp.asarray(series_threshold, dtype=jnp.float64)
     small = jnp.abs(x) < eps
     # Series after cancellation:
-    # Ψ(x) = (1/sqrt(pi)) * [(2/3)x - (2/5)x^3 + (1/7)x^5 + O(x^7)].
+    # Ψ(x) = x/sqrt(pi) sum_n 2(-x²)^n / (n! (2n+3)).
+    # Through x^9 the relative truncation error is <2e-16 for |x|<0.05.
     x2 = x * x
-    series = ((2.0 / 3.0) * x - (2.0 / 5.0) * x * x2 + (1.0 / 7.0) * x * x2 * x2) / sqrt_pi
+    series = x/sqrt_pi * (2/3 + x2*(-2/5 + x2*(1/7 + x2*(-1/27 + x2/132))))
     return jnp.where(small, series, num / den)
 
 def nu_d_hat_pitch_angle_scattering_v3(
@@ -1017,6 +1021,30 @@ class FokkerPlanckV3Phi1Operator:
 
     n_xi_for_x: jnp.ndarray  # (X,) int32
 
+    def rescale_temperature(self, scale: jnp.ndarray) -> FokkerPlanckV3Phi1Operator:
+        """Scale every species temperature by the same positive scalar.
+
+        Species speed ratios and interpolation/Rosenbluth responses are then
+        unchanged; all four unit-density kernels scale as ``scale**(-3/2)``.
+        This exact fixed-grid update supports JIT and AD, including the changed
+        Phi1 Boltzmann response. Masses, charges, densities, ``nu_n`` (including
+        any Coulomb logarithm), and normalization stay fixed. Callers must also
+        update the kinetic operator temperatures, drives and desired profiles.
+        Independent species temperature changes still require a full rebuild.
+
+        Nonpositive or nonfinite scales produce NaNs, including under JIT.
+        """
+        scale = jnp.asarray(scale, dtype=jnp.float64)
+        if scale.shape != ():
+            raise ValueError("temperature scale must be scalar")
+        scale = jnp.where(jnp.isfinite(scale) & (scale > 0), scale, jnp.nan)
+        factor = scale ** -1.5
+        return replace(
+            self, t_hats=self.t_hats * scale,
+            **{name: getattr(self, name) * factor
+               for name in ("k_nu", "k_cd", "k_ce", "k_rosen")},
+        )
+
     def at_uniform_density(self, n_hats: jnp.ndarray, *, n_xi: int) -> FokkerPlanckV3Operator:
         """Refresh uniform FP coefficients from the stored unit-density kernels.
 
@@ -1091,6 +1119,132 @@ class FokkerPlanckV3Phi1Operator:
             k_rosen=k_rosen,
             n_xi_for_x=n_xi_for_x,
         )
+
+def prepare_fokker_planck_v3_profiles(
+    *, x: np.ndarray, x_weights: np.ndarray, ddx: np.ndarray, d2dx2: np.ndarray,
+    x_grid_k: float, z_s: np.ndarray, m_hats: np.ndarray, nu_n: float,
+    krook: float, nl: int, n_xi_for_x: np.ndarray, alpha: float = 1.0,
+    quadrature_order: int = 128,
+) -> Callable[[jnp.ndarray, jnp.ndarray], FokkerPlanckV3Phi1Operator]:
+    """Prepare an opt-in JAX full-FP builder ``build(n_hats, t_hats)``.
+
+    Species densities and temperatures may vary independently under JIT/AD.
+    Layout, masses, charges, normalization, nu_n/Coulomb logarithm and grids
+    stay fixed. The returned kernels support uniform or frozen-Phi1 application.
+    This does not update kinetic profiles/drives or certify reusable factors.
+
+    Rosenbluth integrals use composite Gauss-Legendre quadrature with a static
+    order per panel, retaining the v3 polynomial recurrence. Callers must check
+    order and physical-grid convergence for their parameter domain. This is an
+    explicit alternative to the host QUADPACK parity builder, not its default
+    replacement. Positive speed nodes (v3 schemes 5/6 without x=0) are required.
+    Invalid dynamic profiles produce NaNs; incompatible shapes raise ValueError.
+    """
+    if isinstance(quadrature_order, bool) or not isinstance(quadrature_order, int) or quadrature_order < 2:
+        raise ValueError("quadrature_order must be an integer >= 2")
+    if isinstance(nl, bool) or not isinstance(nl, int) or nl < 1:
+        raise ValueError("nl must be a positive integer")
+    x = np.asarray(x, dtype=np.float64)
+    z = np.asarray(z_s, dtype=np.float64)
+    m = np.asarray(m_hats, dtype=np.float64)
+    nx = x.size
+    if x.ndim != 1 or nx < 1 or not np.all(np.isfinite(x) & (x > 0)):
+        raise ValueError("x must be a nonempty positive finite vector")
+    if z.ndim != 1 or z.size < 1 or m.shape != z.shape or not np.all(np.isfinite(z)) or not np.all(np.isfinite(m) & (m > 0)):
+        raise ValueError("species charges/masses must be finite vectors with positive masses and matching shapes")
+    if np.shape(x_weights) != (nx,) or np.shape(ddx) != (nx, nx) or np.shape(d2dx2) != (nx, nx) or np.shape(n_xi_for_x) != (nx,):
+        raise ValueError("speed weights, derivatives and pitch layout must match x")
+    xg = make_x_grid(n=nx, k=float(x_grid_k), include_point_at_x0=False)
+    a, b = np.asarray(xg.poly_a), np.asarray(xg.poly_b)
+    pvals = np.array([[_evaluate_polynomial_v3(float(t), j=j, a=a, b=b)
+                       for t in x] for j in range(1, nx + 1)])
+    modal = jnp.asarray(np.asarray(x_weights)[None, :] * x[None, :]**x_grid_k * pvals
+                        / np.asarray(xg.poly_c)[1:nx + 1, None])
+    # Polynomial interpolation through a nonsingular evaluation basis avoids
+    # the barycentric 1/(xb-x_j) removable singularity and its incorrect AD at
+    # coincident speed nodes. Normalize modal columns before the static solve.
+    norms = np.sqrt(np.asarray(xg.poly_c)[1:nx + 1])
+    basis = (np.exp(-x*x) * x**x_grid_k)[:, None] * pvals.T / norms
+    inverse_basis = jnp.asarray(np.linalg.solve(basis, np.eye(nx)))
+    nodes, weights = np.polynomial.legendre.leggauss(quadrature_order)
+    u, w = jnp.asarray((nodes + 1)/2), jnp.asarray(weights/2)
+    x, z, m = jnp.asarray(x), jnp.asarray(z), jnp.asarray(m)
+    ddx, d2dx2 = jnp.asarray(ddx), jnp.asarray(d2dx2)
+    layout = jnp.asarray(n_xi_for_x, dtype=jnp.int32)
+
+    def weighted_polynomials(t):
+        # Carry exp(-t²) inside the recurrence to avoid huge polynomial values
+        # multiplying an underflowed Maxwellian in the semi-infinite tail.
+        vals = [jnp.exp(-t*t)]
+        if nx > 1:
+            vals.append((t - a[1]) * vals[0])
+        for j in range(2, nx):
+            vals.append((t - a[j]) * vals[-1] - b[j] * vals[-2])
+        return jnp.stack(vals, axis=-1)
+
+    def build(n_hats, t_hats):
+        n, temp = jnp.asarray(n_hats, dtype=jnp.float64), jnp.asarray(t_hats, dtype=jnp.float64)
+        if n.shape != z.shape or temp.shape != z.shape:
+            raise ValueError(f"n_hats and t_hats must have shape {z.shape}")
+        n = jnp.where(jnp.isfinite(n) & (n >= 0), n, jnp.nan)
+        temp = jnp.where(jnp.isfinite(temp) & (temp > 0), temp, jnp.nan)
+        factor = jnp.sqrt(temp[:, None] * m[None, :] / (temp[None, :] * m[:, None]))
+        xb = x[None, None, :] * factor[:, :, None]
+        partition, split = jnp.maximum(10., 2*xb), jnp.minimum(10., xb)
+        # Lower: two linear panels. Upper: logarithmic near-field panel
+        # resolves small-x electron/ion negative powers, then a rational map
+        # to infinity. Panel locations are differentiated along with xb.
+        lower = jnp.concatenate([split[..., None]*u, split[..., None] + (xb-split)[..., None]*u], axis=-1)
+        lw = jnp.concatenate([split[..., None]*w, (xb-split)[..., None]*w], axis=-1)
+        logspan = jnp.log(partition/xb)
+        mid = xb[..., None] * jnp.exp(logspan[..., None]*u)
+        upper = jnp.concatenate([mid, partition[..., None] + u/(1-u)], axis=-1)
+        uw = jnp.concatenate([mid*logspan[..., None]*w, jnp.broadcast_to(w/(1-u)**2, mid.shape)], axis=-1)
+        lp, up = weighted_polynomials(lower)*lw[..., None], weighted_polynomials(upper)*uw[..., None]
+        lo, hi = lower/xb[..., None], xb[..., None]/upper
+        t32m = temp * jnp.sqrt(temp*m)
+        prefactor = z[:, None]**2 * z[None, :]**2 / t32m[:, None]
+        rosen = []
+        for ell in range(nl):
+            # These are the four v3 incomplete integrals after absorbing all
+            # xb powers: l2=I_(l+2)/xb^(l+1), u1=xb^l I_(1-l),
+            # l4=I_(l+4)/xb^(l+3), u3=xb^(l-2) I_(3-l).
+            l2 = jnp.einsum("abxq,abxqj->abxj", lo**(ell+2)*xb[..., None], lp)
+            l4 = jnp.einsum("abxq,abxqj->abxj", lo**(ell+4)*xb[..., None], lp)
+            u1 = jnp.einsum("abxq,abxqj->abxj", hi**ell*upper, up)
+            u3 = (jnp.einsum("abxq,abxqj->abxj", hi**(ell-2)*upper, up)
+                  if ell >= 2 else jnp.zeros_like(u1))
+            ratio = -(2*ell-1)/(2*ell+3)
+            h = 4*_V3_PI/(2*ell+1)*(l2+u1)
+            xdh = 4*_V3_PI/(2*ell+1)*(-(ell+1)*l2+ell*u1)
+            d2g = -4*_V3_PI/(4*ell*ell-1)*(ell*(ell-1)*(u3+l2) + ratio*(ell+1)*(ell+2)*(u1+l4))
+            combined = -h - (1-m[:, None, None, None]/m[None, :, None, None])*xdh + x[None, None, :, None]**2*d2g
+            sf = 3/(2*_V3_PI) * prefactor / factor**2
+            rosen.append(jnp.einsum("abij,jk->abik", sf[:, :, None, None]*jnp.exp(-x*x)[None, None, :, None]*combined, modal))
+        interpolation = (weighted_polynomials(xb)*xb[..., None]**x_grid_k/norms) @ inverse_basis
+        # Self-collisions have identically coincident speed grids.
+        interpolation = jnp.where(jnp.eye(z.size, dtype=bool)[:, :, None, None], jnp.eye(nx), interpolation)
+        expb, erfs = jnp.exp(-xb*xb), erf(xb)
+        # The host parity route subtracts nearly equal erf/Maxwellian terms
+        # using v3's rounded sqrt(pi). At small electron/ion speed this loses
+        # accuracy even before device-dependent rounding. This opt-in route
+        # uses mathematical sqrt(pi) and a stable series, checked independently.
+        sqrt_pi = math.sqrt(math.pi)
+        psi = _psi_chandra(xb, series_threshold=.05, sqrt_pi=sqrt_pi)
+        ce_factor = (3*sqrt_pi/4)*prefactor[:, :, None]
+        k_nu = ce_factor*(erfs-psi)/x**3
+        k_cd = (3*prefactor*m[:, None]/m[None, :])[:, :, None, None] * jnp.exp(-x*x)[None, None, :, None]*interpolation
+        dx_coeff = -2*factor[:, :, None]**2*psi*(1-m[:, None, None]/m[None, :, None]) + (erfs-psi)/x**2
+        k_ce = ce_factor[..., None]*((psi/x)[..., None]*d2dx2 + dx_coeff[..., None]*ddx)
+        diag = ce_factor*(4/sqrt_pi)*(temp[:, None]/temp[None, :]*factor)[:, :, None]*expb
+        k_ce = k_ce + diag[..., None]*jnp.eye(nx)
+        return FokkerPlanckV3Phi1Operator(
+            nu_n=jnp.asarray(nu_n), krook=jnp.asarray(krook), alpha=jnp.asarray(alpha),
+            z_s=z, n_hats=n, t_hats=temp, nl=nl, k_nu=k_nu, k_cd=k_cd,
+            k_ce=k_ce, k_rosen=jnp.stack(rosen, axis=2), n_xi_for_x=layout,
+        )
+
+    return build
 
 def make_fokker_planck_v3_phi1_operator(
     *,
