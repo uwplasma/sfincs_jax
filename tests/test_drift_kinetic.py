@@ -619,3 +619,43 @@ def test_fokker_planck_block_is_a_kronecker_sum_in_speed_and_angle(er: str) -> N
             assert float(np.max(np.abs(candidate - expected))) / scale < 1e-13, (
                 f"streaming block at L={ell}->{ell + 1}, x={i} is not x-proportional"
             )
+
+@pytest.mark.parametrize("truncated", [False, True])
+def test_staged_solve_reuses_layout_with_fresh_physics(truncated):
+    """Rebuilt collision coefficients must pass through a cached executable."""
+    from dkx.solve import solve
+
+    text = PAS_DKES_ER_TEXT
+    if truncated:
+        text = text.replace("Nxi = 5", "Nxi = 8").replace(
+            "Nxi_for_x_option = 0", "Nxi_for_x_option = 1"
+        )
+    decks = [
+        text,
+        text.replace("THats = 0.5d+0", "THats = 0.7d+0").replace(
+            "nHats = 1.0d+0", "nHats = 1.3d+0"
+        ),
+    ]
+    if truncated:
+        # Same rectangular shapes, different active layout: must retrace.
+        decks.append(text.replace("Nxi_for_x_option = 1", "Nxi_for_x_option = 0"))
+    operators = [KineticOperator.from_namelist(parse_sfincs_input_text(deck)) for deck in decks]
+    assert not np.array_equal(operators[0].t_hat, operators[1].t_hat)
+    assert (operators[0].active_dof_mask() is not None) == truncated
+    traces = []
+
+    def staged(op):
+        traces.append(1)
+        return solve(op, op.rhs(), method="gmres", tol=1e-10).x
+
+    compiled = jax.jit(staged)
+    states = []
+    for op in operators:
+        state = compiled(op)
+        rhs = op.rhs()
+        np.testing.assert_allclose(op.apply(state), rhs, rtol=0, atol=1e-10 * np.linalg.norm(rhs))
+        cold = solve(op, rhs, method="gmres", tol=1e-10).x
+        np.testing.assert_allclose(state, cold, rtol=1e-7, atol=1e-10)
+        states.append(np.asarray(state))
+    assert len(traces) == (2 if truncated else 1)
+    assert not np.allclose(states[0], states[1])

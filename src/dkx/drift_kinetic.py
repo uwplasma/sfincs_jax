@@ -273,7 +273,7 @@ class KineticOperator:
     ddzeta: jnp.ndarray  # (Z,Z)
     theta_weights: jnp.ndarray  # (T,)
     zeta_weights: jnp.ndarray  # (Z,)
-    n_xi_for_x: jnp.ndarray  # (X,) int32
+    n_xi_for_x: jnp.ndarray  # (X,) int32; static pitch layout in the pytree
     xi_coupling_lower: jnp.ndarray  # (L,) l/(2l-1)
     xi_coupling_upper: jnp.ndarray  # (L,) (l+1)/(2l+3)
 
@@ -418,7 +418,6 @@ class KineticOperator:
         "ddzeta",
         "theta_weights",
         "zeta_weights",
-        "n_xi_for_x",
         "xi_coupling_lower",
         "xi_coupling_upper",
         "b_hat",
@@ -473,13 +472,19 @@ class KineticOperator:
 
     def tree_flatten(self):
         children = tuple(getattr(self, name) for name in self._CHILD_FIELDS)
-        aux = tuple(getattr(self, name) for name in self._AUX_FIELDS)
+        # Pitch truncation defines the discrete layout and solver route. Keep
+        # it hashable and static; physical coefficients remain dynamic leaves.
+        layout = tuple(int(n) for n in np.asarray(self.n_xi_for_x))
+        aux = tuple(getattr(self, name) for name in self._AUX_FIELDS) + (layout,)
         return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        kwargs = dict(zip(cls._AUX_FIELDS, aux))
+        kwargs = dict(zip(cls._AUX_FIELDS, aux[:-1]))
         kwargs.update(dict(zip(cls._CHILD_FIELDS, children)))
+        layout = np.asarray(aux[-1], dtype=np.int32)
+        layout.setflags(write=False)
+        kwargs["n_xi_for_x"] = layout
         return cls(**kwargs)
 
     # ------------------------------------------------------------------
