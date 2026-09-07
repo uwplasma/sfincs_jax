@@ -567,6 +567,67 @@ def implicit_linear_observable_derivative_from_builder(
     )
 
 
+def linear_observable_algebraic_error(
+    *, rhs: Array, state: Array, observable_vector: Array,
+    apply: LinearOperatorApply, transpose_apply: LinearOperatorApply,
+    transpose_solve: VectorSolver, primal_rtol: float, adjoint_rtol: float,
+) -> dict[str, Any]:
+    """Audit a linear moment's algebraic error without assembling a matrix.
+
+    With r=b-Ax and A^T lambda=c, c^T(x_exact-x)=lambda^T r. A numerical
+    adjoint leaves a remainder (c-A^T lambda)^T(x_exact-x), so this is an
+    estimate, not a rigorous bound or a discretization/geometry error estimate.
+    Callers supply original constrained operator actions and a qualified
+    transpose solver; tighten that solve to check estimate stability. Reporting
+    is synchronous and outside AD. The returned scalars fit Result.metadata.
+    """
+    import math  # noqa: PLC0415
+
+    primal_rtol, adjoint_rtol = float(primal_rtol), float(adjoint_rtol)
+    if any(not math.isfinite(t) or t < 0 for t in (primal_rtol, adjoint_rtol)):
+        raise ValueError("residual tolerances must be finite and nonnegative")
+    b = _as_vector("rhs", rhs)
+
+    def checked(name, value):
+        v = _as_vector(name, value)
+        if not v.size or v.shape != b.shape or not bool(jnp.all(jnp.isfinite(v))):
+            raise ValueError(f"{name} must be finite, nonempty, and match rhs shape")
+        return v
+
+    def relative_norm(defect, reference):
+        # A shared scale avoids both norm underflow and inf/inf on finite data.
+        scale = jnp.maximum(jnp.max(jnp.abs(defect)), jnp.max(jnp.abs(reference)))
+        scale = jnp.where(scale == 0, 1.0, scale)
+        numerator = float(jnp.linalg.norm(defect / scale))
+        denominator = float(jnp.linalg.norm(reference / scale))
+        return numerator / denominator if denominator else (0.0 if numerator == 0 else math.inf)
+
+    b = checked("rhs", b)
+    x = checked("state", state)
+    c = checked("observable_vector", observable_vector)
+    r = checked("primal defect", b - checked("apply(state)", apply(x)))
+    primal_residual = relative_norm(r, b)
+    if primal_residual > primal_rtol:
+        raise ValueError(f"original primal relative residual {primal_residual} exceeds {primal_rtol}")
+    lam = checked("adjoint", transpose_solve(c))
+    dual_defect = checked("adjoint defect", c - checked("transpose_apply(adjoint)", transpose_apply(lam)))
+    adjoint_residual = relative_norm(dual_defect, c)
+    if adjoint_residual > adjoint_rtol:
+        raise ValueError(f"original adjoint relative residual {adjoint_residual} exceeds {adjoint_rtol}")
+    value, correction = float(jnp.vdot(c, x)), float(jnp.vdot(lam, r))
+    if not all(math.isfinite(v) for v in (value, correction, value + correction)):
+        raise ValueError("nonfinite observable or algebraic correction")
+    return {
+        "kind": "linear_observable_algebraic_estimate",
+        "observable": value, "signed_correction": correction,
+        "absolute_estimate": abs(correction), "corrected_observable": value + correction,
+        "primal_relative_residual": primal_residual,
+        "adjoint_relative_residual": adjoint_residual,
+        "primal_rtol": primal_rtol, "adjoint_rtol": adjoint_rtol,
+        "is_bound": False,
+    }
+
+
 def implicit_matrix_free_linear_observable_derivative(
     system: MatrixFreeLinearObservableSystem,
     *,
@@ -799,6 +860,7 @@ __all__ = (
     "implicit_matrix_free_linear_observable_derivative",
     "implicit_matrix_free_linear_observable_derivative_from_builder",
     "jvp_flux",
+    "linear_observable_algebraic_error",
     "probe_linear_observable_vector",
     "validate_fortran_v3_adjoint_sensitivity_constraints",
     "validate_fortran_v3_adjoint_sensitivity_output_surface",
