@@ -287,6 +287,9 @@ jobs:
       DKX_OFFLINE: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Retain the tested merge and its parents even if remote PR refs move.
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -449,7 +452,9 @@ jobs:
           git clone --quiet \
             "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
             "${RUNNER_TEMP}/full-clone"
-          git -C "${RUNNER_TEMP}/full-clone" fetch --quiet origin "${GITHUB_REF}"
+          # Import the exact tree used to build the artifacts from the retained
+          # checkout. A later remote PR merge ref may name a different commit.
+          git -C "${RUNNER_TEMP}/full-clone" fetch --quiet "${GITHUB_WORKSPACE}" "${GITHUB_SHA}"
           git -C "${RUNNER_TEMP}/full-clone" checkout --quiet --detach "${GITHUB_SHA}"
           "${RUNNER_TEMP}/wheelenv/bin/python" tools/release_contracts.py \
             --policy validation/package_size_contract.toml \
