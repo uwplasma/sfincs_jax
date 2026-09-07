@@ -13,8 +13,8 @@ Gates for the first-class batched-solve API:
   discretization, is rejected with a clear error;
 - the :mod:`dkx.api` facades route to the same result;
 - the multi-device split (``devices=``) is element-wise identical to the
-  single-device path — verified in-process with a duplicated device list and
-  in a fresh subprocess with two forced host CPU devices — and anything short
+  single-device path — verified in a fresh subprocess with two distinct
+  forced host CPU devices — and anything short
   of two usable devices degrades to the single-device path unchanged.
 """
 
@@ -128,7 +128,11 @@ def test_batched_er_scan_matches_serial(tmp_path: Path) -> None:
     assert result.states.shape[0] == er_values.shape[0]
     assert result.radial_current.shape == er_values.shape
     assert result.residual_norms.shape == er_values.shape
-    assert np.all(np.isfinite(np.asarray(result.residual_norms)))
+    for i, er_value in enumerate(values):
+        op_i = er_mod.operator_at_er(prob.operator, er_value, dphi_per_er=prob.dphi_per_er)
+        rhs = op_i.rhs()
+        relative = jnp.linalg.norm(op_i.apply(result.states[i]) - rhs) / jnp.linalg.norm(rhs)
+        assert float(relative) < 1e-10, float(relative)
 
     for i, er in enumerate(np.asarray(er_values)):
         j_r, gamma, state = er_mod.radial_current(prob, float(er))
@@ -529,6 +533,15 @@ def test_api_batched_facades_route(tmp_path: Path) -> None:
         atol=1e-12,
     )
 
+    # Omitted options preserve the prepared problem's numerical policy.
+    prepared = dataclasses.replace(prob, solve_method="gmres", tol=3e-9)
+    inherited = api.batched_er_scan(prepared, er_values)
+    assert inherited.method == inherited.executed_method == "gmres"
+    expected = batch_mod.batched_er_scan(prepared, er_values)
+    np.testing.assert_array_equal(inherited.states, expected.states)
+    override = api.batched_er_scan(prepared, er_values, solve_method="auto", tol=1e-10)
+    np.testing.assert_array_equal(override.states, direct.states)
+
     specs = [(0.04, -0.5), (0.06, -0.55)]
     ops = [
         _build_op(tmp_path, epsilon_h=eh, dndr=dn, name=f"api_surface_{i}.namelist")
@@ -577,19 +590,14 @@ def test_devices_degrade_and_validation(tmp_path: Path) -> None:
     # Resolution rules (pure arithmetic, no dispatch).
     assert batch_mod._resolve_devices(None, 8) is None
     assert batch_mod._resolve_devices([d0], 8) is None  # one device -> degrade
-    assert batch_mod._resolve_devices([d0, d0], 1) is None  # batch < devices
-    assert batch_mod._resolve_devices([d0, d0], 2) == [d0, d0]
+    with pytest.raises(ValueError, match="distinct physical"):
+        batch_mod._resolve_devices([d0, d0], 2)
     if len(jax.local_devices()) == 1:
         assert batch_mod._resolve_devices("auto", 8) is None
     with pytest.raises(ValueError, match="not recognised"):
         batch_mod._resolve_devices("all", 8)
     with pytest.raises(ValueError, match="non-empty"):
         batch_mod._resolve_devices([], 8)
-
-    # Shard bounds: contiguous, near-equal, ordered.
-    assert batch_mod._shard_bounds(8, 2) == [(0, 4), (4, 8)]
-    assert batch_mod._shard_bounds(7, 2) == [(0, 4), (4, 7)]
-    assert batch_mod._shard_bounds(5, 3) == [(0, 2), (2, 4), (4, 5)]
 
     # End-to-end degrade: `devices` that resolve to one device produce the
     # identical result and chunk metadata as the default path.
@@ -603,100 +611,6 @@ def test_devices_degrade_and_validation(tmp_path: Path) -> None:
         _assert_batched_results_identical(base, degraded)
 
 
-def test_duplicate_device_split_matches_single(tmp_path: Path) -> None:
-    """The full multi-device code path (split/place/gather) is element-wise
-    identical to the single-device path at matched chunk widths.
-
-    A duplicated device list exercises the whole orchestration on one physical
-    device; ``max_batch=2`` pins the executed ``lax.map`` width to 2 on both
-    paths, so the per-element computation is the same compiled program and the
-    identity is bitwise.
-    """
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    import jax.numpy as jnp
-
-    from dkx import batch as batch_mod
-    from dkx import er as er_mod
-
-    prob = er_mod.prepare(_write(tmp_path, _pas_deck()), er_bracket=(-5.0, 5.0))
-    er_values = jnp.asarray(
-        [-2.0, -1.5, -1.0, -0.5, 0.0, 0.3, 0.5, 0.7], dtype=jnp.float64
-    )
-    d0 = jax.devices()[0]
-
-    single = batch_mod.batched_er_scan(prob, er_values, max_batch=2)
-    multi = batch_mod.batched_er_scan(
-        prob, er_values, max_batch=2, devices=[d0, d0]
-    )
-    assert single.chunk_size == 2 and single.n_chunks == 4
-    # Per-device metadata: shards of 4, two sequential chunks of 2 per device.
-    assert multi.chunk_size == 2 and multi.n_chunks == 2
-    _assert_batched_results_identical(single, multi)
-
-
-def test_multi_device_per_device_chunk_arithmetic(tmp_path: Path) -> None:
-    """The memory budget bounds each device's chunk, not the whole batch."""
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    import jax.numpy as jnp
-
-    from dkx import batch as batch_mod
-    from dkx import er as er_mod
-
-    prob = er_mod.prepare(_write(tmp_path, _pas_deck()), er_bracket=(-5.0, 5.0))
-    er_values = jnp.asarray(
-        [-2.0, -1.5, -1.0, -0.5, 0.0, 0.3, 0.5, 0.7], dtype=jnp.float64
-    )
-    d0 = jax.devices()[0]
-
-    # Generous budget: each device takes its whole shard in one chunk.
-    roomy = batch_mod.batched_er_scan(
-        prob, er_values, memory_budget_gb=64.0, devices=[d0, d0]
-    )
-    assert roomy.chunk_size == 4 and roomy.n_chunks == 1
-    # Tiny budget: one solve at a time on each device.
-    tight = batch_mod.batched_er_scan(
-        prob, er_values, memory_budget_gb=1e-6, devices=[d0, d0]
-    )
-    assert tight.chunk_size == 1 and tight.n_chunks == 4
-    np.testing.assert_allclose(
-        np.asarray(tight.radial_current),
-        np.asarray(roomy.radial_current),
-        rtol=0.0,
-        atol=1e-12,
-    )
-
-
-def test_multi_device_falls_back_under_jit_trace(tmp_path: Path) -> None:
-    """Traced batch leaves fall back to the (traceable) single-device path."""
-    import jax
-
-    jax.config.update("jax_enable_x64", True)
-    import jax.numpy as jnp
-
-    from dkx import batch as batch_mod
-    from dkx import er as er_mod
-
-    prob = er_mod.prepare(_write(tmp_path, _pas_deck()), er_bracket=(-5.0, 5.0))
-    er_values = jnp.asarray([-1.0, 0.0, 0.5], dtype=jnp.float64)
-    dphi = jnp.asarray(prob.dphi_per_er, dtype=jnp.float64) * er_values
-    batch_leaves = {"dphi_hat_dpsi_hat": dphi, "dphi_hat_dpsi_hat_kinetic": dphi}
-    d0 = jax.devices()[0]
-
-    eager = batch_mod.batched_solve(prob.operator, batch_leaves)
-    jitted = jax.jit(
-        lambda leaves: batch_mod.batched_solve(
-            prob.operator, leaves, devices=[d0, d0]
-        )
-    )(batch_leaves)
-    np.testing.assert_allclose(
-        np.asarray(jitted.states), np.asarray(eager.states), rtol=0.0, atol=1e-12
-    )
-
-
 _TWO_DEVICE_SCRIPT = """
 import sys
 
@@ -708,6 +622,7 @@ import jax.numpy as jnp
 
 from dkx import batch as batch_mod
 from dkx import er as er_mod
+from dkx import batched_er_scan, batched_surface_scan
 
 assert len(jax.devices()) == 2, f"expected 2 forced CPU devices, got {jax.devices()}"
 
@@ -754,6 +669,75 @@ ref = batch_mod.batched_er_scan(prob, er_values[:1])
 assert one.chunk_size == ref.chunk_size == 1
 assert eq(one.states, ref.states)
 
+# Device placement is evidence of distribution; metadata alone is not.
+assert len(multi2.states.addressable_shards) == 2
+assert not multi2.states.is_fully_replicated
+assert {s.device for s in multi2.states.addressable_shards} == set(jax.devices())
+
+# Uneven batches retain order and discard padded cases, including in reverse mode.
+values = er_values[:5]
+def scan(values, devices):
+    return batched_er_scan(
+        prob, values, devices=devices, max_batch=2, differentiable=True)
+for devices in (None, "auto"):
+    result = jax.jit(lambda v: scan(v, devices))(values)
+    assert close(result.states, single.states[:5])
+    for i, er_value in enumerate(values):
+        op_i = er_mod.operator_at_er(prob.operator, er_value, dphi_per_er=prob.dphi_per_er)
+        rhs = op_i.rhs()
+        relative = jnp.linalg.norm(op_i.apply(result.states[i]) - rhs) / jnp.linalg.norm(rhs)
+        assert float(relative) < 1e-10, float(relative)
+    assert result.chunk_size == 2
+    assert result.n_chunks == (3 if devices is None else 2)
+
+def objective(v, devices):
+    return jnp.sum(scan(v, devices).moments["FSABjHat"])
+value, grad = jax.jit(jax.value_and_grad(lambda v: objective(v, "auto")))(values)
+ref_value, ref_grad = jax.jit(jax.value_and_grad(lambda v: objective(v, None)))(values)
+np.testing.assert_allclose(value, ref_value, rtol=1e-10, atol=1e-12)
+np.testing.assert_allclose(grad, ref_grad, rtol=1e-9, atol=1e-12)
+direction = jnp.asarray([0.1, -0.2, 0.3, -0.1, 0.2])
+step = 1e-3
+fd = (objective(values + step * direction, None) -
+      objective(values - step * direction, None)) / (2 * step)
+np.testing.assert_allclose(jnp.vdot(grad, direction), fd, rtol=1e-4, atol=1e-12)
+
+roomy = batch_mod.batched_er_scan(prob, er_values, memory_budget_gb=64, devices="auto")
+tight = batch_mod.batched_er_scan(prob, er_values, memory_budget_gb=1e-6, devices="auto")
+assert roomy.chunk_size == 4 and roomy.n_chunks == 1
+assert tight.chunk_size == 1 and tight.n_chunks == 4
+tight_ref = batch_mod.batched_er_scan(prob, er_values, memory_budget_gb=1e-6)
+assert tight.executed_method == tight_ref.executed_method
+assert close(tight.states, tight_ref.states)
+
+# The public surface facade preserves actual placement and diagnostics too.
+surface_ops = [er_mod.operator_at_er(prob.operator, e, dphi_per_er=prob.dphi_per_er)
+               for e in er_values[:2]]
+surface_result = batched_surface_scan(surface_ops, devices="auto")
+assert not surface_result.states.is_fully_replicated
+assert len(surface_result.states.addressable_shards) == 2
+assert close(surface_result.states, single.states[:2])
+assert close(surface_result.residual_norms, single.residual_norms[:2])
+
+# Full-FP Krylov solves use the same independent-batch contract.
+fp_prob = er_mod.prepare(sys.argv[2], er_bracket=(-1.0, 1.0), solve_method="gmres")
+fp_values = jnp.asarray([-0.1, 0.2])
+def fp_scan(v, devices):
+    return batch_mod.batched_er_scan(
+        fp_prob, v, devices=devices, differentiable=True, max_batch=1)
+for devices in (None, "auto"):
+    result = jax.jit(lambda v: fp_scan(v, devices))(fp_values)
+    grad = jax.jit(jax.grad(lambda v: jnp.sum(fp_scan(v, devices).moments["FSABjHat"])))(fp_values)
+    for i, er_value in enumerate(fp_values):
+        op_i = er_mod.operator_at_er(fp_prob.operator, er_value, dphi_per_er=fp_prob.dphi_per_er)
+        rhs = op_i.rhs()
+        assert float(jnp.linalg.norm(op_i.apply(result.states[i]) - rhs) / jnp.linalg.norm(rhs)) < 1e-10
+    if devices is None:
+        fp_ref, grad_ref = result, grad
+    else:
+        np.testing.assert_allclose(result.states, fp_ref.states, rtol=1e-8, atol=1e-11)
+        np.testing.assert_allclose(grad, grad_ref, rtol=1e-8, atol=1e-11)
+
 print("MULTI_DEVICE_IDENTITY_OK")
 """
 
@@ -761,12 +745,13 @@ print("MULTI_DEVICE_IDENTITY_OK")
 def test_two_forced_cpu_devices_identity(tmp_path: Path) -> None:
     """1-vs-2 forced host CPU devices: the split is element-wise identical.
 
-    Two forced host devices carry the same correctness story as two GPUs (the
-    split, placement, and gather are the same code path), so this is the
-    portable identity gate for the multi-device API.  Device forcing must
-    happen before JAX initializes, hence the fresh subprocess.
+    Actual shard placement, uneven batches and reverse-mode sensitivities are
+    checked independently of metadata. GPU validation remains separate. Device
+    forcing must happen before JAX initializes, hence the fresh subprocess.
     """
     deck_path = _write(tmp_path, _pas_deck())
+    fp_path = _write(tmp_path, _pas_deck(n_theta=5, n_zeta=5, n_xi=4).replace(
+        "collisionOperator = 1", "collisionOperator = 0"), "fp.namelist")
     script_path = tmp_path / "two_device_identity.py"
     script_path.write_text(_TWO_DEVICE_SCRIPT)
 
@@ -780,7 +765,7 @@ def test_two_forced_cpu_devices_identity(tmp_path: Path) -> None:
     )
 
     proc = subprocess.run(
-        [sys.executable, str(script_path), str(deck_path)],
+        [sys.executable, str(script_path), str(deck_path), str(fp_path)],
         env=env,
         capture_output=True,
         text=True,

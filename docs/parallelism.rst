@@ -4,9 +4,9 @@ Parallelism
 `dkx` runs on a single node — a multi-core CPU or the node's local GPUs — and
 gets its throughput from two places: batched ``jax.vmap`` over independent
 solves (optionally split across the node's devices) and the structured
-``solvax`` solve routes underneath. This covers the same physics that SFINCS
-Fortran v3 spreads across many nodes with MPI, while keeping the whole path
-differentiable.
+``solvax`` solve routes underneath. Parallel execution does not establish
+SFINCS-v3 physics parity or complete parameter derivatives; see :doc:`numerics`
+and :doc:`differentiability` for supported domains.
 
 The lever to reach for first is **batching independent solves**. Scanning the
 radial electric field, sweeping flux surfaces, or building a monoenergetic
@@ -34,10 +34,10 @@ that share a discretization:
 
 .. code-block:: python
 
-   from dkx.batch import batched_er_scan, batched_surface_scan
+   from dkx import batched_er_scan, batched_surface_scan
 
    # Scan the radial electric field on one geometry.
-   result = batched_er_scan(problem, er_values)
+   result = batched_er_scan(problem, er_values, devices="auto")
    radial_current = result.radial_current       # J_r for each E_r value
 
    # Sweep a set of flux surfaces (one KineticOperator each).
@@ -50,13 +50,38 @@ take optional ``max_batch`` / ``memory_budget_gb`` overrides. Independent solves
 monoenergetic database (``dkx.monoenergetic``) — are exactly the
 parallel-friendly shape.
 
+Prepare the problem or surface operators outside JAX transformations. The public
+``dkx.batched_er_scan`` retains a prepared problem's solver method and tolerance
+unless explicitly overridden. For repeated differentiable scans:
+
+.. code-block:: python
+
+   import jax
+   import jax.numpy as jnp
+   from dkx.er import prepare
+
+   problem = prepare("input.namelist", solve_method="gmres", tol=1e-10)
+   current = jax.jit(jax.value_and_grad(
+       lambda er: jnp.sum(batched_er_scan(
+           problem, er, devices="auto", differentiable=True,
+       ).moments["FSABjHat"])
+   ))
+   value, gradient = current(er_values)
+
+``devices=None`` keeps the default single-device behavior. Both public scan
+functions return the original residual norms along with states and moments;
+use these diagnostics together with observable and resolution checks. These
+operator/deck interfaces do not yet provide a prepared native ``Case`` API.
+
 **Automatic memory budgeting.** There are no sharding environment variables on
 this path. The batch runs in ``jax.lax.map`` chunks sized from two numbers: the
 per-solve memory footprint of the route the ``auto`` policy actually takes, and
 the resolved device (or host) memory budget. A solve that routes to the
 memory-lean truncated structured direct kernel is charged its truncated working
-set, not the full-band factorization peak that route never allocates. Only one
-chunk's intermediates are ever live. ``memory_budget_gb`` overrides the
+set, not the full-band factorization peak that route never allocates. Forward
+work is chunked, but reverse mode can retain residuals across chunks. The
+budget is an estimate, not a hard allocation limit; measure the gradient peak
+separately. ``memory_budget_gb`` overrides the
 resolved budget and is forwarded to each element's solver-route decision as
 well as the outer chunk planner. A tight budget therefore cannot size a small
 chunk and then silently let each element choose an inadmissible full-factor
@@ -68,30 +93,38 @@ beats a serial Python loop even on CPU — about ``9.5x`` for an ``E_r`` scan an
 sits at CPU parity but a batch fills the device. Reproduce both with
 ``python tools/benchmarks/batched_scan.py``.
 
-**Multiple devices.** The batch elements are embarrassingly parallel, so the
-batched calls also accept a ``devices`` argument that splits the batch across
-devices: ``devices="auto"`` uses every local device of the default backend
-when more than one is visible, and an explicit sequence of ``jax.Device``
-objects selects a subset. Each device receives a contiguous near-equal shard
-of the batch and runs the same memory-budgeted chunked solve on it, so the
-budget bounds each device's chunk and the auto-chunking arithmetic is per
-device; the results are gathered on the host in batch order. Three properties
-of that split:
+**Multiple devices.** ``devices="auto"`` uses every local device of the
+selected backend; an explicit sequence selects distinct devices. JAX
+``shard_map`` runs the memory-budgeted local map on each device, including
+inside ``jax.jit`` and ``jax.grad``. SOLVAX still owns each local solve.
+The current SOLVAX batch wrapper does not expose the varying-axis checker
+option needed by the custom linear solve, so DKX places the physics map with
+JAX directly. Numerical residual and derivative checks remain enabled.
 
-- Fewer than two usable devices, or a batch smaller than the device count,
-  degrades to the single-device path unchanged. Traced inputs (inside
-  ``jax.jit`` / ``jax.grad``) fall back to the single-device path too, which
-  computes the same answer; keep ``devices=None`` on paths meant for tracing.
-- The per-element computation is the single-device computation. With matched
-  executed chunk widths (an explicit ``max_batch``) the results are bitwise
-  identical across device counts, and the identity check in
-  ``tests/test_batch.py`` verifies element-wise identical results for one
-  versus two forced host CPU devices (``DKX_CPU_DEVICES=2``), which exercises
-  the same split/placement/gather path as two GPUs.
-- Multi-GPU *speedup* validation is pending access to a multi-GPU host. The API
-  is measured-correct on multi-device CPU, where no speedup is possible (forced
-  host devices share one threadpool) and the split costs one extra per-shard
-  dispatch, so the honest CPU expectation is neutral-to-slower wall time.
+- Fewer than two resolved devices, or fewer cases than devices, uses the
+  single-device path. Duplicate device entries are rejected.
+- Equal local shapes are obtained by repeating the final valid case for
+  padding. Trimming restores batch order and excludes padding from objectives
+  and their derivatives. There is no explicit host gather. Even batch outputs
+  remain partitioned; trimming uneven outputs can require redistribution.
+- ``tests/test_batch.py`` checks actual addressable shards, single-device
+  agreement, uneven batches, JIT, and physical-current gradients on two forced
+  CPU devices. Forced devices share host resources and do not prove CPU
+  speedup. GPU scaling and production memory/throughput require separate
+  synchronized measurements; device placement alone does not establish speedup.
+
+
+A bounded installed-wheel probe on two RTX A4000s (eight two-species PAS
+cases, 7×7 angular grid, eight pitch modes, three speed nodes, chunk size two)
+measured synchronized warm medians over ten calls: forward 44.1 ms on one GPU
+and 27.7 ms on two; current value plus gradient 71.8 ms and 43.4 ms. Compilation
+and first execution were measured separately (4.7–8.4 s). Perfetto traces show
+approximately half the device events on each GPU, rather than replicated
+whole-batch work. XLA temporary-memory estimates were 5.84 MB per device for
+forward execution and 23.67→19.22 MB for the gradient; these are compiled
+estimates, not measured process/device peaks. Raw traces, HLO and timings are
+archived outside Git under ``dkx-review-evidence-20260905/sharding-wheel``.
+This teaching-grid probe does not qualify production scaling or resolution.
 
 Solver routes and where the GPU helps
 -------------------------------------

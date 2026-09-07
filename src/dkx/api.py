@@ -583,11 +583,12 @@ def batched_er_scan(
     *,
     er_bracket: tuple[float, float] | None = None,
     er_initial: float | None = None,
-    solve_method: str = "auto",
-    tol: float = 1.0e-10,
+    solve_method: str | None = None,
+    tol: float | None = None,
     differentiable: bool = False,
     max_batch: int | None = None,
     memory_budget_gb: float | None = None,
+    devices: Sequence[Any] | str | None = None,
     retain_legendre_tail: bool = False,
 ) -> Any:
     """Batched ``E_r`` scan on one geometry (stable public facade).
@@ -596,7 +597,8 @@ def batched_er_scan(
     solve over a vector of radial-electric-field values sharing a single
     geometry, returning batched states, moments, and the radial current ``J_r``
     per ``E_r``.  Auto-chunked to a memory-budgeted batch size; differentiable
-    and jit-safe.  The heavy JAX/batch stack is imported lazily so
+    and jit-safe with a prepared problem. Build deck inputs outside JAX
+    transformations. The heavy JAX/batch stack is imported lazily so
     ``dkx.api`` stays cheap to import.
 
     Args:
@@ -607,9 +609,12 @@ def batched_er_scan(
         er_values: the ``E_r`` scan values, shape ``(batch,)``.
         er_bracket, er_initial: optional bracket / initial ``E_r`` forwarded to
             :func:`dkx.er.prepare` when ``request`` is a deck.
-        solve_method, tol: forwarded to the solve.
+        solve_method, tol: optional overrides. A prepared problem retains its
+            settings when omitted; a deck defaults to auto and 1e-10.
         differentiable: differentiable implicit solves (for ``jax.grad``).
         max_batch, memory_budget_gb: optional memory-budgeting overrides.
+        devices: None for one device, "auto" for local devices, or a sequence
+            of distinct devices. Forwarded to :func:`dkx.batch.batched_solve`.
         retain_legendre_tail: retain the selected-tail relative-L2 upper bound
             when the memory-lean truncated route executes.
 
@@ -626,8 +631,8 @@ def batched_er_scan(
         input_path, _wout, _out, _backend, _autodiff, _options = _solve_request_paths(request)
         problem = prepare(
             input_path,
-            solve_method=solve_method,
-            tol=tol,
+            solve_method=solve_method if solve_method is not None else "auto",
+            tol=tol if tol is not None else 1.0e-10,
             er_bracket=er_bracket,
             er_initial=er_initial,
         )
@@ -639,6 +644,7 @@ def batched_er_scan(
         differentiable=differentiable,
         max_batch=max_batch,
         memory_budget_gb=memory_budget_gb,
+        devices=devices,
         retain_legendre_tail=retain_legendre_tail,
     )
 
@@ -651,6 +657,7 @@ def batched_surface_scan(
     differentiable: bool = False,
     max_batch: int | None = None,
     memory_budget_gb: float | None = None,
+    devices: Sequence[Any] | str | None = None,
     retain_legendre_tail: bool = False,
 ) -> Any:
     """Batched solve over a batch of flux surfaces (stable public facade).
@@ -659,7 +666,8 @@ def batched_surface_scan(
     solve over a sequence of flux-surface operators that share discretization
     (grids/derivative matrices/layout) but differ in geometry, species,
     collision, and drive leaves.  Auto-chunked to a memory-budgeted batch size;
-    differentiable and jit-safe.
+    differentiable and jit-safe with built operators. Build deck inputs outside
+    JAX transformations.
 
     Args:
         surfaces: a sequence whose entries are each a built
@@ -667,6 +675,8 @@ def batched_surface_scan(
             (:class:`SolveInputs` / namelist path) built into one per surface.
         solve_method, tol, differentiable: forwarded to the solve.
         max_batch, memory_budget_gb: optional memory-budgeting overrides.
+        devices: None for one device, "auto" for local devices, or a sequence
+            of distinct devices. Forwarded to :func:`dkx.batch.batched_solve`.
         retain_legendre_tail: retain the selected-tail relative-L2 upper bound
             when the memory-lean truncated route executes.
 
@@ -692,6 +702,7 @@ def batched_surface_scan(
         differentiable=differentiable,
         max_batch=max_batch,
         memory_budget_gb=memory_budget_gb,
+        devices=devices,
         retain_legendre_tail=retain_legendre_tail,
     )
 

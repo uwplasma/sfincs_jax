@@ -217,10 +217,7 @@ def _sum_x_strict(w_x: jnp.ndarray, values_sxtz: jnp.ndarray) -> jnp.ndarray:
     is unchanged, so the Fortran-parity results this branch exists for are
     bit-identical.
     """
-    acc0 = jnp.zeros(
-        (values_sxtz.shape[0], values_sxtz.shape[2], values_sxtz.shape[3]),
-        dtype=jnp.float64,
-    )
+    acc0 = jnp.zeros_like(values_sxtz[:, 0, :, :], dtype=jnp.float64)
 
     def body(ix: int, acc: jnp.ndarray) -> jnp.ndarray:
         return acc + w_x[ix] * values_sxtz[:, ix, :, :]
@@ -252,7 +249,7 @@ def _sum_tz_sx_strict(
     w_t: jnp.ndarray, w_z: jnp.ndarray, values_sxtz: jnp.ndarray
 ) -> jnp.ndarray:
     """The Fortran (theta, zeta) loop order, jitted once. See :func:`_sum_x_strict`."""
-    acc0 = jnp.zeros((values_sxtz.shape[0], values_sxtz.shape[1]), dtype=jnp.float64)
+    acc0 = jnp.zeros_like(values_sxtz[:, :, 0, 0], dtype=jnp.float64)
 
     def body_t(it: int, acc_t: jnp.ndarray) -> jnp.ndarray:
         def body_z(iz: int, acc_z: jnp.ndarray) -> jnp.ndarray:
