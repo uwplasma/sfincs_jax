@@ -8,7 +8,7 @@ on the physics. One real solve is exercised separately and marked slow.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -32,6 +32,7 @@ class FakeCase:
 class FakeResult:
     def __init__(self, arrays):
         self.arrays = arrays
+        self.metadata = {"converged": True}
 
 
 def study(monkeypatch, response, *, case=None, **kwargs):
@@ -47,6 +48,7 @@ def study(monkeypatch, response, *, case=None, **kwargs):
         return FakeResult({"particle_flux_m2_s": np.array([response(case.resolution)])})
 
     monkeypatch.setattr("dkx.execution.run_case", fake_run_case)
+    kwargs.setdefault("observables", ("particle_flux_m2_s",))
     report = cv.converge_case(
         case or FakeCase(FakeResolution(theta=10, zeta=4, pitch=10, speed=10)), **kwargs
     )
@@ -167,33 +169,26 @@ def test_a_single_refinable_axis_needs_no_joint_run(monkeypatch) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_a_quantity_that_is_physically_zero_is_compared_absolutely() -> None:
-    """Dividing by an exactly zero reference would report a spurious blow-up.
-
-    An exactly symmetric configuration has zero bootstrap current; a refinement
-    that leaves it at 1e-18 has not changed the physics, and a relative measure
-    against zero would call that an infinite change.
-    """
-    changes = cv._relative_changes({"j": 0.0}, {"j": 1e-18})
-    assert changes["j"] == pytest.approx(1e-18)
+def test_a_zero_reference_requires_an_explicit_physical_absolute_budget(monkeypatch):
+    def response(r):
+        return 0.0 if r.theta == 10 else 1e-18
+    report, _ = study(monkeypatch, response, axes=("theta",))
+    assert not report.converged
+    report, _ = study(monkeypatch, response, axes=("theta",),
+                      absolute_tolerances={"particle_flux_m2_s": 2e-18})
+    assert report.converged
+    report, _ = study(monkeypatch, lambda r: 0.0, axes=("theta",))
+    assert report.converged
 
 
 def test_relative_change_is_used_for_ordinary_magnitudes() -> None:
     assert cv._relative_changes({"q": 2.0}, {"q": 3.0})["q"] == pytest.approx(0.5)
 
 
-def test_an_observable_missing_from_a_run_is_skipped_not_counted_as_zero() -> None:
-    assert cv._relative_changes({"a": 1.0, "b": 2.0}, {"a": 1.0}) == {"a": 0.0}
-
-
-def test_an_observable_is_reduced_by_its_largest_magnitude() -> None:
-    """Max absolute value, so a per-species sign cancellation cannot hide drift.
-
-    Summing would let an electron flux rising and an ion flux falling by the
-    same amount register as no change at all.
-    """
-    assert cv._scalarize(np.array([[3.0, -7.0], [1.0, 2.0]])) == pytest.approx(7.0)
-    assert cv._scalarize(np.array([])) == 0.0
+def test_an_observable_missing_from_a_refinement_fails_admission() -> None:
+    changes = cv._relative_changes({"a": 1.0, "b": 2.0}, {"a": 1.0})
+    assert changes["a"] == 0.0
+    assert np.isinf(changes["b"])
 
 
 def test_a_result_without_any_requested_observable_is_an_error(monkeypatch) -> None:
@@ -201,7 +196,7 @@ def test_a_result_without_any_requested_observable_is_an_error(monkeypatch) -> N
     monkeypatch.setattr(
         "dkx.execution.run_case", lambda case, **_: FakeResult({"other": np.array([1.0])})
     )
-    with pytest.raises(ValueError, match="none of the requested observables"):
+    with pytest.raises(ValueError, match="requested observables are missing"):
         cv.converge_case(FakeCase(FakeResolution(10, 4, 10, 10)))
 
 
@@ -210,3 +205,67 @@ def test_the_cli_axis_list_matches_the_workflow(monkeypatch) -> None:
     from dkx import cli
 
     assert cli._CONVERGE_AXES == cv.AXES
+
+@pytest.mark.parametrize('ref, got', [
+    ([1., -1.], [-1., 1.]),
+    ([[1., 2.], [3., 4.]], [[4., 3.], [2., 1.]]),
+    ([1000., 1.], [1000., 2.]),
+])
+def test_refinement_compares_each_signed_species_and_surface(monkeypatch, ref, got):
+    report, _ = study(monkeypatch, lambda r: ref if r.theta == 10 else got,
+                      axes=('theta',))
+    assert not report.converged
+    assert report.refinements[0].worst >= 1.
+
+@pytest.mark.parametrize('got', [[np.nan, 2.], [np.inf, 2.], [], [[1., 2.]]])
+def test_invalid_or_misaligned_observables_cannot_pass(monkeypatch, got):
+    report, _ = study(monkeypatch, lambda r: [1., 2.] if r.theta == 10 else got,
+                      axes=('theta',))
+    assert not report.converged
+
+
+def test_no_refinable_axes_does_not_certify_resolution(monkeypatch):
+    report, _ = study(monkeypatch, lambda r: 1., axes=())
+    assert not report.converged
+    report, _ = study(monkeypatch, lambda r: 1., axes=("zeta",),
+                      case=FakeCase(FakeResolution(10, 1, 10, 10)))
+    assert not report.converged
+
+
+def test_a_failed_solve_cannot_certify_resolution(monkeypatch):
+    result = FakeResult({"particle_flux_m2_s": np.ones(2)})
+    result.metadata["converged"] = False
+    monkeypatch.setattr("dkx.execution.run_case", lambda case: result)
+    with pytest.raises(ValueError, match="failed solve"):
+        cv.converge_case(FakeCase(FakeResolution(10, 4, 10, 10)))
+
+
+@pytest.mark.parametrize("tolerance", [0., -1., np.inf, np.nan])
+def test_invalid_convergence_tolerance_is_rejected(monkeypatch, tolerance):
+    with pytest.raises(ValueError, match="tolerance"):
+        study(monkeypatch, lambda r: 1., tolerance=tolerance)
+
+
+@pytest.mark.parametrize("atols", [{"missing": 1.}, {"particle_flux_m2_s": -1.},
+                                    {"particle_flux_m2_s": np.nan},
+                                    {"particle_flux_m2_s": np.inf}])
+def test_invalid_absolute_budgets_are_rejected(monkeypatch, atols):
+    with pytest.raises(ValueError, match="absolute"):
+        study(monkeypatch, lambda r: 1., absolute_tolerances=atols)
+
+
+def test_entrywise_change_handles_extreme_finite_values():
+    changes = cv._relative_changes({"q": np.array([1e308, 1e-308])},
+                                   {"q": np.array([-1e308, 2e-308])})
+    assert changes["q"] == pytest.approx(2.)
+
+
+def test_large_absolute_budget_does_not_overflow_into_false_convergence():
+    changes = cv._relative_changes({"q": 0.}, {"q": 1e308}, tolerance=.02,
+                                   absolute_tolerances={"q": 5e307})
+    assert changes["q"] == pytest.approx(.04)
+
+
+def test_a_missing_requested_observable_cannot_hide_behind_an_available_one(monkeypatch):
+    with pytest.raises(ValueError, match="missing"):
+        study(monkeypatch, lambda r: 1., observables=("particle_flux_m2_s", "heat_flux_W_m2"))
