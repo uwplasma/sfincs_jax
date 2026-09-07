@@ -508,15 +508,14 @@ Known issues
   near-singular operator: full Fokker-Planck with ``constraintScheme=1``, a
   finite ``Er``, uniform ``Nxi_for_x``, condition number ~``6e10``. A generic
   cotangent excites an almost-null direction, the adjoint solution norm
-  reaches ~``7e7``, and no backward-stable method can then drive
-  :math:`\|A^T y - g\|` down to ``tol`` times :math:`\|g\|`: GCROT stagnates
-  two decades above it at a relative residual of ``2e-8`` while the gradient
-  it produces still matches finite differences to ``1e-9``. The guard
-  therefore accepts a residual that meets *either* the requested tolerance or
-  the float64 backward-error floor ``32 eps (||A|| ||y|| + ||g||)``, times
-  ``adjoint_residual_factor`` (default 10); the floor is capped at ``1e-6``
-  relative so a solve that diverges outright cannot excuse itself with its own
-  inflated solution norm.
+  reaches ~``7e7``, and GCROT can stagnate above the requested residual
+  tolerance while a particular observable still matches finite differences.
+  This does not certify other cotangents or parameters. The guard requires
+  the requested ``max(atol, tol*||g||)`` by default. The capped diagnostic
+  scale ``32 eps (||A|| ||y|| + ||g||)`` remains recorded but cannot widen
+  admission. ``adjoint_residual_factor`` defaults to one; explicit relaxation
+  or ``check_adjoint=False`` requires independent observable validation.
+
 - **Ill-conditioned scheme-1 monoenergetic off-diagonal.** The Fortran build
   itself fails upstream's ``tests.py`` on the ``monoenergetic_geometryScheme1``
   ``transportMatrix[0,1]`` element only (``+1.62`` vs expected ``-1.08`` at

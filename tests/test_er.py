@@ -399,7 +399,8 @@ def test_routed_radial_current_gradient_matches_cold_solves(tmp_path, monkeypatc
         return er_mod.radial_current(problem, field, differentiable=True)[0]
     field = 0.2
     value, gradient = jax.jit(jax.value_and_grad(current))(field)
-    cold = lambda e: float(er_mod.radial_current(problem, e)[0])
+    def cold(e):
+        return float(er_mod.radial_current(problem, e)[0])
     np.testing.assert_allclose(value, cold(field), rtol=1e-8, atol=1e-15)
     assert np.isfinite(gradient) and abs(gradient) > 1e-15
     differences = [(cold(field + h) - cold(field - h)) / (2 * h) for h in [1e-3, 3e-4, 1e-4]]
@@ -408,7 +409,7 @@ def test_routed_radial_current_gradient_matches_cold_solves(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("rhs,x,accepted", [
     ([1.], [1.], True), ([1.], [1.1], False),
-    ([0.], [0.], True), ([0.], [1e-20], False),
+    ([0.], [0.], True), ([0.], [1e-20], False), ([0.], [1e-200], False),
     ([1.], [np.nan], False), ([np.inf], [1.], False),
 ])
 def test_host_kinetic_acceptance_uses_original_equation(monkeypatch, rhs, x, accepted):
@@ -445,6 +446,129 @@ def test_host_root_rejects_inaccurate_cancelling_fluxes(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="Ambipolar kinetic residual failed"):
         er.find_ambipolar_er(problem, emit=None)
     assert len(calls) == 1  # The invalid state never reaches continuation.
+
+
+@pytest.fixture
+def kinetic_effects():
+    """Drain expected asynchronous rejection callbacks between GPU tests."""
+    import jax
+    yield
+    try:
+        jax.effects_barrier()
+    except Exception as exc:
+        assert "Ambipolar kinetic residual failed" in str(exc)
+        # A successful effect replaces the failed runtime token before cleanup.
+        jax.jit(lambda: jax.debug.callback(lambda: None))()
+        jax.effects_barrier()
+
+
+@pytest.mark.parametrize("transform", ["jit", "grad", "vmap"])
+@pytest.mark.parametrize("rhs,x,accepted", [
+    ([1.], [1.], True), ([1.], [1.1], False),
+    ([0.], [0.], True), ([0.], [1e-20], False), ([0.], [1e-200], False),
+    ([1.], [np.nan], False), ([np.inf], [1.], False),
+])
+def test_traced_kinetic_admission(transform, rhs, x, accepted, kinetic_effects):
+    from types import SimpleNamespace
+    import jax
+    import jax.numpy as jnp
+    from dkx import er
+    op = SimpleNamespace(rhs=lambda: jnp.array(rhs), apply=lambda x: x)
+
+    def checked(x):
+        er._check_kinetic_solution(op, 0., x, 1e-10)
+        return jnp.sum(x*x)
+
+    fn = jax.grad(checked) if transform == "grad" else checked
+    argument = jnp.array(x)
+    if transform == "vmap":
+        fn = jax.vmap(fn)
+        argument = jnp.stack([jnp.array(rhs), argument])
+    compiled = jax.jit(fn)
+    if accepted:
+        assert np.all(np.isfinite(compiled(argument)))
+    else:
+        with pytest.raises(Exception, match="Ambipolar kinetic residual failed"):
+            jax.block_until_ready(compiled(argument))
+
+
+def test_differentiated_root_rejects_inaccurate_cancelling_fluxes(tmp_path, monkeypatch, kinetic_effects):
+    from types import SimpleNamespace
+    import jax
+    import jax.numpy as jnp
+    from dkx import er
+    problem = er.prepare(_write(tmp_path, _pas_deck(n_theta=5, n_zeta=5)))
+
+    def corrupt(op, rhs, **kwargs):
+        assert kwargs["differentiable"] and kwargs["tier1_keep_lowest"] == op.n_xi
+        return SimpleNamespace(x=jnp.zeros_like(rhs), converged=True,
+                               residual_norms=jnp.zeros(1))
+
+    monkeypatch.setattr(er, "solve", corrupt)
+    # Zero distribution gives cancelling fluxes, but is not a kinetic solution.
+    with pytest.raises(Exception, match="Ambipolar kinetic residual failed"):
+        jax.block_until_ready(jax.jit(lambda: er.ambipolar_er(problem))())
+
+
+@pytest.mark.parametrize("collision,ramped,tol", [
+    (1, False, 1e-10), (1, True, 1e-10), (0, False, 1e-10), (0, True, 1e-10),
+    (0, False, 1e-12),
+])
+def test_current_adjoint_matches_packed_original_equation(tmp_path, collision, ramped, tol):
+    import jax
+    import jax.numpy as jnp
+    from dkx import er
+    from dkx.run import profile_moments_from_operator
+    from scipy.linalg.lapack import dgesvx
+
+    deck = _pas_deck(collision_operator=collision, n_theta=5, n_zeta=5, n_xi=6, n_x=3)
+    if ramped:
+        deck = deck.replace("Nxi_for_x_option = 0", "Nxi_for_x_option = 1")
+    problem = er.prepare(_write(tmp_path, deck), tol=tol)
+    op = er.operator_at_er(problem.operator, .2, dphi_per_er=problem.dphi_per_er)
+    rhs = op.rhs()
+    def current(x):
+        flux = profile_moments_from_operator(op, x)["particleFlux_vm_psiHat"]
+        return jnp.dot(problem.z_s, flux)
+    weight = jax.grad(current)(jnp.zeros_like(rhs))
+    def state(b):
+        return er.solve(op, b, differentiable=True, tol=problem.tol,
+                        tier1_keep_lowest=op.n_xi, emit=None).x
+    x, pullback = jax.vjp(state, rhs)
+    adjoint = pullback(weight)[0]
+    # Assemble solely from original operator actions, then pack physical DOFs.
+    # The unmasked rectangular FP embedding has inactive columns; its raw
+    # transpose is not the transpose of the physical packed equation.
+    matrix = np.asarray(jax.vmap(op.apply, in_axes=1, out_axes=1)(jnp.eye(op.total_size)))
+    mask = op.active_dof_mask()
+    active = np.ones(op.total_size, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+    packed = matrix[np.ix_(active, active)]
+    g = np.asarray(weight)[active]
+    lam = np.asarray(adjoint)[active]
+    primal_residual = packed @ np.asarray(x)[active] - np.asarray(rhs)[active]
+    assert np.linalg.norm(primal_residual) <= problem.tol * np.linalg.norm(rhs)
+    assert np.linalg.norm(packed.T @ lam - g) <= problem.tol * np.linalg.norm(g)
+    *_, reference, _rcond, _ferr, _berr, info = dgesvx(packed, g[:, None], fact="N", trans="T")
+    assert info == 0
+    reference = reference[:, 0]
+    assert np.linalg.norm(packed.T @ reference - g) <= problem.tol * np.linalg.norm(g)
+    if tol == 1e-12:
+        assert np.linalg.norm(lam - reference) <= 1e-8 * np.linalg.norm(reference)
+    # Audit the research observable as well as the equation. Tight residuals
+    # alone do not bound component errors in this ill-conditioned FP system.
+    def at_field(field):
+        return er.operator_at_er(problem.operator, field, dphi_per_er=problem.dphi_per_er)
+    _, forcing = jax.jvp(lambda field: at_field(field).rhs() - at_field(field).apply(x),
+                         (jnp.array(.2),), (jnp.array(1.),))
+    _, explicit = jax.jvp(
+        lambda field: jnp.dot(problem.z_s, profile_moments_from_operator(
+            at_field(field), x)["particleFlux_vm_psiHat"]),
+        (jnp.array(.2),), (jnp.array(1.),),
+    )
+    reference_slope = explicit + reference @ np.asarray(forcing)[active]
+    slope = jax.grad(lambda field: er.radial_current(problem, field, differentiable=True)[0])(.2)
+    np.testing.assert_allclose(slope, reference_slope,
+                               rtol=1e-8 if tol == 1e-12 else 1e-6, atol=0)
 
 
 def test_host_root_rechecks_original_residual_on_final_cold_solve(tmp_path, monkeypatch):
@@ -561,7 +685,8 @@ def test_ambipolar_acceptance_rejects_invalid_roots(scalar_current, case, option
         "shallow": lambda e, p: 1e-14 * (e - p),
     }
     root = scalar_current(functions[case])
-    call = lambda p: root(p, **options)
+    def call(p):
+        return root(p, **options)
     if transform == "jit":
         call = jax.jit(call)
     elif transform == "grad":

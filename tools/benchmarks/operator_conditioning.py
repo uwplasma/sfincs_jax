@@ -84,7 +84,7 @@ def warm_audit(source_deck: str, target_deck: str, *, max_size: int = 4000,
     from pathlib import Path
     import jax
     import jax.numpy as jnp
-    from scipy.linalg import solve as dense_solve
+    from scipy.linalg.lapack import dgesvx
     from dkx.batch import _check_shared_discretization
     from dkx.run import profile_moments_from_operator
     from dkx.solve import solve
@@ -121,7 +121,13 @@ def warm_audit(source_deck: str, target_deck: str, *, max_size: int = 4000,
         return jnp.ravel(profile_moments_from_operator(target, x)[observable])[0]
 
     q = np.asarray(jax.grad(moment)(jnp.zeros(target.total_size)))
-    dual = dense_solve(matrix.T, q)
+    # Factor A and solve its transpose with LAPACK's refinement/error estimates.
+    # A plain solve of the explicitly transposed matrix was an inaccurate
+    # referee on a checked full-FP case despite a small equation residual.
+    *_, dual, rcond, ferr, berr, info = dgesvx(matrix, q[:, None], fact="N", trans="T")
+    dual = dual[:, 0]
+    if info != 0 or not all(np.isfinite(v).all() for v in (dual, rcond, ferr, berr)):
+        raise RuntimeError(f"dense adjoint referee failed: DGESVX info={info}, rcond={rcond}")
     dual_residual = q - matrix.T @ dual
     seed = solve(source, source_rhs, method="gmres", tol=min(tolerances), emit=None)
     seed_residual = float(jnp.linalg.norm(source.apply(seed.x.reshape(-1)) - source_rhs.reshape(-1)))
@@ -169,6 +175,11 @@ def warm_audit(source_deck: str, target_deck: str, *, max_size: int = 4000,
         seed_original_residual_pass=bool(np.isfinite(seed_residual) and seed_residual <= min(tolerances) * source_norm),
         seed_relative_residual=seed_residual / source_norm if source_norm else None,
         dual_relative_residual=float(np.linalg.norm(dual_residual) / max(np.linalg.norm(q), 1e-300)),
+        dual_reference=dict(driver="LAPACK DGESVX", transpose=True, equilibrated=False,
+                            reciprocal_condition_estimate=float(rcond),
+                            forward_error_norm="infinity",
+                            relative_forward_error_estimate=float(ferr[0]),
+                            componentwise_backward_error=float(berr[0])),
         records=records,
     )
 

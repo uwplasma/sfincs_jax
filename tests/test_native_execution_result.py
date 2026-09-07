@@ -174,6 +174,115 @@ def test_native_profile_refresh_updates_stencil_collisions_and_current_gradient(
         fresh(0.).with_profiles(density_m3=n, temperature_keV=t)
 
 
+@pytest.mark.parametrize("collisions", ["pitch_angle_scattering", "linearized_fokker_planck"])
+def test_native_profile_gradient_matches_independently_rebuilt_ambipolar_roots(collisions):
+    import jax
+    import jax.numpy as jnp
+    from dkx.er import ambipolar_er, find_ambipolar_er, radial_current
+    from dkx import er
+    from dkx.run import profile_moments_from_operator
+    from scipy.linalg.lapack import dgesvx
+
+    base = _case()
+    ion = replace(base.species[0], density_m3=(8e19, 7e19, 6e19),
+                  temperature_keV=(1.2, 1., .8))
+    electron = replace(ion, name="electron", charge=-1, mass_amu=.00054858,
+                       temperature_keV=(1.5, 1.3, 1.1))
+    case = replace(base, species=(ion, electron),
+                   geometry=replace(base.geometry, file="lhd_standard", surfaces=(.09, .16, .25)),
+                   physics=replace(base.physics, collisions=collisions),
+                   resolution=replace(base.resolution, theta=5, zeta=5, pitch=6, speed=3,
+                                      pitch_speed_ramp=0),
+                   solver=replace(base.solver, relative_tolerance=1e-11))
+    prepared = dkx.prepare_er_scan(case, surface_index=1, differentiable_profiles=True)
+    density = jnp.asarray([s.density_m3 for s in case.species]).T
+    temperature = jnp.asarray([s.temperature_keV for s in case.species]).T
+
+    def cold_root(problem, bracket):
+        result = find_ambipolar_er(problem, er_bracket=bracket, max_iter=60,
+                                   current_tol=1e-16, field_tol=1e-12,
+                                   warm_start=False, all_roots=False, emit=None)
+        assert result.converged
+        return float(result.er)
+
+    seed = cold_root(prepared, (-5., 5.))
+
+    def profiles(scale):
+        return density*(1+.05*scale), temperature*(1+scale*jnp.array([.1, -.05]))
+
+    def root(scale):
+        n, t = profiles(scale)
+        return ambipolar_er(prepared.with_profiles(density_m3=n, temperature_keV=t),
+                            er0=seed, root_tol=1e-8, current_tol=1e-15, min_abs_slope=1e-15)
+
+    value, derivative = jax.jit(jax.value_and_grad(root))(0.)
+    np.testing.assert_allclose(value, seed, rtol=0, atol=1e-8)
+    assert np.isfinite(derivative) and abs(float(derivative)) > .1
+    current, slope = jax.jvp(lambda field: radial_current(prepared, field, differentiable=True)[0],
+                             (value,), (jnp.asarray(1.),))
+    assert abs(float(current)) <= 1e-15
+    assert np.isfinite(slope) and abs(float(slope)) > 1e-7
+    # A test-only dense adjoint checks -J_profile/J_Er independently of the
+    # routed root derivative, including explicit profile dependence of moments.
+    def operator(parameters):
+        n, t = profiles(parameters[0])
+        problem = prepared.with_profiles(density_m3=n, temperature_keV=t)
+        return er.operator_at_er(problem.operator, parameters[1], dphi_per_er=problem.dphi_per_er)
+
+    parameters = jnp.array([0., value])
+    op = operator(parameters)
+    def observable(parameters, state):
+        return jnp.dot(prepared.z_s, profile_moments_from_operator(
+            operator(parameters), state)["particleFlux_vm_psiHat"])
+    rhs = op.rhs()
+    weight = jax.grad(lambda x: observable(parameters, x))(jnp.zeros_like(rhs))
+    def state(b):
+        return er.solve(op, b, method=prepared.solve_method, tol=prepared.tol,
+                        differentiable=True, tier1_keep_lowest=op.n_xi, emit=None).x
+    x, pullback = jax.vjp(state, rhs)
+    lam = np.asarray(pullback(weight)[0])
+    matrix = np.asarray(jax.vmap(op.apply, in_axes=1, out_axes=1)(jnp.eye(op.total_size)))
+    mask = op.active_dof_mask()
+    active = np.ones(op.total_size, dtype=bool) if mask is None else np.asarray(mask, dtype=bool)
+    matrix = matrix[np.ix_(active, active)]
+    g = np.asarray(weight)[active]
+    *_, reference, rcond, ferr, berr, info = dgesvx(matrix, g[:, None], fact="N", trans="T")
+    assert info == 0 and np.all(np.isfinite([rcond, ferr[0], berr[0]]))
+    reference = reference[:, 0]
+    derivatives = []
+    for direction in jnp.eye(2):
+        _, forcing = jax.jvp(lambda q: operator(q).rhs()-operator(q).apply(x),
+                             (parameters,), (direction,))
+        _, explicit = jax.jvp(lambda q: observable(q, x), (parameters,), (direction,))
+        derivatives.append(float(explicit + reference @ np.asarray(forcing)[active]))
+    reference_root = -derivatives[0]/derivatives[1]
+    for residual, rhs_norm in (
+        (matrix @ np.asarray(x)[active]-np.asarray(rhs)[active], np.linalg.norm(np.asarray(rhs)[active])),
+        (matrix.T @ lam[active]-g, np.linalg.norm(g)),
+        (matrix.T @ reference-g, np.linalg.norm(g)),
+    ):
+        assert np.linalg.norm(residual) <= prepared.tol * rhs_norm
+    np.testing.assert_allclose(derivative, reference_root, rtol=1e-7, atol=0)
+    np.testing.assert_allclose(slope, derivatives[1], rtol=1e-7, atol=0)
+    remainders = []
+    for step in (1e-3, 3e-4):
+        roots = []
+        for sign in (-1, 1):
+            n, t = map(np.asarray, profiles(sign*step))
+            species = tuple(replace(s, density_m3=tuple(n[:, i]), temperature_keV=tuple(t[:, i]))
+                            for i, s in enumerate(case.species))
+            # Rebuild the native host coefficients and solve cold on the same local branch.
+            fresh = dkx.prepare_er_scan(replace(case, species=species), surface_index=1)
+            roots.append(cold_root(fresh, (seed-.5, seed+.5)))
+        np.testing.assert_allclose(derivative, (roots[1]-roots[0])/(2*step), rtol=2e-6, atol=0)
+        remainders.append(np.abs(np.asarray(roots)-float(value)-np.array([-step, step])*float(derivative)))
+    # Both one-sided linearization errors must decay quadratically above the
+    # cold-root field tolerance; central differences alone can hide cancellation.
+    assert np.all(np.asarray(remainders) > 10*max(1e-12, abs(float(current/slope))))
+    rates = np.log(remainders[0]/remainders[1])/np.log(1e-3/3e-4)
+    assert np.all((rates > 1.8) & (rates < 2.2))
+
+
 def _boozer_case():
     return dkx.Case.from_file(
         Path(__file__).resolve().parents[1]

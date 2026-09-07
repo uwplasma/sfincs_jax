@@ -2127,6 +2127,7 @@ def test_reported_mumps_thread_excess_rejects_reference(tmp_path, monkeypatch, r
 
 
 def test_warm_observable_audit_checks_equations_and_reuse_modes(tmp_path):
+    import numpy as np
     from tools.benchmarks import operator_conditioning as probe
 
     source = ROOT / 'tests/ref/pas_1species_PAS_noEr_tiny_scheme1.input.namelist'
@@ -2136,6 +2137,13 @@ def test_warm_observable_audit_checks_equations_and_reuse_modes(tmp_path):
     assert audit['size'] == 111
     assert len(set(audit['input_sha256'].values())) == 2
     assert audit['dual_relative_residual'] < 1e-12
+    referee = audit['dual_reference']
+    assert referee['driver'] == 'LAPACK DGESVX'
+    assert referee['transpose'] and not referee['equilibrated']
+    assert referee['forward_error_norm'] == 'infinity'
+    assert 0 < referee['reciprocal_condition_estimate'] <= 1
+    assert np.isfinite(referee['relative_forward_error_estimate'])
+    assert np.isfinite(referee['componentwise_backward_error'])
     assert audit['seed_relative_residual'] < 1e-10
     assert [r['reuse'] for r in audit['records']] == ['cold', 'state', 'recycle', 'state_and_recycle']
     for record in audit['records']:
@@ -2149,6 +2157,34 @@ def test_warm_observable_audit_checks_equations_and_reuse_modes(tmp_path):
     target.write_text(target.read_text().replace('Nxi = 4', 'Nxi = 5'))
     with pytest.raises(ValueError, match='structure'):
         probe.warm_audit(str(source), str(target))
+
+
+@pytest.mark.parametrize('failure', ['singular', 'working_precision', 'nonfinite'])
+def test_warm_audit_rejects_unreliable_referee(monkeypatch, failure):
+    import importlib
+    import numpy as np
+    from scipy.linalg import lapack
+    from tools.benchmarks import operator_conditioning as probe
+    from dkx import batch  # Load this consumer before patching its solve provider.
+    solver = importlib.import_module('dkx.solve')
+    assert batch.solve is solver.solve
+    original = lapack.dgesvx
+
+    def unreliable(a, b, **kwargs):
+        result = list(original(a, b, **kwargs))
+        if failure == 'nonfinite':
+            result[-2][0] = np.nan
+        else:
+            result[-1] = 1 if failure == 'singular' else a.shape[0] + 1
+        return tuple(result)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('invalid referee must be rejected before warm solves')
+    monkeypatch.setattr(lapack, 'dgesvx', unreliable)
+    monkeypatch.setattr(solver, 'solve', forbidden)
+    deck = str(ROOT / 'tests/ref/pas_1species_PAS_noEr_tiny_scheme1.input.namelist')
+    with pytest.raises(RuntimeError, match='dense adjoint referee failed'):
+        probe.warm_audit(deck, deck, tolerances=(1e-10,))
 
 
 def test_warm_audit_dual_identity_sign_with_deliberately_inaccurate_states(monkeypatch):

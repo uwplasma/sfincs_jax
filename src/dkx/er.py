@@ -420,8 +420,12 @@ def radial_current(
     Returns:
         ``(J_r, per_species_flux, ErSolveState)`` — ``J_r`` a scalar JAX array,
         ``per_species_flux`` shape ``(n_species,)``, and the warm-start state to
-        thread into the next call. Host solves retain the complete Legendre
+        thread into the next call. Both paths retain the complete Legendre
         state, including when a memory-bounded structured route is selected.
+        Differentiable evaluations require the original kinetic residual to
+        satisfy ``||Ax-b|| <= tol*||b||`` before forming the current; failures
+        raise at execution time, including under JIT. This primal check does
+        not certify the adjoint equation or grid convergence.
     """
     import jax.numpy as jnp  # noqa: PLC0415
 
@@ -436,12 +440,18 @@ def radial_current(
     )
     method = solve_method or problem.solve_method
     rtol = tol if tol is not None else problem.tol
+    if not np.isfinite(rtol) or rtol <= 0:
+        raise ValueError("tol must be finite and positive")
 
     op = operator_at_er(problem.operator, er, dphi_per_er=problem.dphi_per_er)
     rhs = op.rhs()
     if differentiable:
-        result = solve(op, rhs, method=method, tol=rtol, differentiable=True, emit=None)
+        result = solve(
+            op, rhs, method=method, tol=rtol, differentiable=True, emit=None,
+            tier1_keep_lowest=op.n_xi,
+        )
         x_full = jnp.reshape(result.x, (-1,))
+        _check_kinetic_solution(op, er, x_full, rtol)
         state = None
     else:
         # Reuse whatever the previous point's route actually built. Nothing is
@@ -596,22 +606,44 @@ def _brent(
 
 def _check_host_kinetic_state(problem, er, state, tol):
     """Certify the original single-RHS equation before root acceptance/reuse."""
-    import jax.numpy as jnp  # noqa: PLC0415
-
     if state is None:
         raise RuntimeError("Ambipolar kinetic solve returned no state")
     op = operator_at_er(problem.operator, er, dphi_per_er=problem.dphi_per_er)
-    x = jnp.asarray(state.x).reshape((-1,))
+    _check_kinetic_solution(op, er, state.x, tol)
+
+
+def _check_kinetic_solution(op, er, x, tol):
+    """Original-equation admission; valid scalar JIT checks stay on device."""
+    import jax  # noqa: PLC0415
+    import jax.numpy as jnp  # noqa: PLC0415
+
+    x = jnp.asarray(x).reshape((-1,))
     rhs = jnp.asarray(op.rhs()).reshape((-1,))
-    residual = jnp.linalg.norm(op.apply(x) - rhs)
+    defect = op.apply(x) - rhs
+    residual = jnp.linalg.norm(defect)
     rhs_norm = jnp.linalg.norm(rhs)
+    # A squared norm can underflow: homogeneous admission requires actual zeros.
+    within_tolerance = jnp.where(
+        jnp.all(rhs == 0), jnp.all(defect == 0), residual <= tol * rhs_norm
+    )
     accepted = (jnp.all(jnp.isfinite(x)) & jnp.isfinite(rhs_norm)
-                & jnp.isfinite(residual) & (residual <= tol * rhs_norm))
-    if not bool(accepted):
-        raise RuntimeError(
-            f"Ambipolar kinetic residual failed at Er={er:g}: "
-            f"||Ax-b||={float(residual):.8e}, ||b||={float(rhs_norm):.8e}, tol={tol:.8e}"
+                & jnp.isfinite(residual) & within_tolerance)
+
+    def check(ok, field, residual, rhs_norm):
+        if not bool(ok):
+            raise RuntimeError(
+                f"Ambipolar kinetic residual failed at Er={float(field):g}: "
+                f"||Ax-b||={float(residual):.8e}, ||b||={float(rhs_norm):.8e}, tol={tol:.8e}; "
+                "a homogeneous RHS requires entrywise zero defect"
+            )
+
+    if isinstance(accepted, jax.core.Tracer):
+        jax.lax.cond(
+            accepted, lambda: None,
+            lambda: jax.debug.callback(check, accepted, er, residual, rhs_norm),
         )
+    else:
+        check(accepted, er, residual, rhs_norm)
 
 
 def find_ambipolar_er(

@@ -660,7 +660,8 @@ def test_devices_degrade_and_validation(tmp_path: Path) -> None:
         _assert_batched_results_identical(base, degraded)
 
 
-def test_batch_status_rejects_bad_states_and_handles_zero_drive(tmp_path, monkeypatch):
+@pytest.mark.parametrize("scale", [1., 1e-200])
+def test_batch_status_rejects_bad_states_and_handles_zero_drive(tmp_path, monkeypatch, scale):
     from types import SimpleNamespace
     import jax
     import jax.numpy as jnp
@@ -675,7 +676,7 @@ def test_batch_status_rejects_bad_states_and_handles_zero_drive(tmp_path, monkey
         return SimpleNamespace(x=x, residual_norms=jnp.zeros(1), converged=True)
     monkeypatch.setattr(batch_mod, 'solve', manufactured)
     fields = jnp.asarray([-1.0, 0.0, 1.0])
-    result = jax.jit(lambda e: batch_mod.batched_er_scan(problem, e))(fields)
+    result = jax.jit(lambda e: batch_mod.batched_er_scan(problem, e, devices=jax.local_devices()))(fields)
     assert not np.any(result.algebraic_converged)
     finite = np.asarray(problem.dphi_per_er * fields) <= 0
     np.testing.assert_allclose(result.relative_residual_norms, np.where(finite, 1., np.inf))
@@ -683,21 +684,43 @@ def test_batch_status_rejects_bad_states_and_handles_zero_drive(tmp_path, monkey
     # even when the prescribed density/temperature gradients vanish.
     monkeypatch.setattr(type(problem.operator), "rhs", lambda self: jnp.zeros(self.total_size))
     zero = problem
-    exact = jax.jit(lambda e: batch_mod.batched_er_scan(zero, e))(fields)
+    exact = jax.jit(lambda e: batch_mod.batched_er_scan(zero, e, devices=jax.local_devices()))(fields)
     expected = np.asarray(zero.dphi_per_er * fields) <= 0
     np.testing.assert_array_equal(exact.algebraic_converged, expected)
     np.testing.assert_array_equal(exact.relative_residual_norms, np.where(expected, 0., np.inf))
 
     def nonzero(op, rhs, **kwargs):
-        x = jnp.ones(op.total_size)
+        x = jnp.full(op.total_size, scale)
         return SimpleNamespace(x=x, residual_norms=jnp.asarray([jnp.linalg.norm(op.apply(x) - rhs.reshape(-1))]))
     monkeypatch.setattr(batch_mod, 'solve', nonzero)
-    rejected = jax.jit(lambda e: batch_mod.batched_er_scan(zero, e))(fields)
+    defect = zero.operator.apply(jnp.full(zero.operator.total_size, scale))
+    assert np.any(np.asarray(defect) != 0)
+    if scale == 1e-200:
+        assert float(jnp.linalg.norm(defect)) == 0  # The old norm-only gate accepted this.
+    rejected = jax.jit(lambda e: batch_mod.batched_er_scan(zero, e, devices=jax.local_devices()))(fields)
     assert not np.any(rejected.algebraic_converged)
     assert np.all(np.isinf(rejected.relative_residual_norms))
     for tol in (float('nan'), float('inf'), -1.0):
         with pytest.raises(ValueError, match='finite and nonnegative'):
             batch_mod.batched_er_scan(problem, fields, tol=tol)
+
+
+def test_batch_zero_tolerance_rejects_underflowed_defect(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import jax
+    import jax.numpy as jnp
+    from dkx import batch as batch_mod
+    from dkx import er as er_mod
+
+    problem = er_mod.prepare(_write(tmp_path, _pas_deck()))
+    rhs = jnp.zeros(problem.operator.total_size).at[0].set(1.)
+    monkeypatch.setattr(type(problem.operator), "rhs", lambda self: rhs)
+    monkeypatch.setattr(type(problem.operator), "apply", lambda self, x: x)
+    monkeypatch.setattr(batch_mod, "solve", lambda *args, **kwargs: SimpleNamespace(
+        x=rhs.at[1].set(1e-200), converged=True, residual_norms=jnp.zeros(1)))
+    result = jax.jit(lambda e: batch_mod.batched_er_scan(problem, e, tol=0., devices=jax.local_devices()))(jnp.array([0.]))
+    assert float(result.residual_norms[0]) == 0  # Underflow is not exactness.
+    assert not bool(result.algebraic_converged[0])
 
 
 _TWO_DEVICE_SCRIPT = """
