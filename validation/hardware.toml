@@ -1,8 +1,8 @@
 schema_version = 1
-recorded_at = "2026-08-30"
-audited_commit = "c958a947505ba31f4e6f80c6fde983ab1db05b71"
+recorded_at = "2026-09-05"
+audited_commit = "6c4614d7414fb279cf54ce6c44d79c07dddb0a4c"
 
-# Named measurement hosts for DKX 3. Phase A of plan.md requires the exact
+# Named measurement hosts for DKX 3. The plan requires the exact
 # laptop CPU and accelerator hardware to be recorded rather than described.
 # `availability` states what this audit observed, not what a host is expected
 # to be: a host that could not be contacted is never recorded as available.
@@ -21,8 +21,10 @@ memory_bytes = 38654705664
 operating_system = "macOS 14.4.1 (23E224)"
 kernel = "Darwin 23.4.0"
 python = "3.11.14"
-last_check = "2026-08-30"
-notes = "Observed directly during the Phase A audit; this is the named laptop the locked product decision requires. All local Phase A measurements in baseline.toml were taken here."
+last_check = "2026-09-05"
+jax = "0.9.2"
+solvax = "0.20.0"
+notes = "Observed during the September 5 review. Local timing probes had uncontrolled background load and are diagnostic only; historical August measurements remain in baseline.toml."
 
 [[host]]
 id = "office-nvidia"
@@ -30,7 +32,7 @@ role = "maintained_gpu"
 official_release_baseline = true
 availability = "available"
 connection = "ssh office"
-last_check = "2026-08-30"
+last_check = "2026-09-05"
 hostname = "pop-os"
 operating_system = "Pop!_OS 22.04 LTS"
 cpu_cores = 36
@@ -40,7 +42,12 @@ gpu_memory_bytes = 17171480576
 gpu_driver = "580.173.02"
 device_count = 2
 python_system = "3.10.12"
-notes = "Observed directly on 2026-08-30; earlier audits recorded it as unreachable. A GPU lane is blocked on the interpreter, not on the hardware: the only Python present is the system 3.10.12, and DKX now requires >=3.11. There is no conda, pyenv or uv on the box, and the existing stellarator_venv runs jax 0.6.2 with both CUDA devices visible. Standing up a GPU lane means installing a 3.11+ toolchain into the user home first; that is a change to a shared lab workstation and needs the maintainer to agree before anyone does it."
+python_dkx = "3.11.15"
+python_environment = "/home/rjorge/venvs/dkx-gpu"
+jax = "0.10.2"
+jaxlib = "0.10.2"
+solvax = "0.20.0"
+notes = "Observed on September 5: existing user Python environment runs the audited DKX source with both CUDA devices. Single/two-device probes and JAX/XPlane/Perfetto traces completed. The former Python-toolchain blocker is closed; production scaling, distributed states and matched reference-backend gates remain open."
 
 [[host]]
 id = "local-mac-mini-m2"

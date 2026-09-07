@@ -1,6 +1,6 @@
 schema_version = 1
-baseline_commit = "c003ba8e0332509bc07b3a20fddf2b8db2c05ad9"
-recorded_at = "2026-08-28"
+baseline_commit = "6c4614d7414fb279cf54ce6c44d79c07dddb0a4c"
+recorded_at = "2026-09-05"
 status_values = [
   "stable",
   "stable_candidate",
@@ -14,31 +14,31 @@ status_values = [
 id = "native_case_result"
 name = "Native Case execution and Result/NetCDF contract"
 status = "validated_limited"
-owners = ["dkx/config.py", "dkx/execution.py", "dkx/result.py", "dkx/run.py", "dkx/workflows/ambipolar_native.py"]
+owners = ["src/dkx/config.py", "src/dkx/execution.py", "src/dkx/result.py", "src/dkx/run.py", "src/dkx/workflows/ambipolar_native.py"]
 evidence = ["tests/test_validation.py", "tests/test_case_config.py", "tests/test_magnetic_geometry.py", "tests/test_native_execution_result.py", "tests/test_native_ambipolar.py", "validation/native_physical_flux_sfincs_v1.json", "validation/w7x_fixed_field_resolution_referee_v1.json", "validation/w7x_admitted_grid_uniform_probe_no_go_v1.json", "validation/w7x_seeded_bracket_discovery_v1.json", "validation/w7x_admitted_grid_seeded_envelope_v1.json", "validation/inputs/w7x_standard_native_ambipolar_discovery_pair.toml", "validation/inputs/w7x_standard_native_ambipolar_seeded_replay.toml", "validation/inputs/w7x_standard_native_ambipolar_admitted_seeded_envelopes.toml", "validation/inputs/w7x_standard_native_ambipolar_admitted_seeded_extension.toml", "validation/inputs/w7x_standard_native_ambipolar_admitted_seeded_final.toml", "examples/cases/analytic_tokamak_profile.toml", "examples/cases/analytic_ambipolar_profile.toml", "examples/cases/vmec_profile.toml", "examples/cases/boozer_profile.toml"]
-gaps = ["resumable declarative scan execution", "transport-matrix Result", "SFINCS conversion adapters"]
+gaps = ["R2: certified reusable prepared state and atomic scan resume", "R5: native monoenergetic/transport matrix, Phi1/full drifts and single-surface workflows", "R4: explicit native sharding execution"]
 
 [[capability]]
 id = "sfincs_namelist"
 name = "SFINCS namelist input"
 status = "stable_candidate"
-owners = ["dkx/namelist.py", "dkx/inputs.py", "dkx/input_compat.py"]
+owners = ["src/dkx/namelist.py", "src/dkx/inputs.py", "src/dkx/input_compat.py"]
 evidence = ["tests/test_namelist.py", "tests/test_input_compat.py"]
-gaps = ["DKX 3 native Case conversion and installed-wheel coverage"]
+gaps = ["R5: all 145 upstream controls mapped to native semantics or explicit refusal; conversion CLI exists"]
 
 [[capability]]
 id = "sfincs_hdf5"
 name = "SFINCS-compatible HDF5 output"
 status = "stable_candidate"
-owners = ["dkx/writer.py", "dkx/io.py"]
+owners = ["src/dkx/writer.py", "src/dkx/io.py"]
 evidence = ["tests/test_h5_parity.py", "tests/test_output_h5_scheme5_parity.py"]
-gaps = ["adapter must depend on native Result after P2"]
+gaps = ["R5: complete native Result units/schema and compatible HDF5 mapping; reject partial reference output"]
 
 [[capability]]
 id = "pas_local_profile"
 name = "Pitch-angle-scattering local profile solve"
 status = "stable_candidate"
-owners = ["dkx/run.py", "dkx/drift_kinetic.py", "dkx/solve.py"]
+owners = ["src/dkx/run.py", "src/dkx/drift_kinetic.py", "src/dkx/solve.py"]
 evidence = ["tests/test_run_rhsmode1.py", "tests/test_kinetic_operator_fortran_parity.py"]
 gaps = ["native installed-artifact end-to-end gate"]
 
@@ -46,7 +46,7 @@ gaps = ["native installed-artifact end-to-end gate"]
 id = "full_fokker_planck"
 name = "Full linearized Fokker-Planck collisions"
 status = "stable_candidate"
-owners = ["dkx/collisions.py", "dkx/drift_kinetic.py"]
+owners = ["src/dkx/collisions.py", "src/dkx/drift_kinetic.py"]
 evidence = ["tests/test_collisions_improved_sugama.py", "tests/test_collision_physics_gates.py"]
 gaps = ["broader independent multispecies convergence matrix"]
 
@@ -54,15 +54,15 @@ gaps = ["broader independent multispecies convergence matrix"]
 id = "monoenergetic"
 name = "Monoenergetic coefficients and databases"
 status = "stable_candidate"
-owners = ["dkx/monoenergetic.py", "dkx/run.py"]
+owners = ["src/dkx/monoenergetic.py", "src/dkx/run.py"]
 evidence = ["tests/test_monoenergetic_database.py", "tests/test_paper_benchmark_monoenergetic.py"]
-gaps = ["matched YANCC, MONKES, and DKES evidence"]
+gaps = ["R6: broaden existing matched YANCC/MONKES evidence beyond the admitted cases; bounds-checked MONKES reader and DKES comparison"]
 
 [[capability]]
 id = "transport_matrix"
 name = "Thermal transport matrices"
 status = "stable_candidate"
-owners = ["dkx/run.py", "dkx/moments.py", "dkx/writer.py"]
+owners = ["src/dkx/run.py", "src/dkx/moments.py", "src/dkx/writer.py"]
 evidence = ["tests/test_run_transport.py", "tests/test_transport_matrix_write_output_end_to_end.py"]
 gaps = ["native NetCDF schema and installed-wheel gate"]
 
@@ -70,39 +70,39 @@ gaps = ["native NetCDF schema and installed-wheel gate"]
 id = "bootstrap_current"
 name = "Kinetic bootstrap current"
 status = "stable_candidate"
-owners = ["dkx/bootstrap.py", "dkx/moments.py"]
+owners = ["src/dkx/bootstrap.py", "src/dkx/moments.py"]
 evidence = ["tests/test_bootstrap_objective.py", "tests/test_examples_bootstrap_dkx.py"]
-gaps = ["BOOTSJ comparison matrix", "whole-profile certificate"]
+gaps = ["R6: BOOTSJ comparison and independently specified profiles/scale", "R1/R6: whole-profile parallel-current uncertainty certificate"]
 
 [[capability]]
 id = "ambipolar_roots"
 name = "Ambipolar electric-field roots"
 status = "validated_limited"
-owners = ["dkx/er.py", "dkx/ambipolar.py", "dkx/workflows/ambipolar_native.py", "dkx/execution.py", "dkx/result.py"]
+owners = ["src/dkx/er.py", "src/dkx/ambipolar.py", "src/dkx/workflows/ambipolar_native.py", "src/dkx/execution.py", "src/dkx/result.py"]
 evidence = ["tests/test_er_scan_and_ambipolar.py", "tests/test_paper_benchmark_w7x_ambipolar.py", "tests/test_native_ambipolar.py", "tests/test_native_execution_result.py", "examples/cases/analytic_ambipolar_profile.toml"]
-gaps = ["independent dense-surface branch-event validation", "phase-space convergence-rung uncertainty", "PENTA comparison"]
+gaps = ["R1/R6: independent branch-event and joint-grid uncertainty", "R1: marginal slopes and intrinsically ambipolar tokamak handling", "R6: model-matched PENTA comparison; seeded roots retain interval scope"]
 
 [[capability]]
 id = "phi1"
 name = "Phi1 quasineutrality workflow"
 status = "stable_candidate"
-owners = ["dkx/phi1.py", "dkx/collisions.py"]
+owners = ["src/dkx/phi1.py", "src/dkx/collisions.py"]
 evidence = ["tests/test_phi1.py", "tests/test_rhsmode1_phi1_write_output_end_to_end.py"]
-gaps = ["independent converged geometry and collision-model matrix"]
+gaps = ["R5: native Phi1 exposure and coupled residual/adjoint", "R6: independently converged geometry and collision-model matrix"]
 
 [[capability]]
 id = "implicit_gradients"
 name = "Implicit linear and ambipolar-root derivatives"
 status = "validated_limited"
-owners = ["dkx/sensitivity.py", "dkx/er.py", "dkx/solve.py", "SOLVAX"]
+owners = ["src/dkx/sensitivity.py", "src/dkx/er.py", "src/dkx/solve.py", "SOLVAX"]
 evidence = ["tests/test_sensitivity.py", "tests/test_er.py", "tests/test_optimization_comparison.py"]
-gaps = ["installed-wheel JVP/VJP gates", "branch-event nonsmooth warnings", "peak gradient memory baseline"]
+gaps = ["R2/R7: installed full-chain JVP/VJP/Taylor gates", "R1: branch-event nonsmooth refusal", "R3/R4: peak gradient memory and transformation-aware sharding"]
 
 [[capability]]
 id = "structured_direct"
 name = "Structured block-elimination solver route"
 status = "validated_limited"
-owners = ["dkx/solve.py", "SOLVAX"]
+owners = ["src/dkx/solve.py", "SOLVAX"]
 evidence = ["tests/test_solve.py", "tests/test_tier1_refinement.py"]
 gaps = ["explicit reuse contract", "complete cold/warm and memory matrix"]
 
@@ -110,7 +110,7 @@ gaps = ["explicit reuse contract", "complete cold/warm and memory matrix"]
 id = "recycled_krylov"
 name = "Recycled Krylov and physics preconditioners"
 status = "validated_limited"
-owners = ["dkx/solve.py", "dkx/coarse_precond.py", "SOLVAX"]
+owners = ["src/dkx/solve.py", "src/dkx/coarse_precond.py", "SOLVAX"]
 evidence = ["tests/test_solve.py", "tests/test_tier2_memory_guard.py"]
 gaps = ["bounded-memory completion for every stable deck", "matched YANCC study"]
 
@@ -118,23 +118,23 @@ gaps = ["bounded-memory completion for every stable deck", "matched YANCC study"
 id = "batch_scans"
 name = "Batched electric-field and surface scans"
 status = "validated_limited"
-owners = ["dkx/batch.py", "dkx/workflows/scans.py"]
+owners = ["src/dkx/batch.py", "src/dkx/workflows/scans.py"]
 evidence = ["tests/test_batch.py", "tests/test_scans_progress_and_recycle.py", "tests/test_native_ambipolar.py", "tests/test_native_execution_result.py"]
-gaps = ["declarative resume contract", "compilation-family accounting", "missed-root guard under warm starts"]
+gaps = ["R2: atomic resume and compilation-family accounting", "R1/R2: cold/warm observable agreement and preserved root discovery", "R4: remove serial tracer fallback for explicitly requested sharding"]
 
 [[capability]]
 id = "vmex_coupling"
 name = "VMEX geometry and bootstrap objective coupling"
 status = "validated_limited"
-owners = ["dkx/workflows/geometry_adapters.py", "dkx/workflows/optimization.py"]
+owners = ["src/dkx/workflows/geometry_adapters.py", "src/dkx/workflows/optimization.py"]
 evidence = ["tests/test_vmex_workflow.py", "tests/test_finite_beta_vmec_example.py"]
-gaps = ["downstream installed integration test", "profile protocol", "certified optimization campaign"]
+gaps = ["R7: actual installed VMEX boundary optimization; numbered example is an analytic proxy", "R7: profile/current protocol and bootstrap-consistent equilibrium", "R7: complete-chain derivatives and independently validated final design"]
 
 [[capability]]
 id = "representative_vmec_profile"
 name = "Representative VMEC radial-profile panels"
 status = "validated_limited"
-owners = ["dkx/representative.py"]
+owners = ["src/dkx/representative.py"]
 evidence = ["tests/test_representative.py", "tests/ref/wout_up_down_asymmetric_tokamak.nc"]
 gaps = ["standard wout lacks separate density and temperature profiles", "independent converged stellarator profile comparison"]
 
@@ -142,23 +142,23 @@ gaps = ["standard wout lacks separate density and temperature profiles", "indepe
 id = "gpu_single_device"
 name = "Single-device GPU execution"
 status = "validated_limited"
-owners = ["dkx/solve.py", "dkx/batch.py"]
+owners = ["src/dkx/solve.py", "src/dkx/batch.py"]
 evidence = ["tests/test_gpu_solver_path_artifacts.py"]
-gaps = ["maintained GPU host unavailable during P0 audit", "fresh matched throughput and memory evidence"]
+gaps = ["R3/R6: fresh controlled production throughput and measured peak memory; office GPU is available", "R2: full prepared dynamic-physics API beyond the staged-layout prototype"]
 
 [[capability]]
 id = "multi_device"
 name = "Multi-device sharding"
 status = "experimental"
-owners = ["dkx/batch.py"]
+owners = ["src/dkx/batch.py"]
 evidence = ["tests/test_batch.py"]
-gaps = ["maintained strong and weak scaling lane", "communication accounting"]
+gaps = ["R4: real CPU/GPU strong and weak scaling with communication/occupancy", "R4: native sharding and JIT/grad support without silent serial fallback", "R4: separately validated distributed states and multi-host initialization"]
 
 [[capability]]
 id = "variational_bounds"
 name = "Variational transport bounds"
 status = "validated_limited"
-owners = ["dkx/variational.py"]
+owners = ["src/dkx/variational.py"]
 evidence = ["tests/test_variational_bounds.py"]
 gaps = ["independent-code and literature matrix", "public certificate integration"]
 
@@ -166,7 +166,7 @@ gaps = ["independent-code and literature matrix", "public certificate integratio
 id = "bounce_averaged"
 name = "Bounce-averaged reduced model"
 status = "experimental"
-owners = ["dkx/bounce_averaged.py"]
+owners = ["src/dkx/bounce_averaged.py"]
 evidence = ["tests/test_bounce_averaged.py"]
 gaps = ["independent KNOSOS comparison", "validity range", "flagship admission gates"]
 
@@ -174,6 +174,6 @@ gaps = ["independent KNOSOS comparison", "validity range", "flagship admission g
 id = "pitch_collocation"
 name = "Pitch-collocation discretization"
 status = "experimental"
-owners = ["dkx/collocation.py"]
+owners = ["src/dkx/collocation.py"]
 evidence = ["tests/test_collocation.py"]
 gaps = ["matched full-observable evidence", "end-to-end performance advantage"]

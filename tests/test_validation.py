@@ -49,6 +49,39 @@ ENTRY_IDS = list(REGISTRY.ids)
 CORRUPTIBLE_IDS = [entry.id for entry in REGISTRY.entries if entry.corruption]
 
 
+def test_direct_backend_referee_preserves_a_nonsymmetric_petsc_operator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Factoring A.T instead of A can change sparse fill and benchmark conclusions."""
+    import numpy as np
+    import scipy.sparse.linalg as sla
+    from scipy.sparse import csr_matrix
+    from tools.benchmarks.direct_solver_backends import superlu_seconds
+
+    operator = csr_matrix([[4.0, 2.0, 0.0], [0.0, 3.0, 1.0], [2.0, 0.0, 5.0]])
+    matrix = tmp_path / "matrix.petscbin"
+    matrix.write_bytes(
+        np.asarray([1211216, 3, 3, operator.nnz], dtype=">i4").tobytes()
+        + np.diff(operator.indptr).astype(">i4").tobytes()
+        + operator.indices.astype(">i4").tobytes()
+        + operator.data.astype(">f8").tobytes()
+    )
+    factor = sla.splu
+    checked = []
+
+    def checked_factor(actual):
+        np.testing.assert_array_equal(actual.toarray(), operator.toarray())
+        factors = factor(actual)
+        rhs = np.asarray([1.0, -2.0, 3.0])
+        np.testing.assert_allclose(operator @ factors.solve(rhs), rhs, atol=1e-14)
+        checked.append(True)
+        return factors
+
+    monkeypatch.setattr(sla, "splu", checked_factor)
+    elapsed, size, fill = superlu_seconds(matrix)
+    assert checked and elapsed >= 0 and size == 3 and fill >= operator.nnz
+
+
 def payload(entry_id: str) -> dict[str, Any]:
     """Return the registered artifact for ``entry_id``."""
     return json.loads(

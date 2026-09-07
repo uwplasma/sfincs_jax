@@ -66,7 +66,8 @@ The normalization conventions used for hats and dimensionless drives are summari
 Geometry and guiding-center drifts
 ----------------------------------
 
-The guiding-center drifts can be expressed (in physical variables) as
+The guiding-center drifts can be expressed in SI units, with signed
+:math:`\Omega_s = Z_s e B/m_s`, as
 
 .. math::
 
@@ -79,7 +80,7 @@ and the :math:`E\times B` drift as
 
 .. math::
 
-   \mathbf{v}_E = \frac{c}{B^2}\,\mathbf{E}\times\mathbf{B}.
+   \mathbf{v}_E = \frac{1}{B^2}\,\mathbf{E}\times\mathbf{B}.
 
 SFINCS evaluates the geometric coefficients using Boozer-like straight-field-line
 coordinates (especially for ``geometryScheme=11/12``), and the discrete operator

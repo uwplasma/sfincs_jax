@@ -4,11 +4,14 @@ DKX
 `dkx` solves the radially local, linearized drift-kinetic equation on a flux
 surface, in pure JAX. It returns neoclassical particle and heat fluxes,
 parallel flows, bootstrap current, transport matrices and ambipolar electric
-field roots for stellarators and tokamaks, on CPU or GPU, and every output is
-differentiable in every input.
+field roots for stellarators and tokamaks, on CPU or GPU. Expert JAX solve
+paths support implicit differentiation within the domains described in
+:doc:`differentiability`; file workflows and discrete root selection have
+additional limits.
 
-The physics is the same as SFINCS Fortran v3, and `dkx` reads and writes
-SFINCS files. It does not require them: a run is described by one case file.
+DKX implements a broad subset of SFINCS Fortran v3 physics and reads and
+writes SFINCS files. Native case workflows expose a narrower set
+of models; see :doc:`case_files` and :doc:`capabilities` for their scope.
 
 Quickstart
 ----------

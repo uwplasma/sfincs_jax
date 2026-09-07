@@ -1,38 +1,21 @@
-Development Roadmap
+Development roadmap
 ===================
 
-The authoritative DKX 3 roadmap is the repository-root ``plan.md``. It records
-the accepted product and scientific contracts, the research-grade verification
-and validation standard, the target public API and source architecture, the
-ordered implementation phases, the pull-request sequence, and the definition of
-done. This page is a pointer to that file, not a second roadmap.
+The `repository plan <https://github.com/uwplasma/DKX/blob/main/plan.md>`_
+is the single active roadmap. The September 2026 review replaces the previous
+phase letters and chronological execution log with dependency-ordered work
+packages, scientific acceptance gates, and a publication program.
 
-Earlier roadmaps -- ``plan_final.md`` from merged pull request #8 and the
-2200-line execution diary that ``plan.md`` replaced on 2026-08-30 -- are
-historical. Their durable requirements are carried forward: coherent vertical
-slices, one canonical owner per behavior, reusable solver state,
-bounded-memory elimination, measured CPU/GPU scaling, and explicit scientific
-admission criteria. Old branch names, phase letters, and campaign checklists do
-not set direction.
+Start with measurement integrity and observable accuracy, then prepared solves,
+certified reuse, sparse preconditioners, native physics, and CPU/GPU sharding.
+Real VMEX equilibrium optimization, NEOPAX transport coupling, and ESSOS coil
+optimization require the corresponding scientific and derivative gates.
+Mirror geometry and optimization are the final, deferred phase.
 
-Machine-readable planning and validation evidence lives under ``validation/``:
-
-- ``registry.toml`` is the single index of registered evidence artifacts: one
-  entry per artifact naming its capability, status, claim, inputs, generating
-  command, checksum, and the limits of what it establishes. One runner,
-  ``python -m tools.release.registry``, checks them all, and
-  ``tests/test_validation.py`` is the one test module that consumes it;
-- ``capabilities.toml`` records capability status and evidence gaps;
-- ``baseline.toml`` pins the audited tree, package sizes, CI state, coverage,
-  source and public-API inventory, and the known local test gaps;
-- ``hardware.toml`` identifies measured hardware and the measurement work that
-  no available host can run;
-- ``benchmark_schema.toml`` defines the minimum record for later performance
-  comparisons.
-
-Phase A of ``plan.md`` is complete: the plan is replaced and the audited-state
-inventory is frozen in ``baseline.toml``. Phase B is in progress. Its first
-slice added the registry and its runner and replaced nineteen per-campaign test
-modules with one. Its remaining slice moves the dated campaign directories and
-raw suite outputs to release assets and reduces the summary and audit-script
-counts themselves. No new resolution campaign starts before that lands.
+``validation/baseline.toml`` preserves the historical inventory and records the
+latest review separately. ``validation/capabilities.toml`` records capability
+scope; ``validation/registry.toml`` indexes retained scientific evidence.
+``validation/hardware.toml`` identifies the available measurement hosts.
+Older phase letters and PR descriptions describe historical work and do not
+set the next action. Completing a work package updates the plan's current
+checkpoint, capability status, and evidence links together.

@@ -492,7 +492,7 @@ Publication validation dashboard
 
 Literature anchor:
 
-- `Landreman et al. 2014 <https://doi.org/10.1063/1.4870077>`_
+- `Landreman et al. 2014 <https://doi.org/10.1063/1.4870077>`__
 - `Open PDF mirror <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`_
 
 Script:
@@ -521,7 +521,7 @@ Fortran v3 CPU/GPU suite benchmark
 
 Literature and reference anchors:
 
-- `Landreman et al. 2014 <https://doi.org/10.1063/1.4870077>`_
+- `Landreman et al. 2014 <https://doi.org/10.1063/1.4870077>`__
 - `Open PDF mirror <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`_
 - `SFINCS Fortran repository <https://github.com/landreman/sfincs>`_
 
@@ -565,7 +565,7 @@ SFINCS 2014 collisionality figures
 
 Literature anchor:
 
-- `Landreman et al. 2014 <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`_
+- `Landreman et al. 2014 <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`__
 
 Scripts:
 
@@ -888,7 +888,7 @@ in a later research/nightly cycle.
 
 Literature anchors:
 
-- `Landreman et al. 2014 <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`_
+- `Landreman et al. 2014 <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`__
 
 Publication target:
 
@@ -945,7 +945,7 @@ Validation goal:
 
 Literature anchors:
 
-- `Landreman et al. 2014 <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`_
+- `Landreman et al. 2014 <https://publications.lib.chalmers.se/records/fulltext/199559/local_199559.pdf>`__
 
 Closed branch evidence:
 

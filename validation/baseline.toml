@@ -5,7 +5,7 @@ plan = "plan.md"
 plan_phase = "A"
 measurement_host = "official-laptop-cpu"
 
-# Phase A of plan.md freezes an exact current-state inventory. Every number
+# Historical August 30 inventory; active review data is in [review]. Every number
 # below was measured on the audited commit; nothing here changes runtime, API,
 # or physics. Values that could not be observed are recorded as known gaps
 # rather than estimated.
@@ -418,3 +418,75 @@ phase = "A"
 status = "partly_closed"
 description = "Published performance claims cite a MacBook with an Apple M4 that is in no hardware registry; the campaign artifacts recording the same chip call it a Mac mini, registered as campaign-mac-mini-m4. A protocol-conformant re-measurement of the tier-1 HSX PAS/DKES row on official-laptop-cpu is in validation/benchmarks/hsx_pas_dkes_tier1_official_laptop_v1.json: warm solve 27.97 s median against a recorded 27.2 s, which reproduces, and peak process RSS 1.68 GB against a recorded 0.93 GB, which does not. Cross-machine runtime deltas of this size are noise and are not worth documenting; the memory gap is worth resolving only when someone re-measures on the original host or the page states its RSS definition. This is a documentation-provenance gap, not a physics or numerics one, and it should not block plan work."
 
+
+
+# Review snapshot; older sections above are immutable historical measurements.
+[review]
+recorded_at = "2026-09-05"
+audited_commit = "6c4614d7414fb279cf54ce6c44d79c07dddb0a4c"
+plan = "plan.md"
+active_work_packages = "R0-R10; mirrors R11 deferred"
+open_pull_requests = [168]
+source_python_files = 60
+source_physical_python_lines = 48844
+test_python_files = 177
+test_physical_python_lines = 47106
+example_files = 194
+documentation_files = 176
+tool_python_files = 82
+validation_files = 80
+coverage_target_line_percent = 95
+coverage_target_branch_percent = 95
+coverage_last_recorded_date = "2026-09-01"
+coverage_last_recorded_line_percent = 91.55
+coverage_last_recorded_branch_percent = 79.77
+coverage_last_recorded_run_status = "1994 passed, one failed; historical office campaign, not remeasured or a green release certificate"
+coverage_priority = "Maintainer deferred immediate coverage work; release target retained. Correctness and measurement integrity first."
+full_clone_last_recorded_mib = 29.32
+full_clone_last_recorded_date = "2026-09-01"
+full_clone_remeasured = false
+branch_inventory_core_repositories = 5
+branch_heads_compared = 75
+sfincs_active_namelist_controls = 145
+sfincs_namelist_groups = 9
+scope = "All branch/PR/issue inventories and risk-directed source/diff review; not every branch built or every historical source line independently verified. CPU/GPU and five small SFINCS families profiled; medium SFINCS failures, SuperLU_DIST and multirank production comparisons remain open."
+evidence_location = "External local archive dkx-review-evidence-20260905; large traces and raw API responses are not tracked in Git."
+
+[review.branch_protection]
+required_status_checks = ["build", "coverage-report", "examples-smoke", "external-data-smoke", "workflow-lint", "wheel-install", "tests"]
+required_approving_reviews = 1
+enforce_admins = false
+allow_force_pushes = true
+changed_by_review = false
+
+[review.profiling]
+classification = "diagnostic, not release performance evidence"
+warm_repetitions = 5
+cpu_jax = "0.9.2"
+gpu_jax = "0.10.2"
+solvax = "0.20.0"
+cpu_load_controlled = false
+gpu_count = 2
+gpu_model = "NVIDIA RTX A4000"
+fp_small_unknowns = 2804
+fp_small_cpu_warm_median_s = 0.412653
+fp_small_gpu_warm_median_s = 1.053147
+fp_medium_unknowns = 15844
+fp_medium_cpu_warm_median_s = 2.091745
+fp_medium_gpu_warm_median_s = 3.347878
+fp_medium_prepared_gpu_warm_median_s = 2.282732
+fp_medium_prepared_gpu_true_relative_residual = 7.631749e-11
+fp_medium_prepared_compiled_temporary_bytes = 68703728
+prepared_memory_is_measured_peak_vram = false
+small_batch_single_gpu_median_s = 0.709284
+small_batch_two_gpu_median_s = 1.435890
+sfincs_backend = "MacPorts PETSc 3.20.2 / MUMPS; no SuperLU_DIST"
+sfincs_fp_requested_tolerance = 1e-10
+sfincs_fp_iterative_true_relative_residual = 6.513871e-9
+sfincs_fp_direct_true_relative_residual = 2.365043e-13
+sfincs_additional_failures = "finite-Er iterative breakdown despite exit zero; magnetic-drift iterative SNES failure despite complete moments; direct residuals also exceed the common 1e-10 gate"
+gpu_prepared_trsm_launches = 27464
+gpu_prepared_trsm_kernel_s = 1.957129481
+gpu_prepared_device_span_s = 2.373386008
+sfincs_medium_status = "exit-15 failure and repeated 120-second timeouts; repeated failures stopped, incomplete outputs invalid"
+notes = "Different toolchains and timing boundaries forbid blanket CPU/GPU/SFINCS speedup claims. Full-operator JIT fails on traced discrete layout; selected dynamic-parameter staging prototype succeeds."

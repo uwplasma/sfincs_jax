@@ -10,9 +10,11 @@ Neoclassical transport for stellarators and tokamaks, in JAX.
 
 DKX solves the radially local, linearized drift-kinetic equation on a flux
 surface and returns particle and heat fluxes, parallel flows, bootstrap
-current, transport matrices, and ambipolar electric-field roots. Outputs match
-[SFINCS Fortran v3](https://github.com/landreman/sfincs) field by field, and
-every output is differentiable in every input.
+current, transport matrices, and ambipolar electric-field roots. Matched cases are
+tested against [SFINCS Fortran v3](https://github.com/landreman/sfincs).
+Expert JAX paths support implicit derivatives in documented domains.
+See [capability scope](docs/capabilities.rst) for native workflow and root-selection
+limits, and the [research roadmap](plan.md).
 
 ![W7-X standard configuration solved by DKX: the boundary colored by |B| and by parallel current density, the bootstrap current profile, and the ambipolar radial electric field](docs/_static/figures/readme/w7x_showcase.png)
 
@@ -237,10 +239,8 @@ dkx run case.toml --out result.nc
 
 ## Documentation
 
-[Case files](docs/case_files.rst) ·
-[Install](docs/installation.rst) ·
-[Usage](docs/usage.rst) ·
-[Examples](docs/examples.rst) ·
+[Case files](docs/case_files.rst) · [Install](docs/installation.rst) ·
+[Usage](docs/usage.rst) · [Examples](docs/examples.rst) ·
 [Physics](docs/physics_models.rst) ·
 [Performance](docs/performance.rst) ·
 [Validation](docs/validation_matrix.rst)
