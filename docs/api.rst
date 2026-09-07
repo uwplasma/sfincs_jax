@@ -29,6 +29,19 @@ High-level runners live in :mod:`dkx.run` (``run_profile``,
 Canonical modules
 -----------------
 
+For expert staged solves, ``KineticOperator`` is a JAX pytree. Discrete
+dimensions, model switches and the ``n_xi_for_x`` pitch-truncation layout are
+static compilation keys; physical coefficient arrays are dynamic leaves.
+A change to active pitch layout requires a new trace even when the rectangular
+state shape is unchanged. Same-layout operators with changed coefficients can
+reuse an executable on supported staged solver routes.
+
+Supply a consistently rebuilt operator when changing density, temperature or
+geometry. Replacing only ``n_hat`` or ``t_hat`` on an existing operator does not
+rebuild its collision coefficients. Compilation reuse is distinct from valid
+physical-data or preconditioner reuse; it does not establish a prepared restart
+contract or make the namelist/geometry builders differentiable.
+
 .. list-table::
    :header-rows: 1
    :widths: 30 45 25
