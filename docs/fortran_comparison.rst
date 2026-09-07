@@ -174,7 +174,7 @@ Changed options or recorded runtime environment settings invalidate resume.
 The runner writes ``OUT.provenance.json`` with typed options, Python/package
 versions, platform, selected environment variables and individual input/source/
 executable hashes. Its checksum is included in ``OUT.done``. Refused resume
-preserves the previous provenance and measurements.
+preserves the existing provenance and measurements.
 
 Use repeatable ``--provenance-file PATH`` for environment locks, build records,
 external PETSc option files or resolved shared libraries. Their contents become

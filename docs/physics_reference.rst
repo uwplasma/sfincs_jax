@@ -487,9 +487,13 @@ current would flow unless :math:`E_r` self-adjusts to the ambipolar root
    J_r(E_r) = \sum_s Z_s\,\Gamma_s(E_r) = 0.
 
 `dkx` evaluates :math:`J_r` at a given :math:`E_r` with one drift-kinetic
-solve and finds the root with a bracket-expanding Brent solver that mirrors
-SFINCS Fortran v3 ``ambipolarSolver.F90`` (option 2), classifying each root as
-*ion*, *electron*, or *unstable*. The root is also exposed as a differentiable
+solve and finds the root with the bracket-expanding Brent iteration from
+SFINCS Fortran v3 ``ambipolarSolver.F90`` (option 2), with separate current and
+field tolerances. A narrow bracket without an acceptable current is rejected.
+Accepted roots are classified as *ion*, *electron*, *unstable*, or *marginal*
+(exactly zero current slope); nonzero slopes still require uncertainty checks.
+The finite scan does not establish that every root was found.
+The root is also exposed as a differentiable
 quantity: :math:`dE_r/dp` for any profile parameter :math:`p` follows from the
 implicit-function theorem applied to :math:`J_r(E_r,p)=0`, so ``jax.grad`` flows
 through the ambipolar :math:`E_r`.
