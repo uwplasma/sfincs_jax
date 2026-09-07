@@ -760,9 +760,15 @@ def test_native_prepared_scan_matches_fresh_cases_and_field_derivative(tmp_path,
                    solver=replace(base.solver, relative_tolerance=1e-11))
     def forbidden(*args, **kwargs):
         raise AssertionError('native preparation must neither solve nor parse a namelist')
+    # Resolve consumers before replacing the provider, so lazy imports cannot
+    # retain the temporary mock after this context exits.
+    er_mod = importlib.import_module('dkx.er')
     with monkeypatch.context() as patch:
         patch.setattr(importlib.import_module('dkx.solve'), 'solve', forbidden)
+        patch.setattr(er_mod, 'solve', forbidden)
         patch.setattr(importlib.import_module('dkx.namelist'), 'read_sfincs_input', forbidden)
+        patch.setattr(importlib.import_module('dkx.inputs'), 'read_sfincs_input', forbidden)
+        patch.setattr(importlib.import_module('dkx.inputs'), 'parse_sfincs_input_text', forbidden)
         problem = dkx.prepare_er_scan(case, surface_index=1)
     assert problem.er_units == 'kV/m'
     assert problem.tol == case.solver.relative_tolerance
