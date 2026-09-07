@@ -697,10 +697,13 @@ CLI — also obtain a *differentiable* ambipolar :math:`E_r`:
 
    from dkx import er
 
-   # Fortran-parity Brent root (bracket expansion + classification):
+   # SFINCS-style Brent iteration with independent acceptance tolerances:
    result = er.find_ambipolar_er(
        "input.namelist", er_bracket=(-0.1, 0.1), er_initial=0.0,
+       current_tol=1e-10, field_tol=1e-10,
    )
+   if not result.converged:
+       raise RuntimeError(result.message)
    print(result.er, result.root_type, [r.root_type for r in result.roots])
 
    # Differentiable ambipolar Er: jax.grad flows through the root via the
@@ -710,6 +713,19 @@ CLI — also obtain a *differentiable* ambipolar :math:`E_r`:
    root = er.prepare("input.namelist")
    er_star = er.ambipolar_er(root.operator, er0=result.er,
                              dphi_per_er=root.dphi_per_er, z_s=root.z_s)
+
+``find_ambipolar_er`` checks the selected current with a cold solve, discarding
+the search's state, recycle space and preconditioner. It requires the normalized
+current to satisfy ``current_tol``;
+closing a field bracket to ``field_tol`` alone returns a failed result with
+status ``current_tolerance``. Field tolerance uses the prepared problem's units
+(normalized for namelists, kV/m for native Cases). Failed candidates have no
+classified roots. Nonfinite field/current/flux evaluations raise immediately.
+``all_roots`` searches sampled zeros and sign-changing intervals; finite sampling
+cannot establish completeness or exclude tangencies. Exactly zero slope is
+``marginal``, and a small nonzero slope requires an uncertainty study before
+interpreting stability or using a sensitivity. These local checks do not
+replace kinetic residual and phase-space convergence checks.
 
 Running upstream postprocessing scripts (utils/)
 ------------------------------------------------

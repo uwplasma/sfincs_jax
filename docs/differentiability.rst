@@ -75,6 +75,60 @@ function theorem rather than unrolled iterations.
    differentiable JAX arrays directly. The sparse direct host solve is *not*
    differentiable and raises if ``differentiable=True`` is requested.
 
+Ambipolar solves use the routed kinetic solver
+----------------------------------------------
+
+``radial_current(..., differentiable=True)`` and ``ambipolar_er`` use the
+same structured/recycled-Krylov routes as :func:`dkx.solve.solve`, with SOLVAX
+owning the implicit linear and root differentiation. These paths avoid
+assembly and dense factorization of the global kinetic matrix.
+The selected route's layout and differentiation restrictions still apply;
+there is no longer a blanket rejection of ``Nxi_for_x_option=1``.
+Prepared ``ErProblem`` method/tolerance settings are preserved unless explicitly
+overridden. An explicit sparse ``direct`` request raises because that route
+is non-differentiable. Root and initial-field units follow the prepared problem.
+
+CPU and installed-wheel GPU tests compare routed current derivatives to cold finite differences and
+root derivatives to finite differences of independently solved roots, for PAS
+and full-FP collisions with uniform and ramped pitch layouts. They also reject
+construction of the global dense identity. These are bounded discretization
+checks, not joint-grid or marginal-root certificates. Seed the unbracketed
+secant near the desired isolated root. Its final acceptance requires finite
+field/current/slope, ``abs(Jr) <= current_tol`` (default 1e-12),
+``abs(dJr/dEr) > min_abs_slope`` (default zero), and the local Newton correction
+``abs(Jr/(dJr/dEr)) <= root_tol`` (default 1e-11). The field tolerance uses the
+prepared problem's units; current is normalized and the slope is normalized
+current per field unit. These controls are static under JIT.
+
+Failure raises an exception, including under JIT, AD and vmap; the runtime
+callback needs an available CPU backend on GPU hosts (``JAX_PLATFORMS=cuda,cpu``).
+Acceptance adds a final current/field-tangent evaluation. A zero default slope
+threshold rejects exactly flat roots but does not certify a nearly marginal
+root: choose a positive threshold from the application's current uncertainty
+and acceptable field uncertainty. The local correction is not a rigorous
+root-error bound, branch-continuity guarantee, or phase-space convergence test.
+An intrinsically ambipolar model cannot determine a unique field this way.
+
+A paired installed-wheel A4000 probe on 2,358 PAS unknowns compares the former
+dense expression with the routed current at identical parameters. Twelve
+alternating, synchronized samples give median forward times 53.2 -> 10.7 ms
+and value/gradient times 54.7 -> 17.8 ms, with matching values/derivatives.
+HLO replaces the global 2358-by-2358 LU with batches of 49-by-49 factors.
+XLA temporary-buffer estimates decrease from about 266 MB to 4.3 MB; these
+are not allocator peak measurements. The trace confirms GPU execution of
+both expressions; the routed expression launches more, smaller kernels.
+Inputs, wheel checksum, HLO, trace and raw timings remain outside Git in
+``dkx-review-evidence-20260905/routed-ambipolar-ad``. This measures an inner
+current evaluation, not a full optimizer iteration or production scaling.
+The paired local CPU probe gives forward 51.6 -> 2.63 ms and value/gradient
+58.6 -> 3.01 ms. The GPU regression selection takes 419 seconds overall;
+full-root setup/compilation and repeated execution costs remain to be separated.
+A separate 2,358-unknown root value/gradient probe isolates the acceptance
+check: CPU median 11.36 -> 12.12 ms and A4000 52.32 -> 53.32 ms, with matching
+roots/derivatives. Twelve alternating samples synchronize both device work and
+host callback effects; the persistent compilation cache is retained. These
+fixed-seed PAS timings do not characterize branch searches or optimizer runs.
+
 Bounded reverse mode for the truncated structured direct kernel
 ---------------------------------------------------------------
 
