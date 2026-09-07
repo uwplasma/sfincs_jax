@@ -17,10 +17,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The count-only 12-way split reached 9m24s of pytest time before
-        # coverage upload on PR #96, exhausting the ten-minute whole-job
-        # budget after setup. Thirteen shards retain full coverage and restore
-        # upload margin without weakening tests or extending the job limit.
+        # Shards are balanced by measured duration: `.test_durations` at the
+        # repository root (regenerate with `pytest --store-durations`) lets
+        # pytest-split's least_duration algorithm place the 30-s multigrid and
+        # tier-2 tests so no shard approaches the 10-minute job budget. Without
+        # the file pytest-split falls back to a count-only split, which put one
+        # shard at 9m53s and tipped it into the timeout on stacked PRs. This
+        # reverses the 2026-07-17 decision to archive the snapshot; the file is
+        # compact and bounded by tests/test_source_tree_consolidation.py.
         group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     env:
       JAX_ENABLE_X64: "True"
