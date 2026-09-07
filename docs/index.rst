@@ -118,3 +118,12 @@ see :doc:`capabilities` before selecting an advanced model.
    development_roadmap
    release_notes
    release_checklist
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Working decisions and experiment records
+
+   adr/0001-figure-first-planning
+   adr/0002-durations-balanced-shards
+   adr/0003-attribution
+   experiments/README

@@ -10,7 +10,7 @@ Phases
 ------
 
 - **Phase 0, land and freeze (1 week):** the integrated main, ADRs for the
-  working method, the experiment-record template, a changelog, a tag.
+  working method, the experiment-record template and a draft changelog; release tagging is deferred.
 - **Phase 1, the positioning figure (3–4 weeks):** DKX against SFINCS v3 and
   yancc at matched resolution, with an algebraic and a discretization error bar
   on every DKX point, cold and warm, CPU and GPU.
