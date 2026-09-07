@@ -542,6 +542,7 @@ def run_case(
     fortran_binary: Path | None,
     petsc_profile: bool = False,
     *,
+    fortran_petsc_opts: tuple[str, ...] = (),
     ranks: list[int],
     reps: int,
     timeout_s: float,
@@ -551,7 +552,7 @@ def run_case(
 ) -> dict:
     """One deck through both codes, in isolated copies of the example directory."""
     deck = example_dir / "input.namelist"
-    record: dict = {"case": example_dir.name}
+    record: dict = {"case": example_dir.name, "fortran_petsc_opts": list(fortran_petsc_opts)}
     try:
         record.update(deck_metadata(deck))
     except Exception as exc:
@@ -573,7 +574,7 @@ def run_case(
                 _absolutize_equilibrium(work / "input.namelist", example_dir)
                 if fortran_residual:
                     _request_binary_dump(work / "input.namelist")
-                binary = [str(fortran_binary), "-ksp_converged_reason", "-snes_converged_reason"]
+                binary = [str(fortran_binary), *fortran_petsc_opts, "-ksp_converged_reason", "-snes_converged_reason", "-ksp_view"]
                 if petsc_profile:
                     # PETSc's own event log. This is the only way to see where
                     # the Fortran run actually spends its time -- assembly,
@@ -591,6 +592,16 @@ def run_case(
                 # exporting them into the parent would shadow the BLAS that this
                 # process's own numpy is linked against.
                 result = _run_measured(launcher + command, work, timeout_s)
+                # Record observed factor packages separately from requested
+                # options: SFINCS/PETSc may override a requested backend.
+                observed = set()
+                if (work / "benchmark.stdout.log").is_file():
+                    with (work / "benchmark.stdout.log").open(errors="replace") as log:
+                        for line in log:
+                            match = re.search(r"package used to perform factorization:\s*(\S+)", line)
+                            if match:
+                                observed.add(match.group(1))
+                result["observed_factor_backends"] = sorted(observed)
                 result["succeeded"] = _fortran_succeeded(work, result)
                 if fortran_residual and result["succeeded"]:
                     result["true_residual"] = fortran_true_residual(
@@ -648,7 +659,7 @@ def run_case(
     return record
 
 
-def preflight_fortran(binary: Path | None, launcher: list[str]) -> str | None:
+def preflight_fortran(binary: Path | None, launcher: list[str], petsc_opts: tuple[str, ...] = ()) -> str | None:
     """Reason the Fortran reference cannot run, or ``None`` if it can.
 
     A sweep is hours long and its whole value is the comparison, so a reference
@@ -663,7 +674,7 @@ def preflight_fortran(binary: Path | None, launcher: list[str]) -> str | None:
         return None  # dkx-only sweep: nothing to check
     if not binary.exists():
         return f"--fortran-binary {binary} does not exist"
-    probe = [*launcher, str(binary.resolve()), "-help"]
+    probe = [*launcher, str(binary.resolve()), *petsc_opts, "-help"]
     try:
         # SFINCS may continue initialization after printing help. Isolate its
         # files and supervise the launcher's descendants just like real runs.
@@ -727,7 +738,7 @@ def _campaign_id(args, directories: list[Path]) -> str:
         "python": sys.version,
         "platform": platform.platform(),
         "environment": {k: v for k, v in os.environ.items() if k.startswith(
-            ("DKX_", "JAX_", "XLA_", "CUDA_", "OMP_", "MKL_", "OPENBLAS_", "MAMBA_", "LD_", "DYLD_")
+            ("PETSC_", "DKX_", "JAX_", "XLA_", "CUDA_", "OMP_", "MKL_", "OPENBLAS_", "MAMBA_", "LD_", "DYLD_")
         )},
     }, sort_keys=True).encode())
     for path in sorted(files):
@@ -776,6 +787,13 @@ def main(argv: list[str] | None = None) -> int:
             "actually goes, and therefore what is worth attacking in dkx."
         ),
     )
+    parser.add_argument(
+        "--fortran-petsc-opt", action="append", default=[], metavar="TOKEN",
+        help="repeat for each PETSc argument token, using = for leading dashes, e.g. "
+             "--fortran-petsc-opt=-mat_superlu_dist_colperm --fortran-petsc-opt=NATURAL. "
+             "Options are recorded and bound to resume provenance; every backend still "
+             "must pass original-residual and observable gates.",
+    )
     parser.add_argument("--equilibria", default=os.environ.get("DKX_EQUILIBRIA_DIRS"))
     parser.add_argument(
         "--fortran-residual", action=argparse.BooleanOptionalAction, default=True,
@@ -791,7 +809,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     launcher = args.fortran_launcher.split() if args.fortran_launcher else []
-    reason = preflight_fortran(args.fortran_binary, launcher)
+    reason = preflight_fortran(args.fortran_binary, launcher, tuple(args.fortran_petsc_opt))
     if reason is not None:
         print(f"refusing to start: {reason}", file=sys.stderr)
         return 2
@@ -843,6 +861,7 @@ def _run_campaign(args) -> int:
             record = run_case(
                 directory, args.fortran_binary,
                 petsc_profile=args.petsc_profile,
+                fortran_petsc_opts=tuple(args.fortran_petsc_opt),
                 ranks=args.ranks, reps=args.reps,
                 timeout_s=args.timeout_s, equilibria=args.equilibria,
                 launcher=args.fortran_launcher.split() if args.fortran_launcher else [],

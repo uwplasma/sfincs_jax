@@ -246,7 +246,7 @@ def test_campaign_checkpoint_is_atomic_on_publish_failure(tmp_path: Path, monkey
     assert list(tmp_path.iterdir()) == [checkpoint]
 
 
-@pytest.mark.parametrize("mutation", ["input", "equilibrium", "settings"])
+@pytest.mark.parametrize("mutation", ["input", "equilibrium", "settings", "petsc", "petsc_env"])
 @pytest.mark.parametrize("interrupt", [False, True])
 def test_campaign_resume_retries_failures_and_checks_provenance(tmp_path: Path, monkeypatch, mutation, interrupt) -> None:
     from tools.benchmarks import parity_performance_matrix as matrix
@@ -289,6 +289,10 @@ def test_campaign_resume_retries_failures_and_checks_provenance(tmp_path: Path, 
         (examples / "good/input.namelist").write_text("&general\n RHSMode=2\n/\n")
     elif mutation == "equilibrium":
         equilibrium.write_text("changed geometry")
+    elif mutation == "petsc":
+        argv += ["--fortran-petsc-opt=-mat_superlu_dist_equil", "--fortran-petsc-opt=false"]
+    elif mutation == "petsc_env":
+        monkeypatch.setenv("PETSC_OPTIONS", "-ksp_rtol 1e-8")
     else:
         argv += ["--reps", "2"]
     assert matrix.main(argv) == 2
@@ -1654,11 +1658,12 @@ def test_reference_preflight_is_isolated_and_supervised(tmp_path, monkeypatch, f
     workdirs = []
 
     def bounded(command, cwd, timeout_s):
+        assert command[-3:] == ["-label", "a b", "-help"]
         workdirs.append(cwd)
         return run(command, cwd, 0.1 if failure == "timeout" else timeout_s)
 
     monkeypatch.setattr(matrix, "_run_measured", bounded)
-    reason = matrix.preflight_fortran(Path("reference"), [])
+    reason = matrix.preflight_fortran(Path("reference"), [], ("-label", "a b"))
     assert original.read_text() == "preserve"
     assert workdirs and all(not path.exists() for path in workdirs)
     if failure == "none":
@@ -1709,3 +1714,30 @@ def test_conditioning_builds_without_solving_and_caps_before_materializing(monke
     assert op.total_size == 111
     probe.main([deck], max_size=1)
     assert 'too large' in capsys.readouterr().out
+
+
+def test_petsc_arguments_and_observed_backend_are_distinct(tmp_path, monkeypatch):
+    from tools.benchmarks import parity_performance_matrix as matrix
+    (tmp_path / "input.namelist").write_text("&general\n/\n")
+    monkeypatch.setattr(matrix, "deck_metadata", lambda path: {"solverTolerance": 1e-10})
+    calls = []
+
+    def measured(command, work, *args, **kwargs):
+        calls.append(command)
+        (work / "benchmark.stdout.log").write_text(
+            "package used to perform factorization: mumps\n" + "x" * 9000
+        )
+        (work / "benchmark.stderr.log").write_text("")
+        return {"returncode": 1}
+
+    monkeypatch.setattr(matrix, "_run_measured", measured)
+    options = ("-pc_factor_mat_solver_type", "superlu_dist", "-options_string", "a value with spaces")
+    record = matrix.run_case(tmp_path, Path("/reference"), fortran_petsc_opts=options,
+                             ranks=[1, 2], reps=1, timeout_s=10, equilibria=None,
+                             launcher=["isolated-env"], fortran_residual=True)
+    assert calls[0][:6] == ["isolated-env", "/reference", *options]
+    assert calls[1][:5] == ["isolated-env", "mpirun", "-n", "2", "/reference"]
+    assert calls[1][5:9] == list(options)
+    assert record["fortran_petsc_opts"] == list(options)
+    assert record["fortran"]["1"]["observed_factor_backends"] == ["mumps"]
+    assert not record["algebraic_pair_accepted"]

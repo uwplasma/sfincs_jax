@@ -147,3 +147,26 @@ preconditioned solve: factoring the preconditioner and factoring the kinetic
 Jacobian are different workloads. Separate assembly, ordering/symbolic analysis,
 numeric factorization, triangular application and Krylov costs. Preserve failed
 attempts and never use their short runtimes as successful reference timings.
+
+The campaign runner accepts repeatable PETSc argument tokens, for example:
+
+.. code-block:: bash
+
+   python tools/benchmarks/parity_performance_matrix.py \
+     --examples /path/to/cases --out /path/to/campaign.jsonl \
+     --fortran-binary /path/to/qualified/sfincs \
+     --fortran-petsc-opt=-mat_superlu_dist_colperm \
+     --fortran-petsc-opt=NATURAL --petsc-profile
+
+Each record retains ``fortran_petsc_opts`` and each reference run reports
+``observed_factor_backends`` from ``-ksp_view``. An empty observed list means
+no factor-package name was captured; requested options alone do not prove
+which implementation ran. SFINCS or PETSc can override an option. The example
+assumes a separately qualified SuperLU_DIST configuration and does not itself
+select that backend.
+
+Changed option tokens or recorded ``PETSC_`` environment settings invalidate
+resume. This is not a complete toolchain lock: archive external option-file
+contents and implicit PETSc configuration separately, and start a new campaign
+if they change. Every configuration still requires the original-residual and
+observable gates; a backend change can change accuracy as well as runtime.
