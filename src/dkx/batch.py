@@ -21,16 +21,14 @@ operator leaves.  Peak memory is bounded automatically: the per-solve footprint
 comes from the route-aware structured direct memory model in :mod:`dkx.solve`
 (:func:`dkx.solve.auto_solve_peak_memory_bytes`), the memory budget from the
 device/host, and the batch is processed in ``jax.lax.map`` chunks of the
-computed size so only one chunk's intermediates are ever live.
+computed size. Reverse mode can retain residuals across chunks; the budget is
+an estimate rather than a hard allocation limit.
 
-Because the batch elements are embarrassingly parallel, the batch can also be
-split **across devices** (``devices="auto"`` or an explicit device list): each
-device receives a contiguous shard of the batch, runs the same chunked
-solve-plus-moments on it, and the results are gathered on the host.  The
-per-element computation is identical to the single-device path, the memory
-budget applies per device, and anything short of two usable devices (or a
-batch smaller than the device count) degrades to the single-device path
-unchanged.
+Independent batches can be split across distinct local devices using JAX's
+``shard_map`` primitive. Each device runs the same memory-budgeted local map;
+JIT and reverse-mode differentiation preserve this execution path. Uneven
+batches repeat the final valid case for padding and discard it from outputs.
+No host gather is performed; uneven output trimming can require redistribution.
 
 Design constraints honoured here:
 
@@ -346,7 +344,7 @@ def _resolve_devices(
 
     ``None`` keeps the single-device path.  ``"auto"`` selects every local
     device of the default backend when more than one is visible.  An explicit
-    non-empty sequence is taken as given.  Any resolution with fewer than two
+    non-empty sequence must contain distinct devices. Fewer than two
     devices — or a batch smaller than the device count, which would leave
     devices idle — returns ``None`` so the caller degrades to the
     single-device path unchanged.
@@ -367,21 +365,11 @@ def _resolve_devices(
                 "devices must be None, 'auto', or a non-empty sequence of "
                 "jax.Device objects."
             )
+    if len(set(devs)) != len(devs):
+        raise ValueError("devices must contain distinct physical devices")
     if len(devs) < 2 or batch < len(devs):
         return None
     return devs
-
-
-def _shard_bounds(batch: int, n_devices: int) -> list[tuple[int, int]]:
-    """Contiguous near-equal ``[lo, hi)`` batch slices, one per device."""
-    base, extra = divmod(batch, n_devices)
-    bounds: list[tuple[int, int]] = []
-    lo = 0
-    for d in range(n_devices):
-        hi = lo + base + (1 if d < extra else 0)
-        bounds.append((lo, hi))
-        lo = hi
-    return bounds
 
 
 # ---------------------------------------------------------------------------
@@ -410,21 +398,20 @@ def batched_solve(
     table (:func:`dkx.run.profile_moments_from_operator`).  The map is a
     ``jax.vmap`` executed in memory-budgeted ``jax.lax.map`` chunks, so it is
     differentiable (the implicit solve composes with the batch axis), jit-safe,
-    and bounded in peak memory.
+    and chunked using an estimated memory budget. Reverse-mode residual storage
+    across chunks must be measured separately.
 
     Only ``op``'s varying leaves are mapped; every other leaf — crucially the
     discretization grids — is closed over and stays concrete, which keeps the
     host-side solver auto-route and the footprint estimate well defined.
 
-    With ``devices`` resolving to two or more devices the batch is split into
-    contiguous near-equal shards, each shard is placed on its device
-    (``jax.device_put``) and processed by the same chunked solve — the
-    asynchronous dispatch overlaps the devices — and the results are gathered
-    on the host.  The per-element computation is identical to the
-    single-device path and the memory budget applies per device.  This
-    multi-device split is host-side orchestration: inside a ``jax.jit`` or
-    ``jax.grad`` trace (traced ``batch_leaves``) it falls back to the
-    single-device path, which computes the identical result.
+    With two or more resolved devices, JAX's ``shard_map`` distributes
+    contiguous batch slices on a JAX mesh, including under ``jit`` and ``grad``.
+    The memory budget applies per device. Uneven batches are padded with the
+    final valid case and trimmed after solving; padding contributes no loss.
+    Outputs remain JAX arrays with no explicit host gather. Trimming uneven
+    outputs can redistribute them, so inspect their sharding when composing
+    downstream distributed work.
 
     Args:
         op: the base operator (defines grids, layout, and the shared leaves).
@@ -475,13 +462,6 @@ def batched_solve(
     )
 
     devs = _resolve_devices(devices, batch)
-    if devs is not None and any(
-        isinstance(leaf, jax.core.Tracer)
-        for leaf in jax.tree_util.tree_leaves(leaves_map)
-    ):
-        # Under a jit/grad trace the host-side device orchestration below is
-        # not traceable; the single-device path computes the identical result.
-        devs = None
 
     def solve_one(leaves: Mapping[str, Any]):
         op_i = dataclasses.replace(op, **leaves)
@@ -529,11 +509,18 @@ def batched_solve(
         )
         n_chunks = -(-batch // chunk)
     else:
-        bounds = _shard_bounds(batch, len(devs))
-        shard_max = max(hi - lo for lo, hi in bounds)
-        # The memory budget is per device: each device only ever holds one of
-        # its own chunks' intermediates, so the chunk is sized from the budget
-        # of a single device and the largest shard.
+        from jax.sharding import Mesh, PartitionSpec as P  # noqa: PLC0415
+
+        # SOLVAX owns the local numerical solves. Its shard_batch wrapper does
+        # not yet expose this checker option required by custom_linear_solve.
+        if hasattr(jax, "shard_map"):
+            shard_map = jax.shard_map
+            check = {"check_vma": False}
+        else:  # JAX 0.4 compatibility
+            from jax.experimental.shard_map import shard_map  # noqa: PLC0415
+            check = {"check_rep": False}
+
+        shard_max = -(-batch // len(devs))
         chunk = auto_chunk_size(
             op,
             shard_max,
@@ -541,26 +528,26 @@ def batched_solve(
             memory_budget_gb=memory_budget_gb,
             retain_legendre_tail=retain_selected_tail,
         )
-        shards = []
-        for dev, (lo, hi) in zip(devs, bounds):
-            shard_leaves = jax.tree_util.tree_map(
-                lambda a, lo=lo, hi=hi, dev=dev: jax.device_put(
-                    jnp.asarray(a)[lo:hi], dev
-                ),
-                leaves_map,
-            )
-            # Eager dispatch is asynchronous, so the devices overlap naturally.
-            shards.append(
-                jax.lax.map(solve_one, shard_leaves, batch_size=min(chunk, hi - lo))
-            )
-        gathered = jax.device_get(shards)
-        states = jnp.concatenate([s for s, _, _, _ in gathered], axis=0)
-        moments = {
-            key: jnp.concatenate([m[key] for _, m, _, _ in gathered], axis=0)
-            for key in gathered[0][1]
-        }
-        residual_norms = jnp.concatenate([r for _, _, r, _ in gathered], axis=0)
-        tail_bounds = jnp.concatenate([t for _, _, _, t in gathered], axis=0)
+        # Equal local shapes are required by shard_map. Repeat a valid final
+        # case instead of inventing zero-density/otherwise invalid physics.
+        padding = shard_max * len(devs) - batch
+        padded = jax.tree_util.tree_map(
+            lambda a: jnp.concatenate(
+                [jnp.asarray(a), jnp.repeat(jnp.asarray(a)[-1:], padding, axis=0)],
+                axis=0,
+            ),
+            leaves_map,
+        )
+        mapped = shard_map(
+            lambda local: jax.lax.map(solve_one, local, batch_size=chunk),
+            mesh=Mesh(devs, ("device",)),
+            in_specs=P("device"),
+            out_specs=P("device"),
+            **check,
+        )
+        states, moments, residual_norms, tail_bounds = jax.tree_util.tree_map(
+            lambda a: a[:batch], mapped(padded)
+        )
         n_chunks = -(-shard_max // chunk)
     return BatchedSolveResult(
         states=states,
