@@ -1017,6 +1017,34 @@ class FokkerPlanckV3Phi1Operator:
 
     n_xi_for_x: jnp.ndarray  # (X,) int32
 
+    def at_uniform_density(self, n_hats: jnp.ndarray, *, n_xi: int) -> FokkerPlanckV3Operator:
+        """Refresh uniform FP coefficients from the stored unit-density kernels.
+
+        Jittable and differentiable in density at fixed temperatures, masses,
+        charges and speed grid. Changing those kernel dependencies requires a
+        rebuild; this method does not apply a Phi1 Boltzmann response. ``n_xi``
+        is the static rectangular pitch resolution, including truncated rows.
+        """
+        n = jnp.asarray(n_hats, dtype=jnp.float64)
+        if n.shape != self.n_hats.shape:
+            raise ValueError(f"n_hats must have shape {self.n_hats.shape}, got {n.shape}")
+        if n_xi < 1:
+            raise ValueError("n_xi must be positive")
+        ns, _, nx = self.k_nu.shape
+        ell = jnp.arange(n_xi, dtype=jnp.float64)
+        nu_d = jnp.einsum("b,abx->ax", n, self.k_nu)
+        ce = jnp.einsum("b,abij->aij", n, self.k_ce)
+        diagonal = -0.5 * nu_d[:, None, :] * (ell * (ell + 1) + 2 * self.krook)[None, :, None]
+        same_species = ce[:, None, :, :] + diagonal[:, :, :, None] * jnp.eye(nx)
+        mat = n[:, None, None, None, None] * self.k_cd[:, :, None, :, :]
+        mat = mat + jnp.eye(ns)[:, :, None, None, None] * same_species[:, None, :, :, :]
+        nl = min(self.nl, n_xi)
+        mat = mat.at[:, :, :nl].add(n[:, None, None, None, None] * self.k_rosen[:, :, :nl])
+        return FokkerPlanckV3Operator(
+            mat=-self.nu_n * mat, n_xi_for_x=self.n_xi_for_x,
+            mask_xi=_mask_xi(self.n_xi_for_x, n_xi),
+        )
+
     def tree_flatten(self):
         children = (
             self.nu_n,

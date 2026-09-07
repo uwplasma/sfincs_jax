@@ -42,6 +42,33 @@ rebuild its collision coefficients. Compilation reuse is distinct from valid
 physical-data or preconditioner reuse; it does not establish a prepared restart
 contract or make the namelist/geometry builders differentiable.
 
+For full-FP density scans at fixed temperatures, masses, charges and speed
+grid, ``make_fokker_planck_v3_phi1_operator`` already stores unit-density
+collision kernels. Its ``at_uniform_density(n_hats, n_xi=...)`` method
+assembles a regular ``FokkerPlanckV3Operator`` using JAX tensor operations,
+including energy scattering, pitch scattering and field-particle terms.
+The refresh supports density JVPs/VJPs without repeating Rosenbluth integrals.
+For an ordinary no-Phi1 full-FP operator and matching kernels:
+
+.. code-block:: python
+
+   from dataclasses import replace
+   from dkx.solve import solve
+
+   refreshed = replace(
+       operator,
+       n_hat=new_density,
+       fp=kernels.at_uniform_density(new_density, n_xi=operator.n_xi),
+   )
+   # Recompute the drive as well as the collision response.
+   result = solve(refreshed, refreshed.rhs(), differentiable=True)
+
+Here ``kernels`` must have been built with the operator's collision/grid
+settings. Keep profile-gradient inputs consistent with the intended scan;
+the snippet holds them fixed. This refresh does not differentiate temperature,
+change the Coulomb-logarithm prescription, or certify preconditioner reuse.
+Changing a kernel dependency requires rebuilding the kernels.
+
 .. list-table::
    :header-rows: 1
    :widths: 30 45 25
