@@ -88,6 +88,21 @@ Prepared ``ErProblem`` method/tolerance settings are preserved unless explicitly
 overridden. An explicit sparse ``direct`` request raises because that route
 is non-differentiable. Root and initial-field units follow the prepared problem.
 
+Differentiated current evaluations retain every Legendre block and recompute
+the original kinetic residual before admitting a state. Finite state, RHS and
+residual are required, with ``||Ax-b|| <= tol*||b||``; a zero RHS requires zero
+residual. This uses the prepared/overridden tolerance without a backward-error
+floor or solver-reported convergence flag. It costs an original operator
+application per current evaluation. Successful scalar current-level checks stay
+on device; failure callbacks raise at execution time. Full-state structured
+and recycled Krylov solves additionally use callbacks to record primal/adjoint
+residual diagnostics. These residual checks do not bound observable or
+phase-space error.
+Under ``vmap``, `JAX converts conditionals to selections
+<https://docs.jax.dev/en/latest/_autosummary/jax.lax.cond.html>`_, so a batch can
+invoke the callback even for accepted states; production batch/root scaling
+still requires measurement.
+
 CPU and installed-wheel GPU tests compare routed current derivatives to cold finite differences and
 root derivatives to finite differences of independently solved roots, for PAS
 and full-FP collisions with uniform and ramped pitch layouts. They also reject
@@ -132,16 +147,37 @@ fixed-seed PAS timings do not characterize branch searches or optimizer runs.
 Bounded reverse mode for the truncated structured direct kernel
 ---------------------------------------------------------------
 
-One path is deliberately outside the implicit-adjoint wrapper. The memory-lean
+Partial recovery remains outside the implicit-adjoint wrapper. The memory-lean
 truncated structured direct kernel
 (``solve(op, rhs, method="block_tridiagonal_truncated")``) inverts the *reduced*
 Schur-complemented operator on the lowest ``tier1_keep_lowest`` Legendre blocks
-rather than the full band, so a full-operator :math:`A^{\mathsf T}` adjoint would
+when fewer than ``op.n_xi`` blocks are retained. Using the zero-padded partial
+state with a full-operator :math:`A^{\mathsf T}` adjoint would
 be inconsistent and would silently corrupt the gradient. Its blocks are instead
 assembled on the fly, which keeps the **forward** working set at
 :math:`O(\text{keep}\cdot m^2)` per ``(species, x)`` subsystem, independent of
 :math:`N_\xi` — the property that lets large ramped PAS/DKES decks route through
 the structured direct kernel at all.
+
+With ``tier1_keep_lowest=op.n_xi`` and ``differentiable=True``, full generated
+recovery uses SOLVAX's implicit linear solve. When the estimated storage fits
+``tier1_memory_budget_gb``, it retains SOLVAX's generated Schur LU factors,
+regenerates off-diagonal blocks during substitution, and reuses the factors
+for forward/transpose solves and one refinement correction against the original
+physical action. Factors retain only active pitch blocks, grouped by chain
+length. They belong to this operator and solve execution; this is not yet a
+serialized restart or a cache across changing profile/geometry inputs.
+Batch sizing conservatively includes the optional factor storage.
+
+If the storage estimate does not fit, the transpose remains the JAX pullback
+of the existing generated RHS map, including its setup. Physics coefficient
+derivatives come from the original operator under either policy; matrix RHSs
+share factorization. Partial-recovery window settings do not approximate the
+full-state implicit derivative.
+The runtime checks project out inactive padding before computing physical
+residuals and RHS norms. Setup and execution are reported together as
+``build_and_solve`` in this route's timing dictionary. Partial recovery retains
+the derivative described below and has no full-equation adjoint admission.
 
 Plain ``jax.grad`` through that kernel tapes the generated sweeps, so the
 **reverse** pass costs :math:`O(N_\xi\cdot m^2)` per subsystem and surrenders
@@ -342,6 +378,19 @@ or layout, and validate quadrature/observable uncertainty before changing
 collision routes. These updates do not certify factor reuse or a complete
 geometry/profile/ambipolar optimization chain.
 
+The native PAS/full-FP root regression also constructs a small dense referee
+from original operator actions. It checks the primal and transpose equations
+and compares the routed root derivative with
+:math:`dE_r/dp = -J_p/J_{E_r}`, where each current derivative includes both
+explicit moment dependence and the adjoint contraction
+:math:`\lambda^T(b_p-A_p x)`. The refined transpose solve is confined to the
+test; production root evaluation does not construct this dense matrix.
+Independently rebuilt cold roots check both finite differences and quadratic
+one-sided Taylor remainders above the field tolerance and local current/slope
+correction. These fixed-geometry, fixed-branch checks cover a small LHD
+analytic discretization. They do not provide runtime adjoint admission,
+joint-grid uncertainty, or a branch-continuity certificate.
+
 .. note::
 
    The differentiable :math:`\Phi_1` helper requires the
@@ -366,7 +415,7 @@ recorded agreements are:
    * - PAS + :math:`E_r` kinetic outputs
      - recycled Krylov transposed solve
      - ``2.9e-6``
-   * - Ramped-PAS RHSMode=1 output
+   * - Ramped-PAS RHSMode=1 output with partial recovery
      - truncated block-Thomas, taped reverse mode (the
        ``tier1_adjoint_window=None`` default; no implicit adjoint)
      - agree at rtol ``1e-6``
@@ -394,10 +443,20 @@ roughly one forward solve, as predicted.
    the operator after the transposed solve — never the Krylov method's own
    estimate — records it in ``SolveResult.adjoint``, and raises with the
    residual and the remedies unless you pass ``check_adjoint=False``. Read
-   ``result.adjoint`` after the backward pass to see the number behind the
-   decision; the check is silent on near-singular decks whose adjoint
-   residual is at the double-precision backward-error floor, where the
-   gradient is right even though the requested tolerance is unreachable.
+   ``result.adjoint`` after synchronizing the backward pass to see the number
+   behind the decision. Cached JIT executions retain only the latest record
+   per equation and RHS column, so scans do not grow diagnostic history. Copy
+   ``records`` after synchronization to save a snapshot. By default both forward and transpose solves must satisfy
+   ``max(atol, tol*||rhs||)``; the backward-error estimate is diagnostic and
+   never enlarges this gate. A homogeneous equation requires entrywise zero
+   defect, even when a nonzero defect's squared norm underflows. The default
+   ``adjoint_residual_factor`` is one. Explicitly raising it or disabling
+   the check requires independent observable validation; a small backward
+   error alone does not establish gradient accuracy. This runtime adjoint
+   gate covers recycled Krylov and full-state structured routes, including
+   generated recovery. Partial recovery still needs a reduced-system admission
+   policy; its zero-padded state is not a full-equation solution.
+
 
 The differentiable optimization chain
 -------------------------------------

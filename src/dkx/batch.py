@@ -151,9 +151,11 @@ class BatchedSolveResult:
             fails this full-equation check even when its low-order moments are
             accurate. Request ``retain_full_state=True`` to recover every block.
         relative_residual_norms: ``||A x - b|| / ||b||`` per element. With a
-            zero drive, zero residual maps to zero and nonzero residual to inf.
+            zero drive, entrywise zero defect maps to zero and any nonzero
+            defect to inf, even if its squared norm underflows.
         algebraic_converged: per-element finite state/RHS/residual and original
-            residual-tolerance check. This is not an observable/grid certificate.
+            residual-tolerance check. Zero tolerance requires entrywise zero
+            defect. This is not an observable/grid certificate.
         legendre_tail_relative_l2_upper_bound: selected-tail upper bound with
             shape ``(batch, speed, species)`` when explicitly retained on the
             truncated structured route; ``None`` otherwise.
@@ -503,14 +505,20 @@ def batched_solve(
         )
         # Solver diagnostics may cover only the retained low-order rows.
         # Certify the returned state against the original equation instead.
-        residual_norm = jnp.linalg.norm(op_i.apply(state) - rhs.reshape((-1,)))
+        defect = op_i.apply(state) - rhs.reshape((-1,))
+        residual_norm = jnp.linalg.norm(defect)
         rhs_norm = jnp.linalg.norm(rhs)
+        zero_defect = jnp.all(defect == 0)
         relative = jnp.where(rhs_norm > 0, residual_norm / jnp.where(rhs_norm > 0, rhs_norm, 1),
-                             jnp.where(residual_norm == 0, 0.0, jnp.inf))
+                             jnp.where(zero_defect, 0.0, jnp.inf))
         relative = jnp.where(jnp.isfinite(rhs_norm) & jnp.isfinite(residual_norm), relative, jnp.inf)
+        # Exact equations must not be admitted by an underflowed squared norm.
+        within_tolerance = jnp.where(
+            (tol == 0) | jnp.all(rhs == 0), zero_defect, residual_norm <= tol * rhs_norm
+        )
         accepted = (jnp.isfinite(rhs_norm) & jnp.isfinite(residual_norm)
                     & jnp.all(jnp.isfinite(state)) & (residual_norm >= 0)
-                    & (residual_norm <= tol * rhs_norm))
+                    & within_tolerance)
         tail_bound = jnp.zeros((op.n_x, op.n_species), dtype=jnp.float64)
         if retain_selected_tail:
             from .moments import (  # noqa: PLC0415

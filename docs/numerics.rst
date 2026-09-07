@@ -360,6 +360,16 @@ solves :math:`A^T\lambda=q` and compares
 :math:`J(x_w)-J(x_c)` with :math:`\lambda^T(r_c-r_w)`, where
 :math:`r=b-Ax`. The report retains the adjoint residual, identity remainder,
 and the difference between dense and original-operator residual evaluations.
+The dense referee uses LAPACK DGESVX to factor the original matrix and solve
+its transpose with refinement, without equilibration. The report includes
+its reciprocal-condition, relative-forward-error (infinity norm) and componentwise-backward-error
+estimates. Singular/working-precision failures and nonfinite reference data
+abort before warm trials. These are
+`LAPACK error estimates <https://www.netlib.org/lapack/lug/node80.html>`_,
+not rigorous uncertainty bounds. A checked full-FP case showed that a plain
+dense transpose solve could itself have a 1e-7 state error despite a small
+residual; independent high-precision reference checks remain necessary when
+accuracy is comparable to those estimates or the matrix is ill-conditioned.
 The adjoint-residual remainder bound excludes floating-point evaluation error.
 This attributes differences between computed states; it is not an exact-solution
 or grid-error certificate. An ill-conditioned adjoint can itself be unreliable.

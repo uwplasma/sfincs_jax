@@ -47,21 +47,19 @@ Sparse direct — host fallback and cross-check (``solvax.native.splu_solve``)
     explicit request (``method="direct"``) or when the recycled Krylov route
     breaches its iteration cap under ``method="auto"``.
 
-Differentiability: the structured direct and recycled Krylov routes are wrapped
-with ``solvax.implicit.linear_solve`` (implicit function theorem via
-``jax.lax.custom_linear_solve``) when ``differentiable=True``; the adjoint
-costs one transposed solve which reuses the same structured direct factors
-(``block_thomas_solve(transpose=True)``) or a transposed-preconditioner
-GCROT solve.  Sparse direct is a loud, non-differentiable escape hatch.
+Differentiability: full-state structured and recycled Krylov routes use
+``solvax.implicit.linear_solve`` when ``differentiable=True``. Full-factor
+structured solves reuse factors for the transpose. Generated full recovery
+retains Schur factors and refines with the original action when its storage
+estimate fits the budget; otherwise it uses the generated RHS map's pullback,
+including its setup. Partial generated
+recovery retains its reduced-system derivative. Sparse direct refuses AD.
 
-That transposed solve is the one place where a bad answer is invisible: the
-forward solution, its residual, and every other field of :class:`SolveResult`
-stay correct while the gradient is silently wrong.  The differentiable
-recycled Krylov path therefore recomputes each solve's *true* residual from
-the operator (``||A^T y - g||``, never the Krylov method's internal estimate),
-records it in :class:`AdjointDiagnostics` on :attr:`SolveResult.adjoint`, and
-— unless ``check_adjoint=False`` — raises at execution time when it misses
-both the requested tolerance and the double-precision backward-error floor.
+Full-state implicit routes recompute forward/transpose residuals from their
+original physical actions and record bounded :class:`AdjointDiagnostics`.
+Unless ``check_adjoint=False``, a missed requested tolerance (or explicitly
+relaxed residual factor) raises at execution time. Padded coordinates cannot
+enlarge the generated full route's physical adjoint tolerance.
 
 Fortran correspondence: ``solver.F90`` (KSP setup / preconditioner matrix
 ``whichMatrix=0``), ``preconditioner.F90`` (the ``preconditioner_*`` knobs),
@@ -93,7 +91,9 @@ import numpy as np  # noqa: E402
 try:  # noqa: E402
     from solvax.direct import (
         BlockTridiagFactors,
+        GeneratedBlockTridiagFactors,
         block_thomas_factor,
+        block_thomas_factor_fn,
         block_thomas_selected_tail_fn,
         block_thomas_solve,
         block_thomas_truncated_fn,
@@ -105,7 +105,9 @@ try:  # noqa: E402
     from solvax.refine import iterative_refinement
 except ImportError:
     BlockTridiagFactors = None  # type: ignore[assignment, misc]
+    GeneratedBlockTridiagFactors = None  # type: ignore[assignment, misc]
     block_thomas_factor = None  # type: ignore[assignment]
+    block_thomas_factor_fn = None  # type: ignore[assignment]
     block_thomas_selected_tail_fn = None  # type: ignore[assignment]
     block_thomas_solve = None  # type: ignore[assignment]
     block_thomas_truncated_fn = None  # type: ignore[assignment]
@@ -212,13 +214,13 @@ class SolveResidualRecord:
         rhs_norm: ``||b||`` (adjoint: ``||g||``, the cotangent).
         solution_norm: ``||x||`` (adjoint: ``||y||``).
         operator_norm: probe estimate of ``||A||`` (adjoint: ``||A^T||``),
-            used for the attainable backward-error floor.
+            used only for a diagnostic backward-error scale.
         target: the residual the caller asked for, ``max(atol, tol*||b||)``.
-        floor: the float64 backward-error floor
-            ``slack * eps * (||A|| ||x|| + ||b||)`` — no solver can push the
-            residual of *this* system below it in double precision.
-        limit: the accepted residual, ``factor * max(target, floor)``.
-        within_tolerance: ``residual_norm <= limit`` and every norm finite.
+        floor: capped diagnostic scale ``slack * eps * (||A|| ||x|| + ||b||)``.
+            This estimate is neither a lower bound nor an acceptance threshold.
+        limit: the accepted residual, ``factor * target``.
+        within_tolerance: residual gate and finite norms, with entrywise zero
+            defect required for homogeneous or zero-target equations.
     """
 
     label: str
@@ -244,24 +246,20 @@ class SolveResidualRecord:
 class AdjointDiagnostics:
     """True residuals of the implicit-differentiation solves of one :func:`solve`.
 
-    The implicit-function-theorem VJP costs one *transposed* solve, and a
-    transposed solve that stalls returns a wrong gradient while the forward
-    solution stays perfectly good — the failure mode this container exists to
-    make visible.  Records are appended by a ``jax.debug.callback`` when the
-    corresponding solve actually executes (the adjoint ones during the
-    backward pass), so a freshly returned :class:`SolveResult` carries an
-    empty one; read it after ``jax.grad``/``jax.vjp`` has run.
-
-    Under ``jax.jit`` the callback closure is captured at *trace* time, so a
-    cached jitted function keeps appending to the object built on its first
-    trace.  Call :meth:`reset` between measurements.
+    Callbacks update records when each solve executes, including during the
+    backward pass. Synchronize device work/effects before inspecting them.
+    Cached JIT executions reuse this container; only the latest record for
+    each equation label and RHS column is retained, so long scans do not
+    accumulate an unbounded history. Copy ``records`` after synchronization
+    to retain a snapshot, or call :meth:`reset` before a new measurement.
 
     Attributes:
         tol, atol: the tolerances the solve was asked for.
-        factor: the accepted slack over ``max(target, floor)``
+        factor: the explicitly accepted slack over ``target``
             (``adjoint_residual_factor`` of :func:`solve`).
         checked: whether a failure raises (``check_adjoint`` of :func:`solve`).
-        records: the :class:`SolveResidualRecord` list, in execution order.
+        records: latest :class:`SolveResidualRecord` per equation/RHS key,
+            in first-seen key order.
     """
 
     tol: float
@@ -273,6 +271,13 @@ class AdjointDiagnostics:
     def reset(self) -> None:
         """Drop every record (e.g. between two runs of a jitted function)."""
         self.records.clear()
+
+    def _record(self, record: SolveResidualRecord) -> None:
+        for i, old in enumerate(self.records):
+            if (old.label, old.rhs_index) == (record.label, record.rhs_index):
+                self.records[i] = record
+                return
+        self.records.append(record)
 
     def _select(self, label_prefix: str) -> list[SolveResidualRecord]:
         return [r for r in self.records if r.label.startswith(label_prefix)]
@@ -324,13 +329,15 @@ class SolveResult:
         recycle: GCROT recycle pair ``(C, U)`` from the last right-hand side
             (recycled Krylov), for warm-starting the next solve of a
             continuation.
-        timings: wall-clock seconds per phase (``build``, ``solve``).  Each
+        timings: wall-clock seconds per phase (``build``, ``solve``), or
+            ``build_and_solve`` when generated implicit recovery cannot separate
+            them. Each
             phase ends with a ``jax.block_until_ready`` so the numbers are real
             device-compute time, not JAX async-dispatch latency (which would
             under-report by ~10x).  Under ``jit``/``grad`` the blocks are no-ops
             and the values are trace-time only.
         adjoint: :class:`AdjointDiagnostics` of the implicit-differentiation
-            solves (differentiable recycled Krylov only, else ``None``).
+            solves (differentiable full-state structured and recycled Krylov, else ``None``).
             Empty when the result is returned: the records are appended at
             *execution* time, i.e. the forward ones when the value is computed
             and the adjoint ones when the backward pass runs, so inspect it
@@ -451,23 +458,12 @@ def _pinned_matvecs(
 # Accepted slack over the residual the caller asked for, before a
 # differentiable solve is declared failed.  The default of :func:`solve`'s
 # ``adjoint_residual_factor``.
-DEFAULT_ADJOINT_RESIDUAL_FACTOR = 10.0
+DEFAULT_ADJOINT_RESIDUAL_FACTOR = 1.0
 
-# Multiple of the float64 unit roundoff in the attainable backward-error floor
-# ``_ADJOINT_FLOOR_SLACK * eps * (||A|| ||x|| + ||b||)``.  A Krylov solve is
-# backward stable, so its residual settles at that scale; on a near-singular
-# system with a large-norm solution the floor is *above* ``tol * ||b||`` and
-# the requested tolerance is simply unreachable in double precision.  Judging
-# such a solve failed would abort perfectly good gradients.
+# Diagnostic backward-error scale; it does not enlarge the acceptance gate.
 _ADJOINT_FLOOR_SLACK = 32.0
 
-# Hard ceiling on that floor, relative to ``||b||``.  Without it a *diverged*
-# solve would excuse itself: its solution norm blows up, so a floor
-# proportional to ``||A|| ||x||`` grows past the residual it is meant to
-# judge.  ``x = 0`` always attains ``||r|| = ||b||``, so no argument about
-# attainable accuracy can justify a residual anywhere near ``||b||``; 1e-6
-# is far below any converged solve yet far above the near-singular
-# stagnation the floor exists to tolerate.
+# Retain the historical cap for comparable diagnostics, not for admission.
 _ADJOINT_FLOOR_MAX_RELATIVE = 1e-6
 
 # Rademacher probes used to estimate ``||A||`` for that floor.  Each costs one
@@ -485,7 +481,7 @@ def _operator_norm_estimate(
     ``max_i ||A u_i|| / ||u_i||`` over fixed pseudo-random sign vectors: a
     lower bound on the spectral norm, tight to within a small factor for the
     operators here, and used only to set the order of magnitude of the
-    backward-error floor in :func:`_residual_guard`.
+    diagnostic backward-error scale in :func:`_residual_guard`.
     """
     key = jax.random.PRNGKey(0)
     est = jnp.asarray(0.0, dtype=jnp.float64)
@@ -504,11 +500,12 @@ def _residual_guard(
     factor: float,
     raise_on_failure: bool,
     diagnostics: AdjointDiagnostics | None,
+    solver_name: str = "GCROT",
 ) -> Callable[..., None]:
     """Host callback that records — and by default aborts on — a bad solve.
 
-    Used on both the forward and the adjoint (transposed) GCROT solves of the
-    ``differentiable=True`` recycled Krylov path.  A stalled *adjoint* solve is
+    Used on forward and transposed solves of the differentiable full-factor
+    structured and recycled Krylov paths.  A stalled *adjoint* solve is
     the dangerous one: the forward solution stays good, nothing in the returned
     :class:`SolveResult` changes, and the implicit-function-theorem VJP hands
     back a wrong gradient (the singular Fokker-Planck +
@@ -518,14 +515,10 @@ def _residual_guard(
 
     The residual handed in is recomputed from the operator itself
     (``||A^T y - g||``), never the Krylov method's internal recursive
-    estimate.  It is accepted when it meets the requested
-    ``max(atol, tol*||b||)`` *or* sits at the double-precision backward-error
-    floor ``_ADJOINT_FLOOR_SLACK * eps * (||A|| ||x|| + ||b||)``, both times
-    with ``factor`` slack.  The floor matters: when the operator is
-    near-singular the adjoint solution norm explodes, and no backward-stable
-    method can then drive ``||A^T y - g||`` down to ``tol * ||g||``.  It is
-    capped at ``_ADJOINT_FLOOR_MAX_RELATIVE * ||b||`` so a diverged solve
-    cannot excuse itself with its own inflated solution norm.
+    estimate. Acceptance requires ``factor * max(atol, tol*||b||)``.
+    The backward-error scale is recorded for diagnosis only: a small backward
+    error does not establish the accuracy of an ill-conditioned adjoint or
+    of the requested observable. Homogeneous equations require zero defect.
     """
 
     def guard(
@@ -533,6 +526,7 @@ def _residual_guard(
         rhs_norm: jnp.ndarray,
         sol_norm: jnp.ndarray,
         op_norm: jnp.ndarray,
+        zero_defect: jnp.ndarray | None = None,
     ) -> None:
         res = float(np.asarray(res_norm))
         b_norm = float(np.asarray(rhs_norm))
@@ -543,12 +537,14 @@ def _residual_guard(
             _ADJOINT_FLOOR_SLACK * _EPS64 * (a_norm * x_norm + b_norm),
             _ADJOINT_FLOOR_MAX_RELATIVE * b_norm,
         )
-        limit = factor * max(target, floor)
+        limit = factor * target
         ok = bool(
             np.isfinite(res)
             and np.isfinite(x_norm)
             and np.isfinite(a_norm)
+            and np.isfinite(b_norm)
             and res <= limit
+            and ((b_norm > 0 and target > 0) or bool(res == 0 if zero_defect is None else zero_defect))
         )
         record = SolveResidualRecord(
             label=label,
@@ -563,7 +559,7 @@ def _residual_guard(
             within_tolerance=ok,
         )
         if diagnostics is not None:
-            diagnostics.records.append(record)
+            diagnostics._record(record)
         if ok or not raise_on_failure:
             return
         rel = record.relative_residual
@@ -573,21 +569,19 @@ def _residual_guard(
             else ("||A x - b|| / ||b||")
         )
         raise RuntimeError(
-            f"[dkx.solve] differentiable {label} GCROT solve failed to "
+            f"[dkx.solve] differentiable {label} {solver_name} solve failed to "
             f"converge on right-hand side {rhs_index}: the true relative "
             f"residual {formula} is {rel:.3e} (residual {res:.3e}, "
             f"rhs norm {b_norm:.3e}, solution norm {x_norm:.3e}), above the accepted "
-            f"{limit:.3e} = {factor:g} x max(requested {target:.3e}, "
-            f"float64 backward-error floor {floor:.3e}). Returning would "
-            "silently corrupt the implicit-differentiation gradient, so the "
+            f"{limit:.3e} = {factor:g} x requested {target:.3e}. "
+            f"The diagnostic backward-error scale {floor:.3e} does not "
+            "enlarge this gate; homogeneous equations require zero defect. Returning would "
+            "leave the implicit-differentiation gradient uncertified, so the "
             "solve aborts instead.\n"
-            "Likely cause: a singular or near-singular operator whose null "
-            "space the constraint scheme does not span — full Fokker-Planck "
-            "with constraintScheme=1, or an Er xDot/xiDot deck under the "
-            "per-speed constraintScheme=2 border. The physical drive stays "
-            "in the range of A, so the forward solve converges and only the "
-            "transposed solve against a generic cotangent stalls; that is "
-            "why nothing else in the SolveResult looks wrong.\n"
+            "Possible causes include ill-conditioning, incomplete constraints, "
+            "or insufficient convergence/refinement. A physical forward drive "
+            "may be in the range of A even when a generic adjoint cotangent "
+            "is not, so a converged forward solve does not certify the adjoint.\n"
             "Remedies: raise the resolution or pick a constraint scheme that "
             "regularizes this operator (SFINCS pairs constraintScheme=1 with "
             "the Fokker-Planck/Sugama operators and 2 with pitch-angle "
@@ -615,6 +609,7 @@ def _guarded_solve(
     factor: float,
     raise_on_failure: bool,
     diagnostics: AdjointDiagnostics | None,
+    solver_name: str = "GCROT",
 ) -> jnp.ndarray:
     """Measure ``x``'s true residual against ``matvec`` and hand it to the guard.
 
@@ -631,11 +626,13 @@ def _guarded_solve(
             factor=factor,
             raise_on_failure=raise_on_failure,
             diagnostics=diagnostics,
+            solver_name=solver_name,
         ),
         jnp.linalg.norm(residual),
         jnp.linalg.norm(rhs_col),
         jnp.linalg.norm(x),
         _operator_norm_estimate(matvec, rhs_col.shape[0]),
+        jnp.all(residual == 0),
     )
     return x
 
@@ -1310,7 +1307,7 @@ def _implicit_solve(
     *,
     has_aux: bool = False,
 ):
-    """One differentiable column solve via ``solvax.implicit.linear_solve``.
+    """One differentiable solve via ``solvax.implicit.linear_solve``.
 
     The single ``solver`` callable required by the API dispatches between the
     forward and transposed factorized solves by identity of the matvec it is
@@ -1331,6 +1328,150 @@ def _implicit_solve(
     )
 
 
+def _generated_full_factor_bytes(op: KineticOperator) -> float:
+    m = op.n_theta * op.n_zeta
+    return float(op.n_species * np.sum(np.asarray(op.n_xi_for_x)) * (8*m*m + 4*m))
+
+
+def _build_generated_full_solver(
+    op: KineticOperator, subsystem_batch: int | str
+) -> Callable[..., jnp.ndarray]:
+    """Retain SOLVAX Schur factors for this immutable physical operator.
+
+    Factors stay grouped by active chain length; inactive pitch padding is
+    never factored. The returned solve handles matrix RHSs and both borders.
+    For the shifted chain K + gamma*b*c^T, the border correction enforces
+    c^T*f = r_c; transposition swaps b and c and preserves gamma.
+    """
+    coef = _truncated_coefficients(op)
+    ns, nx, nl, nt, nz = op.f_shape
+    m = nt * nz
+    bordered = op.constraint_scheme == 2
+    width = _resolve_subsystem_batch(op, subsystem_batch, nl)
+    groups = {}
+    for ix, nb in enumerate(np.asarray(op.n_xi_for_x)):
+        groups.setdefault(int(nb), []).append(ix)
+    prepared = []
+    for nb, indices in groups.items():
+        idx = np.asarray(indices)
+        count = ns * len(indices)
+        inputs = (jnp.repeat(coef["stream"], len(indices), axis=0),
+                  jnp.repeat(coef["mirror"], len(indices), axis=0),
+                  coef["pas"][:, idx].reshape(count, nl),
+                  jnp.tile(op.x[idx], ns), coef["gamma"][:, idx].reshape(count))
+        def blocks(values):
+            return _truncated_block_fn(coef, nl, *values, shift_border=bordered)
+        def factor(values, nb=nb):
+            state = block_thomas_factor_fn(blocks(values), nb, store_offdiagonals=False)
+            return state.delta_lu, state.delta_piv
+        batch_size = None if min(width, count) == 1 else min(width, count)
+        lu, piv = jax.lax.map(factor, inputs, batch_size=batch_size)
+        prepared.append((nb, idx, inputs, lu, piv, batch_size))
+
+    def solve_prepared(rhs, transpose=False):
+        nr = rhs.shape[1]
+        rf = rhs[:op.f_size].reshape(ns, nx, nl, m, nr)
+        rc = (rhs[op.f_size:].reshape(ns, nx, nr) if bordered
+              else jnp.zeros((ns, nx, nr), dtype=rhs.dtype))
+        fields, sources = jnp.zeros_like(rf), jnp.zeros_like(rc)
+        b, c = (coef["c0"], coef["b0"]) if transpose else (coef["b0"], coef["c0"])
+        for nb, idx, inputs, lu, piv, batch_size in prepared:
+            count = ns * len(idx)
+            def solve_one(values, nb=nb):
+                coefficients, lu_one, piv_one, rhs_one, source = values
+                block_fn = _truncated_block_fn(coef, nl, *coefficients, shift_border=bordered)
+                state = GeneratedBlockTridiagFactors(lu_one, piv_one, block_fn, nb, rhs.dtype)
+                if bordered:
+                    border = jnp.zeros((nb, m, 1), dtype=rhs.dtype).at[0, :, 0].set(b)
+                    solution = block_thomas_solve(state, jnp.concatenate((rhs_one, border), axis=2), transpose=transpose)
+                    y, z = solution[:, :, :nr], solution[:, :, nr]
+                    shift = (c @ y[0] - source) / (c @ z[0])
+                    return y - z[:, :, None] * shift, coefficients[4] * source + shift
+                return block_thomas_solve(state, rhs_one, transpose=transpose), source
+            f, s = jax.lax.map(solve_one,
+                (inputs, lu, piv, rf[:, idx, :nb].reshape(count, nb, m, nr),
+                 rc[:, idx].reshape(count, nr)), batch_size=batch_size)
+            fields = fields.at[:, idx, :nb].set(f.reshape(ns, len(idx), nb, m, nr))
+            sources = sources.at[:, idx].set(s.reshape(ns, len(idx), nr))
+        result = fields.reshape(op.f_size, nr)
+        return jnp.concatenate((result, sources.reshape(op.extra_size, nr)), axis=0) if bordered else result
+    return solve_prepared
+
+
+def _solve_generated_full(
+    op: KineticOperator, rhs2d: jnp.ndarray, *, tol: float, atol: float,
+    subsystem_batch: int | str, adjoint_window: int | None,
+    check_adjoint: bool, adjoint_residual_factor: float,
+    memory_budget_gb: float | None = None,
+) -> SolveResult:
+    """Implicit full recovery using SOLVAX's existing generated sweeps."""
+    start = time.perf_counter()
+    diagnostics = AdjointDiagnostics(tol=float(tol), atol=float(atol),
+                                     factor=float(adjoint_residual_factor), checked=bool(check_adjoint))
+    apply, apply_t = _pinned_matvecs(op)
+    mask = op.active_dof_mask()
+    # Keep a single RHS vector-shaped in the implicit map. A matrix-shaped
+    # map leaves a root bitcast shared with diagnostics, which crashes the
+    # GPU multi-output fusion pass in JAX 0.10.2.
+    single = rhs2d.shape[1] == 1
+    budget, _ = _tier1_budget_bytes(memory_budget_gb)
+    # Extend the one-RHS estimate with four buffers/extra column and its 2x slack.
+    retained_peak = (tier1_truncated_peak_memory_bytes(op, op.n_xi, subsystem_batch)
+                     + 2 * _generated_full_factor_bytes(op)
+                     + 64 * op.total_size * (rhs2d.shape[1] - 1))
+    prepared = (_build_generated_full_solver(op, subsystem_batch)
+                if retained_peak <= budget else None)
+    def project(b):
+        return b if mask is None else jnp.where(mask if single else mask[:, None], b, 0.)
+    def generated(b):
+        result = _solve_tier1_truncated(
+            op, b[:, None] if single else b, keep=op.n_xi, tol=tol, atol=atol,
+            subsystem_batch=subsystem_batch, adjoint_window=adjoint_window,
+        )
+        # Complete the inverse with identity on inactive padding. The public
+        # RHS is projected below, retaining the generated route's zero padding.
+        return (result.x[:, 0] if single else result.x) + (b-project(b))
+    def transpose(b):
+        # Differentiate only the RHS map, not the physics coefficients. The
+        # implicit solve differentiates those through the original operator.
+        _, pullback = jax.vjp(generated, jnp.zeros_like(b))
+        return pullback(b)[0]
+    def measured(b, transposed=False):
+        if prepared is None:
+            x = transpose(b) if transposed else generated(b)
+        else:
+            action = apply_t if transposed else apply
+            action = action if single else jax.vmap(action, in_axes=1, out_axes=1)
+            def cached(r):
+                value = prepared(r[:, None] if single else r, transpose=transposed)
+                return (value[:, 0] if single else value) + (r-project(r))
+            x, _ = iterative_refinement(action, b, cached, iterations=_TIER1_REFINEMENT_SWEEPS)
+        physical_b, physical_x = project(b), project(x)
+        for j in range(rhs2d.shape[1]):
+            _guarded_solve(
+                "adjoint (transposed)" if transposed else "forward", j,
+                apply_t if transposed else apply,
+                physical_b if single else physical_b[:, j],
+                physical_x if single else physical_x[:, j],
+                tol=tol, atol=atol, factor=adjoint_residual_factor,
+                raise_on_failure=check_adjoint, diagnostics=diagnostics, solver_name="generated full",
+            )
+        return x
+    # One matrix-RHS solve preserves shared factorization across columns.
+    apply2d = apply if single else jax.vmap(apply, in_axes=1, out_axes=1)
+    apply_t2d = apply_t if single else jax.vmap(apply_t, in_axes=1, out_axes=1)
+    x = _implicit_solve(apply2d, apply_t2d, project(rhs2d[:, 0] if single else rhs2d),
+                        measured, lambda b: measured(b, True))
+    if single:
+        x = x[:, None]
+    residuals = _residual_norms(apply, x, rhs2d)
+    jax.block_until_ready((x, residuals))
+    return SolveResult(x=x, method="block_tridiagonal_truncated", iterations=None,
+                       residual_norms=residuals, converged=_converged_flag(residuals, rhs2d, tol, atol),
+                       recycle=None, timings={"build_and_solve": time.perf_counter()-start},
+                       adjoint=diagnostics)
+
+
 def _solve_tier1(
     op: KineticOperator,
     rhs2d: jnp.ndarray,
@@ -1338,7 +1479,12 @@ def _solve_tier1(
     tol: float,
     atol: float,
     differentiable: bool,
+    check_adjoint: bool,
+    adjoint_residual_factor: float,
 ) -> SolveResult:
+    diagnostics = (AdjointDiagnostics(tol=float(tol), atol=float(atol),
+                                      factor=float(adjoint_residual_factor), checked=bool(check_adjoint))
+                   if differentiable else None)
     t0 = time.perf_counter()
     t1_solver = build_tier1_solver(op)
     # Force the async block-Thomas factorization to complete so the "build"
@@ -1351,7 +1497,7 @@ def _solve_tier1(
     )
     t1 = time.perf_counter()
 
-    def _solve_refined(b: jnp.ndarray, *, transpose: bool = False) -> jnp.ndarray:
+    def _solve_refined(b: jnp.ndarray, *, transpose: bool = False, rhs_index: int = 0) -> jnp.ndarray:
         """Factor solve plus iterative refinement (defect correction).
 
         The block-Thomas elimination is backward-stable but its rounding can
@@ -1375,6 +1521,12 @@ def _solve_tier1(
             lambda r: t1_solver.solve(r, transpose=transpose),
             iterations=_TIER1_REFINEMENT_SWEEPS,
         )
+        if differentiable:
+            x = _guarded_solve(
+                "adjoint (transposed)" if transpose else "forward", rhs_index,
+                apply, b, x, tol=tol, atol=atol, factor=adjoint_residual_factor,
+                raise_on_failure=check_adjoint, diagnostics=diagnostics, solver_name="structured",
+            )
         return x
 
     if differentiable:
@@ -1384,8 +1536,8 @@ def _solve_tier1(
                 op.apply,
                 apply_t,
                 rhs2d[:, j],
-                lambda b: _solve_refined(b),
-                lambda b: _solve_refined(b, transpose=True),
+                lambda b, j=j: _solve_refined(b, rhs_index=j),
+                lambda b, j=j: _solve_refined(b, transpose=True, rhs_index=j),
             )
             for j in range(rhs2d.shape[1])
         ]
@@ -1402,6 +1554,7 @@ def _solve_tier1(
         residual_norms=res,
         converged=_converged_flag(res, rhs2d, tol, atol),
         recycle=None,
+        adjoint=diagnostics,
         timings={"build": t1 - t0, "solve": t2 - t1},
     )
 
@@ -1454,9 +1607,11 @@ def _solve_tier1_truncated(
     keeps exactly its own static block count at any width — identical
     per-subsystem arithmetic to the serial sweep.
 
-    Differentiability: the whole solve is a pure-JAX composition of
+    This raw kernel is a pure-JAX composition of
     ``block_thomas_truncated_fn`` sweeps, so ``jax.grad`` differentiates
-    straight through it.  It is *not* wrapped in the full-operator
+    straight through it. Public full recovery with ``differentiable=True``
+    instead enters :func:`_solve_generated_full`; the following reduced-system
+    discussion applies to partial recovery.  It is *not* wrapped in the full-operator
     implicit-function-theorem adjoint used by the full structured direct and
     recycled Krylov paths: this solve inverts the *reduced* Schur-complemented
     operator on the lowest ``keep`` blocks, not the full band, so a
@@ -2127,7 +2282,12 @@ def auto_solve_peak_memory_bytes(
     """
     route = _auto_route_structural(op, budget_gb, keep_lowest)
     if route == "block_tridiagonal_truncated":
-        return tier1_truncated_peak_memory_bytes(op, keep_lowest=keep_lowest)
+        peak = tier1_truncated_peak_memory_bytes(op, keep_lowest=keep_lowest)
+        # Full-state AD can retain Schur factors across primal/transpose calls.
+        # Include that optional state in batch sizing even for forward callers.
+        if keep_lowest >= op.n_xi:
+            peak += 2 * _generated_full_factor_bytes(op)
+        return peak
     return tier1_peak_memory_bytes(op)
 
 
@@ -2355,13 +2515,14 @@ def solve(
             (recycled Krylov continuation warm start).
         differentiable: wrap the solution in
             ``solvax.implicit.linear_solve`` so ``jax.grad`` flows through
-            (structured direct and recycled Krylov; sparse direct refuses).
-            The forward solve is the same one either way; a *gradient* costs
-            one extra (transposed) solve.
-        check_adjoint: (differentiable recycled Krylov only, default on) abort
+            (full-state structured and recycled Krylov; sparse direct refuses).
+            Generated full recovery builds its transpose from the generated
+            RHS pullback; partial recovery retains the reduced-system derivative.
+        check_adjoint: (differentiable full-state structured and recycled Krylov,
+            default on) abort
             loudly — a ``RuntimeError`` raised from a ``jax.debug.callback`` at
             execution time — when the forward or the adjoint (transposed)
-            GCROT solve misses its residual.  A stalled *adjoint* solve is
+            solve misses its residual.  A stalled *adjoint* solve is
             invisible from the outside: the forward solution and every field
             of the returned :class:`SolveResult` are fine and only the
             implicit-function-theorem gradient is wrong, which is how the
@@ -2376,19 +2537,12 @@ def solve(
             answers are identical either way.
         adjoint_residual_factor: how far over its residual a differentiable
             solve may land before ``check_adjoint`` calls it a failure
-            (default 10).  The accepted residual is ``factor *
-            max(atol, tol*||b||, floor)``, where ``floor = 32 * eps *
-            (||A|| ||x|| + ||b||)`` is the double-precision backward-error
-            floor of that solve.  The floor is what keeps healthy cases
-            quiet: on a near-singular operator the adjoint solution norm
-            explodes (the cotangent has a component along an almost-null
-            direction), and no backward-stable method can then drive
-            ``||A^T y - g||`` down to ``tol * ||g||`` — the gradient is fine,
-            the requested residual is simply unreachable.  The floor is
-            capped at ``1e-6 * ||b||`` so a solve that diverges outright
-            cannot excuse itself with its own inflated solution norm; a
-            genuinely inconsistent adjoint misses by many orders of
-            magnitude and is caught regardless.
+            (default 1). The accepted residual is
+            ``factor * max(atol, tol*||b||)``. The recorded backward-error
+            scale never widens this gate. Homogeneous equations require
+            entrywise zero defect. Raising the factor is an explicit
+            relaxation, not an observable-accuracy certificate.
+
 
     Operators with a truncated Legendre resolution (non-uniform ``Nxi_for_x``)
     are structurally singular in the rectangular state layout: the truncated
@@ -2599,19 +2753,23 @@ def solve(
     if chosen in ("block_tridiagonal", "block_tridiagonal_truncated"):
         if chosen == "block_tridiagonal":
             result = _solve_tier1(
-                op, rhs2d, tol=tol, atol=atol, differentiable=differentiable
+                op, rhs2d, tol=tol, atol=atol, differentiable=differentiable,
+                check_adjoint=check_adjoint, adjoint_residual_factor=adjoint_residual_factor,
             )
         else:
             keep = min(tier1_keep_lowest, op.n_xi)
-            result = _solve_tier1_truncated(
-                op,
-                rhs2d,
-                keep=keep,
-                tol=tol,
-                atol=atol,
-                subsystem_batch=subsystem_batch,
-                adjoint_window=tier1_adjoint_window,
-            )
+            if differentiable and keep == op.n_xi:
+                result = _solve_generated_full(
+                    op, rhs2d, tol=tol, atol=atol, subsystem_batch=subsystem_batch,
+                    adjoint_window=tier1_adjoint_window, check_adjoint=check_adjoint,
+                    adjoint_residual_factor=adjoint_residual_factor,
+                    memory_budget_gb=tier1_memory_budget_gb,
+                )
+            else:
+                result = _solve_tier1_truncated(
+                    op, rhs2d, keep=keep, tol=tol, atol=atol,
+                    subsystem_batch=subsystem_batch, adjoint_window=tier1_adjoint_window,
+                )
         if method == "auto" and not result.converged and not differentiable:
             # Structured elimination has no pivoting across blocks: on
             # near-singular systems (e.g. a nu_n=0 collisionless deck, whose

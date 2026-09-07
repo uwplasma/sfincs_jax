@@ -311,6 +311,25 @@ def _ramped_pas_op() -> KineticOperator:
     return op
 
 
+@pytest.mark.parametrize("width", [1, "auto"])
+def test_generated_factors_solve_both_physical_borders(width):
+    from dkx.solve import _build_generated_full_solver
+    op = _ramped_pas_op()
+    a = np.asarray(materialize_dense(op, pin_masked_dofs=True))
+    exact = np.random.default_rng(77).normal(size=(op.total_size, 2))
+    exact *= np.asarray(op.active_dof_mask())[:, None]
+    rhs = jnp.asarray(a @ exact)
+    rhs_t = jnp.asarray(a.T @ exact)
+    def both(b, bt):
+        prepared = _build_generated_full_solver(op, width)
+        return prepared(b), prepared(bt, transpose=True)
+    values = jax.jit(both)(rhs, rhs_t)
+    for matrix, b, x in zip((a, a.T), (rhs, rhs_t), values):
+        x = np.asarray(x)
+        assert np.linalg.norm(matrix @ x - b) <= 1e-10 * np.linalg.norm(b)
+        assert np.linalg.norm(x-exact) <= 1e-8 * np.linalg.norm(exact)
+
+
 def test_ramped_pas_routes_truncated_and_matches_pinned_referees() -> None:
     """Auto must route ramped PAS decks to the per-subsystem truncated kernel.
 
@@ -355,7 +374,8 @@ def test_ramped_pas_routes_truncated_and_matches_pinned_referees() -> None:
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-def test_ramped_full_recovery_matches_original_equation_and_dense(grouped):
+@pytest.mark.parametrize("differentiable", [False, True])
+def test_ramped_full_recovery_matches_original_equation_and_dense(grouped, differentiable):
     op = _ramped_pas_op()
     if grouped:
         layout = np.asarray(op.n_xi_for_x).copy()
@@ -368,7 +388,7 @@ def test_ramped_full_recovery_matches_original_equation_and_dense(grouped):
     reference = sla.solve(materialize_dense(op, pin_masked_dofs=True), np.asarray(rhs))
     for width in (1, "auto"):
         result = solve(op, rhs, method="auto", tier1_keep_lowest=op.n_xi,
-                       subsystem_batch=width, tol=1e-11, emit=None)
+                       subsystem_batch=width, differentiable=differentiable, tol=1e-11, emit=None)
         assert result.method == "block_tridiagonal_truncated" and result.converged
         residual = jnp.linalg.norm(jax.vmap(op.apply, in_axes=1, out_axes=1)(result.x) - rhs, axis=0)
         np.testing.assert_allclose(result.residual_norms, residual, rtol=1e-8, atol=1e-14)
@@ -379,18 +399,138 @@ def test_ramped_full_recovery_matches_original_equation_and_dense(grouped):
 
 def test_ramped_full_recovery_windowed_gradient_matches_tape_and_fd():
     op = _ramped_pas_op()
-    def loss(scale, window):
+    def loss(scale, window, differentiable=True):
         varied = replace(op, t_hat=op.t_hat * scale)
         result = solve(varied, varied.rhs(), tier1_keep_lowest=op.n_xi,
-                       differentiable=True, tier1_adjoint_window=window, emit=None)
+                       differentiable=differentiable, tier1_adjoint_window=window, emit=None)
         return jnp.sum(result.x**2)
     value, gradient = jax.jit(jax.value_and_grad(lambda t: loss(t, 2)))(1.)
-    taped = jax.jit(jax.value_and_grad(lambda t: loss(t, None)))(1.)
+    jvp = jax.jit(lambda t: jax.jvp(lambda s: loss(s, 2), (t,), (jnp.ones_like(t),)))(1.)
+    np.testing.assert_allclose([value, gradient], jvp, rtol=1e-10, atol=1e-13)
+    taped = jax.jit(jax.value_and_grad(lambda t: loss(t, None, False)))(1.)
     np.testing.assert_allclose([value, gradient], taped, rtol=1e-10, atol=1e-13)
     assert np.isfinite(gradient) and abs(float(gradient)) > 1e-12
     for h in (1e-3, 3e-4):
-        fd = (loss(1.+h, None) - loss(1.-h, None))/(2*h)
+        fd = (loss(1.+h, None, False) - loss(1.-h, None, False))/(2*h)
         np.testing.assert_allclose(gradient, fd, rtol=1e-4, atol=1e-13)
+
+
+
+@pytest.mark.parametrize("checked", [True, False])
+def test_generated_full_adjoint_rejects_corrupted_pullback(monkeypatch, checked, adjoint_effects):
+    import importlib
+    solver = importlib.import_module("dkx.solve")
+    original = solver._solve_tier1_truncated
+    op = _ramped_pas_op()
+    @jax.custom_vjp
+    def broken(x):
+        return x
+    broken.defvjp(lambda x: (x, None), lambda _, g: (.5*g,))
+    def corrupted(*args, **kwargs):
+        result = original(*args, **kwargs)
+        return replace(result, x=broken(result.x))
+    monkeypatch.setattr(solver, "_solve_tier1_truncated", corrupted)
+    captured = {}
+    def loss(rhs):
+        result = solve(op, rhs, differentiable=True, tier1_keep_lowest=op.n_xi,
+                       check_adjoint=checked, tol=1e-10, emit=None,
+                       tier1_memory_budget_gb=1e-12)
+        captured["result"] = result
+        return jnp.sum(result.x)
+    gradient = jax.jit(jax.grad(loss))
+    if checked:
+        with pytest.raises(Exception, match="adjoint.*generated full solve failed"):
+            gradient(op.rhs()).block_until_ready()
+    else:
+        unchecked = gradient(op.rhs())
+        unchecked.block_until_ready()
+        jax.effects_barrier()
+        diagnostics = captured["result"].adjoint
+        assert np.linalg.norm(unchecked) > 0
+        assert diagnostics.adjoint_records[0].relative_residual == pytest.approx(.5, rel=1e-8)
+        assert diagnostics.forward_records[0].within_tolerance
+        assert not diagnostics.adjoint_records[0].within_tolerance
+
+
+@pytest.mark.parametrize("checked", [True, False])
+def test_generated_retained_adjoint_rejects_corrupted_solve(monkeypatch, checked, adjoint_effects):
+    import importlib
+    solver = importlib.import_module("dkx.solve")
+    build = solver._build_generated_full_solver
+    def corrupted(*args):
+        prepared = build(*args)
+        return lambda rhs, transpose=False: jnp.zeros_like(rhs) if transpose else prepared(rhs)
+    monkeypatch.setattr(solver, "_build_generated_full_solver", corrupted)
+    op = _ramped_pas_op()
+    captured = {}
+    def loss(rhs):
+        result = solve(op, rhs, differentiable=True, tier1_keep_lowest=op.n_xi,
+                       check_adjoint=checked, tol=1e-10, emit=None)
+        captured["result"] = result
+        return jnp.sum(result.x)
+    gradient = jax.jit(jax.grad(loss))
+    if checked:
+        with pytest.raises(Exception, match="adjoint.*generated full solve failed"):
+            gradient(op.rhs()).block_until_ready()
+    else:
+        value = gradient(op.rhs())
+        value.block_until_ready()
+        jax.effects_barrier()
+        np.testing.assert_array_equal(value, 0.)
+        assert not captured["result"].adjoint.adjoint_records[0].within_tolerance
+
+
+def test_generated_factor_retention_respects_budget(monkeypatch):
+    import importlib
+    solver = importlib.import_module("dkx.solve")
+    build = solver._build_generated_full_solver
+    calls = []
+    def observed(*args):
+        calls.append(True)
+        return build(*args)
+    monkeypatch.setattr(solver, "_build_generated_full_solver", observed)
+    op = _ramped_pas_op()
+    def run(budget):
+        return jax.jit(lambda b: solve(
+            op, b, differentiable=True, tier1_keep_lowest=op.n_xi,
+            tier1_memory_budget_gb=budget, emit=None).x)(op.rhs())
+    recomputed = run(1e-12)
+    recomputed.block_until_ready()
+    assert not calls
+    retained = run(1.)
+    retained.block_until_ready()
+    assert calls == [True]
+    assert np.linalg.norm(retained-recomputed) <= 1e-8 * np.linalg.norm(recomputed)
+    for value in (retained, recomputed):
+        assert np.linalg.norm(op.apply(value)-op.rhs()) <= 1e-10 * np.linalg.norm(op.rhs())
+
+
+@pytest.mark.parametrize("columns", [None, 1, 2])
+def test_generated_full_adjoint_padding_cannot_relax_physical_tolerance(columns):
+    op = _ramped_pas_op()
+    mask = op.active_dof_mask()
+    rhs = op.rhs()
+    if columns is not None:
+        mask = jnp.broadcast_to(mask[:, None], (mask.size, columns))
+        rhs = rhs[:, None] * jnp.arange(1, columns+1)[None, :]
+    captured = {}
+    def loss(rhs, padding_weight):
+        result = solve(op, rhs, differentiable=True, tier1_keep_lowest=op.n_xi,
+                       tol=1e-10, emit=None)
+        captured["result"] = result
+        return jnp.vdot(mask + padding_weight*(1-mask), result.x)
+    gradient = jax.jit(jax.grad(loss))
+    ordinary = gradient(rhs, 0.)
+    weighted = gradient(rhs, 1e12)
+    weighted.block_until_ready()
+    jax.effects_barrier()
+    np.testing.assert_allclose(weighted, ordinary, rtol=1e-12, atol=0)
+    np.testing.assert_array_equal(weighted*(1-mask), 0.)
+    diagnostics = captured["result"].adjoint
+    assert diagnostics.converged
+    assert len(diagnostics.adjoint_records) == (columns or 1)
+    for record in diagnostics.adjoint_records:
+        assert record.rhs_norm == pytest.approx(float(jnp.linalg.norm(op.active_dof_mask())))
 
 
 def test_gradient_through_ramped_truncated_route_matches_finite_differences() -> None:
@@ -822,11 +962,9 @@ def test_differentiable_solve_aborts_loudly_on_genuinely_singular_operator() -> 
 #
 #   (a) the true residual ||A^T y - g|| is recomputed from the operator (not
 #       read off the Krylov method) and recorded on SolveResult.adjoint;
-#   (b) a solve that misses both the requested tolerance and the float64
-#       backward-error floor raises, by default, with an actionable message;
-#   (c) no false positives: healthy decks must return their exact gradient
-#       without raising, including near-singular ones whose adjoint solution
-#       norm makes ``tol * ||g||`` unreachable in double precision.
+#   (b) a solve that misses the requested tolerance raises by default;
+#   (c) backward-error estimates remain diagnostic, including when an
+#       independently checked observable happens to be accurate.
 # ---------------------------------------------------------------------------
 
 # Two species with full Fokker-Planck collisions, constraintScheme=1, a finite
@@ -921,22 +1059,21 @@ def test_adjoint_residual_is_recorded_on_the_solve_result() -> None:
     op0 = KineticOperator.from_namelist(
         parse_sfincs_input_text(FP_CS1_ER_UNIFORM_TEXT)
     )
-    g, fd, result = _tier2_grad_vs_fd(op0)
+    g, fd, result = _tier2_grad_vs_fd(op0, check_adjoint=False)
     np.testing.assert_allclose(g, fd, rtol=1e-6)
 
     diag = result.adjoint
-    assert diag is not None and diag.checked
+    assert diag is not None and not diag.checked
     assert diag.tol == 1e-10
     adj = diag.adjoint_records
     assert len(adj) == 1 and len(diag.forward_records) == 1
     rec = adj[0]
     assert rec.label.startswith("adjoint")
-    assert rec.within_tolerance and diag.converged
-    # The residual is the one the operator itself reports, and it is genuinely
-    # above the requested tol*||g|| here: this near-singular deck is exactly
-    # the case the backward-error floor exists to accept.
+    assert not rec.within_tolerance and not diag.converged
+    # FD agreement does not override an unmet original-equation tolerance.
     assert rec.residual_norm > rec.target
-    assert rec.residual_norm <= rec.limit
+    assert rec.limit == rec.target
+    assert rec.floor > rec.limit
     assert diag.worst_relative_residual == rec.relative_residual
     assert 0.0 < rec.relative_residual < 1e-6
 
@@ -944,7 +1081,59 @@ def test_adjoint_residual_is_recorded_on_the_solve_result() -> None:
     assert diag.records == [] and diag.worst_relative_residual == 0.0
 
 
-def test_singular_tier2_adjoint_raises_instead_of_returning_a_wrong_gradient() -> None:
+@pytest.fixture
+def adjoint_effects():
+    """Drain expected asynchronous guard failures between GPU tests."""
+    yield
+    try:
+        jax.effects_barrier()
+    except Exception as exc:
+        assert "solve failed to converge" in str(exc)
+        jax.jit(lambda: jax.debug.callback(lambda: None))()
+        jax.effects_barrier()
+
+
+@pytest.mark.parametrize("residual,rhs,zero,factor,accepted", [
+    (1e-9, 1., False, 1., False),  # Below the diagnostic scale, above requested tol.
+    (1e-9, 1., False, 20., True),  # Explicit expert relaxation still works.
+    (0., 0., False, 1., False),  # A nonzero defect whose squared norm underflows.
+    (0., 0., True, 1., True),
+    (0., np.inf, True, 1., False),
+])
+def test_adjoint_guard_does_not_promote_backward_error_to_acceptance(residual, rhs, zero, factor, accepted):
+    from dkx.solve import _residual_guard
+
+    guard = _residual_guard("adjoint (transposed)", 0, tol=1e-10, atol=0.,
+                            factor=factor, raise_on_failure=True, diagnostics=None)
+    if accepted:
+        guard(residual, rhs, 1e6, 1., zero)
+    else:
+        with pytest.raises(RuntimeError, match="does not enlarge this gate"):
+            guard(residual, rhs, 1e6, 1., zero)
+
+
+
+def test_jitted_adjoint_rejects_a_defect_below_the_backward_error_scale(adjoint_effects):
+    from dkx.solve import _guarded_solve, _implicit_solve
+
+    diagonal = jnp.array([1., 1e-12])
+    def apply(x):
+        return diagonal*x
+    def transpose(x):
+        return diagonal*x
+    def adjoint(rhs):
+        inaccurate = rhs/diagonal + jnp.array([1e-9, 0.])
+        return _guarded_solve("adjoint (transposed)", 0, transpose, rhs, inaccurate,
+                              tol=1e-10, atol=0., factor=1., raise_on_failure=True,
+                              diagnostics=None)
+    def loss(rhs):
+        x = _implicit_solve(apply, transpose, rhs, lambda b: b/diagonal, adjoint)
+        return jnp.dot(jnp.array([1., 1e-6]), x)
+    with pytest.raises(Exception, match="does not enlarge this gate"):
+        jax.jit(jax.grad(loss))(jnp.ones(2)).block_until_ready()
+
+
+def test_singular_tier2_adjoint_raises_instead_of_returning_a_wrong_gradient(adjoint_effects) -> None:
     """A deck whose transposed solve diverges must abort, not hand back a number.
 
     ``er_xidot_1species_tiny`` pairs the Er xiDot term with the per-speed
@@ -959,7 +1148,7 @@ def test_singular_tier2_adjoint_raises_instead_of_returning_a_wrong_gradient() -
         _tier2_grad_vs_fd(op0, max_restarts=20)
 
 
-def test_singular_tier2_adjoint_message_names_cause_and_remedies() -> None:
+def test_singular_tier2_adjoint_message_names_cause_and_remedies(adjoint_effects) -> None:
     """The abort has to be actionable, not just loud."""
     op0 = _load_op("er_xidot_1species_tiny")
     with pytest.raises(Exception) as excinfo:
@@ -1016,26 +1205,22 @@ def test_healthy_tier2_gradients_are_exact_and_do_not_raise(deck: str) -> None:
     assert all(r.within_tolerance for r in diag.records)
 
 
-def test_flagship_shaped_fp_cs1_gradient_matches_fd_without_raising() -> None:
-    """The documented failing configuration, at referee size.
+def test_flagship_shaped_fp_cs1_adjoint_must_meet_requested_tolerance(adjoint_effects) -> None:
+    """A near-singular adjoint is not admitted by its backward-error scale.
 
-    Full Fokker-Planck + constraintScheme=1 + finite Er on a uniform
-    ``Nxi_for_x`` grid: the adjoint stagnates two decades above ``tol*||g||``
-    because the cotangent excites an almost-null direction and ``||y||`` blows
-    up, yet the resulting gradient is right.  Judging that solve failed would
-    abort a healthy optimization; judging it silently fine is the original bug.
+    The unchecked observable/FD comparison is retained separately above;
+    agreement for that scalar does not change the requested equation gate.
     """
     op0 = KineticOperator.from_namelist(
         parse_sfincs_input_text(FP_CS1_ER_UNIFORM_TEXT)
     )
     assert op0.constraint_scheme == 1 and op0.fp is not None
-    assert op0.active_dof_mask() is None  # uniform: pinning is not what saves this
-    g, fd, result = _tier2_grad_vs_fd(op0)
-    np.testing.assert_allclose(g, fd, rtol=1e-6)
-    assert result.adjoint is not None and result.adjoint.converged
+    assert op0.active_dof_mask() is None
+    with pytest.raises(Exception, match="adjoint.*GCROT solve failed"):
+        _tier2_grad_vs_fd(op0)
 
 
-def test_adjoint_guard_survives_jit() -> None:
+def test_adjoint_guard_survives_jit(adjoint_effects) -> None:
     """Production gradients run under ``jit``; the guard has to fire there too.
 
     ``jax.debug.callback`` executes inside the compiled backward pass, so both
@@ -1070,18 +1255,79 @@ def test_adjoint_guard_survives_jit() -> None:
         return jnp.dot(ws, result.x)
 
     with pytest.raises(Exception, match="GCROT solve failed to converge"):
-        jax.jit(jax.grad(loss_singular))(jnp.asarray(1.0))
+        jax.jit(jax.grad(loss_singular))(jnp.asarray(1.0)).block_until_ready()
 
 
-def test_adjoint_guard_leaves_the_forward_solution_untouched() -> None:
+
+@pytest.mark.parametrize("checked", [True, False])
+def test_structured_adjoint_rechecks_original_equation(monkeypatch, checked, adjoint_effects):
+    import importlib
+    solver = importlib.import_module("dkx.solve")
+    op = _load_op("pas_1species_PAS_noEr_tiny_scheme1")
+    original = solver.build_tier1_solver
+
+    def corrupted(operator):
+        factors = original(operator)
+        return SimpleNamespace(
+            **{name: getattr(factors, name) for name in ("factors", "z_fwd", "z_t", "gamma")},
+            solve=lambda b, transpose=False: jnp.zeros_like(b) if transpose else factors.solve(b),
+        )
+    monkeypatch.setattr(solver, "build_tier1_solver", corrupted)
+    captured = {}
+    def loss(rhs):
+        result = solve(op, rhs, method="block_tridiagonal", differentiable=True,
+                       check_adjoint=checked, tol=1e-10)
+        captured["result"] = result
+        return jnp.sum(result.x)
+    gradient = jax.jit(jax.grad(loss))
+    if checked:
+        with pytest.raises(Exception, match="adjoint.*structured solve failed"):
+            gradient(op.rhs()).block_until_ready()
+    else:
+        np.testing.assert_array_equal(gradient(op.rhs()), 0.)
+        jax.effects_barrier()
+        diagnostics = captured["result"].adjoint
+        assert not diagnostics.checked and not diagnostics.converged
+        assert diagnostics.forward_records[0].within_tolerance
+        assert diagnostics.adjoint_records[0].relative_residual == pytest.approx(1.)
+
+
+@pytest.mark.parametrize("method", ["block_tridiagonal", "gmres"])
+def test_adjoint_records_stay_bounded_and_refresh_each_rhs_under_jit(method):
+    op = _load_op("pas_1species_PAS_noEr_tiny_scheme1")
+    rhs = jnp.stack([op.rhs(), .5*op.rhs()], axis=1)
+    captured = {}
+    def loss(b):
+        result = solve(op, b, method=method, differentiable=True, tol=1e-10)
+        captured["result"] = result
+        return jnp.sum(result.x**2)
+    compiled = jax.jit(jax.value_and_grad(loss))
+    for scale in (1., 2., 3.):
+        _, gradient = compiled(scale*rhs)
+        gradient.block_until_ready()
+        jax.effects_barrier()
+        diagnostics = captured["result"].adjoint
+        assert diagnostics.checked and diagnostics.converged
+        for records in (diagnostics.forward_records, diagnostics.adjoint_records):
+            assert len(records) == 2 and {r.rhs_index for r in records} == {0, 1}
+            assert all(r.residual_norm <= r.target for r in records)
+        for record in diagnostics.forward_records:
+            assert record.rhs_norm == pytest.approx(scale*np.linalg.norm(rhs[:, record.rhs_index]))
+        assert np.linalg.norm(gradient[:, 0]) > 0
+        assert np.linalg.norm(gradient[:, 1]-.5*gradient[:, 0]) <= 1e-12*np.linalg.norm(.5*gradient[:, 0])
+
+
+@pytest.mark.parametrize("method,deck", [("gmres", "multispecies_quick_2species_FPCollisions_noEr"),
+                                         ("block_tridiagonal", "pas_1species_PAS_noEr_tiny_scheme1")])
+def test_adjoint_guard_leaves_the_forward_solution_untouched(method, deck) -> None:
     """No physics change: the check observes, it never alters an answer."""
-    op0 = _load_op("multispecies_quick_2species_FPCollisions_noEr")
+    op0 = _load_op(deck)
     rhs = op0.rhs()
-    checked = solve(op0, rhs, method="gmres", tol=1e-10, differentiable=True)
+    checked = solve(op0, rhs, method=method, tol=1e-10, differentiable=True)
     unchecked = solve(
-        op0, rhs, method="gmres", tol=1e-10, differentiable=True, check_adjoint=False
+        op0, rhs, method=method, tol=1e-10, differentiable=True, check_adjoint=False
     )
-    plain = solve(op0, rhs, method="gmres", tol=1e-10)
+    plain = solve(op0, rhs, method=method, tol=1e-10)
     assert np.array_equal(np.asarray(checked.x), np.asarray(unchecked.x))
     assert np.array_equal(np.asarray(checked.x), np.asarray(plain.x))
     assert plain.adjoint is None  # non-differentiable solves run no adjoint
@@ -1431,7 +1677,11 @@ def test_truncated_bounded_adjoint_is_subsystem_batch_invariant() -> None:
 
     x_serial = solve(op, rhs, subsystem_batch=1, tier1_adjoint_window=n_xi, **kwargs).x
     x_batched = solve(op, rhs, subsystem_batch=b, tier1_adjoint_window=n_xi, **kwargs).x
-    np.testing.assert_allclose(np.asarray(x_batched), np.asarray(x_serial), rtol=0, atol=1e-18)
+    # Serial and batched accelerator reductions need not round identically.
+    # Compare relative to the state scale, including components near zero.
+    reference = np.asarray(x_serial)
+    assert np.linalg.norm(reference) > 0
+    assert np.linalg.norm(np.asarray(x_batched)-reference) <= 64*np.finfo(float).eps*np.linalg.norm(reference)
 
     def loss(scale: jnp.ndarray, width: int) -> jnp.ndarray:
         scaled = replace(op, t_hat=op.t_hat * scale)
