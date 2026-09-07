@@ -330,3 +330,41 @@ collisionality. Convergence is therefore best checked by refining one axis at a
 time rather than by a blind global scale factor; the examples and audited suite
 choose resolution changes per axis. For measured runtime/memory and parity
 evidence see :doc:`performance` and :doc:`parity`.
+
+Auditing cold and warm observable differences
+---------------------------------------------
+
+The bounded diagnostic in ``tools/benchmarks/operator_conditioning.py`` can
+compare cold solves, initial-state reuse, recycle-space reuse, and both:
+
+.. code-block:: bash
+
+   python tools/benchmarks/operator_conditioning.py target.namelist \
+       --warm-from source.namelist --observable heatFlux_vm_psiHat --max-size 4000
+
+The source and target must share discretization and model structure. The tool
+builds their coefficients independently, passes no cached preconditioner or
+factorization, fingerprints both complete operators before/after the audit,
+and hashes the target matrix and drive. It checks original residuals at
+relative tolerances 1e-8, 1e-10 and 1e-12, retaining failures and executed methods.
+Each row records whether an initial state and recycle data were actually
+supplied, separately from the requested trial label. The seed has its own
+convergence flag, absolute residual and original-residual gate. A zero-drive
+seed is allowed: its relative residual is null, and its absolute residual
+must vanish to pass. Non-finite drives or overflowing drive norms are rejected
+before dense materialization. The selected moment is normalized current or
+first-species heat flux.
+
+For a linear observable with coefficient vector :math:`q`, the diagnostic
+solves :math:`A^T\lambda=q` and compares
+:math:`J(x_w)-J(x_c)` with :math:`\lambda^T(r_c-r_w)`, where
+:math:`r=b-Ax`. The report retains the adjoint residual, identity remainder,
+and the difference between dense and original-operator residual evaluations.
+The adjoint-residual remainder bound excludes floating-point evaluation error.
+This attributes differences between computed states; it is not an exact-solution
+or grid-error certificate. An ill-conditioned adjoint can itself be unreliable.
+Coupled Phi1 requires an explicit linearization and is rejected here.
+
+The historical 2.46% report in PR #161 has no identified input pair in its PR
+body. A different supplied pair is a new audit, not a reproduction of that
+report; warm-restart promotion still requires the R1 acceptance evidence.
