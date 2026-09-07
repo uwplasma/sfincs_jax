@@ -1665,3 +1665,47 @@ def test_reference_preflight_is_isolated_and_supervised(tmp_path, monkeypatch, f
         assert reason is None
     else:
         assert ("timeout" if failure == "timeout" else "cannot resolve") in reason
+
+
+def test_fortran_control_inventory_preserves_continuations_and_conditions():
+    from tools.parity.output_key_coverage_report import namelist_controls
+    source = '''
+    #ifdef OPTIONAL_PHYSICS
+    namelist / species / density, & ! active continuation
+    !! a removed old member must not be counted
+
+       & temperature, &
+    #endif
+       charge
+    #if MODEL_A
+    namelist / physics / full_model
+    #else
+    namelist / physics / reduced_model
+    #endif
+    '''
+    groups = namelist_controls(source)
+    assert [item['name'] for item in groups['species']] == ['density', 'temperature', 'charge']
+    assert groups['species'][1]['conditions'] == ['#ifdef OPTIONAL_PHYSICS']
+    assert groups['species'][2]['conditions'] == []
+    assert groups['physics'][1]['conditions'] == ['#if MODEL_A -> #else']
+    assert groups['species'][0]['line'] == 3
+    for malformed in ('namelist /g/ a, &', 'namelist /g/ a, A', 'namelist /g/ a(1)', '#endif'):
+        with pytest.raises(ValueError):
+            namelist_controls(malformed)
+
+
+def test_conditioning_builds_without_solving_and_caps_before_materializing(monkeypatch, capsys):
+    import importlib
+    from tools.benchmarks import operator_conditioning as probe
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('conditioning inventory must not solve or materialize above its cap')
+
+    monkeypatch.setattr(importlib.import_module('dkx.solve'), 'solve', forbidden)
+    monkeypatch.setattr(importlib.import_module('dkx.run'), 'solve', forbidden)
+    monkeypatch.setattr(probe, 'materialize_csr', forbidden)
+    deck = str(ROOT / 'tests/ref/pas_1species_PAS_noEr_tiny_scheme1.input.namelist')
+    op = probe.operator_for(deck)
+    assert op.total_size == 111
+    probe.main([deck], max_size=1)
+    assert 'too large' in capsys.readouterr().out

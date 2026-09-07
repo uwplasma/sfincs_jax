@@ -1,31 +1,16 @@
 #!/usr/bin/env python
 """Condition number of the kinetic operator, raw and equilibrated.
 
-Why this exists: three unrelated-looking observations turned out to be one
-fact, and this script is how that was established.
+Dense SVD estimates conditioning of the pinned rectangular operator and its
+Ruiz-equilibrated counterpart. Residual-to-state error bounds motivate this
+probe, but do not establish the cause of a flux discrepancy or mesh error.
+Near or beyond reciprocal machine precision, the smallest singular value and
+condition estimate are not reliable quantitative certificates. Check the
+constrained system, scaling and observable-weighted residual independently.
 
-  * the Boozer round-trip's FSABjHat moved 2.7e-4 across solver routes while
-    every route reported a 1e-15 residual;
-  * warm-starting one surface from another moved a flux by 2.46% while
-    ``primal_residual < 1e-10`` passed;
-  * FSABjHat changed sign as Nxi was refined, with every solve converged.
-
-All three follow from ``||dx||/||x|| <= cond(A) * ||r||/||b||``. Measured here
-by dense SVD, which bounds the decks to a few thousand unknowns -- that is the
-point: these are the *small* decks, and they already reach 1e18.
-
-Recorded on 2026-09-02 (see plan.md):
-
-    deck                     n     cond(raw)   cond(equil)   gain
-    pas_scheme12           303      3.00e12       6.58e9     456x
-    fp_cs3                 402      2.96e07       1.58e5     187x
-    er_xdot                604      3.36e18       1.24e18      3x
-    magdrift               604      6.43e07       2.46e6      26x
-
-The ``er_xdot`` row is the one that matters. At cond ~ 3e18 the system is
-numerically singular in float64 (``cond * eps`` ~ 750), equilibration barely
-moves it, and the term responsible -- the ``Er`` ``xDot`` coupling -- is
-present in exactly the runs where the anomalies above appeared.
+Build the operator without running a kinetic solve. The size cap applies
+before dense materialization/SVD; construction still allocates grids and
+collision coefficients. Failed construction is reported explicitly.
 
 Run:
   python tools/benchmarks/operator_conditioning.py DECK.input.namelist [...]
@@ -37,40 +22,14 @@ import sys
 
 import numpy as np
 
-from dkx.run import run_profile
+from dkx.drift_kinetic import KineticOperator
+from dkx.namelist import read_sfincs_input
 from dkx.solve import materialize_csr
 
 
-def operator_for(namelist: str):
-    """Build the operator a deck solves, without keeping the solve.
-
-    ``run_profile`` owns operator construction and there is no public seam that
-    returns the operator alone, so this wraps ``dkx.solve.solve`` to capture the
-    first operator handed to it. A deck that fails to converge still yields its
-    operator, which is the interesting case here.
-    """
-    import dkx.run as run_mod
-    import dkx.solve as solve_mod
-
-    captured: dict = {}
-    original = solve_mod.solve
-
-    def spy(op, rhs, **kwargs):
-        captured.setdefault("op", op)
-        return original(op, rhs, **kwargs)
-
-    solve_mod.solve = spy
-    run_mod.solve = spy
-    try:
-        run_profile(namelist, emit=None, tol=1e-9)
-    except Exception as exc:  # noqa: BLE001 - the operator is what we came for
-        # A deck that stalls is exactly the interesting case here, so the
-        # failure is reported and discarded rather than raised.
-        print(f"  (solve raised {type(exc).__name__}; using the operator anyway)")
-    finally:
-        solve_mod.solve = original
-        run_mod.solve = original
-    return captured.get("op")
+def operator_for(namelist: str) -> KineticOperator:
+    """Construct through the public builder, without solving or monkeypatching."""
+    return KineticOperator.from_namelist(read_sfincs_input(namelist))
 
 
 def ruiz(matrix: np.ndarray, iterations: int = 20) -> np.ndarray:
@@ -89,9 +48,13 @@ def main(decks: list[str], max_size: int = 4000) -> None:
     )
     for deck in decks:
         name = deck.split("/")[-1][:52]
-        op = operator_for(deck)
-        if op is None:
-            print(f"{name:52s} {'-':>6s} {'no operator':>11s}")
+        try:
+            op = operator_for(deck)
+        except (OSError, ValueError, NotImplementedError) as exc:
+            print(f"{name:52s} construction failed: {exc}")
+            continue
+        if op.include_phi1:
+            print(f"{name:52s} coupled Phi1 needs an explicit linearization state")
             continue
         if op.total_size > max_size:
             print(f"{name:52s} {op.total_size:6d} {'too large':>11s}")
