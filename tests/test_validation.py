@@ -82,6 +82,275 @@ def test_direct_backend_referee_preserves_a_nonsymmetric_petsc_operator(
     assert checked and elapsed >= 0 and size == 3 and fill >= operator.nnz
 
 
+def _assert_process_stopped(pid: int) -> None:
+    import subprocess
+    import time
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        state = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True,
+        ).stdout.strip()
+        if not state or state.startswith("Z"):
+            return
+        time.sleep(0.02)
+    pytest.fail(f"measured descendant {pid} survived cleanup ({state})")
+
+
+@pytest.mark.parametrize("parent_exits", [False, True])
+def test_measurement_reaps_descendants_after_timeout_or_leader_exit(
+    tmp_path: Path, parent_exits: bool,
+) -> None:
+    import os
+    import signal
+    import sys
+    from tools.benchmarks.parity_performance_matrix import _run_measured
+
+    if os.name != "posix":
+        pytest.skip("measurement runner uses POSIX process groups")
+    script = (
+        "import subprocess,sys,time,pathlib; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); "
+        "pathlib.Path('descendant.pid').write_text(str(p.pid)); "
+        + ("sys.exit(0)" if parent_exits else "time.sleep(60)")
+    )
+    pid = None
+    try:
+        result = _run_measured([sys.executable, "-c", script], tmp_path, 1)
+        pid = int((tmp_path / "descendant.pid").read_text())
+        assert ("error" in result) is not parent_exits
+        _assert_process_stopped(pid)
+    finally:
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.parametrize("cancel_signal", ["SIGINT", "SIGTERM"])
+def test_measurement_cancellation_reaps_the_solver_group(
+    tmp_path: Path, cancel_signal: str,
+) -> None:
+    import os
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    if os.name != "posix":
+        pytest.skip("measurement runner uses POSIX process groups")
+    script = (
+        "import os,pathlib,time; "
+        "pathlib.Path('solver.pid').write_text(str(os.getpid())); time.sleep(60)"
+    )
+    worker = (
+        "import sys; from pathlib import Path; "
+        f"sys.path.insert(0, {str(ROOT)!r}); "
+        "from tools.benchmarks.parity_performance_matrix import _run_measured; "
+        f"_run_measured([{sys.executable!r}, '-c', {script!r}], Path('.'), 60)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", worker], cwd=tmp_path,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+    pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "solver.pid").exists() and time.monotonic() < deadline:
+            assert proc.poll() is None
+            time.sleep(0.02)
+        pid = int((tmp_path / "solver.pid").read_text())
+        proc.send_signal(getattr(signal, cancel_signal))
+        assert proc.wait(timeout=5) != 0
+        _assert_process_stopped(pid)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.parametrize("mode", [1, 2, 3])
+@pytest.mark.parametrize("defect", [None, "partial", "nan", "unfinished", "diverged", "nonlinear_false", "exit"])
+def test_fortran_execution_gate_rejects_invalid_outputs(tmp_path: Path, defect, mode) -> None:
+    import h5py
+    import numpy as np
+    from tools.benchmarks.parity_performance_matrix import _fortran_succeeded
+
+    for stream in ("stdout", "stderr"):
+        (tmp_path / f"benchmark.{stream}.log").write_text(
+            "Nonlinear solve did not converge due to DIVERGED_MAX_IT\n" + "ok\n" * 4000
+            if defect == "diverged" and stream == "stdout" else ""
+        )
+    with h5py.File(tmp_path / "sfincsOutput.h5", "w") as f:
+        f["RHSMode"] = mode
+        f["integerToRepresentTrue"] = 1
+        f["finished"] = 0 if defect == "unfinished" else 1
+        if defect == "nonlinear_false":
+            f["didNonlinearCalculationConverge"] = -1
+        keys = ("FSABFlow", "FSABjHat", "particleFlux_vm_psiHat", "heatFlux_vm_psiHat") if mode == 1 else ("transportMatrix",)
+        for key in keys:
+            if defect == "partial" and key == keys[0]:
+                continue
+            f[key] = [np.nan if defect == "nan" else 1.0]
+        f.create_group("optional_group")
+    result = {"returncode": 1 if defect == "exit" else 0}
+    assert _fortran_succeeded(tmp_path, result) is (defect is None)
+    assert ("execution_error" in result) is (defect is not None)
+
+
+def test_sweep_does_not_reuse_outputs_copied_with_an_example(tmp_path: Path, monkeypatch) -> None:
+    import shutil
+    from tools.benchmarks import parity_performance_matrix as matrix
+
+    example = tmp_path / "example"
+    example.mkdir()
+    shutil.copy(ROOT / "tests/ref/pas_1species_PAS_noEr_tiny_scheme1.input.namelist", example / "input.namelist")
+    stale = ("sfincsOutput.h5", "dkxOutput.h5", "dkx_timing.json", "sfincsBinary_iteration_000_stateVector")
+    for name in stale:
+        (example / name).write_text('{"converged": true, "cold_s": 0.01}')
+    calls = []
+
+    def failed_run(command, work, timeout_s, env=None):
+        assert not any((work / name).exists() for name in stale)
+        calls.append(command)
+        return {"returncode": 1}
+
+    monkeypatch.setattr(matrix, "_run_measured", failed_run)
+    record = matrix.run_case(
+        example, Path("unused-sfincs"), ranks=[1], reps=0, timeout_s=1,
+        equilibria=None, launcher=[], fortran_residual=False,
+    )
+    assert len(calls) == 2
+    assert record["fortran"]["1"]["succeeded"] is False
+    assert "cold_s" not in record["dkx"]
+    assert "error" in record["parity"]
+
+
+def test_campaign_checkpoint_is_atomic_on_publish_failure(tmp_path: Path, monkeypatch) -> None:
+    from tools.benchmarks import parity_performance_matrix as matrix
+
+    checkpoint = tmp_path / "results.jsonl"
+    checkpoint.write_text("original\n")
+    def interrupted_replace(source, target):
+        raise OSError("interrupted publication")
+    monkeypatch.setattr(matrix.os, "replace", interrupted_replace)
+    with pytest.raises(OSError, match="interrupted"):
+        matrix._atomic_text(checkpoint, "replacement\n")
+    assert checkpoint.read_text() == "original\n"
+    assert list(tmp_path.iterdir()) == [checkpoint]
+
+
+@pytest.mark.parametrize("mutation", ["input", "equilibrium", "settings"])
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_campaign_resume_retries_failures_and_checks_provenance(tmp_path: Path, monkeypatch, mutation, interrupt) -> None:
+    from tools.benchmarks import parity_performance_matrix as matrix
+
+    examples = tmp_path / "examples"
+    for case in ("good", "retry"):
+        work = examples / case
+        work.mkdir(parents=True)
+        (work / "input.namelist").write_text("&general\n/\n")
+    equilibrium = tmp_path / "geometry.bc"
+    equilibrium.write_text("original geometry")
+    (examples / "good/input.namelist").write_text(f"equilibriumFile = '{equilibrium}'\n")
+    out = tmp_path / "results.jsonl"
+    calls = []
+    def run(directory, *args, **kwargs):
+        calls.append(directory.name)
+        success = directory.name == "good" or calls.count("retry") > 1
+        if interrupt and not success:
+            raise KeyboardInterrupt("cancelled pilot")
+        return {"case": directory.name, "dkx": {"returncode": 0 if success else 1, "converged": success, "algebraic_acceptance": "passed" if success else "failed"}}
+    monkeypatch.setattr(matrix, "run_case", run)
+    monkeypatch.setattr(matrix, "deck_metadata", lambda path: {"dof": 1})
+    argv = ["--examples", str(examples), "--out", str(out)]
+    if interrupt:
+        with pytest.raises(KeyboardInterrupt):
+            matrix.main(argv)
+        assert not out.with_suffix(".jsonl.done").exists()
+    else:
+        assert matrix.main(argv) == 0
+    assert matrix.main(argv) == 0
+    assert calls == ["good", "retry", "retry"]
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 3
+    assert "KeyboardInterrupt" in rows[1]["error"] if interrupt else rows[1]["dkx"]["returncode"] == 1
+    summary = json.loads(out.with_suffix(".jsonl.done").read_text())
+    assert summary["cases"] == 2 and summary["attempts"] == 3
+    assert summary["execution_complete"] == 2
+    snapshot = out.read_bytes()
+    if mutation == "input":
+        (examples / "good/input.namelist").write_text("&general\n RHSMode=2\n/\n")
+    elif mutation == "equilibrium":
+        equilibrium.write_text("changed geometry")
+    else:
+        argv += ["--reps", "2"]
+    assert matrix.main(argv) == 2
+    assert out.read_bytes() == snapshot and len(calls) == 3
+
+
+def test_campaign_lock_refuses_a_concurrent_writer(tmp_path: Path) -> None:
+    import fcntl
+    from tools.benchmarks import parity_performance_matrix as matrix
+
+    out = tmp_path / "results.jsonl"
+    with out.with_suffix(".jsonl.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert matrix.main(["--examples", str(tmp_path), "--out", str(out)]) == 2
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("mode", [1, 2, 3])
+@pytest.mark.parametrize("perturb", [False, True])
+def test_original_residual_checks_every_rhs_of_a_nonsymmetric_system(tmp_path: Path, mode, perturb) -> None:
+    import numpy as np
+    from scipy.sparse import csr_matrix
+    from tools.benchmarks.parity_performance_matrix import fortran_true_residual
+
+    a = csr_matrix([[3.0, 2.0], [0.0, 4.0]])
+    matrix = tmp_path / "sfincsBinary_iteration_000_whichMatrix_1"
+    matrix.write_bytes(
+        np.asarray([1211216, 2, 2, a.nnz], dtype=">i4").tobytes()
+        + np.diff(a.indptr).astype(">i4").tobytes()
+        + a.indices.astype(">i4").tobytes() + a.data.astype(">f8").tobytes()
+    )
+    count = {1: 1, 2: 3, 3: 2}[mode]
+    for i in range(count):
+        x = np.asarray([1.0, i + 1.0])
+        b = a @ x
+        if perturb and i == count - 1:
+            x[0] += 0.1
+        for suffix, values in (("stateVector", x), ("residual", -b)):
+            (tmp_path / f"sfincsBinary_iteration_{i:03d}_{suffix}").write_bytes(
+                np.asarray([1211214, 2], dtype=">i4").tobytes() + values.astype(">f8").tobytes()
+            )
+    error = fortran_true_residual(tmp_path, linear=True, rhs_mode=mode)
+    assert error > 1e-3 if perturb else error == 0.0
+    assert fortran_true_residual(tmp_path, linear=False, rhs_mode=mode) is None
+    (tmp_path / f"sfincsBinary_iteration_{count-1:03d}_stateVector").unlink()
+    assert fortran_true_residual(tmp_path, linear=True, rhs_mode=mode) is None
+
+
+@pytest.mark.parametrize("value,status", [(None, "not_checked"), (float("nan"), "failed"), (1e-4, "failed"), (1e-8, "passed")])
+def test_original_residual_acceptance_is_distinct_from_convergence(value, status) -> None:
+    from tools.benchmarks.parity_performance_matrix import _algebraic_acceptance
+    assert _algebraic_acceptance({"converged": True, "true_residual": value}, 1e-6) == status
+
+
+def test_requested_binary_dump_overrides_a_disabled_setting(tmp_path: Path) -> None:
+    from tools.benchmarks.parity_performance_matrix import _request_binary_dump
+    deck = tmp_path / "input.namelist"
+    deck.write_text("&general\n saveMatricesAndVectorsInBinary = .false. ! retain this note\n/\n")
+    _request_binary_dump(deck)
+    assert "= .true. ! retain this note" in deck.read_text()
+
+
 def payload(entry_id: str) -> dict[str, Any]:
     """Return the registered artifact for ``entry_id``."""
     return json.loads(
@@ -1364,3 +1633,35 @@ def test_the_cli_reports_success_and_failure(tmp_path: Path, capsys) -> None:
     assert main(["--root", str(root)]) == 1
     failed = json.loads(capsys.readouterr().out)
     assert failed["failed"] == 1
+
+@pytest.mark.parametrize("failure", ["timeout", "environment", "none"])
+def test_reference_preflight_is_isolated_and_supervised(tmp_path, monkeypatch, failure):
+    import sys
+    from tools.benchmarks import parity_performance_matrix as matrix
+
+    binary = tmp_path / "reference"
+    body = {
+        "timeout": "import time; time.sleep(10)",
+        "environment": "print('critical libmamba: prefix does not exist'); print('x' * 10000)",
+        "none": "from pathlib import Path; Path('input.namelist').write_text('changed')",
+    }[failure]
+    binary.write_text(f"#!{sys.executable}\n{body}\n")
+    binary.chmod(0o755)
+    original = tmp_path / "input.namelist"
+    original.write_text("preserve")
+    monkeypatch.chdir(tmp_path)
+    run = matrix._run_measured
+    workdirs = []
+
+    def bounded(command, cwd, timeout_s):
+        workdirs.append(cwd)
+        return run(command, cwd, 0.1 if failure == "timeout" else timeout_s)
+
+    monkeypatch.setattr(matrix, "_run_measured", bounded)
+    reason = matrix.preflight_fortran(Path("reference"), [])
+    assert original.read_text() == "preserve"
+    assert workdirs and all(not path.exists() for path in workdirs)
+    if failure == "none":
+        assert reason is None
+    else:
+        assert ("timeout" if failure == "timeout" else "cannot resolve") in reason
