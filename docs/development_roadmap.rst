@@ -1,22 +1,31 @@
 Development roadmap
 ===================
 
-The `repository plan <https://github.com/uwplasma/DKX/blob/main/plan.md>`_
-is the single active roadmap. Its ordered deliverables are verified toroidal
-calculations, fast in-memory repeated solves, and an independently checked
-VMEX boundary optimization. Documentation, examples and removal of duplication
-belong to each deliverable.
+``plan.md`` at the repository root is the single authoritative plan; this page
+is an entry point, not a second plan. The plan is figure-first: each phase is
+defined by a publishable figure or table with entry and exit criteria, numbered
+steps, a kill criterion where the work is an experiment, and an effort range.
 
-The plan records the reviewed PR stack, evidence boundaries, solver ownership,
-reuse and coordinate decisions, and explicit stopping criteria for experiments.
-Native Phi1/full-drift promotion requires its scientific gates. NEOPAX and ESSOS
-consume validated interfaces; mirrors remain the final deferred extension.
-Release follows resolution of the open PRs and the important supported-scope goals.
+Phases
+------
 
-``validation/capabilities.toml`` records capability scope;
-``validation/registry.toml`` indexes retained scientific evidence;
-``validation/hardware.toml`` identifies measurement hosts;
-``validation/baseline.toml`` preserves dated inventory measurements.
-Older phase letters and experiment pages are historical context, not additional
-active work queues. Update the plan, canonical documentation and existing evidence
-registries together when a deliverable is completed.
+- **Phase 0, land and freeze (1 week):** the integrated main, ADRs for the
+  working method, the experiment-record template, a changelog, a tag.
+- **Phase 1, the positioning figure (3–4 weeks):** DKX against SFINCS v3 and
+  yancc at matched resolution, with an algebraic and a discretization error bar
+  on every DKX point, cold and warm, CPU and GPU.
+- **Phase 2, why the Krylov route loses (3 weeks, time-boxed):** a one-week
+  diagnosis of the dominant dropped coupling and resource per deck, then two
+  kill-gated experiments (block-pentadiagonal exactness for Er and drift decks;
+  recycling discipline across sweeps) and memory-lean preconditioning.
+- **Phase 3, verified derivatives and one real optimization (5–6 weeks):**
+  derivatives through the ambipolar root and geometry with Taylor and
+  finite-difference evidence, the closure accuracy map on real designs, and a
+  VMEX boundary optimization at prescribed Er first.
+- **Phase 4, native Phi1 and a W7-X impurity result (4–6 weeks).**
+- **Phase 5, the papers:** a methods paper and a physics letter, each defined
+  by the figures the phases produce.
+
+Working method, engineering contracts, deferred work and the history of the
+plan's predecessors are sections 5 to 9 of ``plan.md``. Older phase letters and
+experiment pages in these docs are historical records, not active plans.

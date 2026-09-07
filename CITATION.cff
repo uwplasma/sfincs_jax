@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If DKX contributes to a publication, please cite it as below, together with the SFINCS paper whose model it reproduces (Landreman, Smith, Mollén & Helander, Phys. Plasmas 21, 042503, 2014)."
+title: "DKX: differentiable drift-kinetic neoclassical transport in JAX"
+type: software
+authors:
+  - family-names: Jorge
+    given-names: Rogerio
+    affiliation: "University of Wisconsin–Madison"
+    email: rogerio.jorge@wisc.edu
+repository-code: "https://github.com/uwplasma/DKX"
+url: "https://sfincs-jax.readthedocs.io/"
+license: MIT
+keywords:
+  - neoclassical transport
+  - stellarator
+  - drift-kinetic equation
+  - JAX
+  - automatic differentiation

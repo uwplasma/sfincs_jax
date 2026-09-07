@@ -5,6 +5,38 @@ DKX computes neoclassical transport, flows, bootstrap current and stellarator
 ambipolar electric fields on toroidal flux surfaces. Start with a physical-unit
 case, then check its numerical resolution before using the result for research.
 
+Quickstart
+----------
+
+.. code-block:: python
+
+   import dkx
+
+   case = dkx.Case.from_mapping({           # analytic tokamak, teaching grid: seconds, not converged
+       "schema": 1, "name": "tokamak", "run": {"workflow": "profile", "progress": False},
+       "geometry": {"format": "analytic", "file": "tokamak", "surfaces": [0.16, 0.25, 0.36]},
+       "species": [{"name": "deuterium", "charge": 1, "mass_amu": 2.014,
+                    "density_m3": [8.0e19, 7.0e19, 6.0e19], "temperature_keV": [1.0, 0.8, 0.6]}],
+       "physics": {"model": "full_local", "collisions": "pitch_angle_scattering", "magnetic_drifts": "dkes", "phi1": "off"},
+       "electric_field": {"mode": "prescribed", "value_kV_m": 0.0},
+       "resolution": {"theta": 9, "zeta": 1, "pitch": 8, "speed": 4}, "solver": {"method": "auto", "relative_tolerance": 1e-8},
+   })
+   result = dkx.run(case)
+   print("solver route:", result.metadata["solver_route"])
+   print(float(result.arrays["particle_flux_m2_s"][1, 0]))   # particle flux, m^-2 s^-1
+
+Then ``dkx converge examples/01_tokamak_profile/case.toml`` before using any number.
+
+Performance evidence
+--------------------
+
+.. figure:: _static/figures/paper/dkx_fortran_suite_benchmark_summary.png
+
+Fortran reference runtime clears a ``10 s`` reference-runtime-window, so
+process-launch and JIT-amortization noise does not dominate the bars.
+
+.. figure:: _static/figures/paper/dkx_fortran_suite_benchmark_summary.png
+
 Choose a starting point
 -----------------------
 

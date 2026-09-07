@@ -5,136 +5,146 @@
 [![Docs](https://img.shields.io/readthedocs/sfincs-jax?label=docs)](https://sfincs-jax.readthedocs.io/en/latest/)
 [![License](https://img.shields.io/github/license/uwplasma/DKX)](LICENSE)
 
-**Neoclassical transport for stellarators and tokamaks, in JAX.**
+**Differentiable neoclassical transport for stellarators and tokamaks, in JAX.**
 
-DKX solves radially local drift-kinetic equations to calculate particle and heat
-fluxes, parallel flows, bootstrap current, transport coefficients and stellarator
-ambipolar electric fields. Use physical-unit case files for profiles, or compose
-prepared solves and checked implicit derivatives in Python.
+DKX solves the radially local, linearized drift-kinetic equation on a flux surface
+and returns particle and heat fluxes, parallel flows, bootstrap current, transport
+matrices and ambipolar radial electric fields. It implements the SFINCS Fortran v3
+model, including full Fokker–Planck collisions and Phi1, reads and writes SFINCS decks,
+runs on CPU or GPU, and every output is differentiable in every input.
 
-- **Physics:** pitch-angle scattering and linearized Fokker–Planck collisions;
-  analytic, VMEC and Boozer geometry; SFINCS-v3 input/output compatibility.
-- **Repeated calculations:** prepared profile/field updates, Krylov warm starts
-  and recycling, shared factors and memory-budgeted independent batches.
-- **CPU/GPU and derivatives:** JIT-compatible expert solves and batch sharding;
-  implicit forward/transpose checks on supported full-state derivative paths.
+![W7-X standard configuration: |B| and parallel current density on the boundary, bootstrap current profile, ambipolar Er against Pablant et al. 2018](docs/_static/figures/readme/w7x_showcase.png)
 
-Native Case execution supports a restricted DKES/no-Phi1 domain. Richer trajectory,
-Phi1 and transport-matrix functionality uses the compatibility/expert paths.
-[Capabilities](docs/capabilities.rst) and [derivative scope](docs/differentiability.rst)
-describe supported combinations and fixed dependencies.
-
-![Example W7-X geometry, parallel current, bootstrap profile and ambipolar electric field from DKX](docs/_static/figures/readme/w7x_showcase.png)
-
-*Example W7-X output. Resolution admission is observable-specific: the recorded
-particle/heat-flux checks do not establish a converged bootstrap-current profile.
-See [validation](docs/validation_matrix.rst).*
-
-## Install and run
-
-Python 3.11 or newer:
+## Install
 
 ```bash
-python -m pip install dkx             # released CPU package
-python -m pip install -U "jax[cuda12]" # optional NVIDIA backend
+pip install dkx                    # CPU
+pip install -U "jax[cuda12]"       # add for NVIDIA GPUs
 ```
 
-For the examples and development APIs shown here, use this source checkout:
-
-```bash
-git clone https://github.com/uwplasma/DKX.git
-cd DKX
-python -m pip install -e .
-dkx run examples/01_tokamak_profile/case.toml --out result.nc
-dkx inspect result.nc
-dkx converge examples/01_tokamak_profile/case.toml
-```
-
-The first case is a small **teaching grid**, not converged transport data.
-`dkx converge` checks separate and joint refinements; check every observable you
-intend to use. See [installation](docs/installation.rst) for backend setup.
-
-The same case runs from Python:
+## Run
 
 ```python
 import dkx
 
-case = dkx.Case.from_file("examples/01_tokamak_profile/case.toml")
+case = dkx.Case.from_mapping({           # analytic tokamak, teaching grid: seconds, not converged
+    "schema": 1, "name": "tokamak", "run": {"workflow": "profile", "progress": False},
+    "geometry": {"format": "analytic", "file": "tokamak", "surfaces": [0.16, 0.25, 0.36]},
+    "species": [{"name": "deuterium", "charge": 1, "mass_amu": 2.014,
+                 "density_m3": [8.0e19, 7.0e19, 6.0e19], "temperature_keV": [1.0, 0.8, 0.6]}],
+    "physics": {"model": "full_local", "collisions": "pitch_angle_scattering", "magnetic_drifts": "dkes", "phi1": "off"},
+    "electric_field": {"mode": "prescribed", "value_kV_m": 0.0},
+    "resolution": {"theta": 9, "zeta": 1, "pitch": 8, "speed": 4}, "solver": {"method": "auto", "relative_tolerance": 1e-8},
+})
 result = dkx.run(case)
-print(result.arrays["particle_flux_m2_s"])
-print(result.metadata["solver_route"])
+print("solver route:", result.metadata["solver_route"])
+print("particle flux:", float(result.arrays["particle_flux_m2_s"][1, 0]))
 ```
 
-Replace the geometry and species profiles in a [TOML or JSON case](docs/case_files.rst).
-`dkx validate case.toml` checks supported inputs. `dkx schema --format toml`
-prints a field reference that needs editing before execution.
+From the shell: `dkx run case.toml`, `dkx converge case.toml` (check the resolution before
+trusting a number), `dkx wout_w7x.nc`, or `dkx input.namelist` for a SFINCS deck.
+
+## Gradients
+
+```python
+import jax, jax.numpy as jnp, dkx
+
+case = dkx.Case.from_file("examples/05_ambipolar_profile/case.toml")
+problem = dkx.prepare_er_scan(case, surface_index=1)          # geometry, grids, collisions once
+
+def bootstrap_current(er_kv_m):
+    scan = dkx.batched_er_scan(problem, er_kv_m, differentiable=True, retain_full_state=True)
+    return jnp.sum(scan.moments["FSABjHat"])
+
+j, dj_der = jax.jit(jax.value_and_grad(bootstrap_current))(jnp.array([-0.2, 0.0, 0.2]))
+```
+
+The derivative passes through the linear solve by the implicit function theorem, and
+every returned state has satisfied the original kinetic equation. Profiles and geometry
+differentiate the same way: [differentiability](docs/differentiability.rst).
 
 ## Choose a workflow
 
-Run example scripts from the repository root. They save results and figures;
-edit their physical and numerical parameters for your application.
-
-| Calculation | Entry point |
+| Calculation | Start from |
 | --- | --- |
-| Tokamak profile with prescribed Er | `python examples/01_tokamak_profile/run.py` |
-| Stellarator from VMEC / Boozer | `python examples/02_vmec_stellarator/run.py` / `python examples/03_boozer_stellarator/run.py` |
-| Monoenergetic transport scan | `python examples/04_monoenergetic_scan/run.py` |
-| Stellarator ambipolar roots and selection | `python examples/05_ambipolar_profile/run.py` |
-| Resolution study / gradient checks | `python examples/06_convergence_certificate/run.py` / `python examples/07_gradients/run.py` |
-| Geometry sensitivity and descent | `python examples/08_vmex_optimization/run.py` — analytic geometry proxy |
-| Phi1 and impurities | `python examples/09_phi1_and_impurities/run.py` — expert physics example |
+| Tokamak profile with prescribed `E_r` | `examples/01_tokamak_profile` |
+| Stellarator from VMEC or Boozer files | `examples/02_vmec_stellarator`, `examples/03_boozer_stellarator` |
+| Monoenergetic transport scan | `examples/04_monoenergetic_scan` |
+| Ambipolar roots and branch selection | `examples/05_ambipolar_profile` |
+| Resolution study, gradient checks | `examples/06_convergence_certificate`, `examples/07_gradients` |
+| Geometry sensitivity and descent (analytic proxy) | `examples/08_vmex_optimization` |
+| Phi1 and impurities (expert path) | `examples/09_phi1_and_impurities` |
 
-[Example guide](docs/examples.rst) · [Real VMEX integration scope](docs/vmex_workflow.rst)
+## Why DKX
 
-For repeated field scans and gradients, prepare once:
+| | DKX | SFINCS v3 | MONKES | yancc |
+| --- | :---: | :---: | :---: | :---: |
+| Full linearized Fokker–Planck, multispecies | ✅ | ✅ | ❌ | ✅ |
+| Analytic, VMEC, Boozer and `lasym` geometry | ✅ | ✅ | ✅ | ✅ |
+| Phi1 quasineutrality; Tangential magnetic drifts; `export_f` | ✅ | ✅ | ❌ | ❌ |
+| Ambipolar `E_r` root with retained branch evidence | ✅ | ✅ | ❌ | ❌ |
+| Transport matrices (RHSMode 2/3) and SFINCS deck/HDF5 I/O | ✅ | ✅ | ❌ | ❌ |
+| GPU, JIT-compiled scans, Krylov recycling | ✅ | ❌ | ❌ | ✅ |
+| Exact gradients of any output w.r.t. any input | ✅ | adjoint branches | ❌ | claimed |
+| Gradients verified against finite differences | ✅ | | | |
 
-```python
-import jax
-import jax.numpy as jnp
+## Verified
 
-problem = dkx.prepare_er_scan(case, surface_index=1)
+![DKX against SFINCS Fortran v3, MONKES and YANCC: scaled differences on matched full Fokker-Planck decks, and Beidler-normalized monoenergetic coefficients](docs/_static/figures/readme/cross_code_validation.png)
 
-def total_current(er_kv_m):
-    scan = dkx.batched_er_scan(
-        problem, er_kv_m, devices="auto", differentiable=True,
-        retain_full_state=True, max_batch=1,
-    )
-    return jnp.sum(scan.moments["FSABjHat"])
+Against SFINCS Fortran v3 on 38 upstream decks with the same discretization, DKX
+agrees to solver tolerance: median 4e-6, full Fokker–Planck decks to 1e-8. Against the
+independent codes MONKES and YANCC, the four Beidler-normalized monoenergetic coefficients
+agree within 6 percent and `D33` within 0.1 percent on three configurations. Gradients
+agree with central finite differences over a step window on every shipped derivative
+example. Details, tolerances and scope: [validation matrix](docs/validation_matrix.rst).
 
-value, gradient = jax.jit(jax.value_and_grad(total_current))(
-    jnp.array([-0.2, 0.0, 0.2])
-)
+## Fast
+
+![Runtime and peak memory, DKX against SFINCS Fortran v3, on the 744k-unknown HSX PAS case](docs/_static/figures/readme/tier1_hsx_runtime_memory.png)
+
+`HSX_PASCollisions_DKESTrajectories`, RHSMode=1, **744,610 unknowns**, one machine, against the
+PETSc 3.23 / MUMPS 5.8.2 build of SFINCS v3. Warm is the second solve in a process, after XLA has compiled.
+
+| Configuration | Warm solve | Peak RSS |
+| --- | ---: | ---: |
+| DKX, `Nxi`-for-`x` ramp | **27.2 s** | **0.93 GB** |
+| DKX, uniform `Nxi` | 44.3 s | 1.16 GB |
+| DKX, RTX A4000 GPU | 45.0 s | — |
+| SFINCS Fortran v3, 1 rank | 463.6 s | 3.98 GB |
+| SFINCS Fortran v3, 2 ranks (its best) | 229.5 s | 2.86 GB |
+
+| Cold versus warm, M3 Max CPU | Unknowns | Cold | Warm |
+| --- | ---: | ---: | ---: |
+| HSX PAS reduced | 40,584 | 1.72 s | 0.12 s |
+| HSX PAS, `25x51x100x5` | 744,610 | 23.6 s | 20.0 s |
+
+That is **one measured 744k-unknown HSX PAS case**, chosen because DKX has an exact structured
+solver for it. Across all 38 upstream decks: structured route faster on 9 of 9; Krylov route faster
+on 7 of 23, six not completed. Every deck, hardware string and method: [performance](docs/performance.rst).
+
+![Measured parity envelopes of DKX against SFINCS Fortran v3](docs/_static/figures/readme/canonical_parity.png)
+
+## Documentation
+
+[Tutorial: first W7-X result](docs/usage.rst) ·
+[How-to: resolution, wout files, SFINCS decks](docs/case_files.rst) ·
+[Reference: schema, CLI, API](docs/api.rst) ·
+[Explanation: physics models, solver routes, limitations](docs/physics_models.rst)
+
+## Cite
+
+```bibtex
+@software{dkx,
+  author = {Jorge, Rogerio and contributors},
+  title  = {DKX: differentiable drift-kinetic neoclassical transport in JAX},
+  url    = {https://github.com/uwplasma/DKX},
+  year   = {2026}
+}
 ```
 
-Here Er is in kV/m and `FSABjHat` is normalized parallel current. Preparation fixes
-geometry/profiles; opt-in profile updates and reuse limits are documented in
-[differentiability](docs/differentiability.rst). `devices="auto"` shards independent
-inputs across available local devices; each linear system stays on one device.
-See [parallelism](docs/parallelism.rst) for memory and per-input convergence checks.
-Root derivatives require a regular retained branch; finite sampling cannot prove
-that every root has been found.
+Please also cite SFINCS (Landreman, Smith, Mollén & Helander, Phys. Plasmas 21, 042503,
+2014) when you use its decks or model. Metadata: [CITATION.cff](CITATION.cff).
 
-SFINCS decks and outputs remain supported:
-
-```bash
-dkx input.namelist --out sfincsOutput.h5
-dkx --plot sfincsOutput.h5
-```
-
-## Demonstrated results
-
-- Matched SFINCS-v3 equations have field-by-field regression checks. Independent
-  zero-field monoenergetic comparisons with YANCC/MONKES pass the recorded 6%
-  coefficient gate on three configurations. This does not validate full-FP,
-  finite-Er or ambipolar physics: [evidence and scope](validation/README.md).
-- On a 7,850-unknown, three-field PAS objective, retained Schur factors reduced
-  warm value/gradient medians **67.59 → 37.09 ms on CPU** and **221.74 → 195.56 ms
-  on A4000**, versus checked recomputation. Twelve paired runs on each host;
-  these are development measurements, not complete optimization timings or a
-  CPU/GPU ranking: [measurement context](plan.md#useful-results-with-their-limits).
-
-[Performance](docs/performance.rst) · [Physics](docs/physics_models.rst) ·
-[API](docs/api.rst) · [Research plan](plan.md) · [Contributing](docs/contributing.rst)
-
-DKX owns physics and solver policy; [SOLVAX](https://github.com/uwplasma/SOLVAX)
-owns reusable solver algorithms. See [LICENSE](LICENSE).
+[Examples](examples/) · [Research plan](plan.md) · [Contributing](docs/contributing.rst) ·
+[SOLVAX](https://github.com/uwplasma/SOLVAX) owns the reusable solver algorithms · [LICENSE](LICENSE)
