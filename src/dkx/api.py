@@ -577,6 +577,44 @@ def bounce_averaged_transport(
     )
 
 
+def prepare_er_scan(case: Any, *, surface_index: int = 0) -> Any:
+    """Prepare one native Case surface for repeated scans, without a solve.
+
+    Build outside JAX transformations. The returned ``ErProblem`` accepts
+    electric fields in kV/m and retains the case's solver method/tolerance.
+    Its scan moments and radial current retain the normalized expert-operator
+    conventions. Geometry, profiles and collision kernels are fixed: changing
+    a Case requires fresh preparation. This does not enable factor reuse or
+    differentiate Case construction, geometry, or ambipolar roots.
+    """
+    import operator  # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+    from .config import Case  # noqa: PLC0415
+    from .er import ErProblem  # noqa: PLC0415
+    from .execution import _make_operator, _prepare_profile, _route_name, _validate_native_slice  # noqa: PLC0415
+
+    if not isinstance(case, Case):
+        raise TypeError("prepare_er_scan requires a native Case")
+    _validate_native_slice(case)
+    index = operator.index(surface_index)
+    if not 0 <= index < len(case.geometry.surfaces):
+        raise IndexError("surface_index is outside the Case's surfaces")
+    geometry, grids, density, temperature, dn, dt = _prepare_profile(case)
+    op, *_ = _make_operator(
+        case, surface_index=index, n_hat=density / 1e20, t_hat=temperature,
+        dn_dr_hat=dn, dt_dr_hat=dt, grids=grids, geometry_state=geometry,
+        electric_field_kv_m=1.0, force_exb_structure=True,
+    )
+    initial = case.electric_field.value_kV_m or 0.0
+    bounds = case.electric_field.search_kV_m or (initial - 5.0, initial + 5.0)
+    return ErProblem(
+        operator=op, dphi_per_er=float(op.dphi_hat_dpsi_hat_kinetic),
+        z_s=np.asarray(op.z_s), er_initial=initial, er_min=bounds[0], er_max=bounds[1],
+        solve_method=_route_name(case.solver.method), tol=case.solver.relative_tolerance,
+        er_units="kV/m",
+    )
+
+
 def batched_er_scan(
     request: "SolveInputs | str | Path | Any",
     er_values: Any,
@@ -719,6 +757,7 @@ __all__ = [
     "SolverOptions",
     "SolverResult",
     "TransportResult",
+    "prepare_er_scan",
     "batched_er_scan",
     "batched_surface_scan",
     "bounce_averaged_transport",

@@ -43,6 +43,7 @@ Design constraints honoured here:
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -148,6 +149,10 @@ class BatchedSolveResult:
             Keeping this diagnostic makes batched production workflows able to
             enforce the same convergence contract as a sequence of scalar
             :func:`dkx.solve.solve` calls.
+        relative_residual_norms: ``||A x - b|| / ||b||`` per element. With a
+            zero drive, zero residual maps to zero and nonzero residual to inf.
+        algebraic_converged: per-element finite state/RHS/residual and original
+            residual-tolerance check. This is not an observable/grid certificate.
         legendre_tail_relative_l2_upper_bound: selected-tail upper bound with
             shape ``(batch, speed, species)`` when explicitly retained on the
             truncated structured route; ``None`` otherwise.
@@ -162,6 +167,8 @@ class BatchedSolveResult:
     radial_current: jnp.ndarray | None = None
     residual_norms: jnp.ndarray | None = None
     legendre_tail_relative_l2_upper_bound: jnp.ndarray | None = None
+    relative_residual_norms: jnp.ndarray | None = None
+    algebraic_converged: jnp.ndarray | None = None
 
 
 # The state, moments, radial current, residual norms, and optional tail bound
@@ -174,6 +181,8 @@ jax.tree_util.register_dataclass(
         "moments",
         "radial_current",
         "residual_norms",
+        "relative_residual_norms",
+        "algebraic_converged",
         "legendre_tail_relative_l2_upper_bound",
     ],
     meta_fields=["chunk_size", "n_chunks", "method", "executed_method"],
@@ -447,6 +456,8 @@ def batched_solve(
     """
     from .run import profile_moments_from_operator  # noqa: PLC0415 - heavy run stack
 
+    if not math.isfinite(tol) or tol < 0:
+        raise ValueError("tol must be finite and nonnegative")
     _validate_batch_leaves(op, batch_leaves)
     batch = _batch_size_of(batch_leaves)
     leaves_map = dict(batch_leaves)
@@ -465,9 +476,10 @@ def batched_solve(
 
     def solve_one(leaves: Mapping[str, Any]):
         op_i = dataclasses.replace(op, **leaves)
+        rhs = op_i.rhs()
         result = solve(
             op_i,
-            op_i.rhs(),
+            rhs,
             method=solve_method,
             tol=tol,
             differentiable=differentiable,
@@ -479,6 +491,13 @@ def batched_solve(
             op_i, state, ntv_kernel_tz=ntv_kernel_tz
         )
         residual_norm = jnp.max(jnp.asarray(result.residual_norms, dtype=jnp.float64))
+        rhs_norm = jnp.linalg.norm(rhs)
+        relative = jnp.where(rhs_norm > 0, residual_norm / jnp.where(rhs_norm > 0, rhs_norm, 1),
+                             jnp.where(residual_norm == 0, 0.0, jnp.inf))
+        relative = jnp.where(jnp.isfinite(rhs_norm) & jnp.isfinite(residual_norm), relative, jnp.inf)
+        accepted = (jnp.isfinite(rhs_norm) & jnp.isfinite(residual_norm)
+                    & jnp.all(jnp.isfinite(state)) & (residual_norm >= 0)
+                    & (residual_norm <= tol * rhs_norm))
         tail_bound = jnp.zeros((op.n_x, op.n_species), dtype=jnp.float64)
         if retain_selected_tail:
             from .moments import (  # noqa: PLC0415
@@ -487,14 +506,14 @@ def batched_solve(
             from .writer import operator_containers  # noqa: PLC0415
 
             selected = tier1_truncated_tail_blocks(
-                op_i, op_i.rhs(), result.x, keep_highest=2
+                op_i, rhs, result.x, keep_highest=2
             )[..., 0]
             tail_bound = legendre_tail_relative_l2_upper_bound_batch(
                 *operator_containers(op_i)[:3],
                 state[None, :],
                 selected[None, ...],
             )[0]
-        return state, dict(moments), residual_norm, tail_bound
+        return state, dict(moments), residual_norm, tail_bound, relative, accepted
 
     if devs is None:
         chunk = auto_chunk_size(
@@ -504,7 +523,7 @@ def batched_solve(
             memory_budget_gb=memory_budget_gb,
             retain_legendre_tail=retain_selected_tail,
         )
-        states, moments, residual_norms, tail_bounds = jax.lax.map(
+        states, moments, residual_norms, tail_bounds, relative, accepted = jax.lax.map(
             solve_one, leaves_map, batch_size=chunk
         )
         n_chunks = -(-batch // chunk)
@@ -545,7 +564,7 @@ def batched_solve(
             out_specs=P("device"),
             **check,
         )
-        states, moments, residual_norms, tail_bounds = jax.tree_util.tree_map(
+        states, moments, residual_norms, tail_bounds, relative, accepted = jax.tree_util.tree_map(
             lambda a: a[:batch], mapped(padded)
         )
         n_chunks = -(-shard_max // chunk)
@@ -557,6 +576,8 @@ def batched_solve(
         method=str(solve_method),
         executed_method=executed_method,
         residual_norms=residual_norms,
+        relative_residual_norms=relative,
+        algebraic_converged=accepted,
         legendre_tail_relative_l2_upper_bound=(
             tail_bounds if retain_selected_tail else None
         ),

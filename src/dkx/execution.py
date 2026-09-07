@@ -908,6 +908,22 @@ def _ambipolar_result_arrays(
     return arrays, dimensions
 
 
+def _prepare_profile(case: Case):
+    """Shared native geometry, grids and physical-profile differentiation."""
+    r_n = np.sqrt(np.asarray(case.geometry.surfaces, dtype=np.float64))
+    geometry_state = _prepare_geometry(case)
+    grids = _make_grids(case, n_periods=geometry_state.n_periods)
+    r_hat = geometry_state.a_hat * r_n
+    density_m3 = _profile_matrix(case, "density_m3")
+    temperature_keV = _profile_matrix(case, "temperature_keV")
+    n_hat = density_m3 / 1.0e20
+    t_hat = temperature_keV
+    dn_dr_hat = _profile_gradients(n_hat, r_hat)
+    dt_dr_hat = _profile_gradients(t_hat, r_hat)
+
+    return geometry_state, grids, density_m3, temperature_keV, dn_dr_hat, dt_dr_hat
+
+
 def run_case(case: Case, *, out: str | Path | None = None, emit=None) -> Result:
     """Execute the supported native profile route and return a Result."""
 
@@ -922,15 +938,8 @@ def run_case(case: Case, *, out: str | Path | None = None, emit=None) -> Result:
     total_start = time.perf_counter()
     surfaces = np.asarray(case.geometry.surfaces, dtype=np.float64)
     r_n = np.sqrt(surfaces)
-    geometry_state = _prepare_geometry(case)
-    grids = _make_grids(case, n_periods=geometry_state.n_periods)
-    r_hat = geometry_state.a_hat * r_n
-    density_m3 = _profile_matrix(case, "density_m3")
-    temperature_keV = _profile_matrix(case, "temperature_keV")
-    n_hat = density_m3 / 1.0e20
-    t_hat = temperature_keV
-    dn_dr_hat = _profile_gradients(n_hat, r_hat)
-    dt_dr_hat = _profile_gradients(t_hat, r_hat)
+    geometry_state, grids, density_m3, temperature_keV, dn_dr_hat, dt_dr_hat = _prepare_profile(case)
+    n_hat, t_hat = density_m3 / 1.0e20, temperature_keV
 
     shape = (surfaces.size, len(case.species))
     particle_flux = np.empty(shape, dtype=np.float64)
@@ -972,6 +981,7 @@ def run_case(case: Case, *, out: str | Path | None = None, emit=None) -> Result:
             assert bounds is not None
             problem = ErProblem(
                 operator=op,
+                er_units="kV/m",
                 dphi_per_er=float(np.asarray(op.dphi_hat_dpsi_hat_kinetic).reshape(())),
                 z_s=np.asarray(op.z_s, dtype=np.float64).reshape((-1,)),
                 er_initial=0.0,
