@@ -59,6 +59,7 @@ import jax.numpy as jnp
 from .drift_kinetic import KineticOperator
 from .solve import (
     _auto_route_structural,
+    _TIER1_KEEP_LOWEST_DEFAULT,
     auto_solve_peak_memory_bytes,
     solve,
     tier1_truncated_tail_blocks,
@@ -145,10 +146,10 @@ class BatchedSolveResult:
         radial_current: ``J_r = sum_a Z_a Gamma_a`` per element, shape
             ``(batch,)`` — populated by :func:`batched_er_scan`, ``None``
             otherwise.
-        residual_norms: true ``||A x - b||`` residual norm per batch element.
-            Keeping this diagnostic makes batched production workflows able to
-            enforce the same convergence contract as a sequence of scalar
-            :func:`dkx.solve.solve` calls.
+        residual_norms: independently recomputed ``||A x - b||`` for the
+            returned state. A truncated, zero-padded moment-only state generally
+            fails this full-equation check even when its low-order moments are
+            accurate. Request ``retain_full_state=True`` to recover every block.
         relative_residual_norms: ``||A x - b|| / ||b||`` per element. With a
             zero drive, zero residual maps to zero and nonzero residual to inf.
         algebraic_converged: per-element finite state/RHS/residual and original
@@ -199,6 +200,7 @@ def solve_footprint_bytes(
     *,
     memory_budget_gb: float | None = None,
     retain_legendre_tail: bool = False,
+    retain_full_state: bool = False,
 ) -> float:
     """Estimated peak bytes of one ``method="auto"`` solve of ``op``.
 
@@ -214,9 +216,11 @@ def solve_footprint_bytes(
     same auto-router used by the solve so budget-forced truncation and chunk
     sizing cannot disagree.  The solved state vector and a fixed runtime
     allowance (:data:`_RUNTIME_OVERHEAD_BYTES`) are added on top.
+    ``retain_full_state`` charges recovery of all Legendre blocks.
     """
     route_bytes = float(
-        auto_solve_peak_memory_bytes(op, budget_gb=memory_budget_gb)
+        auto_solve_peak_memory_bytes(op, budget_gb=memory_budget_gb,
+                                    keep_lowest=op.n_xi if retain_full_state else _TIER1_KEEP_LOWEST_DEFAULT)
     )
     state_bytes = float(op.total_size) * 8.0
     tail_bytes = 0.0
@@ -274,6 +278,7 @@ def auto_chunk_size(
     max_batch: int | None = None,
     memory_budget_gb: float | None = None,
     retain_legendre_tail: bool = False,
+    retain_full_state: bool = False,
 ) -> int:
     """Largest chunk whose peak stays within the memory budget (>= 1, <= batch).
 
@@ -288,6 +293,7 @@ def auto_chunk_size(
         op,
         memory_budget_gb=memory_budget_gb,
         retain_legendre_tail=retain_legendre_tail,
+        retain_full_state=retain_full_state,
     )
     chunk = int(budget // per_solve)
     chunk = max(1, chunk)
@@ -398,6 +404,7 @@ def batched_solve(
     ntv_kernel_tz: Any | None = None,
     devices: Sequence[jax.Device] | str | None = None,
     retain_legendre_tail: bool = False,
+    retain_full_state: bool = False,
 ) -> BatchedSolveResult:
     """Solve a batch of kinetic problems sharing ``op``'s discretization.
 
@@ -448,6 +455,8 @@ def batched_solve(
             explicit sequence of ``jax.Device`` objects to split the batch
             across.  Fewer than two resolved devices, or a batch smaller than
             the device count, degrades to the single-device path unchanged.
+        retain_full_state: recover all Legendre blocks for full-state residual
+            certification/restart; includes the extra cost in chunk sizing.
         retain_legendre_tail: on the truncated structured route, perform the
             opt-in selected-tail sweep and retain its relative-L2 upper bound.
 
@@ -462,7 +471,8 @@ def batched_solve(
     batch = _batch_size_of(batch_leaves)
     leaves_map = dict(batch_leaves)
     executed_method = (
-        _auto_route_structural(op, budget_gb=memory_budget_gb)
+        _auto_route_structural(op, budget_gb=memory_budget_gb,
+                               keep_lowest=op.n_xi if retain_full_state else _TIER1_KEEP_LOWEST_DEFAULT)
         if str(solve_method).strip().lower() == "auto"
         else {"iterative": "gmres"}.get(
             str(solve_method).strip().lower(), str(solve_method).strip().lower()
@@ -484,13 +494,16 @@ def batched_solve(
             tol=tol,
             differentiable=differentiable,
             tier1_memory_budget_gb=memory_budget_gb,
+            tier1_keep_lowest=op.n_xi if retain_full_state else _TIER1_KEEP_LOWEST_DEFAULT,
             emit=None,
         )
         state = jnp.reshape(result.x, (-1,))
         moments = profile_moments_from_operator(
             op_i, state, ntv_kernel_tz=ntv_kernel_tz
         )
-        residual_norm = jnp.max(jnp.asarray(result.residual_norms, dtype=jnp.float64))
+        # Solver diagnostics may cover only the retained low-order rows.
+        # Certify the returned state against the original equation instead.
+        residual_norm = jnp.linalg.norm(op_i.apply(state) - rhs.reshape((-1,)))
         rhs_norm = jnp.linalg.norm(rhs)
         relative = jnp.where(rhs_norm > 0, residual_norm / jnp.where(rhs_norm > 0, rhs_norm, 1),
                              jnp.where(residual_norm == 0, 0.0, jnp.inf))
@@ -522,6 +535,7 @@ def batched_solve(
             max_batch=max_batch,
             memory_budget_gb=memory_budget_gb,
             retain_legendre_tail=retain_selected_tail,
+            retain_full_state=retain_full_state,
         )
         states, moments, residual_norms, tail_bounds, relative, accepted = jax.lax.map(
             solve_one, leaves_map, batch_size=chunk
@@ -546,6 +560,7 @@ def batched_solve(
             max_batch=max_batch,
             memory_budget_gb=memory_budget_gb,
             retain_legendre_tail=retain_selected_tail,
+            retain_full_state=retain_full_state,
         )
         # Equal local shapes are required by shard_map. Repeat a valid final
         # case instead of inventing zero-density/otherwise invalid physics.
@@ -601,6 +616,7 @@ def batched_er_scan(
     ntv_kernel_tz: Any | None = None,
     devices: Sequence[jax.Device] | str | None = None,
     retain_legendre_tail: bool = False,
+    retain_full_state: bool = False,
 ) -> BatchedSolveResult:
     """Batched radial current / moments over a vector of ``E_r`` on one geometry.
 
@@ -624,6 +640,8 @@ def batched_er_scan(
             evaluation. Production output workflows use this to retain the
             same NTV diagnostics as scalar profile runs.
         devices: multi-device split of the scan (see :func:`batched_solve`).
+        retain_full_state: recover all Legendre blocks for full-state residual
+            certification/restart; includes the extra cost in chunk sizing.
         retain_legendre_tail: opt-in selected-tail upper bound on the truncated
             route.
 
@@ -645,6 +663,7 @@ def batched_er_scan(
         ntv_kernel_tz=ntv_kernel_tz,
         devices=devices,
         retain_legendre_tail=retain_legendre_tail,
+        retain_full_state=retain_full_state,
     )
     z_s = jnp.asarray(problem.z_s, dtype=jnp.float64)
     gamma = jnp.asarray(result.moments["particleFlux_vm_psiHat"])  # (batch, n_species)
@@ -719,6 +738,7 @@ def batched_surface_scan(
     ntv_kernel_tz: Any | None = None,
     devices: Sequence[jax.Device] | str | None = None,
     retain_legendre_tail: bool = False,
+    retain_full_state: bool = False,
 ) -> BatchedSolveResult:
     """Batched solve / moments over a sequence of flux-surface operators.
 
@@ -736,6 +756,8 @@ def batched_surface_scan(
         max_batch, memory_budget_gb: memory-budgeting overrides.
         ntv_kernel_tz: optional NTV kernel forwarded to the moment table.
         devices: multi-device split of the batch (see :func:`batched_solve`).
+        retain_full_state: recover all Legendre blocks for full-state residual
+            certification/restart; includes the extra cost in chunk sizing.
         retain_legendre_tail: opt-in selected-tail upper bound on the truncated
             route.
 
@@ -758,6 +780,7 @@ def batched_surface_scan(
         ntv_kernel_tz=ntv_kernel_tz,
         devices=devices,
         retain_legendre_tail=retain_legendre_tail,
+        retain_full_state=retain_full_state,
     )
 
 

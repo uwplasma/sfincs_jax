@@ -62,6 +62,118 @@ def _vmec_case():
     )
 
 
+@pytest.mark.parametrize("collisions", ["pitch_angle_scattering", "linearized_fokker_planck"])
+def test_native_profile_preparation_builds_only_selected_collisions(monkeypatch, collisions):
+    import dkx.collisions as kernels
+
+    base = _case()
+    case = replace(base, physics=replace(base.physics, collisions=collisions))
+    calls = {"make_fokker_planck_v3_operator": 0, "make_pitch_angle_scattering_v3_operator": 0}
+    for name in calls:
+        original = getattr(kernels, name)
+        def count(*args, _name=name, _original=original, **kwargs):
+            calls[_name] += 1
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(kernels, name, count)
+    problem = dkx.prepare_er_scan(case, differentiable_profiles=True)
+    assert calls["make_fokker_planck_v3_operator"] == 0
+    assert calls["make_pitch_angle_scattering_v3_operator"] == int(collisions == "pitch_angle_scattering")
+    assert problem.operator.fp is not None or problem.operator.pas is not None
+
+
+@pytest.mark.parametrize("surfaces,index", [((.09, .25), 0), ((.09, .25), 1),
+                                          ((.04, .09, .2, .4, .7), 0),
+                                          ((.04, .09, .2, .4, .7), 2),
+                                          ((.04, .09, .2, .4, .7), 4)])
+def test_native_profile_stencil_matches_fresh_boundaries_and_interior(surfaces, index):
+    import jax
+    import jax.numpy as jnp
+
+    base = _case()
+    radius = np.sqrt(surfaces)
+    n, t = (1-radius/3+radius**2/5)*1e20, 1.5-radius/2+radius**3/4
+    species = replace(base.species[0], density_m3=tuple(n), temperature_keV=tuple(t))
+    case = replace(base, geometry=replace(base.geometry, surfaces=surfaces), species=(species,))
+    problem = dkx.prepare_er_scan(case, surface_index=index, differentiable_profiles=True)
+    fresh = dkx.prepare_er_scan(case, surface_index=index)
+    def drives(density, temperature):
+        op = problem.with_profiles(density_m3=density, temperature_keV=temperature).operator
+        return op.dn_hat_dpsi_hat, op.dt_hat_dpsi_hat
+    actual = jax.jit(drives)(jnp.asarray(n[:, None]), jnp.asarray(t[:, None]))
+    for got, expected in zip(actual, (fresh.operator.dn_hat_dpsi_hat, fresh.operator.dt_hat_dpsi_hat)):
+        np.testing.assert_allclose(got, expected, rtol=2e-13, atol=2e-13)
+    # Even an invalid point outside the selected local stencil invalidates
+    # a supplied native profile; it must not silently produce valid outputs.
+    invalid = jnp.asarray(t[:, None]).at[-1, 0].set(-1.)
+    assert np.all(np.isnan(jax.jit(drives)(jnp.asarray(n[:, None]), invalid)[1]))
+
+
+@pytest.mark.parametrize("collisions", ["pitch_angle_scattering", "linearized_fokker_planck"])
+@pytest.mark.parametrize("location", ["local", "neighbor"])
+def test_native_profile_refresh_updates_stencil_collisions_and_current_gradient(collisions, location):
+    import jax
+    import jax.numpy as jnp
+
+    base = _case()
+    first = replace(base.species[0], density_m3=(8e19, 7e19, 6e19), temperature_keV=(1.2, 1., .7))
+    second = replace(first, name="helium", charge=2, mass_amu=4.,
+                     density_m3=(2e19, 1.8e19, 1.4e19), temperature_keV=(.9, .7, .5))
+    case = replace(base, species=(first, second),
+                   geometry=replace(base.geometry, surfaces=(.04, .1225, .36)),
+                   physics=replace(base.physics, collisions=collisions),
+                   solver=replace(base.solver, relative_tolerance=1e-11))
+    problem = dkx.prepare_er_scan(case, surface_index=1, differentiable_profiles=True)
+    n = jnp.asarray([s.density_m3 for s in case.species]).T
+    t = jnp.asarray([s.temperature_keV for s in case.species]).T
+    dn = jnp.asarray([[.1, -.05], [0., 0.], [-.1, .2]])
+    dt = jnp.asarray([[.2, -.1], [0., 0.], [-.1, .1]])
+    if location == "local":
+        dn, dt = jnp.zeros_like(n).at[1].set(jnp.array([.1, -.2])), jnp.zeros_like(t).at[1].set(jnp.array([-.1, .2]))
+
+    def profiles(scale):
+        return n*(1+scale*dn), t*(1+scale*dt)
+
+    def current(prepared, differentiable=False):
+        scan = dkx.batched_er_scan(prepared, jnp.array([.2]), differentiable=differentiable,
+                                   retain_full_state=True)
+        value = scan.moments["FSABjHat"][0] * PARALLEL_CURRENT
+        if differentiable:
+            return value, scan.algebraic_converged
+        assert np.all(np.asarray(scan.algebraic_converged))
+        return value
+
+    def loss(scale):
+        density, temperature = profiles(scale)
+        return current(problem.with_profiles(density_m3=density, temperature_keV=temperature), True)
+
+    def fresh(scale):
+        density, temperature = map(np.asarray, profiles(scale))
+        species = tuple(replace(s, density_m3=tuple(density[:, i]), temperature_keV=tuple(temperature[:, i]))
+                        for i, s in enumerate(case.species))
+        return dkx.prepare_er_scan(replace(case, species=species), surface_index=1)
+
+    updated = problem.with_profiles(density_m3=profiles(.1)[0], temperature_keV=profiles(.1)[1])
+    cold = fresh(.1)
+    assert updated.tol == problem.tol and updated.solve_method == problem.solve_method
+    assert (updated.er_min, updated.er_max, updated.er_units) == (problem.er_min, problem.er_max, "kV/m")
+    for name in ("n_hat", "t_hat", "dn_hat_dpsi_hat", "dt_hat_dpsi_hat"):
+        np.testing.assert_allclose(getattr(updated.operator, name), getattr(cold.operator, name), rtol=2e-14, atol=2e-14)
+    if location == "neighbor":
+        np.testing.assert_array_equal(updated.operator.t_hat, problem.operator.t_hat)
+        assert not np.array_equal(updated.operator.dt_hat_dpsi_hat, problem.operator.dt_hat_dpsi_hat)
+    (value, accepted), derivative = jax.jit(jax.value_and_grad(loss, has_aux=True))(.1)
+    assert np.all(np.asarray(accepted))
+    np.testing.assert_allclose(value, current(cold), rtol=2e-8, atol=1e-8)
+    assert np.isfinite(derivative) and abs(float(derivative)) > 1e-8
+    for step in (1e-3, 3e-4):
+        fd = (current(fresh(.1+step))-current(fresh(.1-step))) / (2*step)
+        np.testing.assert_allclose(derivative, fd, rtol=2e-4, atol=abs(float(derivative))*1e-7)
+    with pytest.raises(ValueError, match="native profiles must have shape"):
+        problem.with_profiles(density_m3=n[1], temperature_keV=t[1])
+    with pytest.raises(ValueError, match="differentiable_profiles=True"):
+        fresh(0.).with_profiles(density_m3=n, temperature_keV=t)
+
+
 def _boozer_case():
     return dkx.Case.from_file(
         Path(__file__).resolve().parents[1]
@@ -93,6 +205,27 @@ def _ambipolar_case():
             max_refinements=1,
         ),
     )
+
+
+def test_native_profile_retains_a_state_satisfying_the_original_equation(monkeypatch):
+    import importlib
+    # Resolve consumers before patching, so lazy imports cannot retain the spy.
+    for name in ("dkx.batch", "dkx.er", "dkx.run"):
+        importlib.import_module(name)
+    solve_module = importlib.import_module("dkx.solve")
+    original = solve_module.solve
+    residuals = []
+    def checked(op, rhs, **kwargs):
+        result = original(op, rhs, **kwargs)
+        state = np.asarray(result.x).reshape(-1)
+        measured = float(np.linalg.norm(np.asarray(op.apply(state)) - np.asarray(rhs).reshape(-1)))
+        assert measured <= kwargs["tol"] * np.linalg.norm(rhs)
+        np.testing.assert_allclose(result.residual_norms, measured, atol=1e-14, rtol=1e-8)
+        residuals.append(measured)
+        return result
+    monkeypatch.setattr(solve_module, "solve", checked)
+    dkx.run(_case())
+    assert len(residuals) == 2
 
 
 def test_native_grid_honors_explicit_pitch_speed_ramp() -> None:
@@ -351,11 +484,16 @@ def test_native_ambipolar_real_solver_brackets_and_roundtrips(tmp_path, capsys) 
 
     assert "[dkx.solve]" not in capsys.readouterr().out
     assert result.metadata["legendre_tail_diagnostic"] == (
-        "retained_selected_tail_relative_l2_upper_bound"
+        "retained_full_state_relative_l2"
     )
-    assert "evaluation_legendre_tail_relative_l2" not in result.arrays
-    assert "evaluation_legendre_tail_relative_l2_upper_bound" in result.arrays
-    assert "selected_tail_diagnostic_replay" in set(
+    assert "evaluation_legendre_tail_relative_l2" in result.arrays
+    assert "evaluation_legendre_tail_relative_l2_upper_bound" not in result.arrays
+    # Full structured recovery avoids a failed moment-only solve and Krylov retry.
+    assert result.metadata["ambipolar_solver_attempts"]["automatic_true_residual_recovery_count"] == 0
+    assert set(result.metadata["ambipolar_solver_attempts"]["executed_route_counts"]) == {
+        "block_tridiagonal_truncated"
+    }
+    assert "selected_tail_diagnostic_replay" not in set(
         result.evaluation_solver_attempt_reason.reshape(-1)
     )
     for name in (
@@ -372,8 +510,9 @@ def test_native_ambipolar_real_solver_brackets_and_roundtrips(tmp_path, capsys) 
             np.asarray(result.arrays[name]),
             np.asarray(baseline.arrays[name]),
         )
-    retained_tail = result.evaluation_legendre_tail_relative_l2_upper_bound
-    assert np.count_nonzero(np.isfinite(retained_tail)) == 2 * 4
+    retained_tail = result.evaluation_legendre_tail_relative_l2
+    valid_evaluations = np.count_nonzero(np.isfinite(result.evaluation_electric_field_kV_m))
+    assert np.count_nonzero(np.isfinite(retained_tail)) == valid_evaluations * 4
     for surface_index, selected_field in enumerate(result.electric_field_kV_m):
         evaluation_index = int(
             np.nanargmin(
@@ -409,7 +548,7 @@ def test_native_ambipolar_real_solver_brackets_and_roundtrips(tmp_path, capsys) 
     loaded = dkx.Result.load(tmp_path / "real-ambipolar.nc")
     np.testing.assert_allclose(loaded.electric_field_kV_m, result.electric_field_kV_m)
     np.testing.assert_allclose(
-        loaded.evaluation_legendre_tail_relative_l2_upper_bound,
+        loaded.evaluation_legendre_tail_relative_l2,
         retained_tail,
         equal_nan=True,
     )

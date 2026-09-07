@@ -577,21 +577,28 @@ def bounce_averaged_transport(
     )
 
 
-def prepare_er_scan(case: Any, *, surface_index: int = 0) -> Any:
+def prepare_er_scan(
+    case: Any, *, surface_index: int = 0, differentiable_profiles: bool = False,
+    quadrature_order: int = 128,
+) -> Any:
     """Prepare one native Case surface for repeated scans, without a solve.
 
     Build outside JAX transformations. The returned ``ErProblem`` accepts
     electric fields in kV/m and retains the case's solver method/tolerance.
     Its scan moments and radial current retain the normalized expert-operator
-    conventions. Geometry, profiles and collision kernels are fixed: changing
-    a Case requires fresh preparation. This does not enable factor reuse or
-    differentiate Case construction, geometry, or ambipolar roots.
+    conventions. By default profiles are fixed. With ``differentiable_profiles``
+    enabled, ``problem.with_profiles(density_m3=..., temperature_keV=...)``
+    refreshes profiles, radial drives and collisions inside JAX transformations.
+    Arrays cover all surfaces/species; geometry, normalization, Coulomb logarithm
+    and layout stay fixed. Full-FP uses the opt-in differentiable quadrature
+    builder, with explicit ``quadrature_order`` per panel; PAS is analytic.
+    This does not enable factor reuse or differentiate geometry/Case parsing.
     """
     import operator  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
     from .config import Case  # noqa: PLC0415
     from .er import ErProblem  # noqa: PLC0415
-    from .execution import _make_operator, _prepare_profile, _route_name, _validate_native_slice  # noqa: PLC0415
+    from .execution import _make_operator, _prepare_profile, _prepare_profile_builder, _route_name, _validate_native_slice  # noqa: PLC0415
 
     if not isinstance(case, Case):
         raise TypeError("prepare_er_scan requires a native Case")
@@ -600,18 +607,24 @@ def prepare_er_scan(case: Any, *, surface_index: int = 0) -> Any:
     if not 0 <= index < len(case.geometry.surfaces):
         raise IndexError("surface_index is outside the Case's surfaces")
     geometry, grids, density, temperature, dn, dt = _prepare_profile(case)
-    op, *_ = _make_operator(
+    op, _, _, radial = _make_operator(
         case, surface_index=index, n_hat=density / 1e20, t_hat=temperature,
         dn_dr_hat=dn, dt_dr_hat=dt, grids=grids, geometry_state=geometry,
         electric_field_kv_m=1.0, force_exb_structure=True,
+        build_collisions=not differentiable_profiles,
     )
     initial = case.electric_field.value_kV_m or 0.0
     bounds = case.electric_field.search_kV_m or (initial - 5.0, initial + 5.0)
+    profile_builder = None
+    if differentiable_profiles:
+        profile_builder = _prepare_profile_builder(case, op, grids, geometry, radial, index, quadrature_order)
+        op = profile_builder(density, temperature)
     return ErProblem(
         operator=op, dphi_per_er=float(op.dphi_hat_dpsi_hat_kinetic),
         z_s=np.asarray(op.z_s), er_initial=initial, er_min=bounds[0], er_max=bounds[1],
         solve_method=_route_name(case.solver.method), tol=case.solver.relative_tolerance,
         er_units="kV/m",
+        _profile_builder=profile_builder,
     )
 
 
@@ -628,6 +641,7 @@ def batched_er_scan(
     memory_budget_gb: float | None = None,
     devices: Sequence[Any] | str | None = None,
     retain_legendre_tail: bool = False,
+    retain_full_state: bool = False,
 ) -> Any:
     """Batched ``E_r`` scan on one geometry (stable public facade).
 
@@ -653,6 +667,8 @@ def batched_er_scan(
         max_batch, memory_budget_gb: optional memory-budgeting overrides.
         devices: None for one device, "auto" for local devices, or a sequence
             of distinct devices. Forwarded to :func:`dkx.batch.batched_solve`.
+        retain_full_state: recover all Legendre blocks for full-state residual
+            certification/restart; includes the extra cost in chunk sizing.
         retain_legendre_tail: retain the selected-tail relative-L2 upper bound
             when the memory-lean truncated route executes.
 
@@ -684,6 +700,7 @@ def batched_er_scan(
         memory_budget_gb=memory_budget_gb,
         devices=devices,
         retain_legendre_tail=retain_legendre_tail,
+        retain_full_state=retain_full_state,
     )
 
 
@@ -697,6 +714,7 @@ def batched_surface_scan(
     memory_budget_gb: float | None = None,
     devices: Sequence[Any] | str | None = None,
     retain_legendre_tail: bool = False,
+    retain_full_state: bool = False,
 ) -> Any:
     """Batched solve over a batch of flux surfaces (stable public facade).
 
@@ -715,6 +733,8 @@ def batched_surface_scan(
         max_batch, memory_budget_gb: optional memory-budgeting overrides.
         devices: None for one device, "auto" for local devices, or a sequence
             of distinct devices. Forwarded to :func:`dkx.batch.batched_solve`.
+        retain_full_state: recover all Legendre blocks for full-state residual
+            certification/restart; includes the extra cost in chunk sizing.
         retain_legendre_tail: retain the selected-tail relative-L2 upper bound
             when the memory-lean truncated route executes.
 
@@ -742,6 +762,7 @@ def batched_surface_scan(
         memory_budget_gb=memory_budget_gb,
         devices=devices,
         retain_legendre_tail=retain_legendre_tail,
+        retain_full_state=retain_full_state,
     )
 
 

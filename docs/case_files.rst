@@ -195,29 +195,20 @@ the volume- and Legendre-orthogonality-weighted L2 norm of the final two active
 modes divided by the norm of all active modes. It is supporting evidence, not
 a replacement for observable movement under a resolution increase.
 
-The memory-lean ``block_tridiagonal_truncated`` route returns exact low
-transport moments but deliberately zero-pads eliminated high modes. DKX
-therefore omits the array and records
-``unavailable_on_zero_padded_truncated_state`` rather than publishing a false
-zero tail by default.
+Native profile and ambipolar solves now request complete states, including
+on the generated structured route with unequal pitch chains. Ambipolar
+results therefore retain the full-state tail ratio at every evaluated field;
+``convergence.retain_legendre_tail`` remains accepted for compatibility but
+requires no selected-field replay or additional evaluation budget.
 
-Set ``convergence.retain_legendre_tail = true`` to request a second
-bounded-memory selected-tail sweep on that route. DKX then writes
-``evaluation_legendre_tail_relative_l2_upper_bound``: the numerator uses the
-exact final two active modes, and the denominator the exact union of the three
-retained low modes and those tail modes. Omitted middle-mode energy is
-nonnegative, so this value rigorously bounds the full-state ratio from above.
-The distinct name and ``retained_selected_tail_relative_l2_upper_bound``
-metadata prevent it from being presented as the exact full-state metric.
-
-The extra kinetic replay and selected-tail sweep are retained only at each
-surface's accepted selected field; other evaluation rows remain missing rather
-than multiplying every search/bisection solve. The replay is counted in the
-evaluation budget and solver-attempt evidence, and its observables and true
-residual must reproduce the accepted point. Its working set is included in
-memory preflight. This remains supporting evidence only. The checked
-``validation/ambipolar_joint_pitch_speed_v1.json`` artifact exercises both
-contracts and retains the still-failed speed and pitch checks.
+Expert moment-only batches can still retain only a low-order head. Their
+zero-padded tail is not a full kinetic state and generally fails the original
+residual check. ``retain_legendre_tail=True`` on that batch API computes a
+separate selected-tail upper bound; ``retain_full_state=True`` instead recovers
+all active blocks. See :doc:`parallelism`. Historical
+``validation/ambipolar_joint_pitch_speed_v1.json`` evidence retains the older
+selected-tail contract and unresolved speed/pitch checks; it is not a
+certificate for the new complete-state workflow.
 
 For a VMEC equilibrium, change only the geometry source:
 

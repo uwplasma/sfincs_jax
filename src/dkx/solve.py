@@ -314,8 +314,11 @@ class SolveResult:
             :attr:`route` instead, which is ``"direct"`` or ``"iterative"``.
         iterations: total Krylov inner iterations across all right-hand sides
             (recycled Krylov), else ``None``.
-        residual_norms: true residual norms ``||b - A x||`` per right-hand
-            side, shape ``(n_rhs,)`` (jnp array; traced under ``jax.grad``).
+        residual_norms: residual norms per right-hand side, shape ``(n_rhs,)``
+            (jnp array; traced under ``jax.grad``). Complete states report the
+            original ``||b - A x||``; moment-only truncated states report only
+            the rows determined by the retained head. Certify full equations
+            using complete recovery or an independent original residual.
         converged: every residual below ``max(atol, tol * ||b||)``.  ``True``
             by construction for the direct routes when residuals are finite.
         recycle: GCROT recycle pair ``(C, U)`` from the last right-hand side
@@ -847,9 +850,9 @@ def _truncation_supported(op: KineticOperator, keep: int) -> tuple[bool, str]:
 
     Assumes :func:`tier1_available` already passed (PAS/DKES family,
     constraintScheme in {0, 2}, no point_at_x0).  Additionally every closed
-    (species, x) subsystem must retain at least ``keep`` Legendre blocks —
-    the only ``Nxi_for_x`` requirement: a non-uniform ramp is solved exactly
-    with ``n_blocks = Nxi_for_x[ix]`` per subsystem.
+    (species, x) subsystem must retain at least ``keep`` Legendre blocks,
+    unless full recovery (``keep == n_xi``) is requested. Full recovery retains
+    each chain's own ``Nxi_for_x[ix]`` blocks and pads only inactive DOFs.
     """
     if op.constraint_scheme not in (0, 2):
         return (
@@ -860,7 +863,7 @@ def _truncation_supported(op: KineticOperator, keep: int) -> tuple[bool, str]:
         return False, "point_at_x0 x-grids are not handled by the truncated kernel"
     if keep > op.n_xi:
         return False, f"keep_lowest={keep} exceeds Nxi={op.n_xi}"
-    if int(np.min(np.asarray(op.n_xi_for_x))) < keep:
+    if keep != op.n_xi and int(np.min(np.asarray(op.n_xi_for_x))) < keep:
         return (
             False,
             f"min Nxi_for_x={int(np.min(np.asarray(op.n_xi_for_x)))} < keep_lowest={keep}",
@@ -1427,14 +1430,17 @@ def _solve_tier1_truncated(
     same exact rank-one trick as :func:`build_tier1_solver`.  The lowest
     ``keep`` blocks (and the source unknowns) are exact; blocks ``l >= keep``
     are zero-padded — valid because the drive and all requested output moments
-    live on ``l < keep`` (see :func:`_rhs_confined_to_lowest_blocks`).
+    live on ``l < keep`` (see :func:`_rhs_confined_to_lowest_blocks`). With full
+    recovery, ``keep`` grows with pitch resolution: per-chain memory then grows
+    too, although global band arrays are still never materialized.
 
     Non-uniform ``Nxi_for_x`` (the production speed-dependent Legendre ramp)
     is exact too: each (species, x) subsystem is closed, so it is eliminated
     with its own ``n_blocks = Nxi_for_x[ix]`` — precisely the packed Fortran
     discretization (``indices.F90``), whose truncated DOFs the zero-padded
-    ``l >= keep`` tail already covers (``keep <= min Nxi_for_x`` is enforced
-    by :func:`_truncation_supported`).
+    tail already covers. Full recovery retains ``min(keep, n_blocks)`` per
+    chain and pads only inactive DOFs; partial recovery still requires
+    ``keep <= min Nxi_for_x``.
 
     ``subsystem_batch`` sets how many of the ``B = n_species * n_x``
     independent subsystems are eliminated concurrently (the
@@ -1498,6 +1504,8 @@ def _solve_tier1_truncated(
 
     def solve_one(inputs, n_blocks: int):
         stream, mirror, pas_row, x_val, gamma, rhs_low, r_c = inputs
+        local_keep = min(keep, n_blocks)
+        rhs_low = rhs_low[:local_keep]
 
         def truncated_solve(rhs_cols: jnp.ndarray) -> jnp.ndarray:
             if adjoint_window is not None:
@@ -1513,7 +1521,7 @@ def _solve_tier1_truncated(
                     block_fn_pk,
                     n_blocks,
                     rhs_cols,
-                    keep,
+                    local_keep,
                     params=params,
                     adjoint_window=adjoint_window,
                 )
@@ -1527,10 +1535,10 @@ def _solve_tier1_truncated(
                 gamma,
                 shift_border=(cs == 2),
             )
-            return block_thomas_truncated_fn(block_fn, n_blocks, rhs_cols, keep)
+            return block_thomas_truncated_fn(block_fn, n_blocks, rhs_cols, local_keep)
 
         if cs == 2:
-            z_col = jnp.zeros((keep, n_tz, 1), dtype=jnp.float64).at[0, :, 0].set(b0)
+            z_col = jnp.zeros((local_keep, n_tz, 1), dtype=jnp.float64).at[0, :, 0].set(b0)
             rhs_stack = jnp.concatenate([rhs_low, z_col], axis=2)  # (keep, TZ, R+1)
             sol = truncated_solve(rhs_stack)
             y = sol[:, :, :n_rhs]  # (keep, TZ, R)
@@ -1540,9 +1548,10 @@ def _solve_tier1_truncated(
             shift = (c_y0 - r_c) / c_z0  # (R,)
             s = gamma * r_c + shift  # (R,)
             f_low = y - shift[None, None, :] * z[:, :, None]  # (keep, TZ, R)
-            return f_low, s
-        sol = truncated_solve(rhs_low)  # (keep, TZ, R)
-        return sol, jnp.zeros((n_rhs,), dtype=jnp.float64)
+        else:
+            f_low = truncated_solve(rhs_low)
+            s = jnp.zeros((n_rhs,), dtype=jnp.float64)
+        return jnp.pad(f_low, ((0, keep - local_keep), (0, 0), (0, 0))), s
 
     # Concurrency across the B independent subsystems: lax.map with
     # batch_size=w eliminates w subsystems per vmapped chunk (the peak holds w
@@ -1615,9 +1624,12 @@ def _solve_tier1_truncated(
         parts.append(s_b.reshape(op.extra_size, n_rhs))
     x2d = jnp.concatenate(parts, axis=0)
 
-    res = _truncated_partial_residual(
-        op, coef, stream_b, mirror_b, pas_b, x_b, f_low_b, s_b, rhs_low_b, r_c_b, keep
-    )
+    if keep == n_xi:
+        res = _residual_norms(op.apply, x2d, rhs2d)
+    else:
+        res = _truncated_partial_residual(
+            op, coef, stream_b, mirror_b, pas_b, x_b, f_low_b, s_b, rhs_low_b, r_c_b, keep
+        )
     x2d, res = jax.block_until_ready(
         (x2d, res)
     )  # real residual/assembly time, not dispatch

@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -207,6 +207,21 @@ class ErProblem:
     solve_method: str = "auto"
     tol: float = 1e-10
     er_units: str = "normalized"
+    _profile_builder: Callable | None = field(default=None, repr=False, compare=False)
+
+    def with_profiles(self, *, density_m3, temperature_keV) -> ErProblem:
+        """Return updated native profiles, collisions and radial drives.
+
+        Enable with ``prepare_er_scan(..., differentiable_profiles=True)``.
+        Both inputs cover every Case surface/species; geometry, normalization
+        and Coulomb logarithm stay fixed. Usable inside JAX transformations;
+        the returned problem itself is a Python container, not a JAX array.
+        Solver policy and field bounds are preserved; reuse factors separately
+        only after checking their validity for the changed operator.
+        """
+        if self._profile_builder is None:
+            raise ValueError("prepare_er_scan requires differentiable_profiles=True for profile updates")
+        return replace(self, operator=self._profile_builder(density_m3, temperature_keV))
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +420,8 @@ def radial_current(
     Returns:
         ``(J_r, per_species_flux, ErSolveState)`` — ``J_r`` a scalar JAX array,
         ``per_species_flux`` shape ``(n_species,)``, and the warm-start state to
-        thread into the next call.
+        thread into the next call. Host solves retain the complete Legendre
+        state, including when a memory-bounded structured route is selected.
     """
     import jax.numpy as jnp  # noqa: PLC0415
 
@@ -433,7 +449,10 @@ def radial_current(
         # precond=None and the next point simply builds nothing, which is why an
         # earlier attempt that guessed ahead of the route was a pessimization.
         result = solve(
-            op, rhs, method=method, tol=rtol, x0=x0, recycle=recycle, precond=precond
+            op, rhs, method=method, tol=rtol, x0=x0, recycle=recycle, precond=precond,
+            # A reusable host state must include the Legendre tail: a moment-only
+            # zero-padded head cannot satisfy the original kinetic equation.
+            tier1_keep_lowest=op.n_xi,
         )
         x_full = jnp.reshape(result.x, (-1,))
         state = ErSolveState(
@@ -575,6 +594,26 @@ def _brent(
     )
 
 
+def _check_host_kinetic_state(problem, er, state, tol):
+    """Certify the original single-RHS equation before root acceptance/reuse."""
+    import jax.numpy as jnp  # noqa: PLC0415
+
+    if state is None:
+        raise RuntimeError("Ambipolar kinetic solve returned no state")
+    op = operator_at_er(problem.operator, er, dphi_per_er=problem.dphi_per_er)
+    x = jnp.asarray(state.x).reshape((-1,))
+    rhs = jnp.asarray(op.rhs()).reshape((-1,))
+    residual = jnp.linalg.norm(op.apply(x) - rhs)
+    rhs_norm = jnp.linalg.norm(rhs)
+    accepted = (jnp.all(jnp.isfinite(x)) & jnp.isfinite(rhs_norm)
+                & jnp.isfinite(residual) & (residual <= tol * rhs_norm))
+    if not bool(accepted):
+        raise RuntimeError(
+            f"Ambipolar kinetic residual failed at Er={er:g}: "
+            f"||Ax-b||={float(residual):.8e}, ||b||={float(rhs_norm):.8e}, tol={tol:.8e}"
+        )
+
+
 def find_ambipolar_er(
     inp: SfincsInput | RawNamelist | str | Path | ErProblem,
     *,
@@ -583,8 +622,8 @@ def find_ambipolar_er(
     max_iter: int = 20,
     current_tol: float = 1e-10,
     field_tol: float = 1e-10,
-    solve_method: str = "auto",
-    tol: float = 1e-10,
+    solve_method: str | None = None,
+    tol: float | None = None,
     warm_start: bool = True,
     all_roots: bool = True,
     n_scan: int = 9,
@@ -609,6 +648,14 @@ def find_ambipolar_er(
     cannot guarantee finding tangencies or every root. Zero slope is marginal;
     a small nonzero slope still requires an uncertainty study.
 
+    Omitted ``solve_method`` and ``tol`` preserve a prepared problem's solver
+    policy. Unprepared inputs default to ``"auto"`` and ``1e-10``. Explicit
+    overrides apply to every kinetic solve, including the cold final check.
+    Each state must satisfy the original equation ``||Ax-b|| <= tol*||b||``
+    with finite state/RHS/residual before acceptance or reuse. A failed check
+    raises ``RuntimeError``; a zero RHS requires a zero residual. This adds one
+    operator application per field evaluation and does not certify grid accuracy.
+
     Returns an :class:`AmbipolarResult`.
     """
     for name, value in (("current_tol", current_tol), ("field_tol", field_tol)):
@@ -621,8 +668,8 @@ def find_ambipolar_er(
         if isinstance(inp, ErProblem)
         else prepare(
             inp,
-            solve_method=solve_method,
-            tol=tol,
+            solve_method="auto" if solve_method is None else solve_method,
+            tol=1e-10 if tol is None else tol,
             er_bracket=er_bracket,
             er_initial=er_initial,
         )
@@ -636,6 +683,9 @@ def find_ambipolar_er(
 
     iterations: list[AmbipolarIteration] = []
     state_box: dict[str, Any] = {"state": None, "gamma": None}
+    kinetic_tol = problem.tol if tol is None else tol
+    if not math.isfinite(kinetic_tol) or kinetic_tol <= 0:
+        raise ValueError("tol must be finite and positive")
 
     def eval_jr(er: float, stage: str) -> float:
         er = float(er)
@@ -651,6 +701,7 @@ def find_ambipolar_er(
             solve_method=solve_method,
             tol=tol,
         )
+        _check_host_kinetic_state(problem, er, st, kinetic_tol)
         state_box["state"] = st
         gamma_np = np.asarray(gamma, dtype=np.float64).reshape((-1,))
         state_box["gamma"] = gamma_np
