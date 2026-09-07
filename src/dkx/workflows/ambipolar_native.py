@@ -199,7 +199,6 @@ def preflight_ambipolar_case(case: Any) -> AmbipolarEvidencePreflight:
         evaluations_by_surface = tuple(
             points
             + len(surface) * int(case.electric_field.max_root_iterations)
-            + int(case.convergence.retain_legendre_tail)
             for points, surface in zip(search_points_by_surface, seeds)
         )
         hierarchy_points = max(search_points_by_surface)
@@ -211,7 +210,6 @@ def preflight_ambipolar_case(case: Any) -> AmbipolarEvidencePreflight:
             convergence_enabled=case.convergence.enabled,
             max_refinements=case.convergence.max_refinements,
         )
-        evaluations += int(case.convergence.retain_legendre_tail)
         search_points_by_surface = (hierarchy_points,) * len(case.geometry.surfaces)
         evaluations_by_surface = (evaluations,) * len(case.geometry.surfaces)
     evaluations = max(evaluations_by_surface)
@@ -602,6 +600,9 @@ def solve_native_ambipolar_surface(
     preserving every root in the returned evidence. When
     ``seed_brackets_kv_m`` is supplied, only those explicit intervals are
     searched and the returned scope does not exclude unsampled crossings.
+    Complete states supply tail diagnostics at every evaluation;
+    ``retain_legendre_tail`` remains accepted for configuration compatibility
+    but no longer requests an extra selected-field replay.
     """
 
     import time
@@ -653,7 +654,6 @@ def solve_native_ambipolar_surface(
             convergence_enabled=convergence_enabled,
             max_refinements=max_refinements,
         )
-    evaluation_budget += int(bool(retain_legendre_tail))
     if evaluation_budget > _MAX_RETAINED_EVALUATIONS:
         raise ValueError(
             "native ambipolar refinement preflight exceeds 100000 retained "
@@ -733,8 +733,9 @@ def solve_native_ambipolar_surface(
             legendre_tail_upper_bound = np.asarray(
                 legendre_tail_upper_bound, dtype=np.float64
             )
-        executed_route = str(getattr(batch, "executed_method", "")).strip().lower()
-        if tail_containers is not None and "truncated" not in executed_route:
+        # Every native root evaluation requests a complete state, even when
+        # the generated structured kernel retains its historical route name.
+        if tail_containers is not None:
             from dkx.moments import legendre_tail_relative_l2_batch
 
             # np.array, not np.asarray: asarray over a JAX buffer returns a
@@ -774,6 +775,7 @@ def solve_native_ambipolar_surface(
                 solve_method=solve_method,
                 tol=solve_tolerance,
                 memory_budget_gb=memory_budget_gb,
+                retain_full_state=True,
             )
             (
                 particle,
@@ -849,6 +851,7 @@ def solve_native_ambipolar_surface(
                         tol=solve_tolerance,
                         max_batch=1,
                         memory_budget_gb=memory_budget_gb,
+                        retain_full_state=True,
                     )
                     (
                         retry_particle,
@@ -1136,122 +1139,6 @@ def solve_native_ambipolar_surface(
             key=lambda item: abs(item.radial_current_a_m2),
         )
         status = "seeded_bracket_failed" if seeded else "no_bracketed_root"
-
-    if (
-        retain_legendre_tail
-        and selected.legendre_tail_relative_l2 is None
-        and selected.legendre_tail_relative_l2_upper_bound is None
-    ):
-        # Tail evidence is supporting evidence for the accepted physical
-        # outcome, not part of root discovery. Replay only that selected field
-        # instead of multiplying the cost of every coarse/bisection solve.
-        diagnostic_batch = batched_er_scan(
-            problem,
-            np.asarray([selected.electric_field_kv_m], dtype=np.float64),
-            solve_method=solve_method,
-            tol=solve_tolerance,
-            max_batch=1,
-            memory_budget_gb=memory_budget_gb,
-            retain_legendre_tail=True,
-        )
-        (
-            diagnostic_particle,
-            diagnostic_heat,
-            diagnostic_particle_vs_speed,
-            diagnostic_heat_vs_speed,
-            diagnostic_parallel,
-            diagnostic_current,
-            diagnostic_residual,
-            diagnostic_tail,
-            diagnostic_tail_upper_bound,
-        ) = physical_outputs(diagnostic_batch)
-        from dkx.er import operator_at_er
-
-        diagnostic_rhs = operator_at_er(
-            problem.operator,
-            selected.electric_field_kv_m,
-            dphi_per_er=problem.dphi_per_er,
-        ).rhs()
-        if diagnostic_residual[0] > solve_tolerance * np.linalg.norm(
-            np.asarray(diagnostic_rhs, dtype=np.float64)
-        ):
-            raise RuntimeError(
-                "selected-tail diagnostic replay did not satisfy the true-residual gate"
-            )
-        # Two independently rounded solves may each use the full requested
-        # tolerance, so their direct comparison has a two-tolerance envelope.
-        replay_tolerance = max(1.0e-12, 2.0 * float(solve_tolerance))
-        for actual, expected, label in (
-            (diagnostic_particle[0], selected.particle_flux_m2_s, "particle flux"),
-            (diagnostic_heat[0], selected.heat_flux_w_m2, "heat flux"),
-            (
-                diagnostic_parallel[0],
-                selected.parallel_current_a_t_m2,
-                "parallel current",
-            ),
-            (diagnostic_current[0], selected.radial_current_a_m2, "radial current"),
-        ):
-            if not np.allclose(
-                actual,
-                expected,
-                rtol=replay_tolerance,
-                atol=replay_tolerance,
-            ):
-                raise RuntimeError(
-                    f"selected-tail diagnostic replay changed the accepted {label}"
-                )
-        for actual, expected, label in (
-            (
-                diagnostic_particle_vs_speed[0],
-                selected.particle_flux_m2_s_vs_speed,
-                "speed-resolved particle flux",
-            ),
-            (
-                diagnostic_heat_vs_speed[0],
-                selected.heat_flux_w_m2_vs_speed,
-                "speed-resolved heat flux",
-            ),
-        ):
-            delta_norm = np.linalg.norm(
-                np.asarray(actual) - np.asarray(expected), axis=0
-            )
-            reference_norm = np.linalg.norm(np.asarray(expected), axis=0)
-            if np.any(
-                delta_norm
-                > replay_tolerance * np.maximum(reference_norm, np.finfo(float).tiny)
-            ):
-                raise RuntimeError(
-                    f"selected-tail diagnostic replay changed the accepted {label}"
-                )
-        replay_attempt = SolverAttempt(
-            requested_method=str(diagnostic_batch.method),
-            executed_method=str(diagnostic_batch.executed_method),
-            residual_norm=float(diagnostic_residual[0]),
-            accepted=True,
-            reason="selected_tail_diagnostic_replay",
-        )
-        diagnosed = replace(
-            selected,
-            legendre_tail_relative_l2=(
-                None if diagnostic_tail is None else np.asarray(diagnostic_tail[0])
-            ),
-            legendre_tail_relative_l2_upper_bound=(
-                None
-                if diagnostic_tail_upper_bound is None
-                else np.asarray(diagnostic_tail_upper_bound[0])
-            ),
-            solver_attempts=selected.solver_attempts + (replay_attempt,),
-        )
-        evaluations[selected.electric_field_kv_m] = diagnosed
-        roots = [
-            replace(root, evaluation=diagnosed)
-            if root.evaluation.electric_field_kv_m == selected.electric_field_kv_m
-            else root
-            for root in roots
-        ]
-        selected = diagnosed
-        chunks.append(int(diagnostic_batch.n_chunks))
-        chunk_sizes.append(int(diagnostic_batch.chunk_size))
 
     ordered = tuple(evaluations[key] for key in sorted(evaluations))
     return NativeAmbipolarSurface(

@@ -358,6 +358,53 @@ def test_batch_memory_budget_controls_route_and_preserves_moments(tmp_path: Path
     )
 
 
+@pytest.mark.parametrize("ramped", [False, True])
+def test_batch_full_state_certifies_original_equation(tmp_path, ramped):
+    import jax
+    import jax.numpy as jnp
+    from dkx import batched_er_scan, batched_surface_scan
+    from dkx import batch as batch_mod, er as er_mod
+
+    deck = _pas_deck(n_theta=5, n_zeta=5, n_xi=6)
+    if ramped:
+        deck = deck.replace("Nxi_for_x_option = 0", "Nxi_for_x_option = 1")
+    problem = er_mod.prepare(_write(tmp_path, deck))
+    fields = jnp.array([-.5, .1, .5])  # Uneven on two devices.
+    options = dict(memory_budget_gb=1e-6, devices="auto", retain_full_state=True)
+    full = jax.jit(lambda e: batched_er_scan(problem, e, **options))(fields)
+    head = batched_er_scan(problem, fields, memory_budget_gb=1e-6)
+    assert head.executed_method == "block_tridiagonal_truncated"
+    assert full.executed_method == "block_tridiagonal_truncated"
+    assert np.all(full.algebraic_converged) and not np.any(head.algebraic_converged)
+    np.testing.assert_allclose(full.radial_current, head.radial_current, atol=1e-12, rtol=1e-10)
+    operators = [er_mod.operator_at_er(problem.operator, e, dphi_per_er=problem.dphi_per_er)
+                 for e in fields]
+    surfaces = batched_surface_scan(operators, **options)
+    np.testing.assert_allclose(surfaces.states, full.states, atol=1e-12, rtol=1e-10)
+    for op, state, residual in zip(operators, full.states, full.residual_norms):
+        measured = jnp.linalg.norm(op.apply(state) - op.rhs().reshape(-1))
+        np.testing.assert_allclose(residual, measured, atol=1e-15, rtol=1e-7)
+        assert float(measured) <= problem.tol * float(jnp.linalg.norm(op.rhs()))
+    full_bytes = batch_mod.solve_footprint_bytes(problem.operator, memory_budget_gb=1e-6,
+                                                retain_full_state=True)
+    assert full_bytes > 0
+    if not ramped:  # A route change need not have a larger memory estimate.
+        assert full_bytes > batch_mod.solve_footprint_bytes(problem.operator, memory_budget_gb=1e-6)
+
+    def objective(e):
+        result = batched_er_scan(problem, e, differentiable=True, **options)
+        return jnp.sum(result.moments["FSABjHat"]), result.algebraic_converged
+    (value, accepted), gradient = jax.jit(jax.value_and_grad(objective, has_aux=True))(fields)
+    assert np.all(accepted) and np.isfinite(value)
+    direction = jnp.array([.1, -.2, .3])
+    h = 1e-3
+    plus = batched_er_scan(problem, fields + h * direction, **options)
+    minus = batched_er_scan(problem, fields - h * direction, **options)
+    assert np.all(plus.algebraic_converged) and np.all(minus.algebraic_converged)
+    fd = (jnp.sum(plus.moments["FSABjHat"]) - jnp.sum(minus.moments["FSABjHat"])) / (2*h)
+    np.testing.assert_allclose(jnp.vdot(gradient, direction), fd, rtol=1e-4, atol=1e-12)
+
+
 def test_truncated_batch_retains_selected_tail_upper_bound(tmp_path: Path) -> None:
     import jax
 
@@ -624,14 +671,14 @@ def test_batch_status_rejects_bad_states_and_handles_zero_drive(tmp_path, monkey
     # Manufactured states test the gate independently of a solver's success flag.
     def manufactured(op, rhs, **kwargs):
         x = jnp.zeros(op.total_size)
-        residual = jnp.linalg.norm(op.apply(x) - rhs.reshape(-1))
         x = jnp.where(op.dphi_hat_dpsi_hat > 0, jnp.nan, x)
-        return SimpleNamespace(x=x, residual_norms=jnp.asarray([residual]), converged=True)
+        return SimpleNamespace(x=x, residual_norms=jnp.zeros(1), converged=True)
     monkeypatch.setattr(batch_mod, 'solve', manufactured)
     fields = jnp.asarray([-1.0, 0.0, 1.0])
     result = jax.jit(lambda e: batch_mod.batched_er_scan(problem, e))(fields)
     assert not np.any(result.algebraic_converged)
-    np.testing.assert_allclose(result.relative_residual_norms, 1.0)
+    finite = np.asarray(problem.dphi_per_er * fields) <= 0
+    np.testing.assert_allclose(result.relative_residual_norms, np.where(finite, 1., np.inf))
     # Manufacture a homogeneous equation; nonzero Er itself can drive the DKE
     # even when the prescribed density/temperature gradients vanish.
     monkeypatch.setattr(type(problem.operator), "rhs", lambda self: jnp.zeros(self.total_size))
@@ -639,7 +686,7 @@ def test_batch_status_rejects_bad_states_and_handles_zero_drive(tmp_path, monkey
     exact = jax.jit(lambda e: batch_mod.batched_er_scan(zero, e))(fields)
     expected = np.asarray(zero.dphi_per_er * fields) <= 0
     np.testing.assert_array_equal(exact.algebraic_converged, expected)
-    np.testing.assert_array_equal(exact.relative_residual_norms, 0.0)
+    np.testing.assert_array_equal(exact.relative_residual_norms, np.where(expected, 0., np.inf))
 
     def nonzero(op, rhs, **kwargs):
         x = jnp.ones(op.total_size)

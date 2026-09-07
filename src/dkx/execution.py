@@ -307,6 +307,7 @@ def _make_operator(
     geometry_state: _GeometryState,
     electric_field_kv_m: float | None = None,
     force_exb_structure: bool = False,
+    build_collisions: bool = True,
 ):
     import jax.numpy as jnp  # noqa: PLC0415
 
@@ -346,7 +347,12 @@ def _make_operator(
     )
     pas = None
     fp = None
-    if case.physics.collisions == "pitch_angle_scattering":
+    constraint_scheme = 2 if case.physics.collisions == "pitch_angle_scattering" else 1
+    if not build_collisions:
+        # Internal template only; the profile builder fills collisions before
+        # the prepared problem is returned to a caller or used in a solve.
+        pass
+    elif case.physics.collisions == "pitch_angle_scattering":
         pas = make_pitch_angle_scattering_v3_operator(
             x=grids.x,
             z_s=z_s,
@@ -357,7 +363,6 @@ def _make_operator(
             n_xi_for_x=grids.n_xi_for_x,
             n_xi=grids.n_xi,
         )
-        constraint_scheme = 2
     else:
         fp = make_fokker_planck_v3_operator(
             x=np.asarray(grids.x),
@@ -376,7 +381,6 @@ def _make_operator(
             n_xi_for_x=np.asarray(grids.n_xi_for_x),
             strict_parity=len(case.species) > 1,
         )
-        constraint_scheme = 1
 
     field_kv_m = (
         case.electric_field.value_kV_m
@@ -447,6 +451,60 @@ def _route_name(method: str) -> str:
         "recycled_krylov": "gmres",
         "sparse_direct_referee": "direct",
     }[method]
+
+
+def _prepare_profile_builder(case, op, grids, geometry_state, radial, surface_index, quadrature_order):
+    """Fixed native normalization/stencil with dynamic physical profiles."""
+    from dataclasses import replace
+    import jax.numpy as jnp
+    from dkx.collisions import make_pitch_angle_scattering_v3_operator, prepare_fokker_planck_v3_profiles
+    from dkx.constants import DEFAULT_NU_N
+
+    nsurf = len(case.geometry.surfaces)
+    shape = (nsurf, len(case.species))
+    r_hat = geometry_state.a_hat * np.sqrt(np.asarray(case.geometry.surfaces))
+    # Recover just the selected native stencil: at most three neighbors.
+    # Avoid storing/applying a dense surface-by-surface differentiation matrix.
+    width = min(3, nsurf)
+    start = max(0, min(surface_index - 1, nsurf - width))
+    support = np.arange(start, start + width)
+    basis = np.zeros((nsurf, width))
+    basis[support, np.arange(width)] = 1.
+    gradient = jnp.asarray(_profile_gradients(basis, r_hat)[surface_index])
+    nu_n = DEFAULT_NU_N * (float(case.physics.coulomb_logarithm) / 17.0)
+    common = dict(x=grids.x, z_s=op.z_s, m_hats=op.m_hat, nu_n=nu_n,
+                  n_xi_for_x=grids.n_xi_for_x)
+    fp_builder = None
+    if case.physics.collisions == "linearized_fokker_planck":
+        fp_builder = prepare_fokker_planck_v3_profiles(
+            **common, x_weights=grids.x_weights, ddx=grids.ddx, d2dx2=grids.d2dx2,
+            x_grid_k=0., krook=0., nl=grids.n_l, quadrature_order=quadrature_order)
+    # The closure needs the static operator layout, not an extra retained copy
+    # of the original collision tensors; every update supplies fresh tensors.
+    op = replace(op, pas=None, fp=None)
+
+    def build(density_m3, temperature_keV):
+        n = jnp.asarray(density_m3, dtype=jnp.float64) / 1e20
+        t = jnp.asarray(temperature_keV, dtype=jnp.float64)
+        if n.shape != shape or t.shape != shape:
+            raise ValueError(f"native profiles must have shape {shape} (surface, species)")
+        valid = jnp.all(jnp.isfinite(n) & (n > 0)) & jnp.all(jnp.isfinite(t) & (t > 0))
+        n, t = jnp.where(valid, n, jnp.nan), jnp.where(valid, t, jnp.nan)
+        density, temperature = n[surface_index], t[surface_index]
+        collisions = (
+            {"fp": fp_builder(density, temperature).at_uniform_density(density, n_xi=op.n_xi)}
+            if fp_builder is not None else
+            {"pas": make_pitch_angle_scattering_v3_operator(
+                **common, n_hats=density, t_hats=temperature, n_xi=op.n_xi)}
+        )
+        return replace(
+            op, n_hat=density, t_hat=temperature,
+            dn_hat_dpsi_hat=radial.d_dr_hat_to_d_dpsi_hat * (gradient @ n[support]),
+            dt_hat_dpsi_hat=radial.d_dr_hat_to_d_dpsi_hat * (gradient @ t[support]),
+            **collisions,
+        )
+
+    return build
 
 
 def _sha256(path_or_token: Path) -> str:
@@ -1044,6 +1102,7 @@ def run_case(case: Case, *, out: str | Path | None = None, emit=None) -> Result:
             method=_route_name(case.solver.method),
             tol=case.solver.relative_tolerance,
             device=None if case.run.device == "auto" else case.run.device,
+            tier1_keep_lowest=op.n_xi,
             tier1_memory_budget_gb=case.solver.memory_fraction
             * _total_host_memory_bytes()
             / (1024**3),

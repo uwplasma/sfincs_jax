@@ -250,6 +250,7 @@ def test_brent_bracketing_does_not_multiply_tiny_currents():
 def host_current(monkeypatch):
     from dkx import er
     problem = er.ErProblem(None, 1., np.array([1.]), 0., -1., 1.)
+    monkeypatch.setattr(er, "_check_host_kinetic_state", lambda *args: None)
     def install(function):
         def current(p, e, **kwargs):
             value = function(e)
@@ -281,6 +282,7 @@ def test_host_final_acceptance_drops_warm_reuse(monkeypatch):
     from types import SimpleNamespace
     from dkx import er
     calls = []
+    monkeypatch.setattr(er, "_check_host_kinetic_state", lambda *args: None)
     state = SimpleNamespace(x=np.ones(1), recycle=object(), precond=object())
     def current(problem, field, **kwargs):
         calls.append(kwargs)
@@ -402,6 +404,90 @@ def test_routed_radial_current_gradient_matches_cold_solves(tmp_path, monkeypatc
     assert np.isfinite(gradient) and abs(gradient) > 1e-15
     differences = [(cold(field + h) - cold(field - h)) / (2 * h) for h in [1e-3, 3e-4, 1e-4]]
     np.testing.assert_allclose(differences, gradient, rtol=3e-4, atol=1e-13)
+
+
+@pytest.mark.parametrize("rhs,x,accepted", [
+    ([1.], [1.], True), ([1.], [1.1], False),
+    ([0.], [0.], True), ([0.], [1e-20], False),
+    ([1.], [np.nan], False), ([np.inf], [1.], False),
+])
+def test_host_kinetic_acceptance_uses_original_equation(monkeypatch, rhs, x, accepted):
+    from types import SimpleNamespace
+    from dkx import er
+    import jax.numpy as jnp
+    op = SimpleNamespace(rhs=lambda: jnp.array(rhs), apply=lambda x: x)
+    monkeypatch.setattr(er, "operator_at_er", lambda *args, **kwargs: op)
+    problem = SimpleNamespace(operator=op, dphi_per_er=1.)
+    # Deliberately misleading solver diagnostics must not certify the state.
+    state = SimpleNamespace(x=jnp.array(x), result=SimpleNamespace(
+        converged=True, residual_norms=jnp.zeros(1)))
+    if accepted:
+        er._check_host_kinetic_state(problem, 0., state, 1e-10)
+    else:
+        with pytest.raises(RuntimeError, match="Ambipolar kinetic residual failed"):
+            er._check_host_kinetic_state(problem, 0., state, 1e-10)
+
+
+def test_host_root_rejects_inaccurate_cancelling_fluxes(tmp_path, monkeypatch):
+    from dkx import er
+    import jax.numpy as jnp
+    problem = er.prepare(_write(tmp_path, _pas_deck()))
+    original = er.solve
+    calls = []
+
+    def corrupt(op, rhs, **kwargs):
+        calls.append(kwargs)
+        result = original(op, rhs, **kwargs)
+        return replace(result, x=jnp.zeros_like(result.x), converged=True,
+                       residual_norms=jnp.zeros_like(result.residual_norms))
+
+    monkeypatch.setattr(er, "solve", corrupt)
+    with pytest.raises(RuntimeError, match="Ambipolar kinetic residual failed"):
+        er.find_ambipolar_er(problem, emit=None)
+    assert len(calls) == 1  # The invalid state never reaches continuation.
+
+
+def test_host_root_rechecks_original_residual_on_final_cold_solve(tmp_path, monkeypatch):
+    from dkx import er
+    import jax.numpy as jnp
+    problem = er.prepare(_write(tmp_path, _pas_deck()))
+    original = er.radial_current
+    calls = []
+
+    def current(*args, **kwargs):
+        value, flux, state = original(*args, **kwargs)
+        calls.append(kwargs)
+        if len(calls) > 1 and kwargs["x0"] is None:
+            state = replace(state, x=jnp.zeros_like(state.x))
+        return value, flux, state
+
+    monkeypatch.setattr(er, "radial_current", current)
+    with pytest.raises(RuntimeError, match="Ambipolar kinetic residual failed"):
+        er.find_ambipolar_er(problem, all_roots=False, emit=None)
+    assert len(calls) > 1 and calls[-1]["x0"] is None
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("override", [False, True])
+def test_host_root_preserves_solver_policy(tmp_path, monkeypatch, prepared, override):
+    from dkx import er as er_mod
+    deck = _write(tmp_path, _pas_deck())
+    inp = er_mod.prepare(deck, solve_method="direct", tol=2e-11) if prepared else deck
+    original = er_mod.solve
+    calls = []
+
+    def record(op, rhs, **kwargs):
+        calls.append((kwargs["method"], kwargs["tol"]))
+        return original(op, rhs, **kwargs)
+
+    monkeypatch.setattr(er_mod, "solve", record)
+    policy = dict(solve_method="block_tridiagonal", tol=3e-11) if override else {}
+    result = er_mod.find_ambipolar_er(inp, all_roots=False, emit=None, **policy)
+    assert result.converged
+    assert abs(result.er - LEGACY_BRENT_ROOT_ER) < 1e-3
+    expected = (("block_tridiagonal", 3e-11) if override else
+                ("direct", 2e-11) if prepared else ("auto", 1e-10))
+    assert calls and set(calls) == {expected}
 
 
 def test_ambipolar_root_preserves_prepared_solver_policy(tmp_path, monkeypatch):

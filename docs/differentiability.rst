@@ -299,6 +299,49 @@ Update radial gradients and other profile fields according to the intended
 experiment; this snippet keeps them fixed. It is a coefficient update, not a
 complete native profile builder or a reusable-factor certificate.
 
+Native fixed-geometry profile scans
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use ``dkx.prepare_er_scan(case, surface_index=..., differentiable_profiles=True)``
+to prepare profile updates from a native Case. The returned problem's
+``with_profiles(density_m3=..., temperature_keV=...)`` method accepts positive
+arrays with shape ``(number_of_surfaces, number_of_species)``. It refreshes the
+selected surface's profiles, collisions and radial drives. The radial stencil
+is the same nonuniform/end-point stencil as native execution; neighboring
+profile values therefore contribute to the selected surface's derivatives.
+The fixed references are density 1e20 m^-3 and temperature 1 keV. Geometry,
+surface locations, species masses/charges, Coulomb logarithm, solver policy and
+field bounds stay fixed. PAS uses its analytic coefficients; full-FP uses the
+opt-in quadrature builder above (``quadrature_order=128`` by default).
+Opt-in preparation initializes the selected collision kernels directly, skipping
+the otherwise redundant host reference collision assembly.
+
+For example, with an existing native ``case`` and ``jax``/``jnp`` imports::
+
+   problem = dkx.prepare_er_scan(
+       case, surface_index=1, differentiable_profiles=True,
+   )
+
+   def current_hat(density_m3, temperature_keV, er_kV_m):
+       updated = problem.with_profiles(
+           density_m3=density_m3, temperature_keV=temperature_keV,
+       )
+       scan = dkx.batched_er_scan(
+           updated, jnp.atleast_1d(er_kV_m), differentiable=True,
+       )
+       return scan.moments["FSABjHat"][0]
+
+   profile_gradient = jax.jit(jax.grad(current_hat, argnums=(0, 1)))
+
+Here inputs use the labeled physical units; ``FSABjHat`` retains the expert
+normalized moment convention. ``with_profiles`` returns an immutable Python
+problem container and is used *inside* the transformed function, as above.
+Wrong shapes raise ``ValueError``; nonpositive/nonfinite profiles produce NaNs
+under JIT. Preparation remains a host operation. Reprepare for changed geometry
+or layout, and validate quadrature/observable uncertainty before changing
+collision routes. These updates do not certify factor reuse or a complete
+geometry/profile/ambipolar optimization chain.
+
 .. note::
 
    The differentiable :math:`\Phi_1` helper requires the

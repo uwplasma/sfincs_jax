@@ -354,6 +354,45 @@ def test_ramped_pas_routes_truncated_and_matches_pinned_referees() -> None:
         solve(op, rhs, method="block_tridiagonal")
 
 
+@pytest.mark.parametrize("grouped", [False, True])
+def test_ramped_full_recovery_matches_original_equation_and_dense(grouped):
+    op = _ramped_pas_op()
+    if grouped:
+        layout = np.asarray(op.n_xi_for_x).copy()
+        layout[1] = layout[0]
+        op = replace(op, n_xi_for_x=jnp.asarray(layout))
+    # Multiple RHSs include a manufactured active-state drive with high-L support.
+    mask = op.active_dof_mask()
+    manufactured = jnp.sin(jnp.arange(op.total_size, dtype=jnp.float64)) * mask
+    rhs = jnp.stack([op.rhs().reshape(-1), op.apply(manufactured)], axis=1)
+    reference = sla.solve(materialize_dense(op, pin_masked_dofs=True), np.asarray(rhs))
+    for width in (1, "auto"):
+        result = solve(op, rhs, method="auto", tier1_keep_lowest=op.n_xi,
+                       subsystem_batch=width, tol=1e-11, emit=None)
+        assert result.method == "block_tridiagonal_truncated" and result.converged
+        residual = jnp.linalg.norm(jax.vmap(op.apply, in_axes=1, out_axes=1)(result.x) - rhs, axis=0)
+        np.testing.assert_allclose(result.residual_norms, residual, rtol=1e-8, atol=1e-14)
+        assert np.all(np.asarray(residual) <= 1e-11 * np.linalg.norm(rhs, axis=0))
+        np.testing.assert_allclose(result.x, reference, rtol=1e-8, atol=1e-9)
+        np.testing.assert_array_equal(np.asarray(result.x)[np.asarray(mask) == 0], 0.)
+
+
+def test_ramped_full_recovery_windowed_gradient_matches_tape_and_fd():
+    op = _ramped_pas_op()
+    def loss(scale, window):
+        varied = replace(op, t_hat=op.t_hat * scale)
+        result = solve(varied, varied.rhs(), tier1_keep_lowest=op.n_xi,
+                       differentiable=True, tier1_adjoint_window=window, emit=None)
+        return jnp.sum(result.x**2)
+    value, gradient = jax.jit(jax.value_and_grad(lambda t: loss(t, 2)))(1.)
+    taped = jax.jit(jax.value_and_grad(lambda t: loss(t, None)))(1.)
+    np.testing.assert_allclose([value, gradient], taped, rtol=1e-10, atol=1e-13)
+    assert np.isfinite(gradient) and abs(float(gradient)) > 1e-12
+    for h in (1e-3, 3e-4):
+        fd = (loss(1.+h, None) - loss(1.-h, None))/(2*h)
+        np.testing.assert_allclose(gradient, fd, rtol=1e-4, atol=1e-13)
+
+
 def test_gradient_through_ramped_truncated_route_matches_finite_differences() -> None:
     op0 = _ramped_pas_op()
 
