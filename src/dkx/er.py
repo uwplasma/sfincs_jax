@@ -178,18 +178,20 @@ class ErSolveState:
 class ErProblem:
     """A prepared, shape-stable ambipolar problem.
 
-    Built once by :func:`prepare`; every ``E_r`` evaluation reuses ``operator``
+    Built by :func:`prepare` or :func:`dkx.prepare_er_scan`; every field evaluation reuses ``operator``
     (a base :class:`~dkx.drift_kinetic.KineticOperator` with the ExB / Er
     term flags already switched on) and overrides only ``dPhiHatdpsiHat``, so
     the per-evaluation cost is one solve and the transform is differentiable.
 
     Attributes:
         operator: the base operator (built at a nonzero reference ``E_r`` so
-            ``with_exb`` / ``with_er_xidot`` / ``with_er_xdot`` are active).
+            the electric-field terms enabled by the selected trajectory model
+            have a stable structure).
         dphi_per_er: the conversion factor ``c`` with
             ``dPhiHatdpsiHat = c * E_r`` (``= -ddrHat2ddpsiHat``, the
             ``ambipolarSolver.F90`` ``updateEr`` relation).
         z_s: species charges, shape ``(n_species,)``.
+        er_units: input-field units (normalized for decks, kV/m for native Cases).
         er_initial, er_min, er_max: the initial guess and default bracket read
             from the deck (``Er`` / ``ErMin`` / ``ErMax``).
         solve_method, tol: forwarded to :func:`dkx.solve.solve`.
@@ -203,6 +205,7 @@ class ErProblem:
     er_max: float
     solve_method: str = "auto"
     tol: float = 1e-10
+    er_units: str = "normalized"
 
 
 # ---------------------------------------------------------------------------

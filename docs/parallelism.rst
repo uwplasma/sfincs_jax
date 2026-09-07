@@ -58,20 +58,42 @@ unless explicitly overridden. For repeated differentiable scans:
 
    import jax
    import jax.numpy as jnp
-   from dkx.er import prepare
+   from dkx import Case, prepare_er_scan
 
-   problem = prepare("input.namelist", solve_method="gmres", tol=1e-10)
+   case = Case.from_file("examples/01_tokamak_profile/case.toml")
+   problem = prepare_er_scan(case, surface_index=1)
    current = jax.jit(jax.value_and_grad(
        lambda er: jnp.sum(batched_er_scan(
            problem, er, devices="auto", differentiable=True,
        ).moments["FSABjHat"])
    ))
-   value, gradient = current(er_values)
+   # Native prepared problems accept fields in kV/m.
+   value, gradient = current(jnp.array([-0.2, 0.0, 0.2]))
 
 ``devices=None`` keeps the default single-device behavior. Both public scan
-functions return the original residual norms along with states and moments;
-use these diagnostics together with observable and resolution checks. These
-operator/deck interfaces do not yet provide a prepared native ``Case`` API.
+functions return original absolute and relative residuals plus a per-element
+``algebraic_converged`` array, including under JIT and multi-device sharding.
+The flag requires finite state/RHS/residual and ``||Ax-b|| <= tol*||b||``; it
+does not rely on a solver's reported success flag. For a zero RHS, zero
+residual gives relative residual zero, otherwise infinity. Use these diagnostics
+together with separate finite-moment, observable and resolution checks:
+
+.. code-block:: python
+
+   scan = batched_er_scan(problem, er_values, devices="auto")
+   rejected = ~scan.algebraic_converged  # one boolean per original input
+
+These flags report algebraic admission; they neither raise on every rejected
+nondifferentiable scan element nor certify its physics. The differentiable
+solve's existing forward/adjoint guards remain enabled. These
+prepared native problems reuse the existing Case physics builder without a
+kinetic solve or SFINCS namelist. ``problem.er_units`` is ``"kV/m"`` for this
+path (``"normalized"`` for deck preparation); moments and radial current remain
+normalized expert-operator outputs. Apply the documented unit conversions for
+SI comparisons. Preparation holds geometry, profiles and collision coefficients
+fixed and supports the existing native DKES/no-Phi1 domain. Reprepare after
+changing the Case; Case construction, profile/geometry derivatives, root
+selection and factor reuse are not differentiated or certified by this API.
 
 **Automatic memory budgeting.** There are no sharding environment variables on
 this path. The batch runs in ``jax.lax.map`` chunks sized from two numbers: the

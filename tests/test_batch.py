@@ -128,7 +128,9 @@ def test_batched_er_scan_matches_serial(tmp_path: Path) -> None:
     assert result.states.shape[0] == er_values.shape[0]
     assert result.radial_current.shape == er_values.shape
     assert result.residual_norms.shape == er_values.shape
-    for i, er_value in enumerate(values):
+    assert np.all(result.algebraic_converged)
+    assert np.all(result.relative_residual_norms <= prob.tol)
+    for i, er_value in enumerate(er_values):
         op_i = er_mod.operator_at_er(prob.operator, er_value, dphi_per_er=prob.dphi_per_er)
         rhs = op_i.rhs()
         relative = jnp.linalg.norm(op_i.apply(result.states[i]) - rhs) / jnp.linalg.norm(rhs)
@@ -611,6 +613,46 @@ def test_devices_degrade_and_validation(tmp_path: Path) -> None:
         _assert_batched_results_identical(base, degraded)
 
 
+def test_batch_status_rejects_bad_states_and_handles_zero_drive(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import jax
+    import jax.numpy as jnp
+    from dkx import batch as batch_mod
+    from dkx import er as er_mod
+
+    problem = er_mod.prepare(_write(tmp_path, _pas_deck()), er_bracket=(-5, 5))
+    # Manufactured states test the gate independently of a solver's success flag.
+    def manufactured(op, rhs, **kwargs):
+        x = jnp.zeros(op.total_size)
+        residual = jnp.linalg.norm(op.apply(x) - rhs.reshape(-1))
+        x = jnp.where(op.dphi_hat_dpsi_hat > 0, jnp.nan, x)
+        return SimpleNamespace(x=x, residual_norms=jnp.asarray([residual]), converged=True)
+    monkeypatch.setattr(batch_mod, 'solve', manufactured)
+    fields = jnp.asarray([-1.0, 0.0, 1.0])
+    result = jax.jit(lambda e: batch_mod.batched_er_scan(problem, e))(fields)
+    assert not np.any(result.algebraic_converged)
+    np.testing.assert_allclose(result.relative_residual_norms, 1.0)
+    # Manufacture a homogeneous equation; nonzero Er itself can drive the DKE
+    # even when the prescribed density/temperature gradients vanish.
+    monkeypatch.setattr(type(problem.operator), "rhs", lambda self: jnp.zeros(self.total_size))
+    zero = problem
+    exact = jax.jit(lambda e: batch_mod.batched_er_scan(zero, e))(fields)
+    expected = np.asarray(zero.dphi_per_er * fields) <= 0
+    np.testing.assert_array_equal(exact.algebraic_converged, expected)
+    np.testing.assert_array_equal(exact.relative_residual_norms, 0.0)
+
+    def nonzero(op, rhs, **kwargs):
+        x = jnp.ones(op.total_size)
+        return SimpleNamespace(x=x, residual_norms=jnp.asarray([jnp.linalg.norm(op.apply(x) - rhs.reshape(-1))]))
+    monkeypatch.setattr(batch_mod, 'solve', nonzero)
+    rejected = jax.jit(lambda e: batch_mod.batched_er_scan(zero, e))(fields)
+    assert not np.any(rejected.algebraic_converged)
+    assert np.all(np.isinf(rejected.relative_residual_norms))
+    for tol in (float('nan'), float('inf'), -1.0):
+        with pytest.raises(ValueError, match='finite and nonnegative'):
+            batch_mod.batched_er_scan(problem, fields, tol=tol)
+
+
 _TWO_DEVICE_SCRIPT = """
 import sys
 
@@ -682,6 +724,8 @@ def scan(values, devices):
 for devices in (None, "auto"):
     result = jax.jit(lambda v: scan(v, devices))(values)
     assert close(result.states, single.states[:5])
+    assert np.all(result.algebraic_converged)
+    assert np.all(np.asarray(result.relative_residual_norms) < 1e-10)
     for i, er_value in enumerate(values):
         op_i = er_mod.operator_at_er(prob.operator, er_value, dphi_per_er=prob.dphi_per_er)
         rhs = op_i.rhs()

@@ -745,3 +745,46 @@ def test_native_boozer_reuses_parsed_data_and_matches_scheme12(monkeypatch) -> N
         np.asarray(legacy.moments["FSABjHat"]) * PARALLEL_CURRENT,
         rtol=2.0e-12,
     )
+
+
+@pytest.mark.parametrize("collisions", ["pitch_angle_scattering", "linearized_fokker_planck"])
+def test_native_prepared_scan_matches_fresh_cases_and_field_derivative(tmp_path, monkeypatch, collisions):
+    import importlib
+    import jax
+    import jax.numpy as jnp
+
+    base = _case()
+    electron = replace(base.species[0], name="electron", charge=-1, mass_amu=0.00054858)
+    case = replace(base, species=(*base.species, electron),
+                   physics=replace(base.physics, collisions=collisions),
+                   solver=replace(base.solver, relative_tolerance=1e-11))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('native preparation must neither solve nor parse a namelist')
+    with monkeypatch.context() as patch:
+        patch.setattr(importlib.import_module('dkx.solve'), 'solve', forbidden)
+        patch.setattr(importlib.import_module('dkx.namelist'), 'read_sfincs_input', forbidden)
+        problem = dkx.prepare_er_scan(case, surface_index=1)
+    assert problem.er_units == 'kV/m'
+    assert problem.tol == case.solver.relative_tolerance
+    fields = jnp.asarray([0.0, 0.2])
+    scan = jax.jit(lambda values: dkx.batched_er_scan(problem, values, devices="auto"))(fields)
+    if len(jax.local_devices()) == 2:
+        assert len(scan.states.addressable_shards) == 2
+        assert not scan.states.is_fully_replicated
+    for index, field in enumerate(fields):
+        fresh = replace(case, electric_field=replace(case.electric_field, value_kV_m=float(field)))
+        native = dkx.run(fresh, out=tmp_path / f'fresh-{index}.nc')
+        np.testing.assert_allclose(
+            scan.moments['FSABjHat'][index] * PARALLEL_CURRENT,
+            native.parallel_current_A_T_m2[1], rtol=1e-8, atol=1e-8,
+        )
+    def current(field):
+        return dkx.batched_er_scan(problem, jnp.reshape(field, (1,)),
+                                   differentiable=True).moments['FSABjHat'][0]
+    derivative = jax.jit(jax.grad(current))(0.2)
+    fd = (current(0.201) - current(0.199)) / 0.002
+    np.testing.assert_allclose(derivative, fd, rtol=1e-4, atol=1e-10)
+    with pytest.raises(IndexError, match='surface_index'):
+        dkx.prepare_er_scan(case, surface_index=-1)
+    with pytest.raises(TypeError, match='native Case'):
+        dkx.prepare_er_scan('case.toml')
