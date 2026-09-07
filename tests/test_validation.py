@@ -204,6 +204,57 @@ def test_fortran_execution_gate_rejects_invalid_outputs(tmp_path: Path, defect, 
     assert ("execution_error" in result) is (defect is not None)
 
 
+@pytest.mark.parametrize("mode", [1, 2, 3])
+@pytest.mark.parametrize("defect", [None, "mode", "missing_mode", "shape", "missing", "nan", "empty", "difference"])
+def test_output_comparison_requires_complete_mode_specific_data(tmp_path: Path, mode, defect) -> None:
+    import h5py
+    import numpy as np
+    from tools.benchmarks.parity_performance_matrix import COMPARE_KEYS, compare_outputs
+
+    paths = [tmp_path / "reference.h5", tmp_path / "candidate.h5"]
+    key = "FSABFlow" if mode == 1 else "transportMatrix"
+    for side, path in enumerate(paths):
+        with h5py.File(path, "w") as f:
+            if not (side and defect == "missing_mode"):
+                f["RHSMode"] = (mode % 3 + 1) if side and defect == "mode" else mode
+            # Irrelevant datasets must not count as scientific agreement.
+            if mode == 1:
+                f["transportMatrix"] = [np.nan]
+                for name in COMPARE_KEYS[:4]:
+                    # Distinct initial iterates and iteration counts; same final result.
+                    f[name] = [90 + side, 3] if name == "FSABjHat" else (
+                        [[91, 1], [92, 2]] if side == 0 else [[93, 94, 1], [95, 96, 2]]
+                    )
+            else:
+                f["FSABFlow"] = [np.nan]
+                f[key] = np.ones((3, 3) if mode == 2 else (2, 2))
+            if side and defect in ("shape", "missing", "nan", "empty", "difference"):
+                values = f[key][...]
+                del f[key]
+                if defect == "shape":
+                    f[key] = np.ones((1, 1))  # Matching last entry is insufficient.
+                elif defect == "nan":
+                    f[key] = values * np.nan
+                elif defect == "empty":
+                    f[key] = []
+                elif defect == "difference":
+                    values = values.astype(float)
+                    values[0, -1] += 1e-10
+                    f[key] = values
+    result = compare_outputs(*paths, n_species=2)
+    if defect not in (None, "difference"):
+        assert "error" in result
+        assert "difference" not in result
+    else:
+        assert "error" not in result
+        assert set(result["difference"]) == (set(COMPARE_KEYS[:4]) if mode == 1 else {key})
+        if defect == "difference":
+            assert 0 < result["difference"][key] < 1e-9
+            assert result["absolute_difference"][key] == pytest.approx(1e-10, rel=1e-5)
+        else:
+            assert all(value == 0 for value in result["difference"].values())
+
+
 def test_sweep_does_not_reuse_outputs_copied_with_an_example(tmp_path: Path, monkeypatch) -> None:
     import shutil
     from tools.benchmarks import parity_performance_matrix as matrix
@@ -232,6 +283,83 @@ def test_sweep_does_not_reuse_outputs_copied_with_an_example(tmp_path: Path, mon
     assert "error" in record["parity"]
 
 
+@pytest.mark.parametrize("outcome", ["exit", "timeout", "cancel"])
+def test_retained_case_keeps_raw_evidence_after_cleanup(tmp_path, monkeypatch, outcome):
+    import hashlib
+    import shutil
+    import sys
+    from tools.benchmarks import parity_performance_matrix as matrix
+
+    example = tmp_path / "example"
+    example.mkdir()
+    shutil.copy(ROOT / "tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist", example / "input.namelist")
+    artifact = tmp_path / "retained"
+    measured = matrix._run_measured
+
+    def run(command, work, timeout_s, env=None):
+        script = ("from pathlib import Path; import time; "
+                  "Path('sfincsBinary_partial').write_bytes(b'x' * 2000000); "
+                  "print('retained diagnostic', flush=True); "
+                  + ("time.sleep(30)" if outcome == "timeout" else "raise SystemExit(3)"))
+        result = measured([sys.executable, "-c", script], work, 0.5)
+        if outcome == "cancel":
+            raise KeyboardInterrupt("diagnostic cancellation")
+        return result
+
+    monkeypatch.setattr(matrix, "_run_measured", run)
+    kwargs = dict(ranks=[1], reps=0, timeout_s=1, equilibria=None, launcher=[],
+                  fortran_residual=True, artifact_dir=artifact)
+    if outcome == "cancel":
+        with pytest.raises(KeyboardInterrupt, match="diagnostic cancellation"):
+            matrix.run_case(example, Path("sfincs"), **kwargs)
+    else:
+        result = matrix.run_case(example, Path("sfincs"), **kwargs)
+        assert result["algebraic_pair_accepted"] is False
+        assert result["artifacts_manifest_sha256"] == hashlib.sha256((artifact / "manifest.json").read_bytes()).hexdigest()
+    manifest = json.loads((artifact / "manifest.json").read_text())
+    assert manifest["record"]["artifacts_directory"] == str(artifact)
+    assert "fortran_1/sfincsBinary_partial" in manifest["files"]
+    assert "fortran_1/benchmark.command.json" in manifest["files"]
+    for name, info in manifest["files"].items():
+        content = (artifact / name).read_bytes()
+        assert info == {"sha256": hashlib.sha256(content).hexdigest(), "bytes": len(content)}
+    if outcome == "cancel":
+        assert "KeyboardInterrupt" in manifest["record"]["error"]
+    elif outcome == "timeout":
+        assert "timeout" in manifest["record"]["fortran"]["1"]["error"]
+    with pytest.raises(ValueError, match="outside the copied example"):
+        matrix.run_case(example, Path("sfincs"), **{**kwargs, "artifact_dir": example / "archive"})
+    assert not (example / "archive").exists()
+    snapshot = (artifact / "manifest.json").read_bytes()
+    with pytest.raises(ValueError, match="not empty"):
+        matrix.run_case(example, Path("sfincs"), **kwargs)
+    assert (artifact / "manifest.json").read_bytes() == snapshot
+
+
+def test_campaign_retains_distinct_failed_attempts(tmp_path, monkeypatch):
+    import shutil
+    from tools.benchmarks import parity_performance_matrix as matrix
+
+    examples = tmp_path / "examples"
+    case = examples / "retry"
+    case.mkdir(parents=True)
+    shutil.copy(ROOT / "tests/ref/monoenergetic_PAS_tiny_scheme1.input.namelist", case / "input.namelist")
+    def failed(command, work, timeout_s, env=None):
+        (work / "benchmark.stdout.log").write_text("failure details")
+        return {"returncode": 1}
+    monkeypatch.setattr(matrix, "_run_measured", failed)
+    out = tmp_path / "campaign.jsonl"
+    argv = ["--examples", str(examples), "--out", str(out),
+            "--artifacts-dir", str(tmp_path / "artifacts")]
+    assert matrix.main(argv) == 0
+    assert matrix.main(argv) == 0
+    rows = [json.loads(line) for line in out.read_text().splitlines()]
+    assert len(rows) == 2
+    paths = [Path(row["artifacts_directory"]) for row in rows]
+    assert paths[0] != paths[1]
+    assert all((path / "manifest.json").is_file() for path in paths)
+
+
 def test_campaign_checkpoint_is_atomic_on_publish_failure(tmp_path: Path, monkeypatch) -> None:
     from tools.benchmarks import parity_performance_matrix as matrix
 
@@ -246,9 +374,10 @@ def test_campaign_checkpoint_is_atomic_on_publish_failure(tmp_path: Path, monkey
     assert list(tmp_path.iterdir()) == [checkpoint]
 
 
-@pytest.mark.parametrize("mutation", ["input", "equilibrium", "settings", "petsc", "petsc_env"])
+@pytest.mark.parametrize("mutation", ["input", "equilibrium", "settings", "petsc", "petsc_env", "external"])
 @pytest.mark.parametrize("interrupt", [False, True])
 def test_campaign_resume_retries_failures_and_checks_provenance(tmp_path: Path, monkeypatch, mutation, interrupt) -> None:
+    import hashlib
     from tools.benchmarks import parity_performance_matrix as matrix
 
     examples = tmp_path / "examples"
@@ -269,7 +398,9 @@ def test_campaign_resume_retries_failures_and_checks_provenance(tmp_path: Path, 
         return {"case": directory.name, "dkx": {"returncode": 0 if success else 1, "converged": success, "algebraic_acceptance": "passed" if success else "failed"}}
     monkeypatch.setattr(matrix, "run_case", run)
     monkeypatch.setattr(matrix, "deck_metadata", lambda path: {"dof": 1})
-    argv = ["--examples", str(examples), "--out", str(out)]
+    external = tmp_path / "toolchain.lock"
+    external.write_bytes(b"pinned build\x00library hash")
+    argv = ["--examples", str(examples), "--out", str(out), "--provenance-file", str(external)]
     if interrupt:
         with pytest.raises(KeyboardInterrupt):
             matrix.main(argv)
@@ -284,8 +415,20 @@ def test_campaign_resume_retries_failures_and_checks_provenance(tmp_path: Path, 
     summary = json.loads(out.with_suffix(".jsonl.done").read_text())
     assert summary["cases"] == 2 and summary["attempts"] == 3
     assert summary["execution_complete"] == 2
+    provenance_path = out.with_suffix(".jsonl.provenance.json")
+    provenance_bytes = provenance_path.read_bytes()
+    provenance = json.loads(provenance_bytes)
+    assert provenance["campaign_id"] == summary["campaign_id"]
+    assert provenance["options"]["provenance_file"] == [str(external)]
+    assert provenance["options"]["reps"] == 1
+    assert provenance["files_sha256"][str(external)] == hashlib.sha256(external.read_bytes()).hexdigest()
+    assert provenance["files_sha256"][str(equilibrium)] == hashlib.sha256(equilibrium.read_bytes()).hexdigest()
+    assert "jax" in provenance["versions"] and provenance["python"]
+    assert summary["provenance_sha256"] == hashlib.sha256(provenance_bytes).hexdigest()
     snapshot = out.read_bytes()
-    if mutation == "input":
+    if mutation == "external":
+        external.write_bytes(b"changed library build")
+    elif mutation == "input":
         (examples / "good/input.namelist").write_text("&general\n RHSMode=2\n/\n")
     elif mutation == "equilibrium":
         equilibrium.write_text("changed geometry")
@@ -297,7 +440,20 @@ def test_campaign_resume_retries_failures_and_checks_provenance(tmp_path: Path, 
         argv += ["--reps", "2"]
     assert matrix.main(argv) == 2
     assert out.read_bytes() == snapshot and len(calls) == 3
+    assert provenance_path.read_bytes() == provenance_bytes
 
+
+
+def test_missing_explicit_provenance_file_is_rejected_before_launch(tmp_path, monkeypatch):
+    from tools.benchmarks import parity_performance_matrix as matrix
+    def forbidden(*args, **kwargs):
+        raise AssertionError("missing evidence must fail before launching a process")
+    monkeypatch.setattr(matrix, "preflight_fortran", forbidden)
+    out = tmp_path / "results.jsonl"
+    with pytest.raises(SystemExit):
+        matrix.main(["--examples", str(tmp_path), "--out", str(out),
+                     "--provenance-file", str(tmp_path / "missing.lock")])
+    assert not out.exists()
 
 def test_campaign_lock_refuses_a_concurrent_writer(tmp_path: Path) -> None:
     import fcntl
@@ -1741,6 +1897,53 @@ def test_petsc_arguments_and_observed_backend_are_distinct(tmp_path, monkeypatch
     assert record["fortran_petsc_opts"] == list(options)
     assert record["fortran"]["1"]["observed_factor_backends"] == ["mumps"]
     assert not record["algebraic_pair_accepted"]
+
+
+@pytest.mark.parametrize("requested", ["mumps", "superlu_dist"])
+@pytest.mark.parametrize("observation", ["matching", "wrong", "missing", "mixed"])
+def test_requested_factor_backend_is_selected_and_verified(tmp_path, monkeypatch, requested, observation):
+    from tools.benchmarks import parity_performance_matrix as matrix
+    (tmp_path / "input.namelist").write_text("&general\n/\n")
+    monkeypatch.setattr(matrix, "deck_metadata", lambda path: {"solverTolerance": 1e-12, "RHSMode": 3})
+    monkeypatch.setattr(matrix, "_fortran_succeeded", lambda *args: True)
+    monkeypatch.setattr(matrix, "fortran_true_residual", lambda *args, **kwargs: 1e-14)
+    observed = {"matching": [requested], "wrong": ["other"], "missing": [], "mixed": [requested, "other"]}[observation]
+    calls = []
+    def measured(command, work, *args, **kwargs):
+        calls.append(command)
+        (work / "benchmark.stdout.log").write_text("".join(
+            f"package used to perform factorization: {backend}\n" for backend in observed
+        ))
+        (work / "sfincsOutput.h5").write_bytes(b"other execution checks mocked as passing")
+        return {"returncode": 0 if work.name.startswith("fortran") else 1}
+    monkeypatch.setattr(matrix, "_run_measured", measured)
+    record = matrix.run_case(tmp_path, Path("/reference"),
+                             fortran_petsc_opts=("-pc_factor_mat_solver_type", "conflicting"),
+                             fortran_backend=requested, ranks=[1, 2], reps=0, timeout_s=1,
+                             equilibria=None, launcher=[], fortran_residual=True)
+    assert record["requested_factor_backend"] == requested
+    assert record["fortran_petsc_opts"][-2:] == ["-pc_factor_mat_solver_type", requested]
+    for command in calls[:2]:
+        index = max(i for i, token in enumerate(command) if token == "-pc_factor_mat_solver_type")
+        assert command[index + 1] == requested
+    for result in record["fortran"].values():
+        assert result["succeeded"] is (observation == "matching")
+        assert result["backend_acceptance"] == ("passed" if observation == "matching" else "failed")
+        assert ("backend_error" in result) is (observation != "matching")
+
+
+def test_backend_selection_also_reaches_preflight(tmp_path, monkeypatch):
+    from tools.benchmarks import parity_performance_matrix as matrix
+    calls = []
+    monkeypatch.setattr(matrix, "preflight_fortran", lambda binary, launcher, opts: calls.append(opts))
+    monkeypatch.setattr(matrix, "_run_campaign", lambda args: 0)
+    argv = ["--examples", str(tmp_path), "--out", str(tmp_path / "result.jsonl"),
+            "--fortran-backend", "superlu_dist"]
+    with pytest.raises(SystemExit):
+        matrix.main(argv)
+    assert calls == []
+    assert matrix.main(argv + ["--fortran-binary", "/reference"]) == 0
+    assert calls == [("-pc_factor_mat_solver_type", "superlu_dist")]
 
 
 def test_warm_observable_audit_checks_equations_and_reuse_modes(tmp_path):

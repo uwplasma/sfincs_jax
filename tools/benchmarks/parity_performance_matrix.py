@@ -16,10 +16,10 @@ runtime overhead.  Each case gets a fresh copy of the example directory, so
 equilibrium files resolve exactly as they do upstream and outputs never
 collide.
 
-``dkx`` is reported cold *and* warm.  Cold includes JIT compilation and is the
-honest number for a single one-shot solve; warm is the honest number for the
-scan/optimization workloads the code exists for.  Fortran has no equivalent
-split.  Both are recorded so neither reading can be cherry-picked.
+``dkx`` reports the first invocation and repeated warm invocations. The first
+invocation may load a persistent compilation cache; it is not automatically a
+fresh-compilation measurement. The configured cache directory is recorded.
+Fortran has no equivalent JIT split. Both invocation costs are retained.
 
 Results stream to JSONL as each case finishes, so a long sweep is resumable
 and a single failing case never costs the rest of the run.
@@ -38,6 +38,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import importlib.metadata
@@ -73,21 +74,6 @@ COMPARE_KEYS = (
     "transportMatrix",
 )
 
-#: Keys that are NOT a monoenergetic run's output.  RHSMode=3 computes the
-#: transport matrix; the species fluxes are not defined for it, and one code
-#: writing zeros where the other writes a small residue yields a relative
-#: difference of exactly 1.0 -- a total disagreement on a quantity neither code
-#: was asked for.  That artifact set the campaign's headline "worst parity" and
-#: hid the real outlier, so the comparison skips them rather than reporting them.
-MONOENERGETIC_SKIP_KEYS = frozenset({
-    "particleFlux_vm_psiHat",
-    "heatFlux_vm_psiHat",
-    "particleFlux_vd_psiHat",
-    "heatFlux_vd_psiHat",
-    "FSABFlow",
-    "FSABjHat",
-})
-
 
 def _peak_rss_gb(timing_output: str) -> float | None:
     """Peak RSS in GB parsed from ``/usr/bin/time`` verbose output."""
@@ -112,6 +98,9 @@ def _run_measured(
     SIGTERM cancellation is translated into SystemExit on the main thread so
     the finally block runs; SIGINT/other exceptions already unwind normally.
     """
+    _atomic_text(cwd / "benchmark.command.json", json.dumps({
+        "argv": command, "environment_overrides": env or {}, "timeout_s": timeout_s,
+    }, indent=2) + "\n")
     start = time.perf_counter()
     proc = None
     previous = None
@@ -191,7 +180,9 @@ for _ in range(reps + 1):
             residuals.append(float(norm_r / norm_b) if norm_b else (0.0 if norm_r == 0 else None))
 valid = residuals and all(r is not None and np.isfinite(r) for r in residuals)
 json.dump({
-    "cold_s": samples[0],
+    "cold_s": samples[0],  # Legacy field; first invocation, not necessarily fresh compilation.
+    "first_run_s": samples[0],
+    "compilation_cache_dir": jax.config.jax_compilation_cache_dir,
     "warm_s": statistics.median(samples[1:]) if reps else None,
     "warm_samples_s": samples[1:],
     "backend": jax.default_backend(),
@@ -325,8 +316,8 @@ def fortran_true_residual(work: Path, *, linear: bool, rhs_mode: int = 1) -> flo
     independently verified.
 
     For linear runs, a disagreement between the two codes is not evidence about
-    dkx until this is known.  PETSc's Krylov convergence test measures the *preconditioned*
-    residual, and SFINCS preconditions with a simplified matrix, so a run can
+    dkx until this is known. PETSc's default stopping norm can be preconditioned
+    or estimated, and SFINCS uses a simplified preconditioner, so a run can
     report success at ``solverTolerance = 1d-12`` while leaving a true residual
     of several percent -- measured at 7.5e-2 on
     ``geometryScheme4_2species_PAS_noEr``, where it produced a 28% error in the
@@ -444,9 +435,11 @@ def compare_outputs(fortran_h5: Path, dkx_h5: Path, n_species: int = 1) -> dict:
     """Max relative difference per compared key, scaled by the larger magnitude.
 
     ``n_species`` is what makes nonlinear (``Phi1``) runs comparable: both
-    codes write one row per Newton iteration and they need not take the same
+    codes write one column per Newton iteration and they need not take the same
     number of iterations, so the arrays differ in length even when the answers
-    agree.  The converged answer is the last row of each.
+    agree. The final column carries the per-species answer. Transport modes
+    require their complete, correctly shaped matrix; incompatible modes, shapes,
+    missing required moments and non-finite data are rejected.
     """
     import numpy as np
 
@@ -458,50 +451,59 @@ def compare_outputs(fortran_h5: Path, dkx_h5: Path, n_species: int = 1) -> dict:
     except Exception as exc:  # pragma: no cover - corrupt output
         return {"error": f"{type(exc).__name__}: {exc}"}
 
-    # RHSMode is written by both codes; 3 is monoenergetic.
-    def _mode(d: dict) -> int:
-        v = d.get("RHSMode")
-        try:
-            return int(np.atleast_1d(np.asarray(v)).ravel()[0])
-        except Exception:
-            return 1
+    try:
+        modes = []
+        for output in (reference, candidate):
+            value = float(np.asarray(output["RHSMode"]).item())
+            if value not in (1, 2, 3):
+                raise ValueError(f"unsupported RHSMode {value}")
+            modes.append(int(value))
+        if modes[0] != modes[1]:
+            raise ValueError(f"RHSMode mismatch: {modes}")
+        mode = modes[0]
+        keys = COMPARE_KEYS[:-1] if mode == 1 else ("transportMatrix",)
+        required = COMPARE_KEYS[:4] if mode == 1 else keys
+        for key in required:
+            if key not in reference or key not in candidate:
+                raise ValueError(f"missing required output {key}")
+        if n_species < 1:
+            raise ValueError("n_species must be positive")
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"error": str(exc)}
 
-    monoenergetic = _mode(reference) == 3 or _mode(candidate) == 3
+    def scientific_array(value, key):
+        array = np.asarray(value, dtype=np.float64)
+        if not array.size or not np.all(np.isfinite(array)):
+            raise ValueError("empty or non-finite data")
+        if mode in (2, 3):
+            expected = (3, 3) if mode == 2 else (2, 2)
+            if array.shape != expected:
+                raise ValueError(f"transport shape {array.shape}; expected {expected}")
+            return array
+        if key == "FSABjHat" and array.ndim <= 1:
+            return array.reshape(-1)[-1:]
+        if key != "FSABjHat":
+            if array.ndim == 1 and array.shape == (n_species,):
+                return array
+            # Both writers use (species, iteration), not flattened last entries.
+            if array.ndim == 2 and array.shape[0] == n_species:
+                return array[:, -1]
+        raise ValueError(f"unsupported profile shape {array.shape} for {n_species} species")
 
-    report: dict = {}
-    magnitudes: dict = {}
-    for key in COMPARE_KEYS:
+    report, magnitudes, absolute = {}, {}, {}
+    for key in keys:
         if key not in reference or key not in candidate:
             continue
-        if monoenergetic and key in MONOENERGETIC_SKIP_KEYS:
-            continue
-        a = np.atleast_1d(np.asarray(reference[key], dtype=np.float64)).ravel()
-        b = np.atleast_1d(np.asarray(candidate[key], dtype=np.float64)).ravel()
-        # Both codes write one row per Newton iteration for some keys, and a
-        # nonlinear run need not converge in the same number of iterations in
-        # both.  Compare the converged row: the last ``n_species`` entries.
-        if a.size != b.size:
-            # Per-species keys carry ``n_species`` values per iteration;
-            # species-summed ones (FSABjHat) carry a single value.  Take the
-            # first row width that divides both lengths.
-            for row in (n_species, 1):
-                if row and a.size % row == 0 and b.size % row == 0:
-                    a, b = a[-row:], b[-row:]
-                    break
-        if a.size != b.size:
-            report[key] = {"error": f"shape {a.size} vs {b.size}"}
-            continue
+        try:
+            a = scientific_array(reference[key], key)
+            b = scientific_array(candidate[key], key)
+        except (TypeError, ValueError) as exc:
+            return {"error": f"{key}: {exc}"}
         scale = max(float(np.max(np.abs(a))), float(np.max(np.abs(b))), 1e-300)
-        report[key] = round(float(np.max(np.abs(a - b))) / scale, 12)
-        # The magnitude the relative difference was taken against. Without it a
-        # relative-difference table cannot tell a regression from a physical
-        # zero: on an axisymmetric single-species deck at Er = 0 the particle
-        # flux is intrinsically ambipolar and lands at ~5e-12 against a
-        # bootstrap current of ~3e-2, so a 1.4e-2 relative difference there is
-        # an absolute difference of 7e-14 and means nothing. Recorded per key
-        # so the report can scale each moment against the case's own largest.
+        absolute[key] = float(np.max(np.abs(a - b)))
+        report[key] = absolute[key] / scale
         magnitudes[key] = float(np.max(np.abs(a)))
-    return {"difference": report, "magnitude": magnitudes}
+    return {"difference": report, "magnitude": magnitudes, "absolute_difference": absolute}
 
 
 def deck_metadata(deck: Path) -> dict:
@@ -537,30 +539,69 @@ def deck_metadata(deck: Path) -> dict:
     }
 
 
+@contextmanager
+def _case_workspace(record: dict, artifact_dir: Path | None):
+    """Optional persistent evidence, finalized after subprocess cleanup."""
+    if artifact_dir is None:
+        with tempfile.TemporaryDirectory(prefix="dkx_matrix_") as scratch:
+            yield Path(scratch)
+        return
+    root = artifact_dir.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if any(root.iterdir()):
+        raise ValueError(f"artifact directory is not empty: {root}")
+    record["artifacts_directory"] = str(root)
+    try:
+        yield root
+    except BaseException as exc:
+        record["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        files = {}
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                digest = hashlib.sha256()
+                with path.open("rb") as handle:
+                    for block in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(block)
+                files[str(path.relative_to(root))] = {
+                    "sha256": digest.hexdigest(), "bytes": path.stat().st_size,
+                }
+        manifest = json.dumps({"schema": 1, "record": record, "files": files}, indent=2) + "\n"
+        _atomic_text(root / "manifest.json", manifest)
+        record["artifacts_manifest_sha256"] = hashlib.sha256(manifest.encode()).hexdigest()
+
+
 def run_case(
     example_dir: Path,
     fortran_binary: Path | None,
     petsc_profile: bool = False,
     *,
     fortran_petsc_opts: tuple[str, ...] = (),
+    fortran_backend: str | None = None,
     ranks: list[int],
     reps: int,
     timeout_s: float,
     equilibria: str | None,
     launcher: list[str],
     fortran_residual: bool,
+    artifact_dir: Path | None = None,
 ) -> dict:
     """One deck through both codes, in isolated copies of the example directory."""
     deck = example_dir / "input.namelist"
-    record: dict = {"case": example_dir.name, "fortran_petsc_opts": list(fortran_petsc_opts)}
-    try:
-        record.update(deck_metadata(deck))
-    except Exception as exc:
-        record["metadata_error"] = f"{type(exc).__name__}: {exc}"
-        return record
-
-    with tempfile.TemporaryDirectory(prefix="dkx_matrix_") as scratch:
-        root = Path(scratch)
+    if artifact_dir is not None and artifact_dir.resolve().is_relative_to(example_dir.resolve()):
+        raise ValueError("artifact directory must be outside the copied example directory")
+    if fortran_backend:
+        fortran_petsc_opts += ("-pc_factor_mat_solver_type", fortran_backend)
+    record: dict = {"case": example_dir.name, "fortran_petsc_opts": list(fortran_petsc_opts),
+                    "requested_factor_backend": fortran_backend}
+    with _case_workspace(record, artifact_dir) as root:
+        shutil.copy(deck, root / "input.namelist")
+        try:
+            record.update(deck_metadata(deck))
+        except Exception as exc:
+            record["metadata_error"] = f"{type(exc).__name__}: {exc}"
+            return record
 
         record["fortran"] = {}
         if fortran_binary is not None:
@@ -603,6 +644,12 @@ def run_case(
                                 observed.add(match.group(1))
                 result["observed_factor_backends"] = sorted(observed)
                 result["succeeded"] = _fortran_succeeded(work, result)
+                result["backend_acceptance"] = "not_checked"
+                if fortran_backend:
+                    result["backend_acceptance"] = "passed" if observed == {fortran_backend} else "failed"
+                    if result["backend_acceptance"] == "failed":
+                        result["backend_error"] = f"expected {fortran_backend}; observed {sorted(observed)}"
+                        result["succeeded"] = False
                 if fortran_residual and result["succeeded"]:
                     result["true_residual"] = fortran_true_residual(
                         work, linear=not record.get("includePhi1", False), rhs_mode=record["RHSMode"]
@@ -711,13 +758,13 @@ def _atomic_text(path: Path, text: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _campaign_id(args, directories: list[Path]) -> str:
+def _campaign_id(args, directories: list[Path], *, provenance: dict | None = None) -> str:
     """Bind resume to inputs, code, runtime settings and the selected executable.
 
     This detects changed campaigns; it is not a substitute for a pinned external
     compiler/MPI/library environment in a release benchmark.
     """
-    files = {Path(__file__).resolve()}
+    files = {Path(__file__).resolve(), *(path.resolve() for path in args.provenance_file)}
     for directory in directories:
         files.update(p.resolve() for p in directory.rglob("*") if p.is_file())
         for match in _EQUILIBRIUM_KEY.finditer((directory / "input.namelist").read_text()):
@@ -731,24 +778,32 @@ def _campaign_id(args, directories: list[Path]) -> str:
             spec = importlib.util.find_spec(package)
             if spec is not None and spec.origin is not None:
                 files.update(Path(spec.origin).parent.rglob("*.py"))
-    digest = hashlib.sha256(json.dumps({
+    metadata = {
         "schema": 1,
-        "options": {k: str(v) for k, v in vars(args).items() if k != "out"},
+        "options": json.loads(json.dumps({k: v for k, v in vars(args).items() if k != "out"}, default=str)),
         "versions": versions,
         "python": sys.version,
         "platform": platform.platform(),
         "environment": {k: v for k, v in os.environ.items() if k.startswith(
             ("PETSC_", "DKX_", "JAX_", "XLA_", "CUDA_", "OMP_", "MKL_", "OPENBLAS_", "MAMBA_", "LD_", "DYLD_")
         )},
-    }, sort_keys=True).encode())
+    }
+    digest = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode())
+    file_hashes = {}
     for path in sorted(files):
         digest.update(str(path).encode() + b"\0")
         if not path.is_file():
             digest.update(b"missing\0")
+            file_hashes[str(path)] = None
             continue
+        file_digest = hashlib.sha256()
         with path.open("rb") as handle:
             for block in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(block)
+                file_digest.update(block)
+        file_hashes[str(path)] = file_digest.hexdigest()
+    if provenance is not None:
+        provenance.update(metadata, files_sha256=file_hashes, campaign_id=digest.hexdigest())
     return digest.hexdigest()
 
 
@@ -770,7 +825,24 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--examples", type=Path, required=True)
     parser.add_argument("--fortran-binary", type=Path, default=None)
+    parser.add_argument(
+        "--fortran-backend", metavar="PACKAGE",
+        help="select the PETSc factor package (e.g. mumps or superlu_dist) and "
+             "reject runs whose observed -ksp_view package does not match; "
+             "takes precedence over conflicting --fortran-petsc-opt tokens",
+    )
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--provenance-file", type=Path, action="append", default=[], metavar="PATH",
+        help="bind an external environment lock, PETSc options file, build record or "
+             "library to campaign identity; repeat per file and archive originals separately",
+    )
+    parser.add_argument(
+        "--artifacts-dir", type=Path,
+        help="retain every attempt's inputs, raw matrices/states, logs, commands and "
+             "checksummed manifest here, including failures and handled cancellation; "
+             "large files are not pruned automatically (use a directory outside Git)",
+    )
     parser.add_argument("--ranks", type=int, nargs="+", default=[1])
     parser.add_argument("--reps", type=int, default=1, help="warm repetitions")
     parser.add_argument("--timeout-s", type=float, default=1800.0)
@@ -808,8 +880,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    for path in args.provenance_file:
+        if not path.is_file():
+            parser.error(f"--provenance-file is not a file: {path}")
+    if args.fortran_backend and args.fortran_binary is None:
+        parser.error("--fortran-backend requires --fortran-binary")
     launcher = args.fortran_launcher.split() if args.fortran_launcher else []
-    reason = preflight_fortran(args.fortran_binary, launcher, tuple(args.fortran_petsc_opt))
+    options = tuple(args.fortran_petsc_opt)
+    if args.fortran_backend:
+        options += ("-pc_factor_mat_solver_type", args.fortran_backend)
+    reason = preflight_fortran(args.fortran_binary, launcher, options)
     if reason is not None:
         print(f"refusing to start: {reason}", file=sys.stderr)
         return 2
@@ -839,7 +919,8 @@ def _run_campaign(args) -> int:
         cases.append((dof, directory))
     cases.sort()
 
-    campaign_id = _campaign_id(args, [directory for _, directory in cases])
+    provenance = {}
+    campaign_id = _campaign_id(args, [directory for _, directory in cases], provenance=provenance)
     records = []
     if args.out.exists():
         try:
@@ -849,6 +930,8 @@ def _run_campaign(args) -> int:
         except (ValueError, AttributeError) as exc:
             print(f"refusing to resume: {exc}; choose a fresh --out path", file=sys.stderr)
             return 2
+    provenance_path = args.out.with_suffix(args.out.suffix + ".provenance.json")
+    _atomic_text(provenance_path, json.dumps(provenance, indent=2, sort_keys=True) + "\n")
     latest = {record["case"]: record for record in records}
     done = {case for case, record in latest.items() if _execution_complete(record, args)}
     cases = [(dof, directory) for dof, directory in cases if directory.name not in done]
@@ -857,19 +940,25 @@ def _run_campaign(args) -> int:
     print(f"{len(cases)} case(s) to run, {len(done)} successful executions retained", file=sys.stderr)
     for index, (dof, directory) in enumerate(cases, start=1):
         print(f"[{index}/{len(cases)}] {directory.name} ({dof} dof)", file=sys.stderr)
+        artifact_dir = None
+        if args.artifacts_dir is not None:
+            parent = args.artifacts_dir.resolve() / campaign_id
+            parent.mkdir(parents=True, exist_ok=True)
+            artifact_dir = Path(tempfile.mkdtemp(prefix=directory.name + "-", dir=parent))
         try:
             record = run_case(
                 directory, args.fortran_binary,
                 petsc_profile=args.petsc_profile,
-                fortran_petsc_opts=tuple(args.fortran_petsc_opt),
+                fortran_petsc_opts=tuple(args.fortran_petsc_opt), fortran_backend=args.fortran_backend,
                 ranks=args.ranks, reps=args.reps,
                 timeout_s=args.timeout_s, equilibria=args.equilibria,
                 launcher=args.fortran_launcher.split() if args.fortran_launcher else [],
-                fortran_residual=args.fortran_residual,
+                fortran_residual=args.fortran_residual, artifact_dir=artifact_dir,
             )
         except BaseException as exc:
             records.append({"case": directory.name, "campaign_id": campaign_id,
-                            "error": f"{type(exc).__name__}: {exc}"})
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "artifacts_directory": str(artifact_dir) if artifact_dir else None})
             _atomic_text(args.out, "".join(json.dumps(row) + "\n" for row in records))
             raise
         record["campaign_id"] = campaign_id
@@ -886,6 +975,7 @@ def _run_campaign(args) -> int:
         "execution_complete": sum(_execution_complete(record, args) for record in current),
         "campaign_id": campaign_id,
         "checkpoint_sha256": hashlib.sha256(args.out.read_bytes()).hexdigest(),
+        "provenance_sha256": hashlib.sha256(provenance_path.read_bytes()).hexdigest(),
         "fortran_ok": sum(
             1 for r in current
             if ((r.get("fortran") or {}).get("1") or {}).get("succeeded")
