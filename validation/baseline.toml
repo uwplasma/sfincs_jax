@@ -490,3 +490,47 @@ gpu_prepared_trsm_kernel_s = 1.957129481
 gpu_prepared_device_span_s = 2.373386008
 sfincs_medium_status = "exit-15 failure and repeated 120-second timeouts; repeated failures stopped, incomplete outputs invalid"
 notes = "Different toolchains and timing boundaries forbid blanket CPU/GPU/SFINCS speedup claims. Full-operator JIT fails on traced discrete layout; selected dynamic-parameter staging prototype succeeds."
+
+[review.hard_cases]
+status = "historical_diagnostic_unreproduced"
+source_pr = "https://github.com/uwplasma/DKX/pull/172"
+limitations = "No reference-size certificate; near-float64-limit condition estimates are uncertain; Er15 is not jointly grid-converged."
+# Numbers the 2026-09-05 plan rewrite dropped from the execution log. They
+# constrain R1 and B11 and are kept here so the plan can cite them by key.
+recorded_at = "2026-09-02"
+conditioning_tool = "tools/benchmarks/operator_conditioning.py"
+cond_er_xdot = 3.36e18
+cond_er_xdot_equilibrated = 1.24e18
+cond_pas_scheme12 = 3.00e12
+cond_pas_scheme12_equilibrated = 6.58e9
+cond_magdrift = 6.43e7
+cond_magdrift_equilibrated = 2.46e6
+cond_fp_cs3 = 2.96e7
+cond_fp_cs3_equilibrated = 1.58e5
+warm_reuse_flux_change_fraction = 0.0246
+warm_reuse_primal_residual_below = 1e-10
+er15_deck = "HSX QHS user report, Ntheta=10 Nzeta=15 Nx=10, Er=15"
+er15_nxi = [30, 40, 60, 80, 120, 180]
+er15_seconds = [406.0, 436.0, 360.0, 359.0, 989.0, 1491.0]
+er15_fsabjhat = [5.877e-3, 3.000e-3, -3.364e-3, -4.084e-3, -3.812e-3, -3.769e-3]
+er15_nxi20_seconds_to_failure = 6182.0
+er15_provisional_high_pitch_value = -3.769e-3
+er15_nzeta_axis_checked = false
+sfincs_local_toolchain = "macports petsc 3.20.2, mumps 5.6.2, mpich, gfortran 13"
+sfincs_local_decks = 38
+sfincs_local_ok_mumps = 11
+sfincs_local_mumps_crash = 19
+sfincs_local_timeout_1800s = 8
+sfincs_local_ok_petsc_lu = 6
+sfincs_local_two_rank_completions = 0
+sfincs_local_reported_success_size = 5208
+sfincs_local_size_certifies_validity = false
+
+[review.sfincs_control_inventory]
+source_commit = "8df5453472e982df0f6ae005243ce38d57a83711"
+source_file = "fortran/version3/readInput.F90"
+source_sha256 = "328285614dff3daaaae92d162b6f23598ae6d42bba148d6027d1e234822ccf49"
+tool = "tools/parity/output_key_coverage_report.py --namelist-source"
+counting_rule = "Uncommented declared member identifiers; preprocessor guards recorded but not evaluated; declaration syntax is not model support."
+total = 145
+counts = {general = 14, geometryParameters = 29, speciesParameters = 20, physicsParameters = 27, resolutionParameters = 9, otherNumericalParameters = 13, preconditionerOptions = 10, export_f = 10, adjointOptions = 13}
