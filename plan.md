@@ -1,491 +1,540 @@
-# DKX research, performance, and release plan
+# DKX: a focused plan for verified transport and optimization
 
-**Authoritative plan, reviewed 2026-09-05 UTC; revised the same day after an independent source and literature review (section 2.4).** Source baseline: [`6c4614d7414fb279cf54ce6c44d79c07dddb0a4c`](https://github.com/uwplasma/DKX/commit/6c4614d7414fb279cf54ce6c44d79c07dddb0a4c), version 2.3.1. This replaces the contradictory phase checklist and execution diary; [the previous plan](https://github.com/uwplasma/DKX/blob/6c4614d7414fb279cf54ce6c44d79c07dddb0a4c/plan.md) remains historical evidence. `docs/development_roadmap.rst` is an entry point to this file, not a second plan. Work packages below are proposed work unless explicitly recorded as completed.
+**Decision review: 2026-09-06. Planning only; no release is authorized by this plan.**
+Reviewed default branch: [`44a2e864`](https://github.com/uwplasma/DKX/commit/44a2e864f640deb6d7d30834044d0044fcfa7b6d).
+Reviewed implementation stack: [`be6506fe`](https://github.com/uwplasma/DKX/commit/be6506fedbf357ab7fbbc1c1eaa35195080afc9e),
+the head of [PR #188](https://github.com/uwplasma/DKX/pull/188).
+This file supersedes the R0–R11 work queue. The [preceding plan](https://github.com/uwplasma/DKX/blob/be6506fedbf357ab7fbbc1c1eaa35195080afc9e/plan.md)
+retains detailed historical measurements, rejected experiments and references.
+`docs/development_roadmap.rst` remains an entry point, not another plan.
 
-## 1. Mission and decisions
+## 1. The decision
 
-Deliver a research-grade, differentiable neoclassical code for stellarators and tokamaks, with at least the scientifically supported functionality of SFINCS Fortran v3, reliable CPU/GPU execution, and fast repeated calculations for scans, databases, transport evolution, and optimization. Size reduction serves this mission: remove duplication and generated artifacts without sacrificing equations, useful functionality, error handling, or scientific tests. Mirror physics and mirror optimization are the final, deferred extension.
+Finish one dependable research workflow before expanding the solver portfolio:
+**specified toroidal equilibrium and species profiles → resolved transport and
+bootstrap current → a retained stellarator ambipolar branch → checked derivatives
+→ fast repeated evaluations → one actual equilibrium-boundary optimization.**
+For tokamaks, prescribe Er: an intrinsically ambipolar local model cannot determine
+it uniquely. Keep density and temperature explicit; pressure alone fixes neither.
 
-The flagship is a complete profile calculation: geometry and independently specified species profiles → transport and bootstrap current → retained ambipolar-root evidence → numerical uncertainty → reusable, physical-unit results. The design flagship adds equilibrium sensitivities, a real constrained optimization, and independent verification of the final design. Neither a converged linear solve nor a fast analytic proxy completes these goals.
+The code has made substantial progress in checking equations and derivatives.
+Its principal remaining risk is promoting a collection of small demonstrations
+into a general accuracy, performance or optimization claim. More solver choices,
+coordinate systems, benchmark decks and documentation pages will not by themselves
+close that gap. The next unit of progress is a useful calculation with a stated
+model, error budget, repeatable runtime and a runnable example.
 
-| Retained decision | Contract |
-| --- | --- |
-| Native interface | Immutable `Case`, TOML first and equivalent JSON; `Result` with versioned NetCDF. Physical units are normalized once. Source-relative paths and deterministic semantic IDs. |
-| Compatibility | Permanent SFINCS namelist/HDF5 adapters, with explicit unsupported controls; DKX 3 may change the DKX 2 Python API. |
-| Expert interface | Typed geometry, grids, operator, moments, prepared solve, and sensitivity contracts for composition with other codes. File I/O and Python orchestration need not be differentiable. |
-| Runtime | Python ≥3.11, `src/dkx`, explicit runtime configuration; CLI uses argparse/Rich. Core emits structured progress and diagnostics. |
-| Documentation | Sphinx/MyST/Furo; tutorials, how-to guides, explanation, reference. One source for schemas and capability status. |
-| Algorithms | SOLVAX owns reusable linear algebra, differentiation primitives, and generic parallel primitives. DKX owns physics, discretization, and physics-dependent solver policy. |
-| Platforms | Named M3 Max laptop CPU baseline and office NVIDIA accelerator lane. Performance results identify exact hardware and toolchain. |
-| Size | Fresh full clone, wheel, sdist, and installed DKX-owned files each target <20 MiB. Report each measurement separately; dependencies are excluded from owned-file size, not from installation instructions. Measured 2026-09-01 on a fresh clone: 14.49 MiB tracked tree (3.07 MiB media), 14.83 MiB object store, 29.32 MiB total. This leaves about 5.5 MiB for Git metadata/history under the existing target; it does not prove that a rewrite could or could not achieve it. Measure reachable packed objects before considering another rewrite. Keep the <20 MiB target; do not silently restate it to make a gate pass. |
-| Quality | 95% line **and** branch coverage of stable reachable code is the release target. Maintainer-deferred coverage work must not block urgent correctness fixes. Assertions must test behavior or science. |
-| Workflow | One coherent implementation slice per PR; commits authored and committed by `rogeriojorge`, without assistant coauthor trailers. Preserve uncommitted work. |
+Three deliverables replace twelve parallel work packages:
 
-Do not silently change collisions, trajectories, precision, resolution, root-search scope, or requested parallel execution. Do not call an approximation a full model. New evidence may change a policy, but must identify the affected contract and replace the superseded claim.
-
-## 2. Current checkpoint and review coverage
-
-### Implementation checkpoint — 2026-09-05
-
-Implementation is pushed for review, **not merged or release-certified**. Required review and hosted gates still apply. The rows below supersede the earlier execution diary; raw inputs, logs, wheel checksums and failures remain outside Git under `dkx-review-evidence-20260905`.
-
-| Work / review | Implemented and checked | Remaining boundary |
+| Order | Deliverable | Completion means |
 | --- | --- | --- |
-| [#169](https://github.com/uwplasma/DKX/pull/169): roadmap and sparse referee | Dependency-ordered research plan; corrected CSR/CSC interpretation and explicit matrix selection. | Maintainer review before merge; no benchmark promotion from a sparse factorization alone. |
-| [#170](https://github.com/uwplasma/DKX/pull/170): R0 execution and residual integrity | Process-group timeout/cancellation cleanup, bounded disk logs, isolated supervised preflight, complete finite outputs, atomic checkpoints, single-writer/provenance-bound resume, every linear RHS checked against original operator, raw/median warm timings. Four-case local pilot admits only one pair; PETSc true-residual monitoring confirms rejected transport references. | Coupled-Phi1 residual certification, controlled installed CPU/GPU/PETSc production pilot and observable/grid gates remain open. No broad sweep resumed. |
-| [#173](https://github.com/uwplasma/DKX/pull/173): R2 static layout | Full operator staging with static pitch-layout metadata; rebuilt same-layout physical operators reuse compilation and changed layouts retrace. 100 CPU solver/operator/sensitivity tests plus targeted CPU/GPU regressions. A 15,844-unknown full-FP GPU probe changes density/temperature 10%, rebuilds collisions, uses one trace, meets 1e-10 original residual and matches cold states within 4.1e-15 relative. | Compilation reuse does not establish a differentiable builder or valid physical/preconditioner restart. |
-| [#174](https://github.com/uwplasma/DKX/pull/174): R2 full-FP density refresh | Existing unit-density kernels assemble uniform FP coefficients in JAX at fixed temperatures/masses/charges/grid. Independent rebuilds, density JVP/VJP/linearity and full-solve quadratic-state-functional finite differences pass. 44 CPU collision/Phi1 tests and 3 installed-wheel GPU tests pass, with CPU available for adjoint diagnostic callbacks. | Temperature derivatives, physical-flux sensitivity certificates, native prepared-state policies and preconditioner reuse remain open. CUDA-only callback failure retained. |
-| Integration of [#172](https://github.com/uwplasma/DKX/pull/172) | Historical hard cases and comparison candidates retained with explicit provenance; unproved size thresholds and causal claims removed. Checked-in source inventory reproduces 145 declared controls (section 2.4). Conditioning uses the public builder without a kinetic solve or monkeypatch; cap precedes dense materialization and unspecified coupled-Phi1 linearizations are refused. Validation/registry selection: 225 passed. | Historical numbers remain diagnostic; semantic SFINCS coverage and independent production reproduction remain required. |
-| R2/R9 physical-gradient validation | The density-refresh regression now checks normalized current and species-0 heat flux against independent full-FP rebuilds over a central-difference window and second-order Taylor remainders. Four tests pass on CPU and installed-wheel GPU. Example 07 refreshes PAS collisions for each temperature; its worst FD-window discrepancy is 6.7e-9, and both example checks pass. | Bounded two-species fixed-temperature density fixture and single-species PAS tutorial only. Full-FP temperature, geometry/root derivatives, joint-grid certificates and production optimization remain open. |
-| [#179](https://github.com/uwplasma/DKX/pull/179): R4 differentiable batch sharding | Replaced the host device loop and tracer fallback with an explicit JAX mesh map around SOLVAX local solves; duplicate devices are rejected and uneven padding is removed from outputs/gradients. Public Er/surface scan facades expose device selection; prepared Er problems retain their method/tolerance unless overridden. CPU suite: 14 passed, followed by expanded original-residual/full-FP and public-facade tests; 24 public API/doc contracts pass. Installed-wheel PAS and full-FP value/gradient checks pass on two A4000s. Eight-case PAS warm medians: forward 44.1→27.7 ms, value/gradient 71.8→43.4 ms (one→two GPUs). Perfetto traces show work on both GPUs with approximately half the device events per GPU. | Small fixed-grid evidence, not production scaling or peak-memory qualification. Uneven trimming may redistribute outputs. Native preparation is recorded below; failure envelopes, strong/weak scaling, state decomposition and multi-host execution remain open. |
+| **1. Trustworthy toroidal calculations** | Consolidate the PR stack; qualify a small PAS/full-FP reference set and a useful native profile/root workflow. | Every advertised observable has original-equation, unit, resolution and model checks; unresolved roots and failed references remain explicit. |
+| **2. Fast repeated calculations** | In-memory prepared solves, state/preconditioner reuse, measured CPU/GPU batching and one selected preconditioner improvement. | A whole scan and value/gradient workload improves at the same accepted accuracy, with bounded memory, cold fallbacks and history-independent answers. |
+| **3. A real design calculation** | VMEX boundary → equilibrium → geometry → DKX objective, first at prescribed Er, then on a regular stellarator root branch. | Independent full-chain derivatives, feasible improvement beyond numerical uncertainty, useful iteration cost and a cold, finer-grid final validation. |
 
-R4 batch results now retain per-input `relative_residual_norms` and `algebraic_converged` through JIT/sharding. The flag checks finite state/RHS/residual against the original relative tolerance, including defined zero-RHS behavior; invalid tolerances are rejected before solving. It is not a finite-moment or grid/observable certificate. Fifteen CPU batch tests pass, including manufactured bad/NaN states and homogeneous equations; installed-wheel GPU rejection tests pass. The bounded two-GPU PAS probe remains near earlier timings (28.1 ms forward, 43.9 ms value/gradient; separate runs, not an isolated overhead estimate). An undefined variable in the older scalar/batch residual test was corrected, and the complete batch suite was rerun. Subsequent host-root auditing found that the truncated structured route reports only a partial residual. The batch flag previously consumed that partial diagnostic, invalidating its original-equation claim on that route. The follow-up now recomputes the original residual and offers full-state recovery, as recorded below; moment-only truncated states must not be promoted on partial residuals. This limitation does not invalidate the separately tested full-state routes.
+Documentation, examples and removal of duplication are part of each deliverable.
+SFINCS-v3 scientific completeness remains a long-term requirement; it is not
+claimed by this first supported envelope. Native Phi1 and the wider drift models
+follow explicit capability gates below. NEOPAX and ESSOS consume the validated
+interfaces. Mirrors remain last. Do not begin a second active algorithm experiment
+until the first has a measured decision or has been stopped.
 
-R2/R4 native scan preparation now exposes `dkx.prepare_er_scan(case, surface_index=...)`, using the same native geometry/grid/profile/collision builder as `run_case` without a kinetic solve or namelist. Prepared inputs use kV/m explicitly and preserve the Case method/tolerance; moments remain normalized. Fifteen existing native execution tests pass; two two-species PAS/full-FP checks match fresh native SI current profiles at zero/nonzero field and validate the field derivative on CPU and the installed wheel on two GPUs (with actual shard placement). API/Er contracts: 31 pass. Default preparation remains host-side with fixed profiles; the opt-in profile-update extension below refreshes physical profiles and drives under AD. Geometry construction and validated factor reuse remain open.
+## 2. What exists, what changed, and what remains unproved
 
-R2 native `prepare_er_scan(..., differentiable_profiles=True)` now returns an `ErProblem.with_profiles(density_m3=..., temperature_keV=...)` update path. Whole-profile surface/species arrays refresh selected-surface densities/temperatures, both radial drives and PAS/full-FP coefficients; normalization, geometry, species properties, Coulomb logarithm, solver policy and field bounds remain fixed. Full-FP explicitly uses the differentiable quadrature route, including its documented precision conventions. The native nonuniform/end-point stencil retains at most three neighboring weights rather than a dense surface matrix, and opt-in preparation constructs only the selected collision objects. Local and neighbor-only current gradients match fresh native Case builds over an FD window, with algebraic acceptance required for differentiated/reference solves. Boundary/interior and invalid-profile checks pass; constructor-count checks verify that discarded reference collision objects are not constructed. Validation: 97 native/Er/planning/docs CPU tests and 11 source-checkout GPU checks; strict docs pass. Raw evidence is external in `native-profile-refresh`. No full-workflow speedup or allocator-peak reduction is claimed. Opt-in initial preparation now skips reference collision construction and initializes only the selected coefficients; constructor-count regressions enforce that boundary. Six alternating setup pairs measure CPU 1.32 s → 18.3 ms and office GPU 2.78 s → 81.1 ms, with identical operator tree structure and all 36 leaves bitwise equal. This restores redundant construction via an internal switch on the same source, not an independently installed older release; caches are warm and first-invocation samples are not fresh-compilation evidence. Setup evidence is external in `native-profile-setup`; these are within-machine comparisons (local JAX 0.9.2, office 0.10.2), not cross-device scaling or complete solve/optimization timings. Broaden model/grid/profile/root uncertainty and integrate native results/restarts and geometry sensitivities before claiming complete research optimization.
+### Source and review state
 
-R2 native profile-to-root probes uncovered and fixed a host-policy bug: `find_ambipolar_er` now preserves a prepared problem's method/tolerance unless explicitly overridden; unprepared inputs retain auto/1e-10 defaults. Four regressions exercise actual kinetic solves across both input paths and override choices, including final cold evaluation. At fixed analytic LHD geometry, a joint quasineutral density/species-temperature perturbation gives root derivatives -0.245115 (PAS) and -0.217150 (full-FP) kV/m per scalar perturbation. Independently rebuilt native Case roots over steps 1e-3 and 3e-4 agree within 1.23e-7 and 2.71e-8 relative error respectively; normalized root currents are below 3.3e-20 and field slopes remain nonzero. Validation: 73 Er/planning/docs CPU tests, four office GPU policy regressions and strict Sphinx pass. Evidence is external in `native-root-gradient`. These small-grid probes are preliminary: add a committed native root-chain regression, Taylor-rate and joint-grid/branch uncertainty tests, and explicitly certify original kinetic residuals in every reference/root solve before promoting B10. Finite current alone does not certify the kinetic state; host acceptance is now enforced as recorded below, while the differentiated root path still needs its own primal/adjoint residual audit. Geometry differentiation and production optimization remain open.
+At the review snapshot there are **19 open DKX PRs**, no open non-PR DKX issues,
+and one open SOLVAX PR. All checks reported for #188 are successful; this does not
+merge its dependencies or replace required review. The stack has **53 commits,
+44 changed files, 5,935 insertions and 2,820 deletions** relative to the reviewed
+default branch. These are stack totals, not the size of this planning PR.
 
-R1/R2 host ambipolar evaluation now independently recomputes `||Ax-b||` using the original field-specific kinetic operator and requires finite state/RHS/residual and `||Ax-b|| <= tol*||b||` before a point enters Brent, classification, enumeration or warm reuse. A zero RHS requires zero residual; missing states and invalid tolerance are rejected. This includes the final cold solve and uses the prepared/explicit policy fixed above. The check does not trust route convergence flags, reported residuals, truncated-system diagnostics or a fixed absolute floor. Manufactured bad/NaN states, homogeneous equations, falsely converged cancelling fluxes and corrupted final cold states exercise rejection. Scalar root-algorithm fixtures explicitly isolate this kinetic check; real kinetic regression cases retain it. Ramped PAS revealed that the default structured route returned only a low-order head with a zero-filled tail, so host radial-current solves now request all Legendre blocks for complete state reuse/certification. The initial ramped regression failure is retained externally in `host-root-residual`. This increases retained-state cost relative to a moments-only solve and costs one original operator application per field evaluation; optimize only after measuring that cost against accepted accuracy. Native PAS/full-FP FD probes remain preliminary until differentiated primal/adjoint residuals, Taylor rates, joint grids and branch uncertainty are qualified. Final validation: 109 native/Er/planning/docs CPU tests, 16 office GPU rejection/policy/physical-root-gradient tests and strict Sphinx pass. Evidence is external in `host-root-residual`.
-
-R1/R2 differentiated ambipolar current evaluations now request all Legendre blocks and share original-equation admission with host roots. A finite full state must satisfy the prepared/overridden relative tolerance without a solver flag, backward-error floor or absolute floor; homogeneous equations require entrywise zero defect, including a nonzero 1e-200 case whose squared norm underflows. JIT/grad/vmap rejection tests include cancelling currents from a manufactured invalid distribution. Successful scalar JIT checks stay on device; vmapped predicates can execute failure-branch callbacks even for valid states, so batch/root callback cost remains an optimization target. The generic solves and derivatives remain in SOLVAX. Independent matrix-action assembly and physical-DOF packing test original primal/transpose residuals and radial-current sensitivities for PAS/full-FP with uniform/ramped pitch. CPU sensitivities agree with dense-adjoint calculations within 4.47e-7 relative error. This is a bounded observable audit, not a universal adjoint-state certificate: the uniform full-FP fixture has condition number 6.73e9 and a 1.91e-7 relative adjoint-state discrepancy at solve tolerance 1e-10; the 1e-12 comparison also missed a proposed 1e-8 state-error gate against that unqualified referee, an inference superseded by the refined-reference audit below. A separate ramped PAS primal-residual gate failed at 1e-12. Those failures and matrices remain external in `differentiated-root-audit`; the committed test separately checks the original equations at 1e-10 and the observable derivative at 1e-6 relative tolerance. Do not reinterpret the rejected pointwise/state comparisons as physics convergence. Native fixed-geometry PAS/full-FP profile-to-root probes retain strict primal admission and cold-root FD agreement over two step sizes; native root adjoint/Taylor/joint-grid/branch uncertainty and conditioning/roundoff attribution remain open.
-
-R1's refined-reference audit resolves the misleading full-FP comparison. Fifty- and seventy-digit residual corrections for the stored CPU 904-unknown float64 matrix agree: the original NumPy transpose solve has 1.29e-7 relative state error, SciPy's plain transpose solve 1.09e-7, and the JAX adjoint 6.16e-8 at tolerance 1e-10. Factoring the original matrix and solving its transpose is markedly more accurate on this case; LAPACK DGESVX without equilibration agrees with the multiprecision reference to 6.34e-16 in state and 9.56e-16 in the weighted current derivative. This driver now supplies the packed-matrix test referee and the warm-audit dual, with reciprocal-condition, infinity-norm forward-error and componentwise-backward-error estimates recorded; singular/working-precision failure codes and nonfinite reference data abort before warm trials. These LAPACK estimates are not rigorous uncertainty bounds. At kinetic tolerances 1e-8/1e-10/1e-12, actual adjoint-state errors are 1.09e-4/6.16e-8/2.88e-9 and weighted derivative errors 1.89e-4/9.15e-8/4.76e-9. Both original primal and transpose residuals pass their requested tolerance in this bounded ladder. The new full-FP 1e-12 regression requires 1e-8 relative state and current-derivative agreement; it passes on CPU and A4000, alongside the four existing PAS/full-FP layout referees. Ten existing/new CPU referee/warm checks plus that added regression pass (11 total), including refusal of invalid dense-reference outputs. Multiprecision residuals below 1.4e-39 and dual-identity remainders below 1.9e-48 qualify the stored-matrix attribution only, not a multiprecision kinetic-operator construction. Evidence, failure logs and precision repeats remain external in `adjoint-roundoff`. No universal tolerance or production optimization certificate follows from this one ill-conditioned case.
-
-Validation for that admission slice: 137 CPU Er/native/planning/docs tests pass, with 41 distinct GPU cases covered by 31 initial physical/rejection checks and 33 final shared-admission/transpose checks. Negative GPU tests now drain expected asynchronous errors; the final rerun exits cleanly. Strict Sphinx and scoped Ruff pass. Twelve alternating synchronized pairs on the 7,850-unknown native PAS fixture isolate admission cost with full recovery on both sides:
-
-| Current evaluation | CPU unchecked → checked (ms) | A4000 unchecked → checked (ms) |
-|---|---:|---:|
-| Scalar forward | 3.83 → 4.27 | 24.89 → 25.03 |
-| Scalar value/gradient | 14.92 → 15.22 | 49.79 → 49.81 |
-| Three-field forward | 14.49 → 15.53 | 30.40 → 32.08 |
-| Three-field value/gradient | 47.52 → 49.44 | 66.78 → 68.81 |
-
-Values/gradients match, host reference states satisfy the original equation and scalar FD windows pass. Complete per-stage CPU/GPU traces show no callback for accepted scalar checks and three callbacks per accepted three-field batch. The GPU scalar-gradient difference is within sample variability. These existing-cache, same-source within-host comparisons exclude the additional cost of replacing the old partial state, fresh compilation, installed-release certification, allocator peaks, whole-root optimization and production scaling. Raw samples, HLO/compiler memory estimates, traces, matrices, failed gates and corrected runs remain outside Git in `differentiated-root-audit`.
-
-R4 batch acceptance now recomputes the original equation from the returned state rather than trusting route diagnostics. Partial low-order states retain their moment-use purpose but generally fail full-equation admission. `retain_full_state=True` on expert batches and both public scan facades recovers all Legendre blocks; the initial implementation kept budget-forced uniform recovery structured but routed unequal pitch chains to Krylov. The generated full-recovery follow-up below removes that layout-only fallback; the solver, structural route prediction and chunk footprint use the same retained depth. Original residuals and flags remain JIT/shard-compatible. Regression cases compare moment-only/full states, independently recomputed residuals, surface/Er facades, increased footprint and directional current derivatives for uniform/ramped pitch. Poisoned solver diagnostics cannot certify manufactured bad/NaN states or nonzero homogeneous residuals. Native PAS profile-gradient tests now request full states for both AD and cold references, superseding their earlier partial-residual admission. Native ambipolar evaluation now triggers its existing bounded Krylov recovery when a moment-only state fails, retaining the full-state tail diagnostic and recovery provenance. This was a real route/cost change; the full-recovery follow-up below removes the layout-only Krylov fallback, with further production qualification still required. This does not certify adjoint accuracy, grid convergence, restart compatibility or production memory/scaling; the extra full-state retention and operator-application cost still require profiling. Validation: 22 batch/planning/docs CPU cases, all 28 native cases covered by 25 initial passes plus four profile-gradient and one root round-trip reruns, three uneven two-GPU batch checks and four GPU native-profile gradient checks; strict Sphinx passes. Raw failures and final runs are retained externally in `batch-original-residual`.
-
-R1/R4 exact-zero admission is now consistent in batches: homogeneous RHSs and explicit zero-tolerance requests require entrywise zero defect, rather than trusting a squared norm that can underflow. A nonzero homogeneous defect reports infinite relative residual even when its norm rounds to zero. Manufactured 1e-200 defects exercise zero and nonzero RHSs; JIT tests cover uneven three-field batches and a one-field padded batch using all selected devices. Nineteen distinct CPU batch cases are covered by the 18-case suite and final three-case boundary rerun; three boundary cases pass on two A4000s. This closes the recorded exactness false positive, not an observable/adjoint/grid certificate. Raw logs and source evidence are external in `batch-exact-zero`.
-
-R3/R4 generated full-state recovery now groups unequal pitch chains by their actual lengths, calls SOLVAX's existing generated block-Thomas kernel with `keep=min(Nxi, chain_length)` and pads only inactive DOFs. Full recovery reports the original residual; partial-head diagnostics remain explicitly partial. DKX owns this physical layout/border assembly and route integration; SOLVAX's generic kernel is unchanged. Native profile and ambipolar solves request full states up front; root evaluations compute full-state tail diagnostics without a layout-only Krylov retry. The redundant selected-field tail replay and its budget increment are removed; the configuration option remains accepted, while expert moment-only batches retain their selected-tail option. Dense pinned original-operator referees cover distinct/repeated chain lengths, multi-RHS high-order manufactured drives and inactive zeros; kinetic-temperature coefficient gradients at fixed collision tensors are checked against taped derivatives and FD windows, with native profile cases separately refreshing collision coefficients. Native root round-trips require zero recovery attempts and the structured route. Complete recovery increases retained memory with pitch resolution; global bands are not assembled. Production grid/parameter envelopes, allocator memory, scaling and optimization cost remain open. Validation: 208 broad CPU tests, followed by 49 final native/planning/docs tests after full-profile retention and replay pruning; 13 GPU solver/batch/root/profile checks plus separate fixed-profile and final native-root checks pass. Strict Sphinx passes. Raw failures and source snapshots are retained externally in `unequal-chain-recovery`. Eight alternating synchronized pairs on a 7,850-unknown, three-field, two-species LHD PAS case compare complete structured versus Krylov batches on the same source. CPU forward medians are 35.48→14.71 ms; value/gradient 56.26→53.94 ms. A4000 forward is 104.67→74.76 ms; value/gradient 213.53→145.37 ms. Both routes satisfy 1e-10 original residual tolerance, agree in state to 2.51e-10 relative norm, and pass directional FD windows. Existing-cache single-device comparisons are not installed-release, fresh-compilation, grid, scaling or optimization certificates; local JAX 0.9.2 and office 0.10.2 prohibit treating these as a controlled CPU/GPU comparison. XLA temporary estimates fall from 51.29→1.28 MB (CPU forward) and 29.14→1.92 MB (GPU forward), with value/gradient 70.01→58.33 MB and 69.18→52.27 MB respectively; these exclude allocator/resident/compiler-cache memory. The combined CPU trace exceeded its event cap and is excluded from hotspot claims; complete per-stage recaptures map nested work to generated-chain LU factor/solve loops. The complete GPU trace attributes about 83% of structured-forward device-event time to LU panels and triangular solves. Optimize these generic kernels and verified factor reuse in SOLVAX using matched residual/observable gates before broadening any performance claim.
-
-R3 generic follow-up is in [SOLVAX #100](https://github.com/uwplasma/SOLVAX/pull/100), commit `e9deedbfd97b6a81919f8e567e24ce70da030c00`: full generated recovery initializes the actual highest block instead of solving dummy identity-boundary data. Partial recovery/API are unchanged; production source grows by one net line and adds no files. Four dense-reference regressions cover one/five blocks, vector/multiple RHSs, ignored NaN boundaries and taped/custom-VJP derivatives. Validation: 780 SOLVAX CPU tests pass (six optional-backend skips), all 98 direct tests pass on CUDA, and 11 DKX integration cases pass on each host; lint, types, strict docs, benchmark verification and reproduction smoke pass. On the same 7,850-unknown case, 12 alternating synchronized old/new helper pairs give CPU forward 14.64→14.08 ms and value/gradient 49.62→48.35 ms; A4000 forward 74.98→72.82 ms and value/gradient 145.69→140.54 ms. GPU improves in all 12 pairs; original relative residuals remain <=1.01e-11 at tolerance 1e-10, with matching states/moments/gradients and accepted FD windows. Complete per-stage traces show GPU device-event counts falling 8,106→7,440 forward and 20,289→19,248 for gradients. XLA gradient temporary estimates fall 58.33→55.19 MB CPU and 52.27→49.08 MB GPU; GPU forward rises slightly, 1.918→1.953 MB. Raw evidence/source hashes are external in `solvax-full-head`. This is a modest existing-cache source comparison, not installed-release, fresh-compilation, allocator-peak, scaling or optimization qualification. SOLVAX's required approval/CI remain merge gates; the installed 0.20.0 dependency is unchanged. After review/release, requalify the installed dependency before adopting these measurements as a release claim.
-
-R2 full-FP kernels now support `rescale_temperature(scale)` for a common positive scalar at fixed species temperature ratios, masses, charges, normalization and `nu_n`/Coulomb logarithm. All four collision kernels scale exactly as `scale**(-3/2)` and the Phi1 Boltzmann temperature is refreshed; callers update kinetic temperatures and intended profile drives as well. Fresh-build comparisons, nonzero-Phi1 JVPs and full-solve current/heat-flux FD windows and Taylor rates pass: seven CPU and seven source-checkout A4000 tests, with 34 broader CPU tests and strict docs. An eight-sample alternating synchronized coefficient-only probe measures CPU 83.8 ms rebuild → 0.081 ms refresh, GPU 163 ms host rebuild/transfer → 0.213 ms refresh. Raw samples/HLO/source hashes and rejected setup/overlapping-timing attempts are external in `common-temperature-refresh`. Existing cache, tiny two-species fixed-grid fixture, and source-checkout execution limit these results: no full-solve/optimization speedup, installed-release, independent-temperature builder or factor-reuse certificate. The independent-temperature route below extends the coefficient boundary; integration with native SI profile normalization/drives and factor-reuse validation remains open. Generic solve and derivative algorithms remain in SOLVAX.
-
-R2 now has an opt-in `prepare_fokker_planck_v3_profiles(...)` JAX builder for independently varied species densities/temperatures at fixed grids/masses/charges/normalization/nu_n. Composite transformed Gauss-Legendre integration retains the v3 polynomial recurrence; a nonsingular interpolation basis preserves derivatives at coincident species speed nodes. Forty CPU and 33 selected source-checkout GPU tests pass: independent full-solve current/heat FD windows and Taylor rates, Maxwellian/common-flow conservation, electron/ion response order/derivative convergence and 80-digit high-order/small-speed references. The high-L analytic host response misses one checked entry by 1.28e-4 absolute; a failed GPU comparison also exposed small-speed cancellation and rounded-sqrt(pi) error in the host test-particle coefficients. The opt-in builder uses mathematical sqrt(pi) and a stable Chandrasekhar series, verified independently rather than made to match that inaccurate oracle. Default host parity remains unchanged. On an eight-pair three-species Nx=12/NL=4 coefficient probe, CPU preparation/JVP take 1.28/2.59 ms versus 2.81 s host rebuild; A4000 preparation/JVP take 1.10/2.84 ms versus 6.21 s host rebuild/transfer. Independent 80-digit test-particle matrix errors are below 2.4e-13 CPU and 4.9e-14 GPU. These are existing-cache coefficient timings, not time-to-accepted-observable or an optimizer result. A separate GPU trace has 32/50 forward/JVP kernel events; the largest fused quadrature reduction accounts for about half of summed kernel duration. XLA temporary-buffer estimates are 4.76/11.30 MB, not allocator peaks. External `independent-temperature` evidence retains the failed gates, diagnosis, source snapshots, higher-precision derivations, raw timing and HLO/trace data. This closes a bounded collision-coefficient AD gap, not the complete native prepared API: broaden joint physical/quadrature grids and parameter envelopes, differentiate SI normalization/profile drives and geometry, validate root/observable uncertainties and safe factor reuse before promoting research optimization. Production time-to-accepted-observable, installed release, unequal-temperature entropy properties and multihost scaling remain open.
-
-A bounded R1 audit is now available in `tools/benchmarks/operator_conditioning.py TARGET --warm-from SOURCE`: shared layout/model validation, immutable full-operator fingerprints, separate state/recycle/both reuse, a tolerance ladder, original residuals and adjoint-weighted differences of normalized current or species-0 heat flux. A new 604-unknown full-FP pair with changed analytic geometry passes all original-residual gates; at tol=1e-8 its maximum heat-flux change is 1.32e-14 (7.45e-7 relative), with dual-identity remainder below 3.3e-20. Four targeted tests include manufactured inaccurate-state signs, actual reuse-data reporting, zero-drive seeds and rejection of non-finite/overflowing drives before dense work; strict docs pass. This is a computed-state comparison, not an exact-solution/grid certificate. PR #161's body does not identify the historical input pair, so the 2.46% reproduction and reuse promotion remain open.
-
-R0 release-artifact CI now retains the complete tested checkout and imports its exact commit into the measurement clone. This fixes #172's observed `unable to read tree` race without substituting a PR-head tree for the merge tree used to build the wheel (the alternative proposed in #175). A real-Git regression moves the remote PR ref and prunes the old synthetic merge, then verifies exact-tree checkout and non-shallow history from the retained source. Four workflow tests and pinned actionlint 1.7.12 pass; hosted artifact validation remains required.
-
-The isolated office reference uses pinned SFINCS `8df5453472e982df0f6ae005243ce38d57a83711`, PETSc 3.23.6, MPICH 4.3.2, MUMPS 5.8.1 and SuperLU_DIST 9.1.0. MUMPS PAS smoke passes at one/two ranks. A guarded MUMPS-only diagnostic call fixes the SuperLU_DIST crash; default SuperLU_DIST still fails original residuals. Explicit natural ordering or disabled equilibration passes that smoke only. `docs/fortran_comparison.rst` records the patch, same-matrix replay and build procedure; hashes, locks and all attempts are retained externally. Neither compilation nor unknown count certifies a reference.
-
-R0 transport comparison rejects mismatched modes, incomplete matrix shapes and invalid scientific data; mode 2/3 compare complete matrices, and profile mode selects final species columns despite differing iteration counts. Absolute and unrounded relative differences are retained. The earlier monoenergetic file named `superlu.jsonl` actually recorded MUMPS: its attribution to SuperLU_DIST was wrong. `--fortran-backend` now selects a package in preflight and every rank launch and rejects missing/mixed/wrong observed packages. Nine new tests cover selection and verification; validation/planning: 270 passed.
-
-R0 raw evidence retention is opt-in through `--artifacts-dir`: each attempt preserves inputs, generated matrices/states/outputs, full logs, commands and a checksum manifest. Handled cancellation finalizes partial evidence after process cleanup; retries use distinct directories and nonempty/nested destinations are refused. The office retention pilot's 26 files were independently verified locally. Complete environment/geometry archival, publication integrity verification and abrupt-kill recovery remain open.
-
-Bounded monoenergetic reference qualification now admits both `Nxi=6,12` fixtures through SFINCS MUMPS with Richardson/unpreconditioned norm/max 20 iterations at one/two ranks: all original residuals are below 8.78e-13 against 1e-12; DKX also passes. Complete transport matrices agree within 6.71e-12 absolute (1.06e-14 scaled by the largest entry). Default GMRES/MUMPS and newly verified natural-order SuperLU_DIST remain rejected. Standalone replay identifies default-pivot MUMPS's factor failure as insufficient workspace; forced refinement or Richardson resolves the tiny-case residual gap. Here P equals A, so this is not an approximate-preconditioner policy. Coefficients change strongly between pitch grids and resources are unmatched: no grid, production or speed certificate follows. Preserve failed and accepted attempts in the external archive; `docs/fortran_comparison.rst` records the exact options and limits.
-
-R0 now writes readable provenance alongside the checkpoint: typed options, Python/package versions, platform/runtime settings and individual file hashes; the completion sentinel binds its checksum. Explicit `--provenance-file` inputs bind environment locks, build records, PETSc option files or linked libraries and invalidate resume on content changes. Missing files fail before launch and refused resume preserves old evidence. First-invocation/cache metadata prevents treating legacy `cold_s` as proof of fresh compilation. Validation/planning: 273 passed.
-
-The reference boundary extends to two-species full-FP scheme-4 systems of 2,804/15,844 unknowns with approximate preconditioners. Default GMRES/MUMPS misses 1e-10 original-residual acceptance; right-preconditioned GMRES with an unpreconditioned norm passes on both grids at one/four ranks, as does installed-wheel CPU DKX. The maximum current difference is 2.44e-13 absolute, with flow/particle/heat fluxes checked. The medium installed-wheel A4000 solve also passes (7.72e-11 residual; 3.55e-14 current difference from SFINCS). The CPU campaign binds 107 reference packages, build/patch records and 91 linked libraries; 97 accepted CPU/GPU artifact files and both provenance sidecars are verified locally. See `docs/fortran_comparison.rst` and the external `full-fp-reference` archive. Host contention, existing compilation cache, unresolved joint-grid convergence, GPU runtime locking and production scaling prevent speed/release promotion.
-
-R0 retained campaigns have an offline verifier in the matrix runner: `--verify --out OUT [--artifacts-dir RELOCATED_ROOT] [--dependency-archive ROOT]`. Completion/checkpoint/provenance identity, attempt manifests, counts and exact inventories are checked with streaming hashes. Altered/missing/extra evidence, duplicate attempts, path escapes and symlinks fail. Optional dependency verification binds archived bytes to every declared source/library/input hash; it does not discover undeclared dependencies. Copied full-FP CPU/GPU archives pass: 97 raw files and all 268 declared references. The older unsealed GMRES campaign is rejected. Validation/documentation/planning: 300 tests pass; strict docs pass. Integrity is relative to the supplied completion record, not authentication or scientific certification.
-
-R0 runtime evidence is external in `runtime-archive`: the declared files deduplicate to 183 objects (251 MB); a fresh 15,844-unknown GPU full-FP replay captures 2,180 runtime/module/metadata/compiler files and passes residual 7.71e-11. Its checked flow/current/particle/heat outputs match the qualified reference (largest absolute current difference 3.55e-14). Independent local hashing verifies the complete 1,973-object store (4.35 GB). A same-host single-rank 2,804-unknown SFINCS replay reconstructs ELF/SONAME aliases, suppresses embedded paths and redirects UCX modules: all 100 traced library initializations use restored paths, residual 9.74e-11, checked moments exactly match the qualified reference. Earlier loader traces exposed missing dynamic plugins and implicit 36-thread execution; those attempts are retained, not used for speed claims. GPU capture is fresh evidence, not a retrospective binding of the old campaign. Clean-machine/fresh-compilation, kernel/driver and MPI replay, fresh campaign provenance and controlled production timing remain open.
-
-R0/R4 reference resource requests are explicit: `--fortran-threads` defaults to one thread per MPI rank, reaches preflight and every launch through OpenMP/common BLAS controls, and is bound to resume identity. Quoted launcher arguments survive tokenization; malformed quoting and invalid thread counts fail before launch. MUMPS-reported thread counts are recorded; counts exceeding the request reject the reference, while absent diagnostics remain unverified. A bounded full-FP pilot with one/two ranks × one/two threads reports exactly the requested counts and passes all four original-residual gates (maximum 9.76e-11 at tolerance 1e-10). Cross-rank flow/current/particle/heat comparisons pass (largest normalized current difference 2.07e-13). Both retained campaigns verify offline. Validation/docs/planning plus native/batch/root regressions: 312 tests and strict docs pass. A hosted failure was reproduced as a test mock escaping through a lazy import; audit and native-preparation fixtures now resolve and patch consumers without poisoning later solves, with the original failing order and a six-test recovery sequence checked. This is launch/accuracy qualification, not affinity, utilization, scaling, fresh-compilation or equal-resource speed evidence; raw inputs, MPI launcher/proxy hashes, commands, PETSc logs and results stay external in `reference-threads`.
-
-R2/R7 ambipolar AD uses the routed differentiable kinetic solve, preserving prepared method/tolerance settings and admitting supported pitch ramps. The separate global dense matrix is removed; generic linear/root differentiation stays in SOLVAX. PAS/full-FP uniform/ramped current and actual root gradients match cold finite differences on CPU and the installed GPU wheel. A 2,358-unknown paired PAS current probe reduces A4000 warm forward 53.2→10.7 ms and value/gradient 54.7→17.8 ms; CPU 51.6→2.63 ms and 58.6→3.01 ms. HLO shows 49×49 factor batches instead of global LU; GPU temporary-buffer estimates fall 266→4.3 MB (not measured allocator peak). See `docs/differentiability.rst` and external `routed-ambipolar-ad` evidence. The initial GPU regression selection took 419 s; production setup/compilation and full optimizer costs remain open.
-
-Differentiable root acceptance requires finite field/current/slope, configurable absolute current and minimum slope thresholds, and a local Newton correction below the field tolerance. Thirty-five scalar tests cover eager/JIT/AD/vmap rejection and recovery; 89 root/API/native/planning tests pass on CPU, and four physical root-gradient plus 35 acceptance cases pass on the installed GPU wheel. Four PAS/full-FP uniform/ramped fixture roots have |Jr| <=1.12e-19 and local corrections <=1.01e-13 in normalized field units. Paired root value/gradient probes measure CPU 11.36→12.12 ms and A4000 52.32→53.32 ms, with matching derivatives (12 alternating samples, device and host-effect barriers, existing compilation cache). Evidence is external in `ambipolar-acceptance`. Branch continuity, uncertainty-based marginal-root certification, joint-grid convergence, geometry-chain derivatives and production optimization remain open.
-
-Host-side ambipolar acceptance uses separate normalized-current and field-unit tolerances. A closed bracket or exhausted scan refinement cannot promote an unacceptable current to a root; nonfinite field/current/flux values fail visibly, sign bracketing avoids underflow, and final selected current is checked with cold state/preconditioner/recycle inputs. Sampled endpoint roots are retained. Selected-root classification is independent of nearby scan roots, exactly zero slope is marginal, and scan completeness is explicitly not claimed. Validation: 109 final CPU root/scan/API/native/planning tests and 17 final installed-wheel GPU host acceptance regressions pass; a separate 20-test GPU selection validates the cold-final change, including four PAS/full-FP uniform/ramped root-gradient cases (212.56 s). Focused regressions cover discontinuities, tiny currents, cold final validation, endpoints and close three-root classification. Strict docs and 13 documentation/planning checks pass. Wheels, hashes and logs remain external in `host-root-acceptance`. Kinetic residual/observable uncertainty and unresolved/tangent roots remain separate R1/R6 gates.
-
-The x86 two-device CI discrepancy is reproduced: states/current are bitwise equal, while derived moment reductions/divisions differ by <=8.7e-19. Derived moments use the existing 1e-12 absolute tolerance; exact state/current, actual placement, original-residual and AD/finite-difference checks remain. The complete sharding regression passes on local ARM and office x86 CPUs. Documentation wording and strict-build checks pass; hosted gates still control merge readiness.
-
-R1's observable/cold-warm and joint-grid certificates remain the prerequisite for promoting R2/R3 reuse and performance policies. The strict cache-identity reproduction of the 2.46% discrepancy remains open. The [#171](https://github.com/uwplasma/DKX/pull/171) PETSc-option feature is integrated with #170's supervisor and residual gates: ordered tokens are forwarded to preflight and each rank, retained per case, and bound to campaign identity along with `PETSC_` environment settings. Observed factor packages from `-ksp_view` are recorded separately from requests. The guarded office PAS campaign observes SuperLU_DIST with natural ordering and passes original-residual gates. The validation/registry selection passes 230 tests. External option files and implicit PETSc configuration still require archived contents/fresh campaigns when changed; complete toolchain locking remains R0 work.
-
-### 2.1 What has landed, and what has not
-
-The native analytic/VMEC/Boozer profile routes, native ambipolar evidence, physical flux conversion, CLI's eleven advertised commands, Python floor, src layout, inert top-level import, Rich, MyST/Furo, installed-artifact tests, and evidence runner/registry exist. Do not schedule their initial implementation again. Solver-module imports still configure runtime; distributed initialization must stop swallowing failures.
-
-The compatibility/expert stack is substantially broader than native execution. `execution.py` still rejects native Phi1, full magnetic-drift mode, monoenergetic and transport-matrix workflows, explicit batching/sharding, non-auto reuse policy, and single-surface profiles. Some are interface gaps over existing physics, others need scientific validation. The high-level `Case -> run` orchestration is not an end-to-end JAX-transformable function. `examples/08_vmex_optimization/run.py` uses an analytic harmonic model; it is not a VMEX boundary optimization.
-
-| Measured inventory at the review baseline | Files | Python files | Physical Python lines |
-| --- | ---: | ---: | ---: |
-| `src/dkx` | 62 | 60 | 48,844 |
-| `tests` including fixtures | 488 | 177 | 47,106 |
-| `examples` including inputs | 194 | 96 | 15,885 |
-| `docs` including assets | 176 | — | — |
-| `tools` | 103 | 82 | 28,715 |
-| `validation` | 80 | — | — |
-
-Counts describe the baseline before this revision, not future limits. The September 1 record reports a 29.32 MiB fresh clone, still above target; this review did not remeasure a fresh remote clone. The August history rewrite already removed large historical blobs. A second rewrite is not the default solution. The last recorded coverage campaign was 91.55% line / 79.77% branch, with 1,994 passes and one failure on office; it is not a green release certificate. Earlier 90.6% / 78.5% numbers describe a different run. No new full-suite coverage result is claimed here.
-
-At review, DKX has one open PR, [#168](https://github.com/uwplasma/DKX/pull/168), for process-group timeout cleanup. Main protection reports seven required checks (`build`, `coverage-report`, `examples-smoke`, `external-data-smoke`, `workflow-lint`, `wheel-install`, `tests`), one approving review, admin enforcement disabled, and force pushes allowed. These settings were observed, not changed by this review.
-
-### 2.2 Scope of the external audit
-
-GitHub branch heads, paginated PR/issue bodies, issue comments, review comments, tags, and commit histories were collected for all eight repositories below. All 75 branch heads of the five core comparison repositories were compared with their default branches; source/diff inspection concentrated on physics, solver, API, and failure-relevant changes. This is an exhaustive inventory with directed technical review, **not** a claim that every historical source line was independently verified or every branch built. Closed dependency-update PRs are not scientific features; branch names do not prove unmerged functionality.
-
-| Repository | Branch heads | PRs, all states | Non-PR issues, all states | Review focus |
-| --- | ---: | ---: | ---: | --- |
-| [DKX](https://github.com/uwplasma/DKX) | 2 | 162 | 6 | Equations, native/expert split, plans, all recent performance corrections, tests and evidence |
-| [SOLVAX](https://github.com/uwplasma/SOLVAX) | 14 | 85 | 14 | Krylov/recycling, structured factors, precision, adjoints, parallel primitives; local 0.20.0 at `5a499269` |
-| [SFINCS](https://github.com/landreman/sfincs) | 39 | 16 | 10 | Fortran v3 equations, namelists, assembly, PETSc, adjoint/AMG/external-distribution branches; local `8df5453472e982df0f6ae005243ce38d57a83711` |
-| [YANCC](https://github.com/f0uriest/yancc) | 19 | 97 | 0 | Multigrid, line smoothers, Krylov reliability, field-particle/collision resolution; local `6f399a21` |
-| [MONKES](https://github.com/JavierEscoto/MONKES) | 1 | 0 | 1 | Fourier/Legendre monoenergetic solve and normalization; remote `4e8281c9`, local checkout older |
-| [ESSOS](https://github.com/uwplasma/ESSOS) | 53 | 60 | 5 | Coil/field/geometry differentiation and reusable geometry interfaces |
-| [NEOPAX](https://github.com/uwplasma/NEOPAX) | 19 | 11 | 3 | Transport grid, profile/current conventions and lagged neoclassical response |
-| [VMEX](https://github.com/uwplasma/VMEX) | 53 | 264 | 3 | Equilibrium differentiation, current/profile coupling and production plans |
-
-Evidence was saved outside Git under `dkx-review-evidence-20260905`, including raw API responses, source inventories, probe scripts, inputs, traces, HLO, logs and compact results. The office source was archived from the exact DKX baseline into an isolated directory. Existing local DKX, SFINCS build adjustments, and downstream uncommitted changes were preserved. External branches/PRs remain dependencies until their specific commits pass integration tests.
-
-### 2.3 Lessons that constrain the next implementation
-
-| Evidence | Consequence for the new plan |
-| --- | --- |
-| DKX [#101](https://github.com/uwplasma/DKX/pull/101) corrected radial flux units | Earlier physical flux/current values are superseded. Check Jacobians, radial coordinates, signs and normalization before comparing numbers. |
-| [#102](https://github.com/uwplasma/DKX/pull/102), [#104](https://github.com/uwplasma/DKX/pull/104), [#106](https://github.com/uwplasma/DKX/pull/106) | Particle/heat transport admission does not admit parallel current. Roots near 12.681640625 and 11.533203125 kV/m have specified seeded-interval scope; uniform broad search was operationally unacceptable. |
-| #146–#153: stable JIT, fused setup, narrow preconditioner reuse, reverted speculative setup, restart tradeoffs | Retain the successful setup improvements. Reuse acceptance is measured, not assumed; return the preconditioner actually built. Larger restart helped a GPU case but hurt CPU. |
-| #154–#156: profiles and bootstrap interpretation | Equilibrium pressure alone does not specify density and temperature. Match physical scale and profiles; absence of an admitted root is not a root at a scan endpoint. |
-| [#160](https://github.com/uwplasma/DKX/pull/160): `Er=15`, `Nxi=20` failed after 6,182 s; `Nxi=30–80` solved in roughly 360–436 s while current changed sign | Lower resolution is not necessarily cheaper, and convergence of the linear solver is not convergence of current. Preserve this as a bounded hard case. |
-| [#161](https://github.com/uwplasma/DKX/pull/161): 2.46% flux change after cross-surface warm reuse despite small residual | Establish observable error and cache invariants before broad reuse. Conditioning is a plausible mechanism, not proof that an implementation bug is impossible. |
-| #162–#168: contended runs, orphaned children, incomplete output | The contaminated sweep is void. Process-group supervision, exit status, convergence reason, required datasets and scientific acceptance precede timing comparisons. |
-| Historical conditioning estimates reported in #172, not independently rerun here (2026-09-02, `tools/benchmarks/operator_conditioning.py`): `er_xdot` 3.36e18, `pas_scheme12` 3.00e12, `magdrift` 6.43e7, `fp_cs3` 2.96e7; Ruiz equilibration gains 3x, 456x, 26x, 187x | With `‖δx‖/‖x‖ ≤ cond·‖r‖/‖b‖`, a 1e-15 residual on the 3e12 deck admits 3e-3 of solution error -- the size of the route-to-route `FSABjHat` disagreement actually seen -- and a 1e-10 residual admits far more than the 2.46% the warm reuse produced. `solver.relative_tolerance` bounds the residual, not the answer. This is R1's starting hypothesis and first test, not its conclusion: reproduce the 2.46% under strict cache identity, then attribute it with the adjoint-weighted estimate. Condition estimates near or above reciprocal float64 precision are numerically uncertain. A state-norm bound neither identifies the mechanism nor directly bounds a particular moment; phase-space error is separate. |
-| `Er = 15` pitch-angle ladder on the reported HSX deck with `Ntheta = 10`, `Nzeta = 15` fixed: `Nxi = 20` failed after 6,182 s; 30/40/60/80 solved in 406/436/360/359 s; 120 in 989 s; 180 in 1,491 s. `FSABjHat` = +5.877e-3, +3.000e-3, −3.364e-3, −4.084e-3, −3.812e-3, −3.769e-3 | The current changes sign between 40 and 60 and settles only by 120–180 (6.7% then 1.1% steps), at the value the deck's own author had commented out. Some higher-resolution cases ran faster; this does not establish a conditioning mechanism, and a converged linear solve at low `Nxi` is not a resolved current. B11 carries −3.77e-3 at `Nxi = 180` as its provisional target; the `Nzeta` axis is unchecked. The [Shaing–Callen study](https://arxiv.org/abs/2407.21599) concerns the collisionality limit and orbit-precession regimes. It does not certify this fixed-collisionality pitch-resolution ladder; refine theta/zeta/speed independently as well. |
-| Local SFINCS reference on the macports PETSc 3.20.2 / MUMPS 5.6.2 build: 19 of 38 upstream decks crash inside MUMPS (`SIGTRAP` or `SIGSEGV` about 0.34 s in, right after "Beginning the main solve"; a 12,649-unknown RHSMode=3 case is one), 8 time out at 1,800 s, and 2 ranks segfault on every deck tried. `-pc_factor_mat_solver_type petsc` completes the crashing deck but comparable coverage falls from 11 to 6 because the slower LU pushes medium decks into the timeout | No unknown-count threshold certifies reference validity: some tiny runs also fail original-residual checks. Admit individual runs through execution, residual and observable gates. Two earlier attributions of the same failure pattern -- orphaned children ([#167](https://github.com/uwplasma/DKX/pull/167)) and leaked grandchildren ([#168](https://github.com/uwplasma/DKX/pull/168)) -- were real defects and not the cause; a clean, idle, group-supervised run reproduced the cliff. Attribute a failure only after the next clean run reproduces it. R0 must build an isolated Linux PETSc/MUMPS toolchain; [#171](https://github.com/uwplasma/DKX/pull/171) records the backend per case. |
-| SFINCS branches `adjoint*`, `externalF`, `AMG3Dupwinding`, `AMGLegendre` | Treat these as separate model/algorithm candidates. Do not silently include experimental branch behavior in v3 main parity. |
-| SFINCS issues/PRs #24–#26 | Backend-specific MUMPS diagnostics, ambipolar defaults and field scaling need explicit contracts and matched tests. |
-| YANCC changes and open #8, #34, #62 | Study true-residual replacement, reorthogonalization, adaptive line smoothing, Rosenbluth resolution, cyclic reduction and gauge handling. Open finite-difference/ambipolar/nonuniform-grid proposals are not released evidence. |
-| MONKES [issue #1](https://github.com/JavierEscoto/MONKES/issues/1) | Audit the Boozer reader's zero-index loop against one-based allocation; use a pinned, bounds-checked reference build before new comparisons. |
-| SOLVAX precision/nonfinite/Schur/fixed-loop fixes, including #67–#69, #76, #90, #93, #95–#98 | Require a compatible pinned minimum version and regression coverage; do not reimplement already fixed generic methods in DKX. |
-| ESSOS #58 merged; #61–#66 open; NEOPAX #10–#12 open, #13–#14 merged; VMEX #261/#267 open | Write integration contracts against available APIs, label pending interfaces, and verify actual installed versions. |
-
-### 2.4 Independent review of this plan, 2026-09-05
-
-PR #172 reports a second source/literature review. Its historical observations are retained with provenance, not promoted to current certificates. That review reports verification of: the nine SFINCS namelist groups and the `whichMatrix` semantics in `populateMatrix.F90`; the commented-out `include_fDivVE_term` assembly; `drift_kinetic.py:active_dof_mask` converting `n_xi_for_x` with NumPy; `batch.py` looping over devices and falling back to one device under tracers; `solvax.parallel.shard_batch` and `axis_inner_product`; every DKX, SOLVAX, YANCC and MONKES pull request and issue number cited above; and checks on its own branch. The implementation checkpoint above records this branch's validation and supersedes the original full-operator JIT limitation. The CSR→CSC transposition in `direct_solver_backends.py` was introduced in [#165](https://github.com/uwplasma/DKX/pull/165) and is corrected here; the correction is right and the earlier speedup framing was invalid.
-
-The control count is now reproduced by the checked-in `tools/parity/output_key_coverage_report.py --namelist-source /path/to/readInput.F90` route. It counts uncommented NAMELIST member identifiers, preserves continuations across blank/comment lines, records source line numbers and syntactic preprocessor guards, and rejects unsupported declaration syntax or duplicates. On pinned SFINCS `8df5453472e982df0f6ae005243ce38d57a83711`, source SHA256 `328285614dff3daaaae92d162b6f23598ae6d42bba148d6027d1e234822ccf49`, it recovers 145 members in nine groups, including 20 species and 27 physics members. It does not evaluate preprocessor conditions or establish compiled/model support; R5 must still map defaults, units, admissible combinations, equations and tests.
-
-Not verifiable from Git: this review's own profiling numbers in §5.1 and §5.2, whose evidence lives in an external archive. They are kept as diagnostics with that caveat and carry no release weight until the R0 pilot regenerates them from tracked inputs.
-
-## 3. SFINCS-v3 scientific contract
-
-The Fortran source contains **145 uncommented namelist members in nine groups** (14 general, 29 geometry, 20 species, 27 physics, 9 resolution, 13 other numerical, 10 preconditioner, 10 export, 13 adjoint). R5 must map **each control**, default, units, admissible combination, equation/source location, native representation, compatibility handling and test into the existing capability/reference machinery. This enumeration is not 145 claims of DKX parity, and the count itself is a script output, not a sentence (section 2.4). A parsed control does not establish working support: the `include_fDivVE_term` assembly is commented out upstream; conditionally compiled options need their build flags recorded.
-
-The target is supported scientific functionality, including useful upstream workflows, not identical internal PETSc switches. A PETSc option may map to an equivalent SOLVAX policy. An unsupported scientific option must raise during preflight. Every row needs four distinct statuses: compatibility implementation, native exposure, mathematical/model validation, and production envelope.
-
-| Family to close | Source/API audit and acceptance requirement |
-| --- | --- |
-| Species and drives | Charges, masses, kinetic/adiabatic roles, density/temperature gradients, unequal temperatures, inductive drive, reference scales, Coulomb logarithm and quasineutrality assumptions. Independent density and temperature profiles are mandatory; pressure is not a substitute. |
-| Collisions | Lorentz/PAS, full linearized multispecies Fokker–Planck and retained Sugama variants. Test field-particle terms, Rosenbluth potentials, conservation, Maxwellian limits, high-Z disparity and unequal-temperature domain. State where an H-theorem/equilibrium nullspace applies. |
-| Trajectories | Full and DKES-like choices, compressible/incompressible electric drift, speed and pitch derivatives, `includeXDotTerm`/`includeElectricFieldTermInXiDot`, default combinations. Compare each operator term before comparing moments. |
-| Magnetic drifts | Every supported `magneticDriftScheme` (including the 0–9 choices where implemented), radial/tangential terms, curvature/grad-B and electric-field conventions. Native full magnetic-drift selection is still a gap. |
-| Phi1 and external distributions | Linear/nonlinear quasineutrality, kinetic species response, density/gauge constraints, external Phi1/distribution inputs, NBI conditional build behavior and temperature-equilibration limitations. Verify coupled residual/Jacobian and admissible physics. Native Phi1 is still a gap. |
-| Nullspaces and sources | All retained `constraintScheme` choices, density/energy constraints and source coefficients. Demonstrate constrained rank, uniqueness and normalization; compare physical moments across equivalent constraints. |
-| Full-kinetic outputs | RHSMode 1 particle/heat flux, parallel flow/current, bootstrap, classical terms, NTV/momentum diagnostics and electrostatic corrections where supported. Document heat versus energy flux and every physical-unit conversion. |
-| Transport/database modes | RHSMode 2/3 matrices, monoenergetic coefficients, field/collisionality/speed scans, thermal convolution, interpolation validity and sign conventions. Compatibility exists; native workflow/Result admission remains incomplete. |
-| Ambipolarity | Charge-weighted total radial flux, electric-field coordinate conversion, bracketing/refinement, all retained roots, slope/stability convention, continuation and selection. Compare with SFINCS root utilities and PENTA in matching models. |
-| Sensitivities | Supported RHSMode 4/5 and adjoint controls: distinguish actual solves from input validation. Compare primal/adjoint equations, gradients of moments, geometry and profile parameters, and nonlinear Phi1/root derivatives where differentiable. |
-| Geometry | Analytic and file-backed geometry schemes 1–5, external VMEC/Boozer families 11–13, asymmetric equilibria, signs/orientation, radial interpolation, field periods and Fourier truncation. Match source domains rather than treating equal integer settings as equal grids. |
-| Resolution | `Ntheta`, `Nzeta`, `Nxi`, `Nx`, `NL`, speed maximum/grid scheme, interpolation/quadrature, active pitch layout, boundary conditions and Rosenbluth resolution. Joint refinement must close angular/pitch/speed coupling. |
-| Execution and export | Iterative/direct routes, tolerances, preconditioners, nonlinear controls, all export fields, dump formats and restart semantics. Compare complete successful outputs; never accept a partial HDF5 simply because it opens. |
-| Research workflows | Surface/profile scans, finite-Er databases, impurity transport, full-FP ambipolar calculations, bootstrap/equilibrium iteration and differentiable objectives. Document model validity and tested parameter envelope for each. |
-
-### 3.1 Evidence hierarchy and certificates
-
-Separate four questions: (1) does the code implement the stated equations, (2) are those equations solved accurately, (3) is the model appropriate and independently supported, and (4) does the workflow finish within its resource budget? Cross-code agreement answers none of these alone when both codes share a discretization error or incompatible normalization.
-
-* **Mathematics/code verification:** manufactured distributions and forcing with analytic moments; polynomial/Gamma-function quadrature identities; periodic Fourier derivative symbols; active-grid indexing; adjoint dot products; block extraction/reconstruction and dense nonsymmetric referees; collision invariants and operator limits. Derive expected values independently of production helpers. Perturb a coefficient/sign/weight to confirm that important proofs fail.
-* **Algebraic error:** retain original-system `r = b - A x`, absolute and relative norms and normwise/componentwise backward error. Check constraints separately. Establish rank and gauge before interpreting a condition estimate. A tiny global residual does not bound every small flux.
-* **Observable error:** for a linear observable `Q = cᵀx`, solve `Aᵀλ = c`; `λᵀr` estimates the algebraic error, with adjoint error accounted for. Nonlinear observables need a linearization remainder or conservative refinement evidence. Do not call this a rigorous bound without its assumptions. Equilibration may improve numerical scaling; certification uses the original physical operator and units.
-* **Numerical uncertainty:** refine each axis and jointly refine angular/pitch/speed/potential grids, Fourier truncation, radial interpolation, solver tolerances, and nonlinear/root tolerances. Track every published observable. Near-zero quantities use physically motivated absolute tolerances in their own units plus relative tolerances; never normalize current by a heat flux or discard an inconvenient species using another species' largest moment.
-* **Model validation:** specify local ordering, collisionality, orbit-width and electric-field assumptions, collision model, magnetic drifts, Phi1, geometry regularity and boundary conditions. Model uncertainty is not a mesh error bar.
-* **Differentiation:** JVP/VJP dot products, analytic sensitivities, central differences over a step-size window, and Taylor remainder rates for geometry, collisions, profiles, field and coupled objectives. Report primal and adjoint residuals, root branch, setup/gradient cost and peak memory. Stopping/reuse heuristics must not silently change the differentiated equations.
-
-Existing `test_math.py`, `test_numerics.py`, `test_collision_physics_gates.py`, `test_transport_limits.py`, `test_shaing_callen.py` and solver/transport tests already close substantial proof work. In particular the thermal Lorentz coefficient `8/sqrt(pi)` in DKX normalization and manufactured Gamma-function thermal convolutions are proved; do not reopen them under a different normalization. Full-FP Spitzer–Härm and multispecies transport limits remain distinct from that Lorentz result. Onsager/Onsager–Casimir relations require the appropriate trajectory model, thermodynamic forces, magnetic-field reversal and sign conventions.
-
-For a simple ambipolar root, differentiate `J_r(E_r,p)=0` using `dE_r/dp = -(∂J_r/∂p)/(∂J_r/∂E_r)`. A zero/uncertain slope is **marginal**, not stable; branch creation, tangency and selection switches are nonsmooth events. Sign samples cannot exclude even crossings or tangencies between samples. Axisymmetric local momentum-conserving neoclassical theory is intrinsically ambipolar: it does not select a unique tokamak Er. Use a prescribed field or an explicitly additional closure in that application.
-
-### 3.2 Benchmark families
-
-Every family records pinned inputs, independent derivation/reference, model/normalization match, converged observable targets, tolerances with rationale, valid parameter range, CPU/GPU resource envelopes, and failure outcomes. Tiny smoke decks are not publication benchmarks. Extend the existing registry/runner instead of creating a script and JSON for each sweep point.
-
-| ID | Case family | Evidence and use |
+| Work to retain | Source / review | Remaining boundary |
 | --- | --- | --- |
-| B0 | Manufactured operators/moments, grids and constrained linear systems | Analytic proof tests, backward error, conservation, derivatives; ordinary CI. |
-| B1 | Uniform field, Lorentz conductivity, full-FP conductivity, high-collisionality limits | Independent normalized derivations; distinguish established Lorentz proofs from additional Spitzer–Härm and general-geometry transport work. |
-| B2 | Large-aspect-ratio circular tokamak across collisionality | Banana/plateau/Pfirsch–Schlüter behavior, Shaing–Callen limits, flow/bootstrap and intrinsic ambipolarity; SFINCS plus appropriate analytic theory. Convergence toward the Shaing–Callen limit is slow and resolution-sensitive ([arXiv:2407.21599](https://arxiv.org/abs/2407.21599)); record the approach, not one point. |
-| B3 | DSHAPE/NCSX/W7-X monoenergetic, finite Er | Existing MONKES/YANCC comparisons, matched DKES-like equations and Beidler conventions; extend resolution/collisionality coverage and compare full tables. Add [NTX](https://github.com/uwplasma/NTX), the JAX Legendre/block-tridiagonal monoenergetic solver with an embedded adjoint, as the sibling reference for monoenergetic derivatives. The external bar is yancc's reported agreement with MONKES within 1% across collisionality ([arXiv:2607.20861](https://arxiv.org/abs/2607.20861)). |
-| B4 | LHD/HSX/W7-X full kinetic multispecies | SFINCS, impurities/high-Z/unequal temperatures, particle/heat/current outputs; finite-Er and collision terms separated. Include a direct yancc comparison on identical grids with a stated tolerance: it is open source, reports <1% against SFINCS on NCSX with about 5% on currents, and is the closest competitor (section 3.3). |
-| B5 | Finite-Er trajectory and tangential-drift variants | SFINCS operator parity and converged moments; KNOSOS only inside its bounce-averaged asymptotic domain. |
-| B6 | Linear/nonlinear Phi1 and impurity response | Quasineutrality/gauge proofs, full coupled residual and adjoint, independent SFINCS reference. |
-| B7 | W7-X ambipolar profile and root events | Current uncertainty, seeded and discovery scopes, branch continuation, failed-point handling; broad-search completeness claimed only with an actual exclusion argument. |
-| B8 | VMEC/Boozer conversion and asymmetric tokamak/stellarator | Coordinate/normalization and Fourier/radial errors; independently converged bootstrap rather than a tiny unresolved current. |
-| B9 | Database → thermal response | Existing analytic convolution, withheld table points, interpolation/edge refusal and full-kinetic comparison under matched assumptions. |
-| B10 | Linear, nonlinear and root sensitivities | Analytic/JVP/VJP/Taylor/finite-difference windows, SFINCS adjoints where supported, nonsmooth-event refusal. The gate is a derivative **through the ambipolar root and through geometry**, not a smooth PAS temperature derivative on a tiny deck: report the Taylor-remainder rate and the FD window for `dE_r/dp` and for a flux with respect to a boundary coefficient. Verify DKX's complete model and compare independently audited derivatives under matching model scope. |
-| B11 | Restart and optimization hard cases | Cross-surface 2.46% regression, wide Er reuse, `Er=15` high-pitch case with `FSABjHat` = −3.77e-3 at `Nxi = 180` as a historical high-pitch comparison point pending joint refinement; cold equivalence in observables and bounded failure recovery. |
-| B12 | CPU/GPU batch and state distribution | Strong/weak scaling, throughput/latency, real device occupancy, gradients, memory and communication; correctness before speed. |
-| B13 | Actual VMEX and ESSOS design chain | Equilibrium → geometry → DKX objective → gradient → constrained design; final independently evaluated, refined design. |
-| B14 | NEOPAX transport integration | Consistent profile/grid/flux units, conservation, ambipolar response and lagged-response refresh; prescribed versus evolved state. |
+| Supervised, resumable benchmark attempts; original residual and complete-output checks; PETSc backend/provenance verification | #169–170, #176–177, #181, #183, #185; `tools/benchmarks/parity_performance_matrix.py` | Fresh installed production replay, valid references and observable/grid admission are still needed. |
+| Static operator layouts, refreshed collision coefficients and native profile preparation | #173–174, #178, #182, #186–187; `drift_kinetic.py`, `collisions.py`, `execution.py`, `er.py` | Profile updates are opt-in and hold geometry, normalization, species, Coulomb log and discrete layout fixed. They do not make `Case.run` a JAX transformation. |
+| Independent batch sharding through JIT and gradients, uneven-batch handling and per-input algebraic status | #179, #182, #187–188; `batch.py`, `api.py` | One whole system remains on one device. Native Case execution does not expose every expert batch option; memory budgets are estimates. |
+| Original kinetic and transpose checks; qualified dense adjoint references; native profile-to-root Taylor tests | #180, #184, #188; `solve.py`, `er.py`, solver/root tests | Small fixed-grid evidence does not establish resolution, branch or geometry uncertainty. Partial state recovery has a different derivative contract. |
+| Generated Schur-factor reuse across RHSs, forward/transpose solves and refinement | #188 `be6506fe`; existing SOLVAX generated-factor API | Factors belong to one solve execution. Persistent reuse across changed operators is not implemented by this change. Full-FP uses the Krylov route. |
 
-### 3.3 Position relative to yancc, MONKES, NTX and KNOSOS
+Merge preparation must reconcile #168 with its included timeout fix and #172 with
+its included roadmap review, rather than merging duplicate implementations. Review
+the dependent chain #169 → #170 → #173 → #174 → #176 → #177 → #178 → #179 → #180
+→ #181 → #182 → #183 → #184 → #185 → #186 → #187 → #188. Resolve/rebase in order,
+rerun checks on the resulting integration commit, then close superseded PRs with
+an explicit disposition. This is planned maintainer work, not permission to bypass
+protection. SOLVAX [#100](https://github.com/uwplasma/SOLVAX/pull/100) is also
+unmerged; the reviewed local DKX dependency is SOLVAX 0.20.0. Requalify its eventual
+successor rather than silently depending on a branch.
 
-A research-grade plan states what the code is expected to demonstrate that its neighbours do not, and where it must not overclaim. Reported numbers below are the other codes' own; none has been reproduced here.
+The prior worktree and its paused root-timing edit are absent from their recorded
+local paths. The pushed head was freshly cloned for this review; no recovery or
+commit of that uncommitted fix is claimed. The pushed `find_ambipolar_er` timer
+still needs an outer-clock audit including preparation, final cold admission,
+slope estimation and optional root enumeration. Preserve its cold final solve.
 
-| Code | Model and method | Reported | What DKX must show against it |
-| --- | --- | --- | --- |
-| [yancc](https://arxiv.org/abs/2607.20861) | Full 4D DKE, linearized FP with field-particle terms and speed/pitch electric-field terms; tangential magnetic-drift support requires a separate audit; `E_r` is an input, no Phi1 self-consistency; finite differences with a diagonally dominant upwind stencil, Maxwell collocation in speed, semi-coarsened multigrid V-cycle preconditioning GCROT; JAX. | The paper reports close SFINCS/MONKES agreement and roughly an order-of-magnitude per-scan speed/memory improvement. Those are author-reported comparisons, not a DKX benchmark. Audit derivative verification independently of the differentiability claim. | Certified observable error (§3.1), matched Phi1/quasineutrality scope and retained ambipolar-root evidence; verified derivatives through roots and geometry (B10). Historical DKX two-GPU batch scaling was below 1; the R4 checkpoint now records a bounded sharded PAS improvement and its structured direct route is exact only on PAS/DKES; do not claim the 10⁷-unknown GPU envelope until B12 measures it. |
-| [MONKES](https://arxiv.org/abs/2312.12248), [thesis](https://arxiv.org/abs/2510.27513) | Monoenergetic DKE, Lorentz collisions, Legendre in pitch and Fourier collocation on the surface, block-tridiagonal direct elimination, O(N_ξ N_fs³). | 4–64× over DKES; about one minute per case on one core at ν̂ = 1e-5; converged with ≤180 Legendre modes and about 2,000 surface points; Onsager symmetry checked. Momentum conservation requires external correction. | The same block-tridiagonal structure DKX exploits on PAS decks; B3 must document its convergence criterion and meet DKX's observable tolerances while checking the required `N_ξ` resolution, and the [Boozer-reader off-by-one](https://github.com/JavierEscoto/MONKES/issues/1) must be excluded from any reference build. |
-| [NTX](https://github.com/uwplasma/NTX) | JAX-native monoenergetic solver implementing the MONKES Legendre formulation with an embedded adjoint. | The README reports a 14× adjoint advantage over finite differences at 32 parameters. Pin the benchmark and audit gradient accuracy, normalization and timing boundaries before adoption. | The monoenergetic derivative reference for B3/B10, and a candidate owner of the monoenergetic database workflow rather than a duplicate in DKX; decide ownership explicitly in R5. |
-| [KNOSOS](https://doi.org/10.1016/j.jcp.2020.109512) | Bounce-averaged, low-collisionality, radially local; includes the tangential magnetic drift and surface variation of the potential. | Fast enough for optimization loops; valid in its asymptotic regime. | Comparison only inside that regime (B5); a disagreement outside it is not a defect of either code. |
-| [PENTA](https://ui.adsabs.harvard.edu/abs/2010APS..DPPTP9124L/abstract), [NEO-2](https://www.semanticscholar.org/paper/ef15bce085ab33694ac20af4ea1ce6591f3dbb0b) | Momentum-corrected transport from DKES-type coefficients; field-line-tracing full linearized collisions. | Standard references for momentum correction and parallel flows. | A momentum-conserving full-FP model should not add a DKES momentum correction; verify discrete conservation independently; these are the references for parallel-flow and bootstrap comparisons in B2/B4 and for the database-to-thermal path in B9. |
+### Useful results, with their limits
 
-The differentiating claims are in the last column of the first row: certified observable error, the complete SFINCS-v3 model with root evidence, and verified derivatives of that model. Speed against yancc on the full DKE is not a differentiator until measured on matched grids.
+The #188 report records 244 distinct CPU cases and 22 GPU cases for its factor
+integration, and native root Taylor orders of 2.00–2.01. On one **7,850-unknown,
+three-field PAS objective**, twelve alternating synchronized pairs reduced warm
+value/gradient medians from **67.59 to 37.09 ms on CPU** and **221.74 to 195.56 ms
+on A4000**; GPU LU calls fell from 288 to 144. CPU used M3 Max/JAX 0.9.2; GPU used
+JAX 0.10.2. These compare two checked routes
+on each host. They are not full-FP, fresh compilation, allocator peak, whole-root,
+whole-optimization or cross-host scaling results. The underlying external traces
+were reported in the prior review; this review does not relabel them as new runs.
 
-## 4. Architecture, reuse, and algorithm ownership
+Earlier README claims about a 744k HSX case and a broad upstream speed ranking
+are historical, with differing runtime/memory definitions and invalidated
+reference campaigns elsewhere in the record. Retain their evidence in the
+performance documentation; do not use them as an unqualified headline. In
+particular, small algebraic residuals and agreement with a failed Fortran run
+cannot certify a transport observable.
 
-### 4.1 One owner per concept
+Fresh review evidence is outside Git in `dkx-plan-evidence-20260906`; exact commands,
+inputs, source identities and logs accompany the review PR. Its role is to choose
+work, not to declare a new production benchmark. The initial bounded local pilot
+already reproduced a crucial distinction: a SFINCS full-FP solve reported success
+but its original residual was **1.10e-9 at a requested 1e-10**; DKX's was 8.48e-11.
+A separate direct reference also missed the gate. Neither failed-reference pair is admitted for a
+performance comparison. An initial HSX copy omitted its equilibrium and was
+rejected; its partial DKX state also failed the full residual check. Repair inputs
+and explicitly choose complete-state versus moment-only evidence before rerunning.
 
-| DKX responsibility | SOLVAX responsibility |
+A subsequent **right-preconditioned GMRES/MUMPS** run with an unpreconditioned
+stopping norm and inner rtol=1e-13 passed the common original 1e-10 gate: SFINCS
+1.20e-11 and DKX 8.48e-11. On this full-FP grid (5×5 angles, Nxi=6, Nx=3, two species, ramped
+pitch; 654 rows in the constrained Fortran matrix), scaled differences
+were 4.08e-6 for flow, 3.94e-6 for parallel current and below 8.64e-8 for fluxes.
+The PETSc log records one symbolic factorization, one numeric factorization and
+22 factor applications. This establishes a bounded algebraic comparison, not
+grid convergence or a runtime ranking; concurrent review tests exclude performance
+promotion. Solver/norm configuration must therefore be part of reference admission.
+
+| Fresh check on the reviewed source | Result / limit |
 | --- | --- |
-| Geometry, species, normalization, kinetic equations, collision physics, active phase-space layout, physical constraints and moments | Generic linear operators, sparse/banded/block algebra, factorizations, Schur complements and low-rank updates |
-| Construct physics-aware line/coarse preconditioner matrices and choose admissible approximations | Apply/factor those matrices; Krylov/recycling, residual replacement, reorthogonalization, scaling and iterative refinement |
-| Root scope/selection, convergence of physical observables, solver policy per model/device, physics diagnostics | Generic root/implicit-solve primitives where reusable; transpose solves, custom derivative rules and checkpoint strategies |
-| Case scheduling, species/surface grouping, restart validity, profile/optimization semantics | Public mesh/batch/collective utilities, distributed inner products and generic sharded solve primitives |
-| HDF5/NetCDF adapters, native contracts, reference-code comparison and publication evidence | Optional generic PETSc/SuperLU_DIST/MUMPS integration if justified by measured benefit and support cost |
+| DKX solver, Er, batch, native execution and planning suites | 248 passed on M3 Max CPU/JAX 0.9.2/SOLVAX 0.20.0; not a full coverage campaign. |
+| Office GPU selection | Four targeted batch/AD/full-state cases passed. The unchanged two-device harness also passed PAS/full-FP states, original residuals, uneven batches, actual placement, JIT gradients and an FD check on two A4000s, JAX 0.10.2. |
+| YANCC at `6f399a21` | 59 preconditioner/solve/collision tests passed locally, including its SFINCS/MONKES fixture comparisons, coordinate representations, warm state and derivative tests. This does not establish comparative runtime or general warm-reuse correctness. |
+| README examples | Native Python and CLI run/inspect pass; Python including the advanced JIT gradient also passes from an isolated DKX install inheriting host dependencies. |
+| Existing independent comparison artifact | All three coefficient rows and external YANCC input hashes pass the offline audit; this is an artifact audit, not three fresh kinetic benchmarks. |
+| Documentation | Five planning/wording checks and standard Sphinx `-W` pass. Extra `-n` reference checking finds 219 warnings in both baseline and revised docs; resolve this existing API-link debt during consolidation. |
 
-SOLVAX already exposes generic sharding and collective operations, including `parallel.shard_batch` and `axis_inner_product`. Audit and use them before adding DKX equivalents. Extraction requires matching public factor/apply/transpose and reuse contracts. Separable operator application, host NumPy factorization/callback solves, and host low-rank construction may need SOLVAX API work first. Do not delete DKX code merely because a similarly named SOLVAX function exists. Move generic tests with ownership, retain DKX physics integration tests, and delete the replaced implementation in the consuming change.
+### Capability priorities
 
-Maintain a small native user interface (`Case`, `Result`, `run`, scans/convergence/plotting) over explicit expert objects. Consolidate duplicate facades and run-module/function ambiguity with migration notes. A native workflow must validate before allocation and either execute its declared model or explain precisely which combination is unsupported. Preserve compatibility aliases until the documented major-version migration.
-
-### 4.2 Prepared calculation and warm restart
-
-Introduce one prepared calculation protocol in existing owners, not a parallel framework. Separate immutable **static layout** (shapes, active masks, discretization topology, species count, model switches, dtype, sharding) from dynamic geometry/profile/Er values and mutable reuse state. The original full-operator JIT failure at `active_dof_mask` is addressed by carrying `n_xi_for_x` as static pytree metadata. Complete rebuilt operators now pass through the same staged solve after profile changes, with CPU/GPU regression evidence and a full-FP GPU check. Replacing top-level density/temperature fields alone still leaves collision data stale; dynamic coefficient construction and its derivatives remain required before advertising a complete differentiable prepared API.
-
-| Reused object | Validity and required test |
-| --- | --- |
-| Compilation | Same static signature; dynamic Er/profile values must not recompile. Count lowerings/compiles in scans and optimization. A disk compilation cache is distinct from a physical warm restart. |
-| Geometry/grid intermediates | Hash geometry contents, coordinate convention, radial locations, Fourier/grid settings and precision. Do not key by filename alone. |
-| Collision/operator data | Exact relevant species/model/parameter dependencies; changing n/T/Er must update every affected term. |
-| Symbolic sparse analysis | Same sparsity graph and ordering. Changed coefficients can reuse symbolic work, not exact numeric factors. |
-| Numeric factors | Exact same matrix, or a mathematically explicit update with verification. Reusing stale factors as an exact inverse is forbidden. |
-| Lagged preconditioner | Parameter drift/iteration/true-residual/observable checks; retry with a rebuilt preconditioner when rejected. Record the object actually used and returned. |
-| Initial state and Krylov recycle space | Project/remap between compatible grids, recheck constraints and original residual; discard harmful vectors. Forward, tangent and adjoint states have separate validity. |
-| Disk resume | Versioned semantic key, input hashes, precision/model/layout/software compatibility, atomic completion record and checksum. Partial/failed outputs never become completed points. Compiled executables/device pointers are not portable checkpoints. |
-
-Every warm route must match a cold reference within the **observable** tolerance, preserve root discovery/selection scope, and complete with bounded memory. Recompute final accepted optimizer points cold and at a higher resolution. Report restart hit/reject/rebuild counts, cold setup amortization and cost including failed trials. Adjoint correctness must survive reuse; differentiation through a preconditioner history is not a substitute for differentiating the converged equations.
-
-### 4.3 Prioritized solver investigations
-
-1. Stage setup/apply/solve at stable shapes; eliminate repeated Python tracing, closure churn, unintended NumPy transfers, host gathers and duplicate preconditioner builds. Preserve a transparent cold path for refereeing.
-2. Profile physics preconditioner **construction, factorization and application separately**. Investigate sparse/banded or periodic line structure, separable spatial operators and physics-aware coarsening before materializing larger dense blocks. Use YANCC/MONKES structures only where equations/layout match.
-3. Quantify fill, elimination ordering, block size, Schur density and Krylov workspace. For the sparse referee, include [STRUMPACK](https://portal.nersc.gov/project/sparse/strumpack/) as a candidate alongside MUMPS and SuperLU_DIST. Its GPU multifrontal and compressed-factor routes require pinned build options, same-matrix comparisons and independent residual/refinement checks; SuiteSparse speedups do not predict kinetic-matrix results. Accelerator support is backend-, version- and phase-specific. Measure on a byte-identical matrix on an idle machine. Dense block Thomas can require quadratic storage and cubic factor work per block; matrix-free outer iteration does not make a dense preconditioner memory-free. Compare generated blocks/checkpoint recomputation against retained factors for forward and adjoint.
-4. Compare exact factor reuse for multiple RHS with warm parameter scans; these are different workloads. Do not add block GMRES solely because wider BLAS calls are fast: the earlier study found only 2–3 genuine simultaneous RHS in routine transport modes.
-5. Evaluate equilibration, mixed-precision factors plus float64 residual/refinement in the GMRES-IR framework of [Carson & Higham](https://epubs.siam.org/doi/10.1137/17M1140819), adaptive rebuild and restart/recycle policy with failure envelopes. Select factor/residual precision using the method's assumptions, reliable scaling/rank evidence and observed backward/observable errors. Historical condition estimates motivate tests but are not a universal admission threshold or proof of convergence. NVIDIA A4000 FP64 throughput and small-kernel launch costs constrain results. Do not infer that FP32/TF32 is accurate for ill-conditioned kinetic systems or apply GPU tuning as the CPU default.
-6. Retain multigrid/collocation evidence already established. Promotion requires h-independent convergence **and** observable accuracy, total runtime/memory benefit and maintainable scope. Experimental reduced models remain explicit alternatives; they do not replace missing full-model functionality.
-
-## 5. Profiling and parallel execution
-
-### 5.1 Measurements made during this review
-
-These are **diagnostic probes**, not release rankings. Local CPU measurements had variable background load and JAX 0.9.2; office used JAX/jaxlib 0.10.2, SOLVAX 0.20.0 and two 16-GiB RTX A4000s. Calls were synchronized, warm times use five samples, and tracing was separate from those samples. The local editable install pointed at an obsolete checkout; explicit `PYTHONPATH` selected the audited source. Release runs must use an isolated installed wheel.
-
-| Probe | Observation | Interpretation |
+| Capability | State at the reviewed head | Decision |
 | --- | --- | --- |
-| Full-FP, 2,804 unknowns | Warm median 0.413 s CPU, 1.053 s single GPU | Small GPU work is not automatically faster; these different-platform measurements are not a portable speedup. |
-| Full-FP, 15,844 unknowns | First call 10.56 s CPU / 28.43 s GPU; warm medians 2.092 / 3.348 s | CPU timings are contended diagnostics. Separate setup/JIT from steady state. |
-| Same medium GPU case, prepared static layout prototype | Lower 0.601 s; compile 12.029 s; warm median 2.283 s; original relative residual 7.63e-11 | Staging is promising. Compiled temporary allocation estimate 68,703,728 bytes is **not** peak VRAM. Only the original parameter point was checked; changed profiles must rebuild all dependent physics before this can support a prepared API. |
-| Eight small scan points, one versus two logical CPU devices | 0.638 s versus 1.255 s | Logical CPU devices share host resources; this is not distributed CPU scaling. |
-| Same eight-point batch, one versus two physical GPUs | 0.709 s versus 1.436 s, identical returned states | The current host-loop/gather strategy does not demonstrate useful scaling. Both device placement and overlap need trace-level verification. |
-| Tiny PAS temperature derivative on GPU | Jitted value/gradient warm 1.80 ms; centered-FD discrepancy decreased over the step-size ladder to about 8.3e-12 relative | A real derivative check, limited to this smooth case. It does not certify full-FP geometry/root optimization. |
-| Local SFINCS PAS, FP, finite-Er, magnetic-drift and linear-Phi1 | Five repeats for iterative and direct modes, PETSc logs, outputs and process memory retained | PAS/FP and linear-Phi1 outputs were obtained. Finite-Er iterative solves diverged despite exit zero; the direct residual was about 1.02e-9. The first magnetic-drift launch lacked its equilibrium and was invalid. With that path fixed, iterative magnetic-drift execution still failed SNES (original relative residual 1.0), while the direct residual was 1.71e-10. Neither meets a common 1e-10 gate. Nonlinear Phi1 remains a separate gate. |
-| SFINCS medium FP on this MacPorts build | One exit-15 failure and repeated 120-s timeouts; additional repetitions stopped | Unusable reference outcomes, not DKX speedups. Repair/reproduce in an isolated reference toolchain before larger comparisons. |
-| SFINCS tiny FP tolerance comparison | Requested 1e-10; reconstructed original relative residual about 6.51e-9 iterative, 2.37e-13 direct | Equal configured tolerances do not imply equal acceptance. Use the same independently checked system and tolerance. |
+| Analytic, VMEC and Boozer native profiles; PAS and full-FP; prescribed Er and stellarator roots | Implemented in a restricted DKES/no-Phi1 native domain | First supported research envelope; qualify multispecies fluxes **and** current separately. |
+| Prepared native profile/Er sensitivities and expert batching | Implemented with explicit fixed dependencies | Productize and measure, rather than introduce another public interface. |
+| RHSMode 1/2/3, richer trajectories, Phi1, magnetic drifts and distribution export | Broader compatibility/expert support | Preserve regression coverage; a checkmark must distinguish equation, native interface, derivative and validation support. |
+| Native single-surface profiles, transport matrices, explicit Case sharding, Phi1/full drifts | Rejected or incomplete in `execution.py` | Single-surface explicit drives and prepared-scan access are useful near-term interface work; Phi1/full drifts require physics gates, not just removing a rejection. |
+| Real VMEX boundary optimization | Example 08 is an analytic harmonic geometry proxy | Keep it as a teaching example; do not cite it as the design deliverable. |
 
-Python profiles, JAX/TensorBoard-compatible XPlane traces, Perfetto traces, StableHLO and optimized HLO were captured for representative CPU/GPU kernels and the prepared GPU solve. Some unrestricted Python traces hit the event cap; their inclusive totals cannot support a percentage attribution. HLO cost estimates are not measured bandwidth or FLOP rates. The uncapped prepared-solve trace contains 129,593 kernels on one GPU stream over a 2.373-s device interval. Two batched float64 triangular-solve variants account for 27,464 launches and 1.957 s of nonoverlapping kernel time (about 88% of recorded kernel time). This directly prioritizes factor/preconditioner application and block layout; separate setup/application attribution before changing the algorithm. Capped batch traces cannot establish device occupancy or overlap.
+Extend the existing `validation/capabilities.toml` and SFINCS control inventory
+semantically: collision operators and backgrounds; trajectories/Er terms;
+Phi1/quasineutrality and gauge; geometries/asymmetry/radial conventions;
+RHS modes, sources/constraints and moments; grids/potentials; exports and solver
+controls. The recorded 145 declared namelist controls are an inventory, not 145
+validated scientific features. Map unsupported combinations to explicit reasons,
+references and tests. Do not promise parity with every experimental SFINCS branch.
 
-### 5.2 SFINCS/PETSc/MUMPS/SuperLU comparison
+## 3. What the external codes and literature change
 
-SFINCS `populateMatrix.F90` uses index **0 for the preconditioner**, **1 for the Jacobian**, 2 for the f0 residual contribution, **3 for the f1 residual operator**, and 4/5 for adjoint operator/preconditioner. An iterative PETSc solve often factors a simplified P (index 0), not the full residual A (index 3). A direct Jacobian solve factors index 1. Record `-ksp_view`, `-pc_view`, options and matrix dumps rather than guessing from the solver name.
+GitHub branch heads, all-state PR/issue bodies and repository-wide issue/review
+comments were inventoried again. Branch comparisons identify divergent code;
+technical review concentrates on equations, preconditioners, adjoints, geometry
+and failures. This is not a claim to have built every branch or verified every
+historical line. Fresh clones of YANCC, MONKES and KNOSOS supplement the existing
+SFINCS-v3 and SOLVAX sources.
 
-The previous `direct_solver_backends.py` comparison selected index 3 and constructed CSC directly from CSR arrays, transposing a square nonsymmetric operator. This review corrects the CSR→CSC conversion, requires explicit matrix index 0/1, adds a nonsymmetric regression, and removes an invalid numeric-factor/whole-factor speedup ratio. Sequential SuperLU is supernodal and has fill-reducing orderings (SciPy defaults to COLAMD); it is not an unordered unblocked baseline.
-
-In the 2,804-unknown FP probe, the preconditioner had 47,824 nonzeros; COLAMD SuperLU factors had 247,204 nonzeros and median complete `splu` time 5.57 ms. The direct Jacobian had 72,604 nonzeros, 3,544,534 factor nonzeros and 249.56 ms. Changing ordering materially changed fill and runtime. This demonstrates why factoring different matrices invalidates a backend comparison; it does not identify the best distributed solver.
-
-PETSc supplies matrix/solver composition, assembly and diagnostics. MUMPS uses multifrontal elimination, ordering, scaling/pivoting and distributed parallel work; SuperLU_DIST uses distributed supernodal LU with its own pivoting/ordering and accelerator support. Their implementation details and supported GPU phases depend on build/version. Sparse structure and fill-reducing order can save memory relative to dense DKX blocks, while memory-free operator application can favor DKX at larger sizes. Determine the crossover experimentally.
-
-The local executable uses MacPorts PETSc 3.20.2/MUMPS 5.6.2 and has no SuperLU_DIST backend. Its failures are specific and reproducible: 2 ranks segfault on every deck tried; at 1 rank, 19 of 38 upstream decks die inside MUMPS with `SIGTRAP` or `SIGSEGV` about 0.34 s into the main solve, and `-pc_factor_mat_solver_type petsc` completes those decks while pushing coverage from 11 to 6 comparable cases through timeouts. These are toolchain-specific blockers, and the plain-LU workaround is a diagnostic rather than a reference route. Do not call this a completed MPI/backend study. Build isolated pinned SFINCS/PETSc configurations with MUMPS and SuperLU_DIST on Linux; record BLAS, integer width, MPI, ordering packages, compiler flags and patches. Study 1/2/4/... ranks and relevant threads, sparse A versus simplified P, same matrix ordering where possible, symbolic reuse, numeric factorization, triangular solve, multiple RHS and aggregate memory. PETSc events nest: never sum parent and child times. Earlier claims that assembly is universally 88% of SFINCS runtime or one backend is universally faster are withdrawn as general conclusions.
-
-### 5.3 Required measurement protocol
-
-* Own and supervise each case's process group, impose wall/memory budgets, clean descendants on timeout/cancellation, and verify completion, solver convergence reason and required datasets before accepting observables (Fortran may exit zero after a failed solve). Reject overlapping/contended release runs. Preserve failed/timed-out/OOM/refused outcomes in the denominator.
-* Record exact commits, source/input/binary hashes, patches, environment, versions, hardware, threads/ranks/devices, precision, backend flags, compiler/JAX caches and load. Separate process startup/I/O, geometry/grid, operator construction, preconditioner construction, lowering, compilation, transfer, solve, moments, adjoint and serialization.
-* Measure fresh-process cold (empty compilation cache), cached-process cold, warm numeric-factor reuse, warm preconditioner reuse, and warm initial-state/recycle separately. Synchronize all outputs before stopping timers. Use at least five unprofiled steady-state repeats, median and dispersion; retain raw samples and state why repetitions or time caps differ.
-* Peak host RSS needs platform-correct units and aggregate/per-rank semantics; GPU allocated, reserved and peak device bytes are different quantities. Record both forward and gradient peaks, factor fill, Krylov vectors, transfers and communication. Compiled memory estimates supplement measured peaks.
-* Use cProfile for Python/setup attribution; JAX profiler/XPlane with TensorBoard or XProf and Perfetto for CPU/GPU launch/transfer/stream timelines; inspect lowered/optimized HLO and compilation logs. Use Nsight/perf only where the identified question needs hardware counters. Profile selected cases after unprofiled baselines; inspect truncated/dropped events before deriving conclusions.
-* Compare identical equations, physical inputs, grid functions, tolerance certificates and requested outputs. Report both time to solution and time to **accepted physical observable**. Never compare DKX solve-only time with SFINCS whole-process time as a speedup. Include full optimization iterations, failed line searches and setup amortization.
-
-### 5.4 Parallelism in order
-
-1. **CPU threads and independent processes:** measure actual BLAS/XLA threading and oversubscription; distinguish a thread pool, logical CPU devices, independent cases, and MPI-distributed states. Bound process count by memory as well as cores.
-2. **Resident same-shape batching:** group by compilation signature, place geometry and preconditioners deliberately, vectorize/chunk independent Er/speed/surface/sample axes, and return arrays without unconditional host gather. Show memory versus chunk-size tradeoffs.
-3. **Real multi-device batching:** use JAX `Mesh`/`NamedSharding` and explicit distributed array placement with compatible SOLVAX primitives. Measure 1 versus 2 office GPUs, uneven batches, failures, value/gradient equality and communication. `batch.py` now uses a transformable mesh map; the checkpoint records CPU/GPU PAS and full-FP correctness plus a small PAS speedup. Extend to production grids, failure propagation, measured peak memory and strong/weak scaling. Prefer SOLVAX’s generic wrapper once it exposes the checker option needed by custom linear solves; keep local numerical algorithms in SOLVAX.
-4. **Native exposure:** make `ParallelConfig` control actual execution for profiles/scans/objectives. Report requested and observed devices, partition, completion and fallback reason. An accepted sharding request must not quietly execute serially.
-5. **State decomposition:** a separate research slice for problems too large for one device, with phase-space partition, halo exchange, globally correct norms/inner products, constraints, preconditioner distribution and transpose collectives. Replicated operators plus split independent cases are not a state-distributed solve.
-6. **Multi-host:** initialize before backend allocation, fail closed on rendezvous errors, and validate restart/repartition and multi-process collectives. This requires an actual multi-host testbed; two GPUs on office do not establish it.
-
-The first performance target is a measured break-even map and no material one-device regression in the admitted envelope. For sufficiently large independent batches, target ≥1.5× throughput on two office GPUs with matched accuracy and documented memory; this is a target, not a promised result. Publish strong/weak scaling separately, including communication and aggregate resource cost. CPU and GPU tuning profiles may differ.
-
-## 6. Research applications and examples
-
-### 6.1 Real equilibrium and design optimization
-
-R7 must replace or relabel the analytic VMEX proxy and add an actual installed VMEX integration. Follow boundary coefficients and profile/current parameters through converged equilibrium, geometry transformation/interpolation, DKX physics, moments and objective. Document which parts are implicit/automatic derivatives and which transformations require an explicit derivative implementation. Test the **complete chain**, including geometry normalization and profile changes; a gradient with respect to an already constructed operator is insufficient.
-
-Start with a fixed-equilibrium differentiable neoclassical objective; then optimize an actual stellarator boundary with engineering/physics constraints and finally couple bootstrap current self-consistently to VMEX. Define current/pressure units, flux-coordinate mappings, relaxation and coupled convergence. Include prescribed-Er tokamak design; do not force a unique ambipolar Er from intrinsically ambipolar theory. At every stage measure the full optimizer iteration (equilibrium, geometry, solve, adjoint, rejected trials, plotting/I/O) and compare adjoints with finite differences at equal accepted accuracy.
-
-Objectives should include species-resolved transport and bootstrap/current targets, potentially ambipolar profiles and impurity accumulation where the model supports them. Use dimensional scales/weights, bounds and robust constraint handling. Near root bifurcations, mark nondifferentiability and use a justified continuation or alternative objective; silently following a different root changes the problem. Optimize at increasing resolution, then independently reevaluate final designs on a finer mesh, with cold solves and external-code checks. Demonstrate reproducible constraint satisfaction and improvement beyond estimated numerical uncertainty, not merely a descending training curve.
-
-ESSOS supplies coils and magnetic fields. First demonstrate coil realization of a validated target equilibrium with distance, curvature, length/current and field-error constraints; then consider joint plasma/coils optimization once geometry and equilibrium response derivatives are verified. Do not assume arbitrary coil fields define nested flux surfaces or a valid local-neoclassical geometry. Explicitly qualify equilibria/coordinates and the treatment of islands/stochastic fields. Mirror coil optimization waits for R11.
-
-### 6.2 NEOPAX, databases and restart
-
-Specify a small adapter protocol for species order, radial coordinates/cell faces, density/temperature values and gradients, current/field conventions, flux units, time state, tolerances and returned derivatives. Validate conservation at the transport discretization boundary. Check NEOPAX's pending grid/lagged-response changes against pinned released interfaces rather than adopting unmerged assumptions.
-
-Support resumable monoenergetic/full-kinetic databases with deterministic axes, units, interpolation validity/error and withheld-point tests. Reuse response tables/preconditioners only inside a certified parameter envelope; refresh them when state drift or transport error requires it. Include one interrupted/restarted transport scan, one lagged-response failure/rebuild example, and a full cold comparison. Integration should accept in-memory prepared objects; file exchange remains an optional reproducibility route.
-
-### 6.3 One example ladder, two resolutions
-
-Consolidate the existing numbered examples and native cases into this ladder; do not add another competing gallery. Each example has editable physical/numerical parameters at the top, direct construction/run/summary/save/plot, no argparse or hidden orchestration framework, and a short statement of equations, expected result, units, validity, memory and runtime. Provide a quick teaching configuration and a separately selected converged research configuration. A quickstart must visibly say when its grid is only a smoke example.
-
-| Rung | Application and learning outcome |
-| --- | --- |
-| 1 | Analytic tokamak: geometry, species, prescribed Er, moments and numerical versus physical convergence |
-| 2 | Multispecies FP/impurity transport: conservation, collision choices and density/temperature profiles |
-| 3 | VMEC/Boozer/asymmetric profiles: coordinates, field periods, units and resolution conversion |
-| 4 | Monoenergetic/database/thermal convolution: normalization, collisionality/Er axes and validity |
-| 5 | Stellarator ambipolar profile: all retained roots, uncertainty, branch events and interval scope |
-| 6 | Phi1 and tangential drifts: explicit added physics and comparison with the reduced model |
-| 7 | Warm scans on CPU/GPU: interruption/resume, cache validity, chunking and sharding with observed-device diagnostics |
-| 8 | Sensitivities and real VMEX optimization: full-chain checks, constraints, cost and independent final validation |
-| 9 | NEOPAX transport and ESSOS coil realization: small optional integrations with pinned environments |
-
-Use existing input fixtures or checksummed, licensed external data; keep large equilibrium/trace/distribution outputs in release or archival storage. Generate publication plots from saved Results: signed flux/current, meaningful units, species legends, true radial coordinates, zero-aware scales, refinement/error bands, failed-point masks and root-scope annotation. Do not plot padded root entries or connect missing points as valid data. Save vector figures for papers and compact raster previews; test scientific data/labels, not every pixel.
-
-## 7. Documentation and deliberate code reduction
-
-Reorganize the existing pages around reader tasks before writing additional prose. Migrate incrementally with redirects and one canonical explanation per concept; do not mechanically translate every rst page into a new Markdown duplicate.
-
-| Documentation area | Content and consolidation |
-| --- | --- |
-| Tutorials | Install/first result, tokamak and stellarator learning paths, convergence, a real optimization; link to runnable examples and explain their output. |
-| How-to | Geometry/profiles, choose physics/resolution, ambipolar roots, scans/restart, CPU/GPU/sharding, diagnose slow/nonconverged runs, database/export, VMEX/NEOPAX/ESSOS coupling. |
-| Explanation | Equations and ordering, units/coordinates, collisions/trajectories/Phi1, moments, roots and validity, discretization, SOLVAX algorithm choices, implicit derivatives and error certification. Merge overlapping physics/numerics/differentiability/optimization explanations. |
-| Reference | Generated Case/Result schemas, API/CLI, SFINCS-control mapping, statuses/envelopes, benchmark manifest and developer contribution/release instructions. |
-
-Every physics explanation names the model, derives conventions, links the source owner and an independent test/reference, and states excluded regimes. SI formulas must be internally consistent: `Ω = Z e B/m` and `v_E = E×B/B²`; do not leave a Gaussian-unit `c` in an otherwise SI presentation. Explain heat flux, radial flux coordinates, normalization and current signs once and link to it.
-
-The README should lead with what a researcher can calculate, one tested installation/quickstart, a readable example result, and evidence-backed CPU/GPU/AD features. A compact status table distinguishes supported native workflows, expert/compatibility functionality and experimental features. Caption every performance/parity figure with case, precision, hardware, error metric and provenance; avoid “every output is differentiable,” unqualified SFINCS equivalence and universal speedups. Link deeper equations, limitations, examples, citation/license, contributing and the plan instead of duplicating them.
-
-Reduce the repository by tracing ownership and usage: `solve.py`, `drift_kinetic.py`, `magnetic_geometry.py`, `multigrid.py`, `coarse_precond.py`, `workflows/optimization.py`, native/compat orchestration, CLI formatting and validation/release machinery are priorities. Remove superseded implementations and campaign-specific branches after equivalent behavior is demonstrated. Consolidate repetitive tests into parameterized scientific families, while preserving independent assertions, failure histories and meaningful coverage. Uncovered live code is not dead code.
-
-The former 35-source-file/12-test-module counts are **not hard gates**: combining unrelated modules to hit them creates maintenance costs. Retain a soft ≤45k production-line target and report justified exceptions; trend total files/lines/bytes and public concepts per coherent change. Preserve compact, stable fixtures. Move large/generated campaign artifacts to checksummed archival assets with a compact index and retrieval instructions. Prune duplicates only after references are redirected and reproducibility is retained. No additional history rewrite without a specific measured benefit and maintainer coordination.
-
-CI should separate fast mathematical/unit gates, installed-wheel/API examples, documentation/schema validation, and optional external-code/hardware/release campaigns. Keep 13-shard coverage aggregation honest about missing shards and branch coverage. Replace timing-sensitive ordinary unit assertions with deterministic correctness checks and dedicated performance gates. Target PR execution under ten minutes excluding runner queueing where feasible; budget larger scientific campaigns explicitly. Use the 95% line/branch ratchet without vacuous tests, removing defensive checks, or excluding difficult reachable physics to improve a percentage.
-
-## 8. Ordered work packages and acceptance gates
-
-Start with R0; resolve measurement validity and observable acceptance before spending another unbounded production sweep. Documentation/example improvements proceed with each scientific slice. Coverage/size cleanup does not block a needed correctness fix, and physics work can proceed on small valid references while performance work establishes the larger envelope.
-
-| Package | Owner / dependencies | Concrete work and exit gate |
+| Repository | Branches / PRs / non-PR issues, all states | Findings that affect the decision |
 | --- | --- | --- |
-| **R0 Reliable evidence** | DKX; immediate | Supervisor, atomic completion, CSR/matrix selection, full-output comparison, retained evidence and explicit backend verification are implemented. Complete environment/external-input archival and publication verification; readable provenance and explicit file binding are implemented. Tiny monoenergetic Richardson/MUMPS and bounded full-FP right-preconditioned GMRES/MUMPS references are accepted only at their stated discretizations. One bounded matched-resource installed CPU/GPU/PETSc pilot must pass observable/grid gates with no survivors; failed references remain explicit. |
-| **R1 Observable correctness** | DKX + generic SOLVAX error primitives; R0 | Original residual/backward error, constrained rank/scaling, adjoint-weighted moment error, cold/warm comparison and joint-grid certificates. Start from the measured conditioning (§2.3) as hypothesis: reproduce the 2.46% reuse case under strict cache identity and attribute it with `λᵀr`; reproduce the `Er = 15` ladder to its `Nxi = 180` value and extend it along `Nzeta`. No promotion until published observables agree within justified errors. Marginal roots and intrinsic ambipolarity handled correctly. |
-| **R2 Prepared execution/restart** | DKX + SOLVAX; R1 | Static-layout/dynamic-physics API, exact dependency keys, factor/preconditioner/recycle validity, atomic disk resume, explicit native policy and transformation behavior. Repeated parameter values do not recompile, interrupted scans resume correctly, stale states are rejected, cold/warm observables and derivatives agree. |
-| **R3 Solver cost and memory** | SOLVAX generic kernels + DKX physics preconditioners; R0/R1, co-design R2 | Phase/HLO/kernel profiling, same-matrix PETSc/MUMPS/SuperLU_DIST comparison, structured/sparse preconditioner and memory studies, measured policy. Improve identified cost with accepted accuracy; record cold/warm/adjoint runtime, memory, failures and crossover against baseline. No universal backend claim. |
-| **R4 CPU/GPU parallelism** | SOLVAX primitives + DKX scheduling; R2/R3 | Resident batching, real two-GPU sharding and grad support, native exposure, CPU thread/process study. Correct uneven batches and failure propagation; occupancy/communication traces and strong/weak scaling demonstrate the declared envelope. State decomposition/multi-host are separate explicitly unclosed subgates. |
-| **R5 Native scientific completeness** | DKX; R1, reuse interfaces R2 | Extend the reproduced SFINCS control inventory (section 2.4) into semantic capability coverage, map every control and supported combination, decide monoenergetic-database ownership between DKX and NTX explicitly, close native single-surface/FP/Phi1/drift/database/matrix/objective gaps in coherent vertical slices. Installed native and compatibility paths match independent equations/units and verified outputs; unsupported combinations fail preflight. |
-| **R6 Independent production benchmarks** | DKX validation; R0–R5 as applicable | Run B0–B12 with matched SFINCS/MONKES/YANCC and appropriate theory/KNOSOS/PENTA/BOOTSJ comparisons. Close whole-profile current/root uncertainty and hard-case boundedness. Publish convergence, error, runtime/memory/gradient/scaling and failure tables with exact versions; no blanket promotion from tiny parity. |
-| **R7 Real VMEX optimization** | DKX/VMEX; R1/R2/R5, scalable R3/R4 | Fixed-equilibrium sensitivity → actual boundary objective → self-consistent bootstrap/current coupling; prescribed-Er tokamak example. Full-chain derivatives with the B10 gate (Taylor rate and FD window through the root and through geometry), feasible objective improvement beyond uncertainty, bounded full iteration cost, warm restart and independent final design validation, including an external check of the final bootstrap profile against SFINCS on the converged equilibrium as in the [M3D-C1 workflow](https://arxiv.org/abs/2507.05166). |
-| **R8 NEOPAX and ESSOS applications** | Small adapters in respective owners; R2/R5/R7 | Transport protocol/conservation/restart and lagged refresh; validated coil realization then justified coupled plasma/coils design. Installed integration tests and examples, pinned optional dependencies and explicit geometry/model validity. |
-| **R9 Docs, examples and consolidation** | DKX; continuous, complete after R5–R8 | Four-part documentation, one example ladder, honest compelling README, generated reference/status and source/asset consolidation. Warning-clean docs, working quick/research examples, preserved scientific assertions and measured size; no competing roadmap. |
-| **R10 Release and publications** | DKX, SOLVAX where appropriate; R6–R9 | Installed distribution, stable capability envelopes, target coverage/size, reproducible figures/data, archived environment and manuscripts. Release only the closed scientific scope; unclosed parallel/model capabilities remain labeled. |
-| **R11 Mirrors (deferred last)** | DKX/ESSOS + required generic SOLVAX extensions; after tokamak/stellarator milestones | Derive open-field-line model, loss cone/end losses, sources, electrostatic potential, boundaries and applicability before implementation. New independent references, conservation/convergence and derivative benchmarks; mirror optimization follows physics validation. Toroidal periodic machinery is not assumed applicable. |
+| [SFINCS](https://github.com/landreman/sfincs) | 39 / 16 / 10 | v3 [`solver.F90`](https://github.com/landreman/sfincs/blob/8df5453472e982df0f6ae005243ce38d57a83711/fortran/version3/solver.F90) reuses preconditioners; `populateMatrix.F90` distinguishes simplified P (0), Jacobian (1), residual f1 action (3) and adjoint operators (4/5). #24 guards MUMPS-specific queries; #25–26 concern root defaults and field scaling. Adjoint, AMG and externalF branches diverge from master. |
+| [YANCC](https://github.com/f0uriest/yancc) | 19 / 97 / 0 | Pinned `6f399a21`: full/monoenergetic DKE, multigrid, line smoothing and reusable initial/recycle state. Merged [#71](https://github.com/f0uriest/yancc/pull/71)/[#79](https://github.com/f0uriest/yancc/pull/79) reduce gauge/collision work, factor storage and smoother cost; open #8/#34/#62 remain proposals. The divergent smoothers branch adds frozen-plane coupling: a candidate to inspect, not a demonstrated DKX improvement. |
+| [MONKES](https://github.com/JavierEscoto/MONKES) | 1 / 0 / 1 | Pinned `4e8281c9`; spectral monoenergetic block elimination and database/transport tooling. A fresh bounds-checked local build succeeded, then a 7×9×12 W7-X smoke run failed at `DKE_BTD_Solution_Legendre.f90:105`: S1 extent 7 versus vm extent 8. This is distinct from the reader issue #1; no new numerical reference is admitted. |
+| [KNOSOS](https://github.com/joseluisvelasco/KNOSOS) | 3 / 0 / 4 | Orbit-averaged transport, tangential drifts and linearized surface potential; `amb_and_qn.f90` exposes the coupled workflow. Bounds issue #3 and build/usage requirements matter for an eventual reference. At `5134a9eb`, a serial bounds-checked build linked with local NetCDF/FFTW, but a bounded LHD monoenergetic smoke run stopped at `configuration.f90:91` (`bvco_b(0)` below lower bound 1). No transport/Phi1 comparison is admitted. |
+| [SOLVAX](https://github.com/uwplasma/SOLVAX) | 15 / 86 / 14 | Generated factors/refinement, recycled Krylov and implicit primitives already exist. Read #63's refresh-calibration problem and #56–58's window limitations; do not schedule their assumptions as established certificates. |
 
-Each implementation PR includes the problem, final behavior, deleted/superseded owner where relevant, equation/normalization changes, tests/evidence and remaining domain limits. Acceptance evidence belongs in the existing registry with input/source hashes and commands. Update the checkpoint and affected package status; do not append another long execution diary. Do not produce one PR per helper or evidence file.
+Downstream inventories cover NEOPAX (19/11/3), ESSOS (53/60/5), VMEX (48/278/3)
+and NTX (9/24/1). Their open interfaces are dependencies, not delivered DKX
+features. Full inventories and relevant diffs remain external to keep the repo light.
 
-### 8.1 Next implementable slice
+The [YANCC paper](https://arxiv.org/html/2607.20861v1) makes differentiable GPU
+neoclassics an existing comparison standard. Its important lesson is the joint
+choice of discretization and preconditioner, not a transferable speedup factor.
+Its general surface angles also show that Boozer coordinates are not obligatory.
+[MONKES](https://arxiv.org/html/2312.12248v2) supports retaining DKX's efficient
+Legendre structure where the physics permits it. [KNOSOS](https://arxiv.org/abs/1908.11615)
+supports a reduced model for a specified low-collisionality regime, not wholesale
+replacement of multispecies full-FP transport. The [SFINCS trajectory study](https://arxiv.org/abs/1312.6058)
+requires explicit finite-Er and momentum-conservation limits; agreeing reduced
+models cannot validate omitted physics.
 
-**Completed foundation, pending PR review/release:** differentiated currents, host roots and full-state batches check the original primal equation. Full-factor structured, generated full-recovery and recycled Krylov implicit solves also check the original transpose equation and retain bounded per-RHS diagnostics. A failed adjoint raises under JIT unless the caller explicitly opts out; padded cotangents cannot enlarge the physical tolerance. Partial generated recovery still needs a reduced-system admission contract. SOLVAX owns the solve/derivative algorithms; DKX supplies physical actions, layout and admission policy.
+## 4. Deliverable 1: establish a trustworthy calculation
 
-The refined DGESVX referee is qualified by independent 50/70-digit residual correction on stored float64 equations. Native PAS/full-FP profile-to-root regressions include cold rebuilt roots, original primal/transpose checks, derivative ratios and one-sided Taylor orders 2.00–2.01 above the root uncertainty floor. Tightening the recorded full-FP tolerance from 1e-11 to 1e-12 reduced root-derivative error from 2.54e-8 to 1.81e-9. These remain bounded fixed-geometry checks, not multiprecision operator construction, joint-grid/branch uncertainty or a production optimization certificate. Detailed inputs and previous validation are retained in `adjoint-roundoff`, `native-root-taylor`, `strict-krylov-adjoint` and `structured-adjoint-admission`.
+First finish the stack review and fix evidence plumbing that prevents meaningful
+comparisons. The campaign must request full recovery when checking the original
+state equation; it must not confuse deliberately zero-filled Legendre tails with
+solver failure or certify them as complete distributions. Moment-only algorithms
+can remain useful, but require their own reduced-system/observable certificate.
 
-The latest generated full-recovery slice in [DKX #188](https://github.com/uwplasma/DKX/pull/188) integrates SOLVAX 0.20.0's existing generated factor/solve split. Schur LU factors retain only active chain lengths and are reused across original/transpose solves and one refinement correction. DKX handles physical grouping, rank-one border corrections, padding and admission; no generic algorithm is copied. A conservative estimate includes retained factors and multi-RHS buffers; if storage does not fit, the previous checked recomputation route remains available. Batch sizing includes optional retained state. Factors live within one solve execution and are rebuilt for changed operator inputs; this does not yet provide serialized restarts or cross-execution factor caching.
+Use **four representative families**, adding points only to resolve a concrete
+uncertainty. Each has a fast verification grid and a separately converged research
+grid; a smoke grid is never silently promoted.
 
-Validation covers 244 distinct CPU solver/Er/native/batch cases (243-case suite plus the added budget boundary), four planning-schema checks and 22 distinct default-compiler GPU cases including uneven two-GPU gradients. Final 15-case CPU/GPU reruns cover grouped unequal chains, vector/matrix RHSs, both physical borders, the budget fallback, rejection of corrupted retained/recomputed adjoints, and JIT JVP/reverse/taped/FD agreement. Native full-FP regressions retain their existing routed solver; generated factor reuse applies to the supported PAS/DKES family. Strict Sphinx and scoped Ruff pass. The earlier single-RHS shape fix for JAX 0.10.2 GPU fusion remains; no compiler-pass override is needed. Evidence is in `generated-factor-integration`, extending `generated-full-adjoint` and `generated-factor-reuse`.
-
-**Latest paired cost:** on the same 7,850-unknown, three-field native LHD PAS objective, 12 alternating synchronized value-gradient pairs compare the checked recomputation path with retained/refined factors on the same source:
-
-| Host | Recompute → retained/refined median | Compiler temporary bytes, recompute → retained/refined |
+| Family | Required physics and measurements | Independent anchor |
 | --- | --- | --- |
-| CPU, JAX 0.9.2 | 67.59 → 37.09 ms | 19,734,024 → 14,309,048 |
-| A4000, JAX 0.10.2 | 221.74 → 195.56 ms | 15,283,224 → 13,542,512 |
+| Analytic/axisymmetric tokamak | PAS and multispecies full-FP; prescribed Er; particle/heat flux, parallel flow, bootstrap/conductivity; NZeta=1 versus resolved symmetry | Collision invariants, Spitzer–Härm/full-FP and applicable tokamak limits; SFINCS v3 |
+| One structured stellarator and one W7-X surface | PAS/DKES monoenergetic coefficients at zero and finite Er; sign/normalization/Onsager conventions; selected thermal convolution | MONKES/YANCC in matched equations; existing Beidler-normalized fixtures |
+| Multispecies stellarator profile | Full-FP, independent n/T drives, finite Er, ion/electron currents and regular root branch | SFINCS/YANCC; native SI versus expert normalized path; independent cold roots |
+| A bounded hard case | Existing finite-Er current sign-changing grid ladder and warm cross-surface discrepancy, then one Phi1/drift case when that model is admitted | Original inputs from #160–161, refined referee, appropriate trajectory/Phi1 literature |
 
-Every retained pair is faster. Both variants meet the original 1e-10 residual target, agree in gradients within 1e-8 and pass two directional FD steps. Refinement reduces recorded primal residuals from roughly 1e-11 to 1e-14. Each variant is compiled once with existing caches; these are within-host comparisons, not allocator peaks, clean-install/fresh-cache, production-grid, whole-root/optimization or CPU/GPU scaling claims. Complete CPU traces have 1.53/2.64 million events below a process-local three-million cap; GPU traces have fewer than 68,000 events each. GPU LU panel calls halve 288→144 (70.81→35.39 ms in captured device kernels); triangular solves now dominate and both paths retain six callbacks. Nested host/device intervals overlap and must not be added as independent overhead. Raw reports, HLO and traces stay outside Git. Prior taped-versus-implicit and full-factor admission costs remain historical evidence, not interchangeable baselines.
+For each published quantity Q, define a physical scale and an application tolerance
+`atol_Q + rtol_Q * |Q|`. Budget algebraic, grid/quadrature, root and geometry errors
+separately. A reasonable initial allocation is no more than 10% of the observable
+budget to linear/nonlinear algebraic error; calibrate it, rather than choosing a
+universal residual tolerance. Use absolute scales for near-zero current/flux.
+For a simple root, propagate current uncertainty through `|dJr/dEr|`; if the slope
+is too small or the error overlaps another branch, report unresolved/marginal.
 
-The earlier rejected 16×49 internal-chain random RHS now passes after one retained-factor refinement correction: CPU forward residual 2.01e-10→1.76e-14, GPU 2.41e-10→1.88e-14; transpose residuals also meet 1e-10. This qualifies that internal equation and correction, not arbitrary parameter/model accuracy. Corrupted transpose solves still raise under the original-equation gate; refinement is not permission to relax acceptance.
+Mathematical verification includes independently derived manufactured forcing and
+moments, Fourier derivative symbols, Maxwell/Gamma quadrature identities, active
+layout and border identities, nonsymmetric transpose dot tests, collision number,
+combined momentum/energy conservation and nullspace/gauge checks. Preserve existing
+proofs rather than rewrite them to mirror the implementation. Full-FP conductivity
+is a different test from the existing Lorentz `8/sqrt(pi)` result. For linear
+`Q=cᵀx`, `Aᵀlambda=c` and `r=b-Ax`, the exact discrete identity is
+`Q_exact-Q_computed=lambdaᵀr`; approximate adjoints need an error allowance.
+This neither proves grid convergence nor identifies the cause of every discrepancy.
 
-Next, in dependency order:
+Refine theta, zeta, pitch, speed, Rosenbluth resolution, geometry Fourier truncation
+and relevant radial/Phi1 grids both separately and jointly. Compare current and
+each species' flux independently. The historical Er=15 pitch ladder changes the
+sign of current; it is not fixed by a tighter Krylov residual alone. Recover the
+exact #161 source/target pair before attributing its 2.46% difference to conditioning.
+If it cannot be recovered, keep it unresolved and construct a new identified
+adversarial pair. Do not substitute the latter as a reproduction.
 
-1. **R2/R3, extend validated reuse.** The intra-execution generated factor/transpose integration is implemented above; do not rebuild it. Next define and validate factor lifetime/invalidation, safe cross-execution reuse and restart persistence across profile/geometry changes. Profile substitution/border RHS costs and full root/iteration cost before selecting a production policy. Compare retained factors and recomputation under measured allocator budgets and larger physical/grid envelopes; memory estimates alone do not certify peaks. Generic algorithm changes stay in SOLVAX; DKX owns physical cache identity and admission. Requalify the installed dependency after SOLVAX #100 is reviewed/released. Reduce callback/action cost without weakening rejection.
-2. **R1/R2, derivative and observable uncertainty.** Extend the qualified referee and native Taylor/FD ladder across physical profiles and geometry, then joint grids and retained root branches. Bind acceptance to observable uncertainty and nonzero root slope. Recover the exact historical cross-surface input pair for the unresolved discrepancy and reproduce strict cache identity. Derive a separate partial-recovery adjoint contract; a zero-padded partial state is not a full-equation certificate.
-3. **R0/R3/R6, reproducible production comparisons.** Finish clean-environment/fresh-compilation and MPI replay; bind runtime evidence into regenerated campaigns, then collect idle paired installed CPU/GPU/PETSc measurements with controlled caches and matched physical/observable gates. Cost residual recomputation/refinement and factor fill before selecting policy. Preserve the existing supervisor, atomic completion, dependency/provenance/retention checks and mode-specific comparisons. The void broad sweep remains excluded.
-4. **R4–R8, broaden after those gates.** Extend physical/model and scaling envelopes, then real VMEX geometry/profile/root optimization with warm restart, bounded full-iteration cost and independent final-design validation. Native scientific gaps, NEOPAX/ESSOS integration and the example ladder follow the dependencies in section 8; mirrors remain last. Keep docs/status synchronized and large evidence outside Git.
+Source inventory at this head: 60 production Python files / 49,405 lines;
+177 test Python files / 49,504 lines; 82 tool Python files / 29,329 lines.
+A separate untouched full remote clone measures 33.43 MiB allocated on this
+filesystem, including 16.26 MiB `.git`, above the 20 MiB target. The tested working
+checkout also contains generated files and is not used for that clone measurement.
+These counts identify consolidation opportunities, not a reason to delete physics.
 
-## 9. Publication and release outcomes
+**Exit:** the supported toroidal domain, representative decks and per-observable
+tolerances are recorded; a valid reference and a convergence ladder support each
+advertised result; root branch/slope and original primal/transpose checks accompany
+derivatives. The installed native and compatibility paths agree in physical units.
+Failed cases are retained in the denominator. A broad all-deck sweep is unnecessary
+until this smaller set produces interpretable results.
 
-Plan publications around distinct scientific contributions, not a predetermined paper count:
+## 5. Deliverable 2: make repeated solves cheap
 
-* **DKX methods/verification paper (CPC or JCP as appropriate):** equations and model scope, native workflow, mathematical verification, SFINCS-v3 mapping, independent converged benchmarks, precision/uncertainty, usability and reproducibility. A feature catalog alone is insufficient.
-* **Performance/differentiation study, combined with the first paper unless independently substantial:** prepared solves/restart, forward/adjoint memory and runtime, CPU/GPU/state/batch scaling, matched sparse-solver comparisons and failure envelopes. Generic algorithmic novelty belongs to SOLVAX and should be credited/published there when appropriate.
-* **Physics/design application paper (for example Nuclear Fusion/JPP):** actual equilibrium and possibly coil/transport design with quantified improvement, constraints, model validity and independently verified final configurations. Mirror applications are later.
+### An in-memory reuse contract, not another restart subsystem
 
-Required figure/data set: model/capability map; analytic and cross-code convergence; time-to-accepted-observable versus size and collisionality; setup/solve/adjoint breakdown; peak memory and factor fill; restart break-even; strong/weak scaling; derivative Taylor/FD windows; full optimization convergence including rejected trials and final independent physics. Report failures and excluded regimes alongside successes. Trace-derived claims require nonoverlapping attribution, actual kernel evidence and matching unprofiled timings.
+Extend the existing `ErProblem`, `ErSolveState`, `solve` and SOLVAX factor/recycle
+objects. The intended expert interface is a prepared, immutable physical problem
+plus explicit reusable state passed in and returned from Python/JAX. The following
+is a **design sketch, not an implemented API**:
 
-For each figure provide a single reproducible runner selection, immutable inputs, environment lock/build recipe, software/source hashes, licenses, raw measurements and compact derived table. Archive large artifacts with persistent identifiers/checksums and publish a citation file/software release DOI; keep only small indispensable fixtures and figure sources in Git. A new researcher should reproduce a quick example from the wheel, understand why it is not a convergence certificate, and find the complete research configuration without reading the development history.
+```python
+prepared = prepare(case, layout=fixed_layout)
+result, state = evaluate(prepared, profiles, er, state=state)
+value, gradient = objective_and_grad(prepared, parameters, state=state)
+```
 
-Release acceptance: every stable capability has equations, tested domain, proof/convergence/independent evidence, native or explicitly compatibility API, usable examples/docs and bounded forward/gradient runtime/memory; native full-model scope reaches the supported SFINCS-v3 contract; promised parallel/restart paths execute as advertised; installed wheel/sdist and schemas pass; coverage and size targets are either met or explicitly recorded as unresolved release decisions. Do not silently mark a failed target complete. Mirrors remain deferred and do not block a toroidal release.
+File I/O is unnecessary for optimization. Disk checkpoints are an optional later
+serialization of physical state and provenance, not the first implementation.
+Keep reusable arrays as bounded pytrees; do not accumulate every iteration's
+factors or diagnostics in a closure. State owns its device, dtype, layout,
+physical dependency identity, constraints/gauge, previous iterate, recycle space
+and preconditioner metadata. Rejected optimizer trial states must not overwrite
+the accepted continuation state. A geometry/profile change can preserve layout
+and compilation while still requiring all affected coefficients to refresh.
 
-## 10. Primary references and how to use them
-
-These sources guide specific tests and design choices; reading an abstract/front matter is not a completed textbook derivation. Cite the exact equation, assumptions and normalization in the eventual implementation documentation.
-
-| Source | Use |
+| Reused item | Validity / action |
 | --- | --- |
-| [Landreman et al., 2014, SFINCS trajectories/collisions](https://arxiv.org/abs/1312.6058) | Full versus reduced trajectories, conservation and model-matched validation. |
-| [Helander & Sigmar, *Collisional Transport in Magnetized Plasmas*](https://assets.cambridge.org/97805210/20985/frontmatter/9780521020985_frontmatter.pdf) | Foundation for collisional transport/orderings; this public link is front matter, not the full text. Consult the actual chapters for derived limits. |
-| [MONKES paper](https://arxiv.org/abs/2312.12248), [Escoto thesis](https://arxiv.org/abs/2510.27513) | Monoenergetic spectral/block formulation, resolution and independent comparison. |
-| [YANCC preprint](https://arxiv.org/abs/2607.20861) | Recent multigrid/collision/solver design; verify preprint results against the pinned implementation. |
-| [KNOSOS](https://doi.org/10.1016/j.jcp.2020.109512) | Bounce-averaged comparison in its ordering regime, not universal full-kinetic parity. |
-| [Paul et al., neoclassical adjoints](https://arxiv.org/abs/1904.06430) | Derivative equations and geometry sensitivity benchmarks. |
-| [Landreman, Buller & Drevlak, bootstrap-consistent optimization](https://arxiv.org/abs/2205.02914) | Current/profile/equilibrium conventions and actual design validation. |
-| [Direct neoclassical optimization study](https://arxiv.org/abs/2406.04147) | Objective construction and final-design comparison under matched assumptions. |
-| [Sandia manufactured-solution verification](https://www.sandia.gov/research/publications/details/code-verification-by-the-method-of-manufactured-solutions-2000-06-01/) | Independent forcing, observed order and detection of implementation errors. |
-| [PETSc profiling](https://petsc.org/release/manual/profiling/), [KSP](https://petsc.org/release/manual/ksp/), [MUMPS integration](https://petsc.org/release/manualpages/Mat/MATSOLVERMUMPS/) | Norm/preconditioner semantics, factor events, backend options and nested timing interpretation. |
-| [SuperLU project](https://portal.nersc.gov/project/sparse/superlu/), [SuperLU_DIST source](https://github.com/xiaoyeli/superlu_dist) | Sequential versus distributed implementation, ordering/fill, GPU/build-dependent behavior. |
-| [JAX benchmarking](https://docs.jax.dev/en/latest/benchmarking.html), [profiling](https://docs.jax.dev/en/latest/profiling.html) | Synchronization, compilation separation, trace and memory methodology. |
-| [JAX sharding](https://docs.jax.dev/en/latest/201/sharding.html), [sharding and AD](https://docs.jax.dev/en/latest/301/sharding-ad.html) | Explicit distributed arrays and transformation-aware sharding. |
-| [Diátaxis](https://diataxis.fr/), [FAIR4RS](https://doi.org/10.15497/RDA00068) | Reader-oriented documentation and reproducible/reusable research software. |
-| [NTX](https://github.com/uwplasma/NTX) | Sibling JAX monoenergetic solver with an adjoint implementation to audit; reference for B3/B10 and a candidate owner of the monoenergetic database workflow. |
-| [MONKES on quasi-isodynamic fields](https://arxiv.org/abs/2410.17836) | Application-scale monoenergetic evaluation and the resolution it needed; use for B3 coverage choices. |
-| [Shaing–Callen convergence](https://arxiv.org/abs/2407.21599) | Collisionality-limit and orbit-precession physics for B2; distinct from certifying the pitch-grid ladder in B11. |
-| [Saxena et al. 2025, bootstrap current in M3D-C1](https://arxiv.org/abs/2507.05166) | A SFINCS-on-arbitrary-equilibrium workflow and Sauter-type comparisons; an external check for R7's final design. |
-| [Claus, Ghysels, Boukaram & Li 2025, STRUMPACK on GPUs](https://doi.org/10.1177/10943420241288567) | GPU multifrontal factorization with block low-rank compression, PETSc-accessible; one candidate referee backend for R3, subject to matched kinetic-matrix evidence. |
-| [Carson & Higham, GMRES-based iterative refinement](https://epubs.siam.org/doi/10.1137/17M1140819) | Mixed-precision factors with certified refinement for ill-conditioned systems; the framework for §4.3 item 5. |
-| [Parks et al. 2006, GCRO-DR](https://doi.org/10.1137/040607277) | Recycling harmonic Ritz vectors across a sequence of systems; a reference against which to audit SOLVAX's harmonic recycling strategy and R2 reuse validity. |
-| [Maassberg, Beidler & Turkin 2009, momentum correction](https://doi.org/10.1063/1.3175328) | Standard momentum-correction techniques for DKES-type coefficients; reference for B9 and for what full-FP DKX does not need. |
+| Compiled executable, quadrature and symbolic structure | Reuse for matching shapes, dtype, static model/layout and device contract. Changing n/T/Er is not automatically a retrace; changing active pitch topology is. |
+| Numerical factors | Exact solver only for the same numerical operator, border and constraints, including changed collision/geometry dependencies. RHS-only changes can share factors. Otherwise use as an **approximate preconditioner**, or refactor. |
+| Distribution / Phi1 / Er | Initial guess or branch predictor, never an accepted result by identity alone. Interpolate only through an explicit geometry/grid map and recheck physical constraints. |
+| Recycle basis | Recompute its image under the new original operator; reorthogonalize and discard dependent/stale vectors. A small parameter step is not a validity certificate. |
+| Lagged preconditioner | Permit nearby changed systems while true residuals converge; refresh on loss of convergence, measured extra work, memory pressure or changed constraints/layout. Keep forward/transpose use explicit. |
+
+[PETSc's successive-system rules](https://petsc.org/release/manualpages/KSP/KSPSetReusePreconditioner/)
+and [maintainer explanation](https://lists.mcs.anl.gov/pipermail/petsc-users/2022-October/047018.html)
+make this distinction explicit. [GCRO-DR](https://doi.org/10.1137/040607277) motivates
+recycling; SOLVAX's implementation still needs calibration on DKX sequences.
+Compare four ablations on exactly the same sequence: compilation only; plus x0;
+plus recycle; plus lagged P. Separately test repeated RHSs with an unchanged A.
+Record setup/apply/matvec/orthogonalization/adjoint work, cache rebuilds and peak
+storage, including large rejected steps, branch changes and species/grid changes.
+
+Select refresh by measured economics: if rebuilding costs `T_build`, compare it
+with the expected extra iterations times `T_apply + T_matvec + T_orth` over the
+remaining reuse horizon. Use a bounded diagnostic and a cold fallback, not a
+universal distance threshold. At least one full-FP n/T sequence and one stellarator
+Er/root sequence must agree with independent cold solves within the observable
+budget. Replay forward, reverse and permuted sequences: the answer must not depend
+on history. Short memory ownership tests must include failed/rejected evaluations.
+
+### Differentiation and coupled potential
+
+Differentiate the **converged equations**, not cache decisions or a fixed number
+of unconverged iterations. For `F(u,p)=0`, the adjoint solves
+`F_uᵀ lambda=Q_uᵀ`, giving `dQ/dp=Q_p-lambdaᵀF_p`. Warm guesses and lagged P can
+be detached from AD while physical coefficients remain differentiable, provided
+the primal and adjoint solve the intended equations accurately. This is the
+[JAX custom-linear-solve contract](https://docs.jax.dev/en/latest/_autosummary/jax.lax.custom_linear_solve.html),
+not permission to ignore residuals. Test JVP/VJP, two or more FD steps, quadratic
+Taylor remainders above the noise floor, and cold/warm derivative agreement.
+[Paul et al.'s neoclassical adjoint work](https://arxiv.org/abs/1904.06430)
+already includes root acceleration; evaluate safeguarded Newton continuation
+against the existing Brent search, charging every slope evaluation and retaining
+bracket fallback and cold final verification. Root selection switches are not smooth.
+
+For Phi1, the eventual state is `u=(f, Phi1, source/gauge variables)` and, when
+appropriate, Er. Reuse both f and Phi1, but certify the **coupled** kinetic,
+quasineutrality and gauge residual. A kinetic solve with frozen Phi1 is not the
+coupled derivative. Start with linearized quasineutrality and a block/Schur
+preconditioner; qualify nonlinear Newton/line-search behavior and potential gauge
+before native promotion. Reuse the existing compatibility implementation first.
+[PETSc SNES lagging](https://petsc.org/release/manualpages/SNES/SNESSetLagPreconditioner/)
+and [Eisenstat–Walker forcing](https://users.wpi.edu/~walker/Papers/forcing_terms%2CSISC_17%2C1996%2C16-32.pdf)
+suggest avoiding oversolved early Newton steps. Use existing SOLVAX support where
+available; tighten terminal primal/adjoint accuracy to the observable budget.
+This coupled extension follows the no-Phi1 reuse contract, not a parallel rewrite.
+
+### Preconditioners and MUMPS: adopt mechanisms, measure before implementing
+
+DKX owns the physics approximation P and its constraints; SOLVAX owns elimination,
+Krylov, refinement, recycling and reusable parallel algebra. The expensive
+full-FP route drops species/speed and some trajectory couplings in P. At difficult
+parameters this can require many iterations; dense angular blocks also make P
+expensive to store and apply. Both hypotheses are measurable, not universal causes.
+
+1. **First retain the implemented factor sharing**, then measure triangular solves,
+   border/RHS batching, callbacks and transfers at the complete objective level.
+   Avoid reconstructing a factor in every transpose or correction. Consider a
+   narrower host diagnostic transfer only if failure information remains complete.
+2. **Compare the same A and the same simplified P with PETSc/MUMPS/SuperLU_DIST.**
+   Record ordering, nnz(A/P), nnz(L+U), scaling, pivot tolerance, symbolic analysis,
+   numeric factorization, forward/transpose solve and multiple RHS cost. Include
+   aggregate rank memory and startup. Do not compare factoring P with factoring A,
+   or PETSc solve-only time with DKX compilation plus setup. Reuse symbolic structure
+   separately from numeric factors. Repair the reference build when required.
+3. **Choose one bounded improvement from the measured bottleneck.** If application
+   dominates, test compact/batched factor application. If iteration growth dominates,
+   retain the missing speed/species coupling in a coarse correction or test a
+   line/block smoother on a coarse discretization. Preserve the fine physical
+   operator and its nullspace; a coarse upwind P need not replace the fine scheme.
+   Stop the experiment if setup-inclusive scan/gradient cost and accepted memory
+   do not improve. No automatic escalation to a second discretization project.
+
+The [MUMPS 5.9.1 guide](https://mumps-solver.org/doc/userguide_5.9.1.pdf) describes
+separate analysis/factor/solve phases, pivoting, refinement and optional block
+low-rank compression. [SuperLU_DIST](https://github.com/xiaoyeli/superlu_dist)
+uses distributed supernodal methods with build-dependent accelerator support.
+These are substantial sparse solver infrastructures. The fresh 654-row full-FP dump illustrates the distinction:
+with the same COLAMD/SuperLU settings, simplified P has 10,070 nonzeros and
+42,634 factor entries; the original A has 12,995 nonzeros and 199,337 factor
+entries. Natural ordering increases the latter to 321,174. These are storage
+counts on one identical layout, not MUMPS/DKX timings or an accuracy certificate.
+A separate uniform-layout dump is excluded from this comparison.
+
+Reimplementing MUMPS in
+DKX would duplicate years of work and mix algorithms into the physics layer.
+Use these backends as references and, if useful, optional SOLVAX integrations;
+a CPU reference need not become a GPU dependency. BLR/mixed precision are deferred
+until kinetic factor ranks and refinement convergence justify them. Elliptic-PDE
+compression results do not establish compressibility of these nonsymmetric matrices.
+
+### Measure the work users actually pay for
+
+Time preparation → all kinetic/root/Newton evaluations → moments → backward pass
+→ acceptance, synchronizing arrays **and diagnostic effects**. Also separate process
+startup, empty-cache compile, persistent-cache load, warm solve and reuse modes.
+Use at least five unprofiled repetitions/pairs after checking stable load; retain
+samples, median and dispersion. Include failed solves, line searches and rebuilds.
+Peak RSS, aggregate MPI memory, allocator peak VRAM and compiler temporary estimates
+are separate quantities. Do not sum nested PETSc events or overlapping GPU intervals.
+
+Follow [JAX profiling guidance](https://docs.jax.dev/en/latest/profiling.html):
+coarse named regions first, then XPlane/Perfetto and HLO/XLA/kernel inspection of the
+identified bottleneck. Check trace completeness/event caps; do not infer occupancy
+or speed from a capped trace or HLO operation count. Keep TensorBoard/XProf/Perfetto
+artifacts outside Git. Profiled runs diagnose; unprofiled runs establish runtime.
+
+CPU policy compares thread counts and a small process pool with controlled BLAS/XLA
+threads and per-process memory. Logical JAX CPU devices share resources; they are
+not extra CPUs. GPU policy compares serial continuation against independent batches
+on one/two physical A4000s, including compile and transfers, uneven sizes, gradient
+placement and failure propagation. Nearby points may benefit more from serial warm
+reuse than simultaneous cold solves; group related points into resident sequences
+only if that measured tradeoff wins. Use strong/weak scaling for independent work;
+state partitioning and multi-host collectives are deferred.
+
+**Exit:** an installed native scan and a complete value/gradient/root workload
+show a reproducible benefit at fixed accepted accuracy. As a decision target,
+seek ≥20% end-to-end improvement or ≥2× lower measured peak memory on the identified
+bottleneck, with no loss of admitted cases; otherwise keep the simpler baseline.
+Targets are not promised results. Demonstrate cold fallback, bounded memory and
+no unintended recompilation for supported parameter updates on CPU and GPU.
+
+## 6. Coordinate choices and the actual optimization deliverable
+
+A coordinate change can simplify streaming or geometry preparation, but it also
+changes grids, Jacobians, collision representation and boundary conditions. It is
+not an algebraic cure for missing physics or an unresolved trapped/passing layer.
+
+| Option | Potential benefit | Cost / decision |
+| --- | --- | --- |
+| Existing Boozer/general surface-angle geometry with Legendre pitch | Preserves working block structure and compatibility; existing VMEC geometry avoids requiring every input to be Boozer transformed | **Default.** Audit the geometry tensor/weight contract and its derivatives. |
+| Direct VMEX/VMEC or DESC surface angles | Could avoid an expensive coordinate transform and its derivative in optimization | Use the existing general-geometry path where valid. Compare the same equilibrium, surface moments and shape derivative in two representations before choosing the adapter. No new solver backend is required merely to change the input representation. |
+| Field-aligned `(alpha,l)` | Simplifies parallel streaming, may aid a line preconditioner | Global toroidal periodicity, rational surfaces and cross-field ExB coupling remain. Defer a solver rewrite; reconsider only if measured angular coupling dominates after P improvements. |
+| Pitch angle `alpha=acos(xi)` with finite differences | YANCC-style regular endpoint handling and line smoothing | Loses the present simple Legendre collision/block structure and introduces new resolution/error tradeoffs. At most test it in P if justified; defer replacement of the fine operator. |
+| Bounce coordinates / orbit averaging | Removes a fast coordinate for selected low-collisionality objectives | Model/order restrictions, well creation/merging and singular quadrature require separate evidence. Use an external reduced objective for screening if useful, then verify with DKX. Do not claim full-FP/Phi1 parity from it. |
+
+The [differentiable bounce-averaging study](https://arxiv.org/html/2412.01724v2)
+demonstrates that useful reduced objectives can be differentiated; it does not
+make a bounce-averaged model equivalent to DKX's full local problem. The
+[NEO-2 bootstrap-limit study](https://arxiv.org/abs/2407.21599) also cautions against
+using a universal low-collisionality asymptote without the stated precession and
+ripple conditions. Both support a validity-based choice, not more active branches.
+
+Deliver the real optimization in three steps within one existing example family:
+
+1. Use a verified fixed equilibrium, explicit n/T profiles and prescribed Er.
+   Validate profile and geometry derivatives independently, including radial
+   coordinate, Fourier truncation and metric/Jacobian derivatives. Extend the
+   adapter already used by VMEX; pin the actual dependency and equilibrium residual.
+2. Optimize a small set of **boundary coefficients** through the equilibrium solve
+   and DKX transport/current objective with explicit aspect-ratio, iota, field and
+   geometric feasibility constraints. Report the full cost per accepted step,
+   rejected steps and compilation. Compare AD with finite differences over several
+   parameter counts at equal error; a harmonic field-amplitude descent is insufficient.
+3. Add regular-branch stellarator ambipolar response, then self-consistent bootstrap
+   current/equilibrium coupling. Differentiate the coupled fixed point or converge
+   and validate its implicit Jacobian; freezing the equilibrium current omits part
+   of the derivative. Keep a prescribed-Er tokamak example. Use
+   [direct neoclassical optimization](https://arxiv.org/abs/2406.04147) and
+   [bootstrap-consistent equilibrium optimization](https://arxiv.org/abs/2205.02914)
+   as comparison designs, not claims that DKX already reproduces them.
+
+**Exit:** objective improvement exceeds its numerical uncertainty, constraints are
+satisfied, full-chain Taylor/FD tests pass on smooth branches, and the final design
+is recomputed cold at finer resolution with an independent transport/current
+reference. Charge the equilibrium and coordinate transformation to the timing.
+Stop and narrow the parameter/physics domain if the derivative or model is invalid;
+do not silently freeze it to preserve a descending objective.
+
+NEOPAX integration then needs a small in-memory protocol for species order,
+radial centers/faces, SI fluxes and Jacobians, boundary conditions, validity and
+refresh. Check transport conservation and lagged-response error before claiming a
+transport simulation. NTX is a candidate monoenergetic database producer; avoid a
+second database framework until its normalization/interpolation/restart contract
+is compared with DKX's existing one. ESSOS first realizes coils for an accepted
+target with field-error, length, curvature, distance and current constraints.
+Arbitrary coil fields need not possess nested surfaces. Joint plasma/coils and
+open-field-line mirror optimization follow their own physical validity gates.
+
+## 7. Documentation, examples and deliberate reduction
+
+The README should contain one runnable start, a short feature/results summary and
+an easy-to-advanced workflow map. Remove categorical SFINCS/AD/GPU claims and
+multiple historical timing narratives. Keep scope beside each result. The docs
+landing page should route readers by task; remove its duplicate performance table
+and universal “runs in seconds” claim. Preserve existing URLs while consolidating.
+
+| Existing material | Canonical destination / action |
+| --- | --- |
+| `installation`, `examples`, first-run parts of `usage` | Tutorials: first physical result, convergence, gradients; examples remain executable sources. |
+| `case_files`, `applications`, `optimization`, `vmex_workflow`, `parallelism`, troubleshooting | How-to: one guide per user task; combine overlapping optimization instructions after the real adapter exists. |
+| `physics_models`, `system_equations`, `physics_reference`, `theory_from_upstream`, `method`, `numerics` | Explanation: one model/units/constraints derivation and one numerical-method explanation; keep independent citations and applicability. |
+| `api`, `cli`, `inputs`, `outputs`, `normalizations`, `capabilities`, `feature_matrix` | Reference: schemas/status generated from the existing definitions; link instead of copying a second capability matrix. |
+| `performance`, `validation_matrix`, `parity`, `fortran_comparison`, `research_lanes` | Evidence: accepted results versus historical/experimental records; archive a superseded experiment, do not present it as a second roadmap. |
+
+Reuse the nine numbered examples. Keep 01–03 for analytic/VMEC/Boozer profiles,
+04 for the documented monoenergetic path, 05 for root evidence, 06 for convergence,
+07 for gradients, 08 explicitly labeled geometry proxy until the real boundary
+example replaces it, and 09 for qualified Phi1/impurity comparisons. Add warm/batch
+options to the relevant examples and guides rather than another numbered gallery.
+Each needs editable profiles/geometry/resolution, units, model scope, expected
+qualitative result, a quick mode and a checksummed research case with measured
+resource requirements. Do not imply all nine support native Case execution.
+
+Students should reach a plot and a readable physical summary in one command, then
+see why a small residual is not grid convergence. Researchers should be able to
+replace equilibrium/profiles and run convergence, repeated solves and gradients
+without copying internal code. Examples must expose rejected points, root scope,
+error bars and SI conventions, not connect invalid entries as real data.
+
+Audit duplication in `solve.py`, `coarse_precond.py`, `multigrid.py`, geometry and
+workflow orchestration before creating helpers. Keep one physics assembly and one
+solver policy; generic new algorithms belong in SOLVAX. Remove obsolete paths only
+after preserving meaningful assertions, not by deleting difficult tests. Report
+source/test/tool/doc file counts, physical lines, tracked bytes, fresh-clone size,
+wheel and installed-owned size separately. Dependencies still count in user setup
+cost. Preserve the <20 MiB owned-artifact/fresh-clone targets and soft 45k production
+line target as visible debt where missed, without forcing unrelated modules into
+one file or silently changing measurement definitions. No history rewrite is planned.
+
+The 95% line/branch goal remains a ratchet for stable reachable code, not a reason
+to manufacture tests or postpone an urgent scientific correction. Run focused
+mathematical/physics tests per change, installed examples and warning-clean docs;
+reserve large external/GPU campaigns for relevant changes. Keep compact inputs,
+checksums, commands and result summaries in Git; raw states, traces and build trees
+belong in an archive. Verify retrieval before pruning an artifact that underpins
+an advertised result.
+
+## 8. Deferred work, publications, and the next PRs
+
+Defer a new fine-grid coordinate/discretization backend; MUMPS reimplementation;
+BLR/mixed precision without measured kinetic evidence; learned/Nyström/PINN
+preconditioners; unqualified truncated-adjoint windows; multi-host/state-decomposed
+execution; new database frameworks; joint coils/plasma optimization; and mirrors.
+Existing useful experimental APIs can remain clearly labeled. A deferred item
+reopens only with a named user calculation the active deliverables cannot serve,
+a bounded experiment and a measurable decision. Native Phi1/full drifts are
+scientific completeness work after the corresponding coupled/error contracts,
+not abandoned physics or an excuse to claim SFINCS parity early.
+
+The next implementation PRs should be concrete and sequential:
+
+1. **Integrate and qualify the baseline:** reconcile the existing PRs, close the
+   root-timing scope defect, request appropriate full states in the benchmark
+   runner, archive valid reference inputs/toolchains, and publish the four-family
+   observable/error table. Avoid a full campaign while its pairs remain invalid.
+2. **Expose safe reuse through existing prepared objects:** first unchanged A and
+   changing RHS, then full-FP n/T and regular Er continuation; cold/warm values,
+   derivatives, rejected-trial ownership, invalidation and memory are its tests.
+3. **Optimize one measured bottleneck:** choose factor application or a stronger
+   physics P from the ablations; include the complete scan/gradient benchmark,
+   CPU thread/process policy and one/two-GPU results. Stop if it does not pay off.
+4. **Replace the optimization proxy with the real dependency chain:** prescribed
+   Er first, root and bootstrap coupling only after their respective checks.
+   Improve the existing guides/examples in each PR, not in a final documentation dump.
+
+Estimate implementation effort only after the first baseline identifies reference,
+physics and dependency blockers. Do not promise a date or spend unlimited runtime
+recovering one historical input. Bound attempts and retain failure information;
+a smaller honest supported domain is more useful than a nominally complete matrix.
+
+Prepare **one methods/software paper** from deliverables 1–2: stated equations,
+independent mathematics/physics benchmarks, full-FP versus reduced-model scope,
+error-controlled derivatives, warm reuse, CPU/GPU throughput, whole-workflow cost,
+memory and failures. Differentiable GPU neoclassics alone is no longer a novelty
+claim. Its strongest possible contribution is reliable reuse and measured design
+throughput at accepted physical accuracy. A separate application paper is warranted
+only when deliverable 3 yields a scientifically interesting independently validated
+design, not merely because another example exists.
+
+**No new release until the open PRs are merged or explicitly resolved and the most
+important supported-scope goals above are achieved.** Then verify the exact installed
+wheel/sdist/dependencies, all required checks/reviews, documentation commands,
+scientific envelopes and archived figure provenance. Report remaining experimental
+capabilities honestly. All commits use author and committer `rogeriojorge`; keep
+user work and unrelated repositories intact. Completion updates this decision plan,
+existing capability/evidence registries and canonical docs together; it does not
+append another chronological execution diary.

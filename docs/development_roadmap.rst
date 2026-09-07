@@ -2,20 +2,21 @@ Development roadmap
 ===================
 
 The `repository plan <https://github.com/uwplasma/DKX/blob/main/plan.md>`_
-is the single active roadmap. The September 2026 review replaces the previous
-phase letters and chronological execution log with dependency-ordered work
-packages, scientific acceptance gates, and a publication program.
+is the single active roadmap. Its ordered deliverables are verified toroidal
+calculations, fast in-memory repeated solves, and an independently checked
+VMEX boundary optimization. Documentation, examples and removal of duplication
+belong to each deliverable.
 
-Start with measurement integrity and observable accuracy, then prepared solves,
-certified reuse, sparse preconditioners, native physics, and CPU/GPU sharding.
-Real VMEX equilibrium optimization, NEOPAX transport coupling, and ESSOS coil
-optimization require the corresponding scientific and derivative gates.
-Mirror geometry and optimization are the final, deferred phase.
+The plan records the reviewed PR stack, evidence boundaries, solver ownership,
+reuse and coordinate decisions, and explicit stopping criteria for experiments.
+Native Phi1/full-drift promotion requires its scientific gates. NEOPAX and ESSOS
+consume validated interfaces; mirrors remain the final deferred extension.
+Release follows resolution of the open PRs and the important supported-scope goals.
 
-``validation/baseline.toml`` preserves the historical inventory and records the
-latest review separately. ``validation/capabilities.toml`` records capability
-scope; ``validation/registry.toml`` indexes retained scientific evidence.
-``validation/hardware.toml`` identifies the available measurement hosts.
-Older phase letters and PR descriptions describe historical work and do not
-set the next action. Completing a work package updates the plan's current
-checkpoint, capability status, and evidence links together.
+``validation/capabilities.toml`` records capability scope;
+``validation/registry.toml`` indexes retained scientific evidence;
+``validation/hardware.toml`` identifies measurement hosts;
+``validation/baseline.toml`` preserves dated inventory measurements.
+Older phase letters and experiment pages are historical context, not additional
+active work queues. Update the plan, canonical documentation and existing evidence
+registries together when a deliverable is completed.
