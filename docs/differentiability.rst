@@ -548,3 +548,25 @@ Worked examples
 
 See :doc:`numerics` for the solver routes behind the adjoint and :doc:`performance`
 for runtime and memory of the differentiable paths.
+
+Algebraic error in linear moments
+---------------------------------
+
+``dkx.sensitivity.linear_observable_algebraic_error`` audits a supplied state,
+linear moment vector and original constrained forward/transpose actions. Supply
+the existing qualified transpose solver and explicit primal/adjoint tolerances;
+the helper recomputes both residuals and returns serializable scalar diagnostics.
+With ``r = b - A x``, its signed correction is ``lambda.T @ r`` for
+``A.T @ lambda = c``. Add the correction to ``c.T @ x``. An approximate adjoint
+leaves the remainder ``(c - A.T @ lambda).T @ (x_exact - x)``: a small transpose
+residual alone does not bound it for an ill-conditioned operator. Check stability
+under adjoint tightening before using the estimate in a figure.
+
+The returned dictionary can be stored under a named observable in
+``Result.metadata`` using ``dataclasses.replace`` and survives normal Result
+serialization. This opt-in audit does not add solves to ordinary execution or
+change its convergence policy. It applies to linear observables at fixed geometry
+and coefficients, with all source/gauge constraints included. Nonlinear moments,
+Phi1/root linearizations and grid/geometry uncertainty need their own evidence.
+See `Pierce and Giles (2004) <https://doi.org/10.1016/j.jcp.2004.05.001>`_ for the
+distinction between adjoint error corrections and error bounds.

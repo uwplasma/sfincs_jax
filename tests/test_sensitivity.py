@@ -746,3 +746,54 @@ def test_rhs1_moment_observables_jvp_vjp_dot_product_gates() -> None:
     for name, diagnostic in diagnostic_functions.items():
         result = adjoint_dot_product_check(diagnostic, state, tangent, cotangent)
         assert result.abs_error < 1.0e-10, name
+
+
+@pytest.mark.parametrize("rhs_scale", [1., 1e-200, 1e200])
+def test_algebraic_moment_error_recovers_manufactured_signed_error(rhs_scale, tmp_path):
+    from dkx.sensitivity import linear_observable_algebraic_error
+
+    # Nonnormal, nonsymmetric operator: transposing the wrong solve changes J.
+    a = jnp.array([[2., 9., 0.], [0., 3., -4.], [0., 0., 5.]])
+    exact = rhs_scale * jnp.array([1., -2., 3.])
+    x = exact + rhs_scale * jnp.array([.002, -.001, .003])
+    c = jnp.array([1., 2., -1.])
+    out = linear_observable_algebraic_error(
+        rhs=a @ exact, state=x, observable_vector=c, apply=lambda x: a @ x,
+        transpose_apply=lambda x: a.T @ x,
+        transpose_solve=lambda b: jnp.linalg.solve(a.T, b),
+        primal_rtol=.01, adjoint_rtol=1e-12,
+    )
+    assert out["signed_correction"] / rhs_scale == pytest.approx(float(c @ ((exact-x)/rhs_scale)), abs=1e-13)
+    assert out["corrected_observable"] / rhs_scale == pytest.approx(float(c @ (exact/rhs_scale)))
+    assert out["primal_relative_residual"] > 0
+    assert not out["is_bound"]
+    assert json.loads(json.dumps(out)) == out
+
+    from dkx.result import Result
+
+    result = Result(case_id="manufactured", case_name="linear", workflow="profile",
+                    arrays={"objective": np.array(out["observable"])},
+                    dimensions={"objective": ()}, metadata={"algebraic_error": out})
+    restored = Result.load(result.save(tmp_path / "audit.nc"))
+    assert restored.metadata["algebraic_error"] == out
+
+
+@pytest.mark.parametrize("failure", ["primal", "adjoint", "nonfinite", "shape", "zero_rhs"])
+def test_algebraic_moment_error_rejects_invalid_equations(failure):
+    from dkx.sensitivity import linear_observable_algebraic_error
+
+    b = jnp.ones(2)
+    x = b if failure != "primal" else b * 2
+    if failure == "nonfinite":
+        x = x.at[0].set(jnp.nan)
+    if failure == "shape":
+        x = jnp.ones(3)
+    if failure == "zero_rhs":
+        b, x = jnp.zeros(2), jnp.array([1e-200, 0.])
+    with pytest.raises(ValueError):
+        linear_observable_algebraic_error(
+            rhs=b, state=x, observable_vector=jnp.ones(2), apply=lambda v: v,
+            transpose_apply=lambda v: v,
+            transpose_solve=lambda v: v * (2 if failure == "adjoint" else 1),
+            primal_rtol=0., adjoint_rtol=0.,
+        )
